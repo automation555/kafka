@@ -60,7 +60,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -87,7 +86,6 @@ class WorkerSourceTask extends WorkerTask {
     private final TopicAdmin admin;
     private final CloseableOffsetStorageReader offsetReader;
     private final OffsetStorageWriter offsetWriter;
-    private final Executor closeExecutor;
     private final SourceTaskMetricsGroup sourceTaskMetricsGroup;
     private final AtomicReference<Exception> producerSendException;
     private final boolean isTopicTrackingEnabled;
@@ -100,8 +98,9 @@ class WorkerSourceTask extends WorkerTask {
     private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessages;
     // A second buffer is used while an offset flush is running
     private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessagesBacklog;
-    private boolean flushing;
-    private CountDownLatch stopRequestedLatch;
+    private boolean recordFlushPending;
+    private boolean offsetFlushPending;
+    private final CountDownLatch stopRequestedLatch;
 
     private Map<String, String> taskConfig;
     private boolean started = false;
@@ -125,8 +124,7 @@ class WorkerSourceTask extends WorkerTask {
                             ClassLoader loader,
                             Time time,
                             RetryWithToleranceOperator retryWithToleranceOperator,
-                            StatusBackingStore statusBackingStore,
-                            Executor closeExecutor) {
+                            StatusBackingStore statusBackingStore) {
 
         super(id, statusListener, initialState, loader, connectMetrics,
                 retryWithToleranceOperator, time, statusBackingStore);
@@ -142,13 +140,12 @@ class WorkerSourceTask extends WorkerTask {
         this.admin = admin;
         this.offsetReader = offsetReader;
         this.offsetWriter = offsetWriter;
-        this.closeExecutor = closeExecutor;
 
         this.toSend = null;
         this.lastSendFailed = false;
         this.outstandingMessages = new IdentityHashMap<>();
         this.outstandingMessagesBacklog = new IdentityHashMap<>();
-        this.flushing = false;
+        this.recordFlushPending = false;
         this.stopRequestedLatch = new CountDownLatch(1);
         this.sourceTaskMetricsGroup = new SourceTaskMetricsGroup(id, connectMetrics);
         this.producerSendException = new AtomicReference<>();
@@ -175,9 +172,13 @@ class WorkerSourceTask extends WorkerTask {
                 log.warn("Could not stop task", t);
             }
         }
-
-        closeProducer(Duration.ofSeconds(30));
-
+        if (producer != null) {
+            try {
+                producer.close(Duration.ofSeconds(30));
+            } catch (Throwable t) {
+                log.warn("Could not close producer", t);
+            }
+        }
         if (admin != null) {
             try {
                 admin.close(Duration.ofSeconds(30));
@@ -202,14 +203,6 @@ class WorkerSourceTask extends WorkerTask {
     public void cancel() {
         super.cancel();
         offsetReader.close();
-        // We proactively close the producer here as the main work thread for the task may
-        // be blocked indefinitely in a call to Producer::send if automatic topic creation is
-        // not enabled on either the connector or the Kafka cluster. Closing the producer should
-        // unblock it in that case and allow shutdown to proceed normally.
-        // With a duration of 0, the producer's own shutdown logic should be fairly quick,
-        // but closing user-pluggable classes like interceptors may lag indefinitely. So, we
-        // call close on a separate thread in order to avoid blocking the herder's tick thread.
-        closeExecutor.execute(() -> closeProducer(Duration.ZERO));
     }
 
     @Override
@@ -264,16 +257,6 @@ class WorkerSourceTask extends WorkerTask {
             // and commit offsets. Worst case, task.flush() will also throw an exception causing the offset commit
             // to fail.
             commitOffsets();
-        }
-    }
-
-    private void closeProducer(Duration duration) {
-        if (producer != null) {
-            try {
-                producer.close(duration);
-            } catch (Throwable t) {
-                log.warn("Could not close producer for {}", id, t);
-            }
         }
     }
 
@@ -353,7 +336,7 @@ class WorkerSourceTask extends WorkerTask {
             // messages and update the offsets.
             synchronized (this) {
                 if (!lastSendFailed) {
-                    if (!flushing) {
+                    if (!recordFlushPending) {
                         outstandingMessages.put(producerRecord, producerRecord);
                     } else {
                         outstandingMessagesBacklog.put(producerRecord, producerRecord);
@@ -471,12 +454,12 @@ class WorkerSourceTask extends WorkerTask {
     private synchronized void recordSent(final ProducerRecord<byte[], byte[]> record) {
         ProducerRecord<byte[], byte[]> removed = outstandingMessages.remove(record);
         // While flushing, we may also see callbacks for items in the backlog
-        if (removed == null && flushing)
+        if (removed == null && recordFlushPending)
             removed = outstandingMessagesBacklog.remove(record);
         // But if neither one had it, something is very wrong
         if (removed == null) {
             log.error("{} CRITICAL Saw callback for record that was not present in the outstanding message set: {}", this, record);
-        } else if (flushing && outstandingMessages.isEmpty()) {
+        } else if (recordFlushPending && outstandingMessages.isEmpty()) {
             // flush thread may be waiting on the outstanding messages to clear
             this.notifyAll();
         }
@@ -493,11 +476,15 @@ class WorkerSourceTask extends WorkerTask {
         synchronized (this) {
             // First we need to make sure we snapshot everything in exactly the current state. This
             // means both the current set of messages we're still waiting to finish, stored in this
-            // class, which setting flushing = true will handle by storing any new values into a new
+            // class, which setting recordFlushPending = true will handle by storing any new values into a new
             // buffer; and the current set of user-specified offsets, stored in the
             // OffsetStorageWriter, for which we can use beginFlush() to initiate the snapshot.
-            flushing = true;
-            boolean flushStarted = offsetWriter.beginFlush();
+            // No need to begin a new offset flush if we timed out waiting for records to be flushed to
+            // Kafka in a prior attempt.
+            if (!recordFlushPending) {
+                recordFlushPending = true;
+                offsetFlushPending = offsetWriter.beginFlush();
+            }
             // Still wait for any producer records to flush, even if there aren't any offsets to write
             // to persistent storage
 
@@ -506,11 +493,8 @@ class WorkerSourceTask extends WorkerTask {
             while (!outstandingMessages.isEmpty()) {
                 try {
                     long timeoutMs = timeout - time.milliseconds();
-                    // If the task has been cancelled, no more records will be sent from the producer; in that case, if any outstanding messages remain,
-                    // we can stop flushing immediately
-                    if (isCancelled() || timeoutMs <= 0) {
+                    if (timeoutMs <= 0) {
                         log.error("{} Failed to flush, timed out while waiting for producer to flush outstanding {} messages", this, outstandingMessages.size());
-                        finishFailedFlush();
                         recordCommitFailure(time.milliseconds() - started, null);
                         return false;
                     }
@@ -526,7 +510,7 @@ class WorkerSourceTask extends WorkerTask {
                 }
             }
 
-            if (!flushStarted) {
+            if (!offsetFlushPending) {
                 // There was nothing in the offsets to process, but we still waited for the data in the
                 // buffer to flush. This is useful since this can feed into metrics to monitor, e.g.
                 // flush time, which can be used for monitoring even if the connector doesn't record any
@@ -603,7 +587,8 @@ class WorkerSourceTask extends WorkerTask {
         offsetWriter.cancelFlush();
         outstandingMessages.putAll(outstandingMessagesBacklog);
         outstandingMessagesBacklog.clear();
-        flushing = false;
+        recordFlushPending = false;
+        offsetFlushPending = false;
     }
 
     private synchronized void finishSuccessfulFlush() {
@@ -611,7 +596,8 @@ class WorkerSourceTask extends WorkerTask {
         IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> temp = outstandingMessages;
         outstandingMessages = outstandingMessagesBacklog;
         outstandingMessagesBacklog = temp;
-        flushing = false;
+        recordFlushPending = false;
+        offsetFlushPending = false;
     }
 
     @Override

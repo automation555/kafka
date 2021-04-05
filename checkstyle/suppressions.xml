@@ -136,7 +136,7 @@
               files="(KafkaConfigBackingStore|Values).java"/>
 
     <suppress checks="NPathComplexity"
-              files="(DistributedHerder|RestClient|RestServer|JsonConverter|KafkaConfigBackingStore|FileStreamSourceTask|TopicAdmin).java"/>
+              files="(DistributedHerder|RestClient|RestServer|JsonConverter|KafkaConfigBackingStore|FileStreamSourceTask|TopicAdmin|WorkerSourceTask).java"/>
 
     <!-- connect tests-->
     <suppress checks="ClassDataAbstractionCoupling"
@@ -253,10 +253,6 @@
     <suppress id="dontUseSystemExit"
               files="VerifiableProducer.java"/>
 
-    <!-- Shell -->
-    <suppress checks="CyclomaticComplexity"
-              files="(GlobComponent).java"/>
-
     <!-- Log4J-Appender -->
     <suppress checks="CyclomaticComplexity"
               files="KafkaLog4jAppender.java"/>
@@ -266,19 +262,7 @@
     <suppress checks="JavaNCSS"
               files="RequestResponseTest.java"/>
 
-    <!-- Log4J2-Appender -->
-    <suppress checks="CyclomaticComplexity"
-              files="KafkaAppender.java"/>
-    <suppress checks="NPathComplexity"
-              files="KafkaAppender.java"/>
-
     <!-- metadata -->
-    <suppress checks="ClassDataAbstractionCoupling"
-              files="(ReplicationControlManager).java"/>
-    <suppress checks="ClassFanOutComplexity"
-              files="(QuorumController|ReplicationControlManager).java"/>
-    <suppress checks="CyclomaticComplexity"
-              files="(ReplicationControlManager).java"/>
     <suppress checks="NPathComplexity"
               files="KafkaEventQueue.java"/>
     <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"

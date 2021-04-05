@@ -23,7 +23,6 @@ import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.kstream.Aggregator;
-import org.apache.kafka.streams.kstream.Branched;
 import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.Grouped;
 import org.apache.kafka.streams.kstream.Initializer;
@@ -56,7 +55,7 @@ import static org.junit.Assert.assertEquals;
 public class StreamsGraphTest {
 
     private final Pattern repartitionTopicPattern = Pattern.compile("Sink: .*-repartition");
-    private Initializer<String> initializer;
+    private Initializer<String, String> initializer;
     private Aggregator<String, String, String> aggregator;
 
     // Test builds topology in succesive manner but only graph node not yet processed written to topology
@@ -112,7 +111,8 @@ public class StreamsGraphTest {
         builder.build(properties);
     }
 
-    @Test
+    @Test 
+    @SuppressWarnings("unchecked")
     // Topology in this test from https://issues.apache.org/jira/browse/KAFKA-9739
     public void shouldNotThrowNPEWithMergeNodes() {
         final Properties properties = new Properties();
@@ -121,7 +121,7 @@ public class StreamsGraphTest {
         properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, StreamsConfig.OPTIMIZE);
 
         final StreamsBuilder builder = new StreamsBuilder();
-        initializer = () -> "";
+        initializer = (String key) -> "";
         aggregator = (aggKey, value, aggregate) -> aggregate + value.length();
         final TransformerSupplier<String, String, KeyValue<String, String>> transformSupplier = () -> new Transformer<String, String, KeyValue<String, String>>() {
             @Override
@@ -165,19 +165,18 @@ public class StreamsGraphTest {
                 .leftJoin(idTable, (v1, v2) -> v1 + v2,
                         Joined.with(Serdes.String(), Serdes.String(), Serdes.String()));
 
+        final KStream<String, String>[] branches = joinStream.branch((k, v) -> v.equals("some-value"), (k, v) -> true);
 
-        joinStream.split()
-                .branch((k, v) -> v.equals("some-value"), Branched.withConsumer(ks -> ks.map(KeyValue::pair)
-                                .peek((recipientId, command) -> System.out.println("printing out"))
-                                .to("external-command", Produced.with(Serdes.String(), Serdes.String()))
-                ))
-                .defaultBranch(Branched.withConsumer(ks -> {
-                    ks.filter((k, v) -> v != null)
-                            .peek((subscriptionId, wrapper) -> System.out.println("Printing output"))
-                            .mapValues((k, v) -> v)
-                            .to("dlq-topic", Produced.with(Serdes.String(), Serdes.String()));
-                    ks.map(KeyValue::pair).to("retryTopic", Produced.with(Serdes.String(), Serdes.String()));
-                }));
+        branches[0].map(KeyValue::pair)
+                .peek((recipientId, command) -> System.out.println("printing out"))
+                .to("external-command", Produced.with(Serdes.String(), Serdes.String()));
+
+        branches[1].filter((k, v) -> v != null)
+                .peek((subscriptionId, wrapper) -> System.out.println("Printing output"))
+                .mapValues((k, v) -> v)
+                .to("dlq-topic", Produced.with(Serdes.String(), Serdes.String()));
+
+        branches[1].map(KeyValue::pair).to("retryTopic", Produced.with(Serdes.String(), Serdes.String()));
 
         final Topology topology = builder.build(properties);
         assertEquals(expectedComplexMergeOptimizeTopology, topology.describe().toString());
@@ -474,42 +473,42 @@ public class StreamsGraphTest {
             "      --> KSTREAM-BRANCH-0000000027\n" +
             "      <-- KSTREAM-SOURCE-0000000025\n" +
             "    Processor: KSTREAM-BRANCH-0000000027 (stores: [])\n" +
-            "      --> KSTREAM-BRANCH-00000000270, KSTREAM-BRANCH-00000000271\n" +
+            "      --> KSTREAM-BRANCHCHILD-0000000029, KSTREAM-BRANCHCHILD-0000000028\n" +
             "      <-- KSTREAM-LEFTJOIN-0000000026\n" +
-            "    Processor: KSTREAM-BRANCH-00000000270 (stores: [])\n" +
+            "    Processor: KSTREAM-BRANCHCHILD-0000000029 (stores: [])\n" +
             "      --> KSTREAM-FILTER-0000000033, KSTREAM-MAP-0000000037\n" +
             "      <-- KSTREAM-BRANCH-0000000027\n" +
-            "    Processor: KSTREAM-BRANCH-00000000271 (stores: [])\n" +
-            "      --> KSTREAM-MAP-0000000029\n" +
+            "    Processor: KSTREAM-BRANCHCHILD-0000000028 (stores: [])\n" +
+            "      --> KSTREAM-MAP-0000000030\n" +
             "      <-- KSTREAM-BRANCH-0000000027\n" +
             "    Processor: KSTREAM-FILTER-0000000033 (stores: [])\n" +
             "      --> KSTREAM-PEEK-0000000034\n" +
-            "      <-- KSTREAM-BRANCH-00000000270\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000029\n" +
             "    Source: KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition-source (topics: [KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition])\n" +
             "      --> KSTREAM-PEEK-0000000013\n" +
-            "    Processor: KSTREAM-MAP-0000000029 (stores: [])\n" +
-            "      --> KSTREAM-PEEK-0000000030\n" +
-            "      <-- KSTREAM-BRANCH-00000000271\n" +
+            "    Processor: KSTREAM-MAP-0000000030 (stores: [])\n" +
+            "      --> KSTREAM-PEEK-0000000031\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000028\n" +
             "    Processor: KSTREAM-PEEK-0000000034 (stores: [])\n" +
             "      --> KSTREAM-MAPVALUES-0000000035\n" +
             "      <-- KSTREAM-FILTER-0000000033\n" +
             "    Processor: KSTREAM-MAP-0000000037 (stores: [])\n" +
             "      --> KSTREAM-SINK-0000000038\n" +
-            "      <-- KSTREAM-BRANCH-00000000270\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000029\n" +
             "    Processor: KSTREAM-MAPVALUES-0000000035 (stores: [])\n" +
             "      --> KSTREAM-SINK-0000000036\n" +
             "      <-- KSTREAM-PEEK-0000000034\n" +
             "    Processor: KSTREAM-PEEK-0000000013 (stores: [])\n" +
             "      --> KSTREAM-AGGREGATE-0000000015\n" +
             "      <-- KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition-source\n" +
-            "    Processor: KSTREAM-PEEK-0000000030 (stores: [])\n" +
-            "      --> KSTREAM-SINK-0000000031\n" +
-            "      <-- KSTREAM-MAP-0000000029\n" +
+            "    Processor: KSTREAM-PEEK-0000000031 (stores: [])\n" +
+            "      --> KSTREAM-SINK-0000000032\n" +
+            "      <-- KSTREAM-MAP-0000000030\n" +
             "    Processor: KSTREAM-AGGREGATE-0000000015 (stores: [KSTREAM-AGGREGATE-STATE-STORE-0000000014])\n" +
             "      --> none\n" +
             "      <-- KSTREAM-PEEK-0000000013\n" +
-            "    Sink: KSTREAM-SINK-0000000031 (topic: external-command)\n" +
-            "      <-- KSTREAM-PEEK-0000000030\n" +
+            "    Sink: KSTREAM-SINK-0000000032 (topic: external-command)\n" +
+            "      <-- KSTREAM-PEEK-0000000031\n" +
             "    Sink: KSTREAM-SINK-0000000036 (topic: dlq-topic)\n" +
             "      <-- KSTREAM-MAPVALUES-0000000035\n" +
             "    Sink: KSTREAM-SINK-0000000038 (topic: retryTopic)\n" +

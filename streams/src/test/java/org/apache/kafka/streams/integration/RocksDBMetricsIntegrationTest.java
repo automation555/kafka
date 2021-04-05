@@ -40,9 +40,8 @@ import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.StreamsTestUtils;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -52,7 +51,6 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
 import org.junit.runners.Parameterized.Parameters;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -73,17 +71,8 @@ public class RocksDBMetricsIntegrationTest {
 
     private static final int NUM_BROKERS = 3;
 
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(NUM_BROKERS);
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
 
     private static final String STREAM_INPUT_ONE = "STREAM_INPUT_ONE";
     private static final String STREAM_OUTPUT_ONE = "STREAM_OUTPUT_ONE";
@@ -210,7 +199,7 @@ public class RocksDBMetricsIntegrationTest {
         builder.stream(STREAM_INPUT_TWO, Consumed.with(Serdes.Integer(), Serdes.String()))
             .groupByKey()
             .windowedBy(TimeWindows.of(WINDOW_SIZE).grace(Duration.ZERO))
-            .aggregate(() -> 0L,
+            .aggregate((Integer key) -> 0L,
                 (aggKey, newValue, aggValue) -> aggValue,
                 Materialized.<Integer, Long, WindowStore<Bytes, byte[]>>as("time-windowed-aggregated-stream-store")
                     .withValueSerde(Serdes.Long())

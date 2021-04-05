@@ -61,26 +61,26 @@ public class SessionWindowedCogroupedKStreamImpl<K, V> extends
     }
 
     @Override
-    public KTable<Windowed<K>, V> aggregate(final Initializer<V> initializer,
+    public KTable<Windowed<K>, V> aggregate(final Initializer<K, V> initializer,
                                             final Merger<? super K, V> sessionMerger) {
         return aggregate(initializer, sessionMerger, Materialized.with(null, null));
     }
 
     @Override
-    public KTable<Windowed<K>, V> aggregate(final Initializer<V> initializer,
+    public KTable<Windowed<K>, V> aggregate(final Initializer<K, V> initializer,
                                             final Merger<? super K, V> sessionMerger,
                                             final Materialized<K, V, SessionStore<Bytes, byte[]>> materialized) {
         return aggregate(initializer, sessionMerger, NamedInternal.empty(), materialized);
     }
 
     @Override
-    public KTable<Windowed<K>, V> aggregate(final Initializer<V> initializer,
+    public KTable<Windowed<K>, V> aggregate(final Initializer<K, V> initializer,
                                             final Merger<? super K, V> sessionMerger, final Named named) {
         return aggregate(initializer, sessionMerger, named, Materialized.with(null, null));
     }
 
     @Override
-    public KTable<Windowed<K>, V> aggregate(final Initializer<V> initializer,
+    public KTable<Windowed<K>, V> aggregate(final Initializer<K, V> initializer,
                                             final Merger<? super K, V> sessionMerger, final Named named,
                                             final Materialized<K, V, SessionStore<Bytes, byte[]>> materialized) {
         Objects.requireNonNull(initializer, "initializer can't be null");
@@ -106,11 +106,15 @@ public class SessionWindowedCogroupedKStreamImpl<K, V> extends
             sessionMerger);
     }
 
+
+
+    @SuppressWarnings("deprecation") // continuing to support SessionWindows#maintainMs in fallback mode
     private  StoreBuilder<SessionStore<K, V>> materialize(final MaterializedInternal<K, V, SessionStore<Bytes, byte[]>> materialized) {
         SessionBytesStoreSupplier supplier = (SessionBytesStoreSupplier) materialized.storeSupplier();
         if (supplier == null) {
-            final long retentionPeriod = materialized.retention() != null ?
-                materialized.retention().toMillis() : sessionWindows.inactivityGap() + sessionWindows.gracePeriodMs();
+            // NOTE: in the future, when we remove sessionWindows#maintainMs(), we should set the default retention
+            // to be (sessionWindows.inactivityGap() + sessionWindows.grace()). This will yield the same default behavior.
+            final long retentionPeriod = materialized.retention() != null ? materialized.retention().toMillis() : sessionWindows.maintainMs();
 
             if ((sessionWindows.inactivityGap() + sessionWindows.gracePeriodMs()) > retentionPeriod) {
                 throw new IllegalArgumentException("The retention period of the session store "

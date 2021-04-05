@@ -21,7 +21,6 @@ import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
-import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.KeyValueTimestamp;
 import org.apache.kafka.streams.StreamsConfig;
@@ -76,7 +75,7 @@ public class KStreamSessionWindowAggregateProcessorTest {
 
     private final String threadId = Thread.currentThread().getName();
     private final ToInternal toInternal = new ToInternal();
-    private final Initializer<Long> initializer = () -> 0L;
+    private final Initializer<String, Long> initializer = (String key) -> 0L;
     private final Aggregator<String, String, Long> aggregator = (aggKey, value, aggregate) -> aggregate + 1;
     private final Merger<String, Long> sessionMerger = (aggKey, aggOne, aggTwo) -> aggOne + aggTwo;
     private final KStreamSessionWindowAggregate<String, String, Long> sessionAggregator =
@@ -106,8 +105,7 @@ public class KStreamSessionWindowAggregateProcessorTest {
             metrics,
             new StreamsConfig(StreamsTestUtils.getStreamsConfig()),
             MockRecordCollector::new,
-            new ThreadCache(new LogContext("testCache "), 100000, metrics),
-            Time.SYSTEM
+            new ThreadCache(new LogContext("testCache "), 100000, metrics)
         ) {
             @SuppressWarnings("unchecked")
             @Override
@@ -626,8 +624,7 @@ public class KStreamSessionWindowAggregateProcessorTest {
             streamsMetrics,
             new StreamsConfig(StreamsTestUtils.getStreamsConfig()),
             MockRecordCollector::new,
-            new ThreadCache(new LogContext("testCache "), 100000, streamsMetrics),
-            Time.SYSTEM
+            new ThreadCache(new LogContext("testCache "), 100000, streamsMetrics)
         ) {
             @SuppressWarnings("unchecked")
             @Override

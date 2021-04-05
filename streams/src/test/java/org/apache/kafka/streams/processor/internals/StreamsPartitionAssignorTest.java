@@ -19,6 +19,7 @@ package org.apache.kafka.streams.processor.internals;
 import java.time.Duration;
 import java.util.Properties;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo;
 import org.apache.kafka.clients.admin.OffsetSpec;
@@ -35,7 +36,6 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.common.feature.FeatureAndVersionRange;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.MockTime;
@@ -64,7 +64,6 @@ import org.apache.kafka.streams.processor.internals.assignment.FallbackPriorTask
 import org.apache.kafka.streams.processor.internals.assignment.HighAvailabilityTaskAssignor;
 import org.apache.kafka.streams.processor.internals.assignment.ReferenceContainer;
 import org.apache.kafka.streams.processor.internals.assignment.StickyTaskAssignor;
-import org.apache.kafka.streams.processor.internals.assignment.StreamConsumerFeatureVersion;
 import org.apache.kafka.streams.processor.internals.assignment.SubscriptionInfo;
 import org.apache.kafka.streams.processor.internals.assignment.TaskAssignor;
 import org.apache.kafka.streams.state.HostInfo;
@@ -105,7 +104,6 @@ import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.apache.kafka.common.utils.Utils.mkSortedSet;
 import static org.apache.kafka.streams.processor.internals.StreamsPartitionAssignor.assignTasksToThreads;
 import static org.apache.kafka.streams.processor.internals.assignment.AssignmentTestUtils.EMPTY_CHANGELOG_END_OFFSETS;
-import static org.apache.kafka.streams.processor.internals.assignment.AssignmentTestUtils.EMPTY_MAP;
 import static org.apache.kafka.streams.processor.internals.assignment.AssignmentTestUtils.EMPTY_TASKS;
 import static org.apache.kafka.streams.processor.internals.assignment.AssignmentTestUtils.TASK_0_0;
 import static org.apache.kafka.streams.processor.internals.assignment.AssignmentTestUtils.TASK_0_1;
@@ -244,7 +242,6 @@ public class StreamsPartitionAssignorTest {
         expect(taskManager.builder()).andStubReturn(builder);
         expect(taskManager.getTaskOffsetSums()).andStubReturn(getTaskOffsetSums(activeTasks, standbyTasks));
         expect(taskManager.processId()).andStubReturn(UUID_1);
-        expect(taskManager.featureMetadata()).andStubReturn(EMPTY_MAP);
         builder.setApplicationId(APPLICATION_ID);
         builder.buildTopology();
     }
@@ -1032,7 +1029,6 @@ public class StreamsPartitionAssignorTest {
 
     @Test
     public void testOnAssignment() {
-//        adminClient = createMockAdminClientForAssignor(EMPTY_CHANGELOG_END_OFFSETS);
         taskManager = EasyMock.createStrictMock(TaskManager.class);
 
         final Map<HostInfo, Set<TopicPartition>> hostState = Collections.singletonMap(
@@ -1057,7 +1053,7 @@ public class StreamsPartitionAssignorTest {
         configureDefaultPartitionAssignor();
 
         final List<TaskId> activeTaskList = asList(TASK_0_0, TASK_0_3);
-        final AssignmentInfo info = new AssignmentInfo(LATEST_SUPPORTED_VERSION, activeTaskList, standbyTasks, hostState, emptyMap(), emptyMap(), 0);
+        final AssignmentInfo info = new AssignmentInfo(LATEST_SUPPORTED_VERSION, activeTaskList, standbyTasks, hostState, emptyMap(), 0);
         final Assignment assignment = new Assignment(asList(t3p0, t3p3), info.encode());
 
         partitionAssignor.onAssignment(assignment, null);
@@ -1698,13 +1694,13 @@ public class StreamsPartitionAssignorTest {
         assertThat(assignment.get(CONSUMER_1).partitions(), equalTo(asList(t1p0, t1p2)));
         assertThat(
             AssignmentInfo.decode(assignment.get(CONSUMER_1).userData()),
-            equalTo(new AssignmentInfo(LATEST_SUPPORTED_VERSION, asList(TASK_0_0, TASK_0_2), emptyMap(), emptyMap(), emptyMap(), emptyMap(), 0)));
+            equalTo(new AssignmentInfo(LATEST_SUPPORTED_VERSION, asList(TASK_0_0, TASK_0_2), emptyMap(), emptyMap(), emptyMap(), 0)));
 
 
         assertThat(assignment.get(CONSUMER_2).partitions(), equalTo(Collections.singletonList(t1p1)));
         assertThat(
             AssignmentInfo.decode(assignment.get(CONSUMER_2).userData()),
-            equalTo(new AssignmentInfo(LATEST_SUPPORTED_VERSION, Collections.singletonList(TASK_0_1), emptyMap(), emptyMap(), emptyMap(), emptyMap(), 0)));
+            equalTo(new AssignmentInfo(LATEST_SUPPORTED_VERSION, Collections.singletonList(TASK_0_1), emptyMap(), emptyMap(), emptyMap(), 0)));
     }
 
     @Test
@@ -1868,6 +1864,13 @@ public class StreamsPartitionAssignorTest {
 
     @Test
     public void shouldSkipListOffsetsRequestForNewlyCreatedChangelogTopics() {
+        adminClient = EasyMock.createMock(AdminClient.class);
+        final ListOffsetsResult result = EasyMock.createNiceMock(ListOffsetsResult.class);
+        final KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> allFuture = new KafkaFutureImpl<>();
+        allFuture.complete(emptyMap());
+
+        expect(adminClient.listOffsets(emptyMap())).andStubReturn(result);
+        expect(result.all()).andReturn(allFuture);
 
         builder.addSource(null, "source1", null, null, null, "topic1");
         builder.addProcessor("processor1", new MockApiProcessorSupplier<>(), "source1");
@@ -1879,6 +1882,7 @@ public class StreamsPartitionAssignorTest {
                               defaultSubscriptionInfo.encode()
                           ));
 
+        EasyMock.replay(result);
         configureDefault();
         overwriteInternalTopicManagerWithMock(true);
 
@@ -1894,6 +1898,7 @@ public class StreamsPartitionAssignorTest {
             new TopicPartition(APPLICATION_ID + "-store-changelog", 1),
             new TopicPartition(APPLICATION_ID + "-store-changelog", 2)
         );
+        adminClient = EasyMock.createMock(AdminClient.class);
         final ListOffsetsResult result = EasyMock.createNiceMock(ListOffsetsResult.class);
         final KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> allFuture = new KafkaFutureImpl<>();
         allFuture.complete(changelogs.stream().collect(Collectors.toMap(
@@ -2032,7 +2037,7 @@ public class StreamsPartitionAssignorTest {
             )
             .windowedBy(TimeWindows.of(Duration.ofMinutes(10)))
             .aggregate(
-                () -> "",
+                (String key) -> "",
                 (k, v, a) -> a + k)
             .leftJoin(
                 inputTable,
@@ -2104,8 +2109,7 @@ public class StreamsPartitionAssignorTest {
     }
 
     private static Assignment createAssignment(final Map<HostInfo, Set<TopicPartition>> firstHostState) {
-        final Map<String, StreamConsumerFeatureVersion> featureVersionMap = mkMap(mkEntry(FeatureAndVersionRange.EOS_FEATURE.feature(), new StreamConsumerFeatureVersion(1, StreamConsumerFeatureVersion.NOT_EXIST)));
-        final AssignmentInfo info = new AssignmentInfo(LATEST_SUPPORTED_VERSION, emptyList(), emptyMap(), firstHostState, emptyMap(), featureVersionMap, 0);
+        final AssignmentInfo info = new AssignmentInfo(LATEST_SUPPORTED_VERSION, emptyList(), emptyMap(), firstHostState, emptyMap(), 0);
         return new Assignment(emptyList(), info.encode());
     }
 

@@ -45,12 +45,10 @@ import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.TestUtils;
 import org.hamcrest.Matchers;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -81,22 +79,12 @@ import static org.hamcrest.Matchers.empty;
 
 @Category(IntegrationTest.class)
 public class SuppressionIntegrationTest {
-
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(
         1,
         mkProperties(mkMap()),
         0L
     );
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
     private static final StringSerializer STRING_SERIALIZER = new StringSerializer();
     private static final Serde<String> STRING_SERDE = Serdes.String();
     private static final int COMMIT_INTERVAL = 100;
@@ -130,7 +118,7 @@ public class SuppressionIntegrationTest {
 
         final KTable<String, String> valueCounts = inputStream
             .groupByKey()
-            .aggregate(() -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
+            .aggregate((String key) -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
 
         valueCounts
             .suppress(untilTimeLimit(ofMillis(MAX_VALUE), maxRecords(1L).emitEarlyWhenFull()))
@@ -348,7 +336,7 @@ public class SuppressionIntegrationTest {
 
         final KTable<String, String> valueCounts = inputStream
             .groupByKey()
-            .aggregate(() -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
+            .aggregate((String key) -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
 
         valueCounts
             .suppress(untilTimeLimit(ofMillis(MAX_VALUE), maxRecords(1L)
@@ -407,7 +395,7 @@ public class SuppressionIntegrationTest {
 
         final KTable<String, String> valueCounts = inputStream
             .groupByKey()
-            .aggregate(() -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
+            .aggregate((String key) -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
 
         valueCounts
             .suppress(untilTimeLimit(ofMillis(MAX_VALUE), maxRecords(1L)
@@ -462,7 +450,7 @@ public class SuppressionIntegrationTest {
 
         final KTable<String, String> valueCounts = inputStream
             .groupByKey()
-            .aggregate(() -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
+            .aggregate((String key) -> "()", (key, value, aggregate) -> aggregate + ",(" + key + ": " + value + ")");
 
         valueCounts
             .suppress(untilTimeLimit(ofMillis(MAX_VALUE), maxRecords(1L)
@@ -538,6 +526,6 @@ public class SuppressionIntegrationTest {
 
     private static void verifyErrorShutdown(final KafkaStreams driver) throws InterruptedException {
         waitForCondition(() -> !driver.state().isRunningOrRebalancing(), DEFAULT_TIMEOUT, "Streams didn't shut down.");
-        waitForCondition(() -> driver.state() == KafkaStreams.State.ERROR, "Streams didn't transit to ERROR state");
+        assertThat(driver.state(), is(KafkaStreams.State.PENDING_SHUTDOWN));
     }
 }

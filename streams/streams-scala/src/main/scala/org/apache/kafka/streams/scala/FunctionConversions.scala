@@ -1,4 +1,7 @@
 /*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2017-2018 Alexis Seigneurin.
+ *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -73,8 +76,8 @@ object FunctionConversions {
     def asReducer: Reducer[V] = (value1: V, value2: V) => f(value1, value2)
   }
 
-  implicit class InitializerFromFunction[VA](val f: () => VA) extends AnyVal {
-    def asInitializer: Initializer[VA] = () => f()
+  implicit class InitializerFromFunction[K, VA](val f: K => VA) extends AnyVal {
+    def asInitializer: Initializer[K, VA] = (key: K) => f(key)
   }
 
   implicit class TransformerSupplierFromFunction[K, V, VO](val f: () => Transformer[K, V, VO]) extends AnyVal {

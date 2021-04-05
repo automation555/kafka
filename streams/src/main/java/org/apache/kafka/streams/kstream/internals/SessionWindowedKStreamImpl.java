@@ -167,14 +167,14 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
     }
 
     @Override
-    public <T> KTable<Windowed<K>, T> aggregate(final Initializer<T> initializer,
+    public <T> KTable<Windowed<K>, T> aggregate(final Initializer<K, T> initializer,
                                                 final Aggregator<? super K, ? super V, T> aggregator,
                                                 final Merger<? super K, T> sessionMerger) {
         return aggregate(initializer, aggregator, sessionMerger, NamedInternal.empty());
     }
 
     @Override
-    public <T> KTable<Windowed<K>, T> aggregate(final Initializer<T> initializer,
+    public <T> KTable<Windowed<K>, T> aggregate(final Initializer<K, T> initializer,
                                                 final Aggregator<? super K, ? super V, T> aggregator,
                                                 final Merger<? super K, T> sessionMerger,
                                                 final Named named) {
@@ -182,7 +182,7 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
     }
 
     @Override
-    public <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    public <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                                   final Aggregator<? super K, ? super V, VR> aggregator,
                                                   final Merger<? super K, VR> sessionMerger,
                                                   final Materialized<K, VR, SessionStore<Bytes, byte[]>> materialized) {
@@ -190,7 +190,7 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
     }
 
     @Override
-    public <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    public <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                                   final Aggregator<? super K, ? super V, VR> aggregator,
                                                   final Merger<? super K, VR> sessionMerger,
                                                   final Named named,
@@ -222,11 +222,13 @@ public class SessionWindowedKStreamImpl<K, V> extends AbstractStream<K, V> imple
             materializedInternal.valueSerde());
     }
 
+    @SuppressWarnings("deprecation") // continuing to support SessionWindows#maintainMs in fallback mode
     private <VR> StoreBuilder<SessionStore<K, VR>> materialize(final MaterializedInternal<K, VR, SessionStore<Bytes, byte[]>> materialized) {
         SessionBytesStoreSupplier supplier = (SessionBytesStoreSupplier) materialized.storeSupplier();
         if (supplier == null) {
-            final long retentionPeriod = materialized.retention() != null ?
-                materialized.retention().toMillis() : windows.inactivityGap() + windows.gracePeriodMs();
+            // NOTE: in the future, when we remove Windows#maintainMs(), we should set the default retention
+            // to be (windows.inactivityGap() + windows.grace()). This will yield the same default behavior.
+            final long retentionPeriod = materialized.retention() != null ? materialized.retention().toMillis() : windows.maintainMs();
 
             if ((windows.inactivityGap() + windows.gracePeriodMs()) > retentionPeriod) {
                 throw new IllegalArgumentException("The retention period of the session store "

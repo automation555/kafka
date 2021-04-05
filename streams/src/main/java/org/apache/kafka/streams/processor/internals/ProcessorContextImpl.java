@@ -173,6 +173,34 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
     }
 
     @Override
+    @Deprecated
+    public <K, V> void forward(final K key,
+                               final V value,
+                               final int childIndex) {
+        final Record<K, V> toForward = new Record<>(
+            key,
+            value,
+            timestamp(),
+            headers()
+        );
+        forward(toForward, (currentNode().children()).get(childIndex).name());
+    }
+
+    @Override
+    @Deprecated
+    public <K, V> void forward(final K key,
+                               final V value,
+                               final String childName) {
+        final Record<K, V> toForward = new Record<>(
+            key,
+            value,
+            timestamp(),
+            headers()
+        );
+        forward(toForward, childName);
+    }
+
+    @Override
     public <K, V> void forward(final K key,
                                final V value,
                                final To to) {
@@ -181,7 +209,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
             key,
             value,
             toInternal.hasTimestamp() ? toInternal.timestamp() : timestamp(),
-            headers()
+            toInternal.hasHeaders() ? toInternal.headers() : headers()
         );
         forward(toForward, toInternal.child());
     }
@@ -307,11 +335,6 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
     public long timestamp() {
         throwUnsupportedOperationExceptionIfStandby("timestamp");
         return super.timestamp();
-    }
-
-    @Override
-    public long currentStreamTimeMs() {
-        return streamTask.streamTime();
     }
 
     @Override

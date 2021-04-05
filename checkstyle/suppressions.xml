@@ -167,7 +167,7 @@
               files="StreamsMetricsImpl.java"/>
 
     <suppress checks="NPathComplexity"
-              files="(KafkaStreams|StreamsPartitionAssignor|StreamThread|TaskManager|GlobalStateManagerImpl|KStreamImplJoin).java"/>
+              files="(KafkaStreams|StreamsPartitionAssignor|StreamThread|TaskManager|GlobalStateManagerImpl).java"/>
 
     <suppress checks="(FinalLocalVariable|UnnecessaryParentheses|BooleanExpressionComplexity|CyclomaticComplexity|WhitespaceAfter|LocalVariableName)"
               files="Murmur3.java"/>
@@ -211,7 +211,7 @@
               files="Murmur3Test.java"/>
 
     <suppress checks="MethodLength"
-              files="(KStreamSlidingWindowAggregateTest|KStreamKStreamLeftJoinTest|KStreamKStreamOuterJoinTest).java"/>
+              files="KStreamSlidingWindowAggregateTest.java"/>
 
     <suppress checks="ClassFanOutComplexity"
               files="StreamTaskTest.java"/>
@@ -274,4 +274,8 @@
               files="KafkaEventQueue.java"/>
     <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
             files="metadata[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+
+    <!-- jmh-benchmarks -->
+   <suppress checks="(ClassFanOutComplexity|ClassDataAbstractionCoupling)"
+             files="KafkaApisFetchBenchmark.java"/>
 </suppressions>

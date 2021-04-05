@@ -69,7 +69,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
     private boolean producerFenced;
     private boolean sentOffsets;
     private long commitCount = 0L;
-    private final Map<MetricName, Metric> mockMetrics;
+    private Map<MetricName, Metric> mockMetrics;
 
     public RuntimeException initTransactionException = null;
     public RuntimeException beginTransactionException = null;
@@ -145,7 +145,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void initTransactions() {
+    public synchronized void initTransactions() {
         verifyProducerState();
         if (this.transactionInitialized) {
             throw new IllegalStateException("MockProducer has already been initialized for transactions.");
@@ -161,7 +161,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void beginTransaction() throws ProducerFencedException {
+    public synchronized void beginTransaction() throws ProducerFencedException {
         verifyProducerState();
         verifyTransactionsInitialized();
 
@@ -180,7 +180,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
+    public synchronized void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
                                          String consumerGroupId) throws ProducerFencedException {
         Objects.requireNonNull(consumerGroupId);
         verifyProducerState();
@@ -201,14 +201,14 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
+    public synchronized void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
                                          ConsumerGroupMetadata groupMetadata) throws ProducerFencedException {
         Objects.requireNonNull(groupMetadata);
         sendOffsetsToTransaction(offsets, groupMetadata.groupId());
     }
 
     @Override
-    public void commitTransaction() throws ProducerFencedException {
+    public synchronized void commitTransaction() throws ProducerFencedException {
         verifyProducerState();
         verifyTransactionsInitialized();
         verifyTransactionInFlight();
@@ -233,7 +233,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void abortTransaction() throws ProducerFencedException {
+    public synchronized void abortTransaction() throws ProducerFencedException {
         verifyProducerState();
         verifyTransactionsInitialized();
         verifyTransactionInFlight();
@@ -302,19 +302,13 @@ public class MockProducer<K, V> implements Producer<K, V> {
         int partition = 0;
         if (!this.cluster.partitionsForTopic(record.topic()).isEmpty())
             partition = partition(record, this.cluster);
-        else {
-            //just to throw ClassCastException if serializers are not the proper ones to serialize key/value
-            keySerializer.serialize(record.topic(), record.key());
-            valueSerializer.serialize(record.topic(), record.value());
-        }
-            
         TopicPartition topicPartition = new TopicPartition(record.topic(), partition);
         ProduceRequestResult result = new ProduceRequestResult(topicPartition);
         FutureRecordMetadata future = new FutureRecordMetadata(result, 0, RecordBatch.NO_TIMESTAMP,
                 0L, 0, 0, Time.SYSTEM);
         long offset = nextOffset(topicPartition);
         Completion completion = new Completion(offset, new RecordMetadata(topicPartition, 0, offset,
-                RecordBatch.NO_TIMESTAMP, 0L, 0, 0), result, callback, topicPartition);
+                RecordBatch.NO_TIMESTAMP, 0L, 0, 0), result, callback);
 
         if (!this.transactionInFlight)
             this.sent.add(record);
@@ -375,12 +369,12 @@ public class MockProducer<K, V> implements Producer<K, V> {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         close(Duration.ofMillis(0));
     }
 
     @Override
-    public void close(Duration timeout) {
+    public synchronized void close(Duration timeout) {
         if (this.closeException != null) {
             throw this.closeException;
         }
@@ -512,18 +506,15 @@ public class MockProducer<K, V> implements Producer<K, V> {
         private final RecordMetadata metadata;
         private final ProduceRequestResult result;
         private final Callback callback;
-        private final TopicPartition tp;
 
         public Completion(long offset,
                           RecordMetadata metadata,
                           ProduceRequestResult result,
-                          Callback callback,
-                          TopicPartition tp) {
+                          Callback callback) {
             this.metadata = metadata;
             this.offset = offset;
             this.result = result;
             this.callback = callback;
-            this.tp = tp;
         }
 
         public void complete(RuntimeException e) {
@@ -532,7 +523,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
                 if (e == null)
                     callback.onCompletion(metadata, null);
                 else
-                    callback.onCompletion(new RecordMetadata(tp, -1, -1, RecordBatch.NO_TIMESTAMP, -1L, -1, -1), e);
+                    callback.onCompletion(null, e);
             }
             result.done();
         }

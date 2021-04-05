@@ -967,7 +967,7 @@ project(':core') {
     compression = Compression.GZIP
     from(project.file("$rootDir/bin")) { into "bin/" }
     from(project.file("$rootDir/config")) { into "config/" }
-    from "$rootDir/LICENSE-binary" rename {String filename -> filename.replace("-binary", "")}
+    from "$rootDir/LICENSE"
     from "$rootDir/NOTICE"
     from(configurations.runtimeClasspath) { into("libs/") }
     from(configurations.archives.artifacts.files) { into("libs/") }
@@ -1489,9 +1489,9 @@ project(':streams') {
     include "**/org/apache/kafka/streams/**"
     exclude "**/org/apache/kafka/streams/internals/**", "**/org/apache/kafka/streams/**/internals/**"
   }
-
+  configurations.testRuntimeOnly.setCanBeResolved(true)
   tasks.create(name: "copyDependantLibs", type: Copy) {
-    from (configurations.testRuntime) {
+    from (configurations.testRuntimeOnly) {
       include('slf4j-log4j12*')
       include('log4j*jar')
       include('*hamcrest*')

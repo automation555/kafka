@@ -42,7 +42,7 @@ docker_run_memory_limit="2000m"
 default_num_nodes=14
 
 # The default OpenJDK base image.
-default_jdk="openjdk:11"
+default_jdk="openjdk:8"
 
 # The default ducker-ak image name.
 default_image_name="ducker-ak"
@@ -226,10 +226,7 @@ ducker_build() {
     # Tip: if you are scratching your head for some dependency problems that are referring to an old code version
     # (for example java.lang.NoClassDefFoundError), add --no-cache flag to the build shall give you a clean start.
     must_do -v -o docker build --memory="${docker_build_memory_limit}" \
-        --build-arg "ducker_creator=${user_name}" \
-        --build-arg "jdk_version=${jdk_version}" \
-        --build-arg "UID=${UID}" \
-        -t "${image_name}" \
+        --build-arg "ducker_creator=${user_name}" --build-arg "jdk_version=${jdk_version}" -t "${image_name}" \
         -f "${ducker_dir}/Dockerfile" ${docker_args} -- .
     docker_status=$?
     must_popd

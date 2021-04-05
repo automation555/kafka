@@ -81,21 +81,26 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void shouldOnlyIterateOpenSegments() {
         long currentTime = 0;
-        windowStore.put(1, "one", currentTime);
+        setCurrentTime(currentTime);
+        windowStore.put(1, "one");
 
         currentTime = currentTime + SEGMENT_INTERVAL;
-        windowStore.put(1, "two", currentTime);
+        setCurrentTime(currentTime);
+        windowStore.put(1, "two");
         currentTime = currentTime + SEGMENT_INTERVAL;
 
-        windowStore.put(1, "three", currentTime);
+        setCurrentTime(currentTime);
+        windowStore.put(1, "three");
 
         final WindowStoreIterator<String> iterator = windowStore.fetch(1, 0L, currentTime);
 
         // roll to the next segment that will close the first
         currentTime = currentTime + SEGMENT_INTERVAL;
-        windowStore.put(1, "four", currentTime);
+        setCurrentTime(currentTime);
+        windowStore.put(1, "four");
 
         // should only have 2 values as the first segment is no longer open
         assertEquals(new KeyValue<>(SEGMENT_INTERVAL, "two"), iterator.next());
@@ -104,18 +109,22 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void testRolling() {
 
         // to validate segments
         final long startTime = SEGMENT_INTERVAL * 2;
         final long increment = SEGMENT_INTERVAL / 2;
-        windowStore.put(0, "zero", startTime);
+        setCurrentTime(startTime);
+        windowStore.put(0, "zero");
         assertEquals(Utils.mkSet(segments.segmentName(2)), segmentDirs(baseDir));
 
-        windowStore.put(1, "one", startTime + increment);
+        setCurrentTime(startTime + increment);
+        windowStore.put(1, "one");
         assertEquals(Utils.mkSet(segments.segmentName(2)), segmentDirs(baseDir));
 
-        windowStore.put(2, "two", startTime + increment * 2);
+        setCurrentTime(startTime + increment * 2);
+        windowStore.put(2, "two");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(2),
@@ -124,7 +133,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
             segmentDirs(baseDir)
         );
 
-        windowStore.put(4, "four", startTime + increment * 4);
+        setCurrentTime(startTime + increment * 4);
+        windowStore.put(4, "four");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(2),
@@ -134,7 +144,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
             segmentDirs(baseDir)
         );
 
-        windowStore.put(5, "five", startTime + increment * 5);
+        setCurrentTime(startTime + increment * 5);
+        windowStore.put(5, "five");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(2),
@@ -181,7 +192,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
                 ofEpochMilli(startTime + increment * 5 - WINDOW_SIZE),
                 ofEpochMilli(startTime + increment * 5 + WINDOW_SIZE))));
 
-        windowStore.put(6, "six", startTime + increment * 6);
+        setCurrentTime(startTime + increment * 6);
+        windowStore.put(6, "six");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(3),
@@ -234,7 +246,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
                 ofEpochMilli(startTime + increment * 6 - WINDOW_SIZE),
                 ofEpochMilli(startTime + increment * 6 + WINDOW_SIZE))));
 
-        windowStore.put(7, "seven", startTime + increment * 7);
+        setCurrentTime(startTime + increment * 7);
+        windowStore.put(7, "seven");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(3),
@@ -293,7 +306,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
                 ofEpochMilli(startTime + increment * 7 - WINDOW_SIZE),
                 ofEpochMilli(startTime + increment * 7 + WINDOW_SIZE))));
 
-        windowStore.put(8, "eight", startTime + increment * 8);
+        setCurrentTime(startTime + increment * 8);
+        windowStore.put(8, "eight");
         assertEquals(
             Utils.mkSet(
                 segments.segmentName(4),
@@ -371,6 +385,7 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void testSegmentMaintenance() {
 
         windowStore = buildWindowStore(RETENTION_PERIOD, WINDOW_SIZE, true, Serdes.Integer(),
@@ -378,20 +393,23 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
         windowStore.init((StateStoreContext) context, windowStore);
 
         context.setTime(0L);
-        windowStore.put(0, "v", 0);
+        setCurrentTime(0);
+        windowStore.put(0, "v");
         assertEquals(
             Utils.mkSet(segments.segmentName(0L)),
             segmentDirs(baseDir)
         );
 
-        windowStore.put(0, "v", SEGMENT_INTERVAL - 1);
-        windowStore.put(0, "v", SEGMENT_INTERVAL - 1);
+        setCurrentTime(SEGMENT_INTERVAL - 1);
+        windowStore.put(0, "v");
+        windowStore.put(0, "v");
         assertEquals(
             Utils.mkSet(segments.segmentName(0L)),
             segmentDirs(baseDir)
         );
 
-        windowStore.put(0, "v", SEGMENT_INTERVAL);
+        setCurrentTime(SEGMENT_INTERVAL);
+        windowStore.put(0, "v");
         assertEquals(
             Utils.mkSet(segments.segmentName(0L), segments.segmentName(1L)),
             segmentDirs(baseDir)
@@ -413,7 +431,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
             segmentDirs(baseDir)
         );
 
-        windowStore.put(0, "v", SEGMENT_INTERVAL * 3);
+        setCurrentTime(SEGMENT_INTERVAL * 3);
+        windowStore.put(0, "v");
 
         iter = windowStore.fetch(0, ofEpochMilli(0L), ofEpochMilli(SEGMENT_INTERVAL * 4));
         fetchedCount = 0;
@@ -428,7 +447,8 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
             segmentDirs(baseDir)
         );
 
-        windowStore.put(0, "v", SEGMENT_INTERVAL * 5);
+        setCurrentTime(SEGMENT_INTERVAL * 5);
+        windowStore.put(0, "v");
 
         iter = windowStore.fetch(0, ofEpochMilli(SEGMENT_INTERVAL * 4), ofEpochMilli(SEGMENT_INTERVAL * 10));
         fetchedCount = 0;
@@ -492,19 +512,29 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void testRestore() throws Exception {
         final long startTime = SEGMENT_INTERVAL * 2;
         final long increment = SEGMENT_INTERVAL / 2;
 
-        windowStore.put(0, "zero", startTime);
-        windowStore.put(1, "one", startTime + increment);
-        windowStore.put(2, "two", startTime + increment * 2);
-        windowStore.put(3, "three", startTime + increment * 3);
-        windowStore.put(4, "four", startTime + increment * 4);
-        windowStore.put(5, "five", startTime + increment * 5);
-        windowStore.put(6, "six", startTime + increment * 6);
-        windowStore.put(7, "seven", startTime + increment * 7);
-        windowStore.put(8, "eight", startTime + increment * 8);
+        setCurrentTime(startTime);
+        windowStore.put(0, "zero");
+        setCurrentTime(startTime + increment);
+        windowStore.put(1, "one");
+        setCurrentTime(startTime + increment * 2);
+        windowStore.put(2, "two");
+        setCurrentTime(startTime + increment * 3);
+        windowStore.put(3, "three");
+        setCurrentTime(startTime + increment * 4);
+        windowStore.put(4, "four");
+        setCurrentTime(startTime + increment * 5);
+        windowStore.put(5, "five");
+        setCurrentTime(startTime + increment * 6);
+        windowStore.put(6, "six");
+        setCurrentTime(startTime + increment * 7);
+        windowStore.put(7, "seven");
+        setCurrentTime(startTime + increment * 8);
+        windowStore.put(8, "eight");
         windowStore.flush();
 
         windowStore.close();

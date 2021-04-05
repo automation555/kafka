@@ -21,13 +21,13 @@ import org.apache.kafka.streams.kstream.Transformer;
 import org.apache.kafka.streams.processor.MockProcessorContext;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.StoreBuilder;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.Iterator;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Demonstrate the use of {@link MockProcessorContext} for testing the {@link Transformer} in the {@link WordCountTransformerDemo}.
@@ -52,7 +52,7 @@ public class WordCountTransformerTest {
         transformer.init(context);
 
         // send a record to the transformer
-        transformer.transform("key", "alpha beta\tgamma\n\talpha");
+        transformer.transform("key", "alpha beta gamma alpha");
 
         // note that the transformer does not forward during transform()
         assertTrue(context.forwarded().isEmpty());

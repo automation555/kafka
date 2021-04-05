@@ -16,16 +16,13 @@
  */
 package org.apache.kafka.connect.data;
 
-import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.connect.data.Schema.Type;
 import org.apache.kafka.connect.data.Values.Parser;
 import org.apache.kafka.connect.errors.DataException;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -35,13 +32,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ValuesTest {
 
@@ -77,19 +73,6 @@ public class ValuesTest {
         STRING_LIST.add("bar");
         INT_LIST.add(1234567890);
         INT_LIST.add(-987654321);
-    }
-
-    @Test
-    @Timeout(5)
-    public void shouldNotEncounterInfiniteLoop() {
-        // This byte sequence gets parsed as CharacterIterator.DONE and can cause issues if
-        // comparisons to that character are done to check if the end of a string has been reached.
-        // For more information, see https://issues.apache.org/jira/browse/KAFKA-10574
-        byte[] bytes = new byte[] {-17, -65,  -65};
-        String str = new String(bytes, StandardCharsets.UTF_8);
-        SchemaAndValue schemaAndValue = Values.parseString(str);
-        assertEquals(Type.STRING, schemaAndValue.schema().type());
-        assertEquals(str, schemaAndValue.value());
     }
 
     @Test
@@ -261,9 +244,9 @@ public class ValuesTest {
         assertEquals(Boolean.TRUE, resultTrue.value());
     }
 
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToParseInvalidBooleanValueString() {
-        assertThrows(DataException.class, () -> Values.convertToBoolean(Schema.STRING_SCHEMA, "\"green\""));
+        Values.convertToBoolean(Schema.STRING_SCHEMA, "\"green\"");
     }
 
     @Test
@@ -546,53 +529,50 @@ public class ValuesTest {
     /**
      * This is technically invalid JSON, and we don't want to simply ignore the blank elements.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToConvertToListFromStringWithExtraDelimiters() {
-        assertThrows(DataException.class, () -> Values.convertToList(Schema.STRING_SCHEMA, "[1, 2, 3,,,]"));
+        Values.convertToList(Schema.STRING_SCHEMA, "[1, 2, 3,,,]");
     }
 
     /**
      * Schema of type ARRAY requires a schema for the values, but Connect has no union or "any" schema type.
      * Therefore, we can't represent this.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToConvertToListFromStringWithNonCommonElementTypeAndBlankElement() {
-        assertThrows(DataException.class, () -> Values.convertToList(Schema.STRING_SCHEMA, "[1, 2, 3, \"four\",,,]"));
+        Values.convertToList(Schema.STRING_SCHEMA, "[1, 2, 3, \"four\",,,]");
     }
 
     /**
      * This is technically invalid JSON, and we don't want to simply ignore the blank entry.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToParseStringOfMapWithIntValuesWithBlankEntry() {
-        assertThrows(DataException.class,
-            () -> Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  1234567890 ,, \"bar\" : 0,  \"baz\" : -987654321 }  "));
+        Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  1234567890 ,, \"bar\" : 0,  \"baz\" : -987654321 }  ");
     }
 
     /**
      * This is technically invalid JSON, and we don't want to simply ignore the malformed entry.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToParseStringOfMalformedMap() {
-        assertThrows(DataException.class,
-            () -> Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  1234567890 , \"a\", \"bar\" : 0,  \"baz\" : -987654321 }  "));
+        Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  1234567890 , \"a\", \"bar\" : 0,  \"baz\" : -987654321 }  ");
     }
 
     /**
      * This is technically invalid JSON, and we don't want to simply ignore the blank entries.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToParseStringOfMapWithIntValuesWithOnlyBlankEntries() {
-        assertThrows(DataException.class, () -> Values.convertToMap(Schema.STRING_SCHEMA, " { ,,  , , }  "));
+        Values.convertToMap(Schema.STRING_SCHEMA, " { ,,  , , }  ");
     }
 
     /**
      * This is technically invalid JSON, and we don't want to simply ignore the blank entry.
      */
-    @Test
+    @Test(expected = DataException.class)
     public void shouldFailToParseStringOfMapWithIntValuesWithBlankEntries() {
-        assertThrows(DataException.class,
-            () -> Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  \"1234567890\" ,, \"bar\" : \"0\",  \"baz\" : \"boz\" }  "));
+        Values.convertToMap(Schema.STRING_SCHEMA, " { \"foo\" :  \"1234567890\" ,, \"bar\" : \"0\",  \"baz\" : \"boz\" }  ");
     }
 
     @Test
@@ -846,14 +826,14 @@ public class ValuesTest {
         );
         assertEquals(Schema.FLOAT32_SCHEMA, schemaAndValue.schema());
         assertTrue(schemaAndValue.value() instanceof Float);
-        assertEquals(value, (Float) schemaAndValue.value(), 0);
+        assertEquals(value.floatValue(), ((Float) schemaAndValue.value()).floatValue(), 0);
         value = -Float.MAX_VALUE;
         schemaAndValue = Values.parseString(
             String.valueOf(value)
         );
         assertEquals(Schema.FLOAT32_SCHEMA, schemaAndValue.schema());
         assertTrue(schemaAndValue.value() instanceof Float);
-        assertEquals(value, (Float) schemaAndValue.value(), 0);
+        assertEquals(value.floatValue(), ((Float) schemaAndValue.value()).floatValue(), 0);
     }
 
     @Test
@@ -864,14 +844,14 @@ public class ValuesTest {
         );
         assertEquals(Schema.FLOAT64_SCHEMA, schemaAndValue.schema());
         assertTrue(schemaAndValue.value() instanceof Double);
-        assertEquals(value, (Double) schemaAndValue.value(), 0);
+        assertEquals(value.doubleValue(), ((Double) schemaAndValue.value()).doubleValue(), 0);
         value = -Double.MAX_VALUE;
         schemaAndValue = Values.parseString(
             String.valueOf(value)
         );
         assertEquals(Schema.FLOAT64_SCHEMA, schemaAndValue.schema());
         assertTrue(schemaAndValue.value() instanceof Double);
-        assertEquals(value, (Double) schemaAndValue.value(), 0);
+        assertEquals(value.doubleValue(), ((Double) schemaAndValue.value()).doubleValue(), 0);
     }
 
     protected void assertParsed(String input) {
@@ -912,7 +892,7 @@ public class ValuesTest {
 
     protected void assertConsumable(Parser parser, String... expectedTokens) {
         for (String expectedToken : expectedTokens) {
-            if (!Utils.isBlank(expectedToken)) {
+            if (!expectedToken.trim().isEmpty()) {
                 int position = parser.mark();
                 assertTrue(parser.canConsume(expectedToken.trim()));
                 parser.rewindTo(position);

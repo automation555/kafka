@@ -891,7 +891,7 @@ public class Values {
         }
 
         String token = parser.next();
-        if (Utils.isBlank(token)) {
+        if (token.trim().isEmpty()) {
             return new SchemaAndValue(Schema.STRING_SCHEMA, token);
         }
         token = token.trim();
@@ -1193,7 +1193,7 @@ public class Values {
             boolean escaped = false;
             int start = iter.getIndex();
             char c = iter.current();
-            while (canConsumeNextToken()) {
+            while (c != CharacterIterator.DONE) {
                 switch (c) {
                     case '\\':
                         escaped = !escaped;
@@ -1253,7 +1253,7 @@ public class Values {
                 nextToken = consumeNextToken();
             }
             if (ignoreLeadingAndTrailingWhitespace) {
-                while (Utils.isBlank(nextToken) && canConsumeNextToken()) {
+                while (nextToken.trim().isEmpty() && canConsumeNextToken()) {
                     nextToken = consumeNextToken();
                 }
             }

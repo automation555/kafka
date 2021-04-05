@@ -17,7 +17,6 @@
 package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -124,8 +123,6 @@ public interface Task {
 
     void addRecords(TopicPartition partition, Iterable<ConsumerRecord<byte[], byte[]>> records);
 
-    void addFetchedMetadata(TopicPartition partition, ConsumerRecords.Metadata metadata);
-
     boolean commitNeeded();
 
     /**
@@ -156,7 +153,7 @@ public interface Task {
     /**
      * Updates input partitions and topology after rebalance
      */
-    void update(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> allTopologyNodesToSourceTopics);
+    void update(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> nodeToSourceTopics);
 
     /**
      * Attempt a clean close but do not close the underlying state
@@ -209,11 +206,8 @@ public interface Task {
         return false;
     }
 
-    /**
-     * @throws TimeoutException if {@code currentWallClockMs > task-timeout-deadline}
-     */
     void maybeInitTaskTimeoutOrThrow(final long currentWallClockMs,
-                                     final Exception cause);
+                                     final TimeoutException timeoutException) throws StreamsException;
 
     void clearTaskTimeout();
 }

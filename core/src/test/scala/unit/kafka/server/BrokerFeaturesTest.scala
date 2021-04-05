@@ -18,12 +18,17 @@
 package kafka.server
 
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange, SupportedVersionRange}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertTrue}
-import org.junit.jupiter.api.Test
+import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
+import org.junit.Test
 
 import scala.jdk.CollectionConverters._
 
 class BrokerFeaturesTest {
+
+  @Test
+  def testEmpty(): Unit = {
+    assertTrue(BrokerFeatures.createDefault().supportedFeatures.empty)
+  }
 
   @Test
   def testIncompatibilitiesDueToAbsentFeature(): Unit = {

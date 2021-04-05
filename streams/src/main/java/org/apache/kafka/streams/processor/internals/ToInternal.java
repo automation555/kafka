@@ -16,11 +16,9 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
-import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.streams.processor.To;
 
 public class ToInternal extends To {
-
     public ToInternal() {
         super(To.all());
     }
@@ -37,16 +35,8 @@ public class ToInternal extends To {
         return timestamp != -1;
     }
 
-    public boolean hasHeaders() {
-        return headers != null;
-    }
-
     public long timestamp() {
         return timestamp;
-    }
-
-    public Headers headers() {
-        return headers;
     }
 
     public String child() {

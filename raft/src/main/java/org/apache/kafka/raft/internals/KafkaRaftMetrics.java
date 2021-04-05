@@ -64,8 +64,7 @@ public class KafkaRaftMetrics implements AutoCloseable {
         this.numUnknownVoterConnections = 0;
         this.logEndOffset = new OffsetAndEpoch(0L, 0);
 
-        this.currentStateMetricName = metrics.metricName("current-state", metricGroupName,
-            "The current state of this member; possible values are leader, candidate, voted, follower, unattached, resigned");
+        this.currentStateMetricName = metrics.metricName("current-state", metricGroupName, "The current state of this member; possible values are leader, candidate, voted, follower, unattached");
         Gauge<String> stateProvider = (mConfig, currentTimeMs) -> {
             if (state.isLeader()) {
                 return "leader";
@@ -75,8 +74,6 @@ public class KafkaRaftMetrics implements AutoCloseable {
                 return "voted";
             } else if (state.isFollower()) {
                 return "follower";
-            } else if (state.isResigned()) {
-                return "resigned";
             } else {
                 return "unattached";
             }
@@ -89,7 +86,7 @@ public class KafkaRaftMetrics implements AutoCloseable {
         this.currentVotedIdMetricName = metrics.metricName("current-vote", metricGroupName, "The current voted leader's id; -1 indicates not voted for anyone");
         metrics.addMetric(this.currentVotedIdMetricName, (mConfig, currentTimeMs) -> {
             if (state.isLeader() || state.isCandidate()) {
-                return state.localIdOrThrow();
+                return state.localId;
             } else if (state.isVoted()) {
                 return state.votedStateOrThrow().votedId();
             } else {

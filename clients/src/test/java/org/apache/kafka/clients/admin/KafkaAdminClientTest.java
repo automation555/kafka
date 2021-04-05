@@ -23,7 +23,6 @@ import org.apache.kafka.clients.MockClient;
 import org.apache.kafka.clients.NodeApiVersions;
 import org.apache.kafka.clients.admin.DeleteAclsResult.FilterResults;
 import org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo;
-import org.apache.kafka.clients.admin.internals.ConsumerGroupOperationContext;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol;
@@ -116,12 +115,10 @@ import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResp
 import org.apache.kafka.common.message.OffsetDeleteResponseData.OffsetDeleteResponseTopicCollection;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.quota.ClientQuotaAlteration;
 import org.apache.kafka.common.quota.ClientQuotaEntity;
 import org.apache.kafka.common.quota.ClientQuotaFilter;
 import org.apache.kafka.common.quota.ClientQuotaFilterComponent;
-import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterPartitionReassignmentsResponse;
 import org.apache.kafka.common.requests.AlterReplicaLogDirsResponse;
@@ -486,15 +483,15 @@ public class KafkaAdminClientTest {
 
     private static FeatureMetadata defaultFeatureMetadata() {
         return new FeatureMetadata(
-            Utils.mkMap(Utils.mkEntry("test_feature_1", new FinalizedVersions((short) 2, (short) 3))),
+            Utils.mkMap(Utils.mkEntry("test_feature_1", new FinalizedVersionRange((short) 2, (short) 3))),
             Optional.of(1L),
-            Utils.mkMap(Utils.mkEntry("test_feature_1", new SupportedVersions((short) 1, (short) 5))));
+            Utils.mkMap(Utils.mkEntry("test_feature_1", new SupportedVersionRange((short) 1, (short) 5))));
     }
 
-    private static Features<org.apache.kafka.common.feature.SupportedVersionRange> convertSupportedFeaturesMap(Map<String, SupportedVersions> features) {
+    private static Features<org.apache.kafka.common.feature.SupportedVersionRange> convertSupportedFeaturesMap(Map<String, SupportedVersionRange> features) {
         final Map<String, org.apache.kafka.common.feature.SupportedVersionRange> featuresMap = new HashMap<>();
-        for (final Map.Entry<String, SupportedVersions> entry : features.entrySet()) {
-            final SupportedVersions versionRange = entry.getValue();
+        for (final Map.Entry<String, SupportedVersionRange> entry : features.entrySet()) {
+            final SupportedVersionRange versionRange = entry.getValue();
             featuresMap.put(
                 entry.getKey(),
                 new org.apache.kafka.common.feature.SupportedVersionRange(versionRange.minVersion(),
@@ -504,10 +501,10 @@ public class KafkaAdminClientTest {
         return Features.supportedFeatures(featuresMap);
     }
 
-    private static Features<org.apache.kafka.common.feature.FinalizedVersionRange> convertFinalizedFeaturesMap(Map<String, FinalizedVersions> features) {
+    private static Features<org.apache.kafka.common.feature.FinalizedVersionRange> convertFinalizedFeaturesMap(Map<String, FinalizedVersionRange> features) {
         final Map<String, org.apache.kafka.common.feature.FinalizedVersionRange> featuresMap = new HashMap<>();
-        for (final Map.Entry<String, FinalizedVersions> entry : features.entrySet()) {
-            final FinalizedVersions versionRange = entry.getValue();
+        for (final Map.Entry<String, FinalizedVersionRange> entry : features.entrySet()) {
+            final FinalizedVersionRange versionRange = entry.getValue();
             featuresMap.put(
                 entry.getKey(),
                 new org.apache.kafka.common.feature.FinalizedVersionRange(
@@ -3486,11 +3483,10 @@ public class KafkaAdminClientTest {
             partitionLevelErrResult.values().get(tp2).get();
 
             // 4. top-level error
-            String errorMessage = "this is custom error message";
             AlterPartitionReassignmentsResponseData topLevelErrResponseData =
                     new AlterPartitionReassignmentsResponseData()
                             .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())
-                            .setErrorMessage(errorMessage)
+                            .setErrorMessage(Errors.CLUSTER_AUTHORIZATION_FAILED.message())
                             .setResponses(Arrays.asList(
                                     new ReassignableTopicResponse()
                                             .setName("A")
@@ -3501,9 +3497,9 @@ public class KafkaAdminClientTest {
                             );
             env.kafkaClient().prepareResponse(new AlterPartitionReassignmentsResponse(topLevelErrResponseData));
             AlterPartitionReassignmentsResult topLevelErrResult = env.adminClient().alterPartitionReassignments(reassignments);
-            assertEquals(errorMessage, TestUtils.assertFutureThrows(topLevelErrResult.all(), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass()).getMessage());
-            assertEquals(errorMessage, TestUtils.assertFutureThrows(topLevelErrResult.values().get(tp1), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass()).getMessage());
-            assertEquals(errorMessage, TestUtils.assertFutureThrows(topLevelErrResult.values().get(tp2), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass()).getMessage());
+            TestUtils.assertFutureError(topLevelErrResult.all(), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass());
+            TestUtils.assertFutureError(topLevelErrResult.values().get(tp1), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass());
+            TestUtils.assertFutureError(topLevelErrResult.values().get(tp2), Errors.CLUSTER_AUTHORIZATION_FAILED.exception().getClass());
 
             // 5. unrepresentable topic name error
             TopicPartition invalidTopicTP = new TopicPartition("", 0);
@@ -4066,12 +4062,19 @@ public class KafkaAdminClientTest {
     @Test
     public void testUpdateFeaturesShouldFailRequestForInvalidFeatureName() {
         try (final AdminClientUnitTestEnv env = mockClientEnv()) {
-            assertThrows(
-                IllegalArgumentException.class,
-                () -> env.adminClient().updateFeatures(
-                    Utils.mkMap(Utils.mkEntry("feature", new FeatureUpdate((short) 2, false)),
-                                Utils.mkEntry("", new FeatureUpdate((short) 2, false))),
-                    new UpdateFeaturesOptions()));
+            final UpdateFeaturesResult result = env.adminClient().updateFeatures(
+                Utils.mkMap(Utils.mkEntry("", new FeatureUpdate((short) 2, false))),
+                            new UpdateFeaturesOptions());
+
+            final Map<String, KafkaFuture<Void>> futures = result.values();
+            for (Map.Entry<String, KafkaFuture<Void>> entry : futures.entrySet()) {
+                final Throwable cause = assertThrows(ExecutionException.class, () -> entry.getValue().get());
+                assertEquals(KafkaException.class, cause.getCause().getClass());
+            }
+
+            final KafkaFuture<Void> future = result.all();
+            final Throwable cause = assertThrows(ExecutionException.class, () -> future.get());
+            assertEquals(KafkaException.class, cause.getCause().getClass());
         }
     }
 
@@ -4911,40 +4914,6 @@ public class KafkaAdminClientTest {
             TestUtils.assertFutureThrows(result.descriptions().get(0), ApiException.class);
             assertNotNull(result.descriptions().get(1).get());
         }
-    }
-
-    @Test
-    public void testHasCoordinatorMoved() {
-        Map<Errors, Integer> errors = new HashMap<>();
-        AbstractResponse response = new AbstractResponse() {
-            @Override
-            public Map<Errors, Integer> errorCounts() {
-                return errors;
-            }
-            @Override
-            protected Struct toStruct(short version) {
-                return null;
-            }
-        };
-
-        assertFalse(ConsumerGroupOperationContext.hasCoordinatorMoved(response));
-
-        errors.put(Errors.NOT_COORDINATOR, 1);
-        assertTrue(ConsumerGroupOperationContext.hasCoordinatorMoved(response));
-    }
-
-    @Test
-    public void testShouldRefreshCoordinator() {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
-
-        assertFalse(ConsumerGroupOperationContext.shouldRefreshCoordinator(errorCounts));
-
-        errorCounts.put(Errors.COORDINATOR_LOAD_IN_PROGRESS, 1);
-        assertTrue(ConsumerGroupOperationContext.shouldRefreshCoordinator(errorCounts));
-
-        errorCounts.clear();
-        errorCounts.put(Errors.COORDINATOR_NOT_AVAILABLE, 1);
-        assertTrue(ConsumerGroupOperationContext.shouldRefreshCoordinator(errorCounts));
     }
 
     private DescribeLogDirsResponse prepareDescribeLogDirsResponse(Errors error, String logDir) {

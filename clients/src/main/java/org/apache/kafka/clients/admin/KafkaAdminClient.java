@@ -287,9 +287,6 @@ import static org.apache.kafka.common.utils.Utils.closeQuietly;
  * The default implementation of {@link Admin}. An instance of this class is created by invoking one of the
  * {@code create()} methods in {@code AdminClient}. Users should not refer to this class directly.
  *
- * <p>
- * This class is thread-safe.
- * </p>
  * The API of this class is evolving, see {@link Admin} for details.
  */
 @InterfaceStability.Evolving
@@ -3627,7 +3624,7 @@ public class KafkaAdminClient extends AdminClient {
                             for (ReassignablePartitionResponse partition : topicResponse.partitions()) {
                                 errors.put(
                                         new TopicPartition(topicName, partition.partitionIndex()),
-                                        new ApiError(topLevelError, response.data().errorMessage()).exception()
+                                        new ApiError(topLevelError, topLevelError.message()).exception()
                                 );
                                 receivedResponsesCount += 1;
                             }
@@ -3941,14 +3938,23 @@ public class KafkaAdminClient extends AdminClient {
             void handleResponse(AbstractResponse abstractResponse) {
                 final OffsetCommitResponse response = (OffsetCommitResponse) abstractResponse;
 
-                Map<Errors, Integer> errorCounts = response.errorCounts();
-                // 1) If coordinator changed since we fetched it, retry
-                // 2) If there is a coordinator error, retry
-                if (ConsumerGroupOperationContext.hasCoordinatorMoved(errorCounts) ||
-                    ConsumerGroupOperationContext.shouldRefreshCoordinator(errorCounts)) {
+                // If coordinator changed since we fetched it, retry
+                if (ConsumerGroupOperationContext.hasCoordinatorMoved(response)) {
                     Call call = getAlterConsumerGroupOffsetsCall(context, offsets);
                     rescheduleFindCoordinatorTask(context, () -> call, this);
                     return;
+                }
+
+                // If there is a coordinator error, retry
+                for (OffsetCommitResponseTopic topic : response.data().topics()) {
+                    for (OffsetCommitResponsePartition partition : topic.partitions()) {
+                        Errors error = Errors.forCode(partition.errorCode());
+                        if (ConsumerGroupOperationContext.shouldRefreshCoordinator(error)) {
+                            Call call = getAlterConsumerGroupOffsetsCall(context, offsets);
+                            rescheduleFindCoordinatorTask(context, () -> call, this);
+                            return;
+                        }
+                    }
                 }
 
                 final Map<TopicPartition, Errors> partitions = new HashMap<>();
@@ -4347,9 +4353,9 @@ public class KafkaAdminClient extends AdminClient {
             "describeFeatures", calcDeadlineMs(now, options.timeoutMs()), provider) {
 
             private FeatureMetadata createFeatureMetadata(final ApiVersionsResponse response) {
-                final Map<String, FinalizedVersions> finalizedFeatures = new HashMap<>();
+                final Map<String, FinalizedVersionRange> finalizedFeatures = new HashMap<>();
                 for (final FinalizedFeatureKey key : response.data().finalizedFeatures().valuesSet()) {
-                    finalizedFeatures.put(key.name(), new FinalizedVersions(key.minVersionLevel(), key.maxVersionLevel()));
+                    finalizedFeatures.put(key.name(), new FinalizedVersionRange(key.minVersionLevel(), key.maxVersionLevel()));
                 }
 
                 Optional<Long> finalizedFeaturesEpoch;
@@ -4359,9 +4365,9 @@ public class KafkaAdminClient extends AdminClient {
                     finalizedFeaturesEpoch = Optional.empty();
                 }
 
-                final Map<String, SupportedVersions> supportedFeatures = new HashMap<>();
+                final Map<String, SupportedVersionRange> supportedFeatures = new HashMap<>();
                 for (final SupportedFeatureKey key : response.data().supportedFeatures().valuesSet()) {
-                    supportedFeatures.put(key.name(), new SupportedVersions(key.minVersion(), key.maxVersion()));
+                    supportedFeatures.put(key.name(), new SupportedVersionRange(key.minVersion(), key.maxVersion()));
                 }
 
                 return new FeatureMetadata(finalizedFeatures, finalizedFeaturesEpoch, supportedFeatures);
@@ -4404,10 +4410,6 @@ public class KafkaAdminClient extends AdminClient {
 
         final Map<String, KafkaFutureImpl<Void>> updateFutures = new HashMap<>();
         for (final Map.Entry<String, FeatureUpdate> entry : featureUpdates.entrySet()) {
-            final String feature = entry.getKey();
-            if (feature.trim().isEmpty()) {
-                throw new IllegalArgumentException("Provided feature can not be empty.");
-            }
             updateFutures.put(entry.getKey(), new KafkaFutureImpl<>());
         }
 
@@ -4422,6 +4424,10 @@ public class KafkaAdminClient extends AdminClient {
                 for (Map.Entry<String, FeatureUpdate> entry : featureUpdates.entrySet()) {
                     final String feature = entry.getKey();
                     final FeatureUpdate update = entry.getValue();
+                    if (feature.trim().isEmpty()) {
+                        throw new IllegalArgumentException("Provided feature can not be null or empty.");
+                    }
+
                     final UpdateFeaturesRequestData.FeatureUpdateKey requestItem =
                         new UpdateFeaturesRequestData.FeatureUpdateKey();
                     requestItem.setFeature(feature);
@@ -4465,8 +4471,7 @@ public class KafkaAdminClient extends AdminClient {
                         break;
                     default:
                         for (final Map.Entry<String, KafkaFutureImpl<Void>> entry : updateFutures.entrySet()) {
-                            final String errorMsg = response.data().errorMessage();
-                            entry.getValue().completeExceptionally(topLevelError.exception(errorMsg));
+                            entry.getValue().completeExceptionally(topLevelError.exception());
                         }
                         break;
                 }

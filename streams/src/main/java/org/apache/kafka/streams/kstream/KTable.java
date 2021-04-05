@@ -713,6 +713,31 @@ public interface KTable<K, V> {
                                  final Named named);
 
     /**
+     * Convert this changelog stream to a {@link KStream} using the given {@link KeyValueWithPreviousMapper} to
+     * compute the new value of the output record.
+     *
+     * If there is no previous value the {@link KeyValueWithPreviousMapper} receives a null value as previous value.
+     *
+     * @param mapper   a {@link KeyValueWithPreviousMapper} that computes the new record value. Cannot be {@code null}.
+     *
+     * @return a {@link KStream} that contains the values computed comparing the new and old value of the records as this {@code KTable}
+     */
+    <VR> KStream<K, VR> toStream(final KeyValueWithPreviousMapper<? super K, ? super V, ? extends VR> mapper);
+
+    /**
+     * Convert this changelog stream to a {@link KStream} using the given {@link KeyValueWithPreviousMapper} to
+     * compute the new value of the output record.
+     *
+     * If there is no previous value the {@link KeyValueWithPreviousMapper} receives a null value as previous value.
+     *
+     * @param mapper   a {@link KeyValueWithPreviousMapper} that computes the new record value. Cannot be {@code null}.
+     * @param named  a {@link Named} config used to name the processor in the topology
+     *
+     * @return a {@link KStream} that contains the values computed comparing the new and old value of the records as this {@code KTable}
+     */
+    <VR> KStream<K, VR> toStream(final KeyValueWithPreviousMapper<? super K, ? super V, ? extends VR> mapper, final Named named);
+
+    /**
      * Suppress some updates from this changelog stream, determined by the supplied {@link Suppressed} configuration.
      *
      * This controls what updates downstream table and stream operations will receive.
@@ -1061,6 +1086,40 @@ public interface KTable<K, V> {
      * @return a {@link KGroupedTable} that contains the re-grouped records of the original {@code KTable}
      */
     <KR, VR> KGroupedTable<KR, VR> groupBy(final KeyValueMapper<? super K, ? super V, KeyValue<KR, VR>> selector);
+
+    /**
+     * Re-groups the records of this {@code KTable} using the provided {@link KeyValueMapper}
+     * and {@link Serde}s as specified by {@link Serialized}.
+     * Each {@link KeyValue} pair of this {@code KTable} is mapped to a new {@link KeyValue} pair by applying the
+     * provided {@link KeyValueMapper}.
+     * Re-grouping a {@code KTable} is required before an aggregation operator can be applied to the data
+     * (cf. {@link KGroupedTable}).
+     * The {@link KeyValueMapper} selects a new key and value (with both maybe being the same type or a new type).
+     * If the new record key is {@code null} the record will not be included in the resulting {@link KGroupedTable}
+     * <p>
+     * Because a new key is selected, an internal repartitioning topic will be created in Kafka.
+     * This topic will be named "${applicationId}-&lt;name&gt;-repartition", where "applicationId" is user-specified in
+     * {@link  StreamsConfig} via parameter {@link StreamsConfig#APPLICATION_ID_CONFIG APPLICATION_ID_CONFIG}, "&lt;name&gt;" is
+     * an internally generated name, and "-repartition" is a fixed suffix.
+     *
+     * You can retrieve all generated internal topic names via {@link Topology#describe()}.
+     *
+     * <p>
+     * All data of this {@code KTable} will be redistributed through the repartitioning topic by writing all update
+     * records to and rereading all updated records from it, such that the resulting {@link KGroupedTable} is partitioned
+     * on the new key.
+     *
+     * @param selector      a {@link KeyValueMapper} that computes a new grouping key and value to be aggregated
+     * @param serialized    the {@link Serialized} instance used to specify {@link org.apache.kafka.common.serialization.Serdes}
+     * @param <KR>          the key type of the result {@link KGroupedTable}
+     * @param <VR>          the value type of the result {@link KGroupedTable}
+     * @return a {@link KGroupedTable} that contains the re-grouped records of the original {@code KTable}
+     *
+     * @deprecated since 2.1. Use {@link org.apache.kafka.streams.kstream.KTable#groupBy(KeyValueMapper, Grouped)} instead
+     */
+    @Deprecated
+    <KR, VR> KGroupedTable<KR, VR> groupBy(final KeyValueMapper<? super K, ? super V, KeyValue<KR, VR>> selector,
+                                           final Serialized<KR, VR> serialized);
 
     /**
      * Re-groups the records of this {@code KTable} using the provided {@link KeyValueMapper}

@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.Utils;
@@ -104,7 +103,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
 
     private final RocksDBMetricsRecorder metricsRecorder;
 
-    @VisibleForTesting
+    // visible for testing
     volatile BatchingStateRestoreCallback batchingStateRestoreCallback = null;
 
     protected volatile boolean open = false;
@@ -630,7 +629,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
         }
     }
 
-    @VisibleForTesting
+    // not private for testing
     static class RocksDBBatchingRestoreCallback implements BatchingStateRestoreCallback {
 
         private final RocksDBStore rocksDBStore;
@@ -650,7 +649,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
         }
     }
 
-    @VisibleForTesting
+    // for testing
     public Options getOptions() {
         return userSpecifiedOptions;
     }

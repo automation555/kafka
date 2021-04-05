@@ -19,7 +19,6 @@ package org.apache.kafka.streams.processor.internals;
 import java.util.ArrayList;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.utils.FixedOrderMap;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.errors.ProcessorStateException;
@@ -217,7 +216,7 @@ public class ProcessorStateManager implements StateManager {
         return globalStores.get(name);
     }
 
-    @VisibleForTesting
+    // package-private for test only
     void initializeStoreOffsetsFromCheckpoint(final boolean storeDirIsEmpty) {
         try {
             final Map<TopicPartition, Long> loadedCheckpoints = checkpointFile.read();
@@ -604,11 +603,7 @@ public class ProcessorStateManager implements StateManager {
         try {
             checkpointFile.write(checkpointingOffsets);
         } catch (final IOException e) {
-            log.warn("Failed to write offset checkpoint file to [{}]." +
-                " This may occur if OS cleaned the state.dir in case when it located in /tmp directory." +
-                " This may also occur due to running multiple instances on the same machine using the same state dir." +
-                " Changing the location of state.dir may resolve the problem.",
-                checkpointFile, e);
+            log.warn("Failed to write offset checkpoint file to [{}]", checkpointFile, e);
         }
     }
 

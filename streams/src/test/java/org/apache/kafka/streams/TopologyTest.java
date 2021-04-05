@@ -37,6 +37,7 @@ import org.apache.kafka.streams.state.internals.KeyValueStoreBuilder;
 import org.apache.kafka.test.MockApiProcessorSupplier;
 import org.apache.kafka.test.MockKeyValueStore;
 import org.apache.kafka.test.MockProcessorSupplier;
+import org.apache.kafka.test.TestUtils;
 import org.easymock.EasyMock;
 import org.junit.Assert;
 import org.junit.Test;
@@ -44,6 +45,7 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -51,7 +53,6 @@ import static java.time.Duration.ofMillis;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 public class TopologyTest {
@@ -61,75 +62,74 @@ public class TopologyTest {
     private final Topology topology = new Topology();
     private final InternalTopologyBuilder.TopologyDescription expectedDescription = new InternalTopologyBuilder.TopologyDescription();
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullNameWhenAddingSourceWithTopic() {
-        assertThrows(NullPointerException.class, () -> topology.addSource((String) null, "topic"));
+        topology.addSource((String) null, "topic");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullNameWhenAddingSourceWithPattern() {
-        assertThrows(NullPointerException.class, () -> topology.addSource(null, Pattern.compile(".*")));
+        topology.addSource(null, Pattern.compile(".*"));
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullTopicsWhenAddingSoureWithTopic() {
-        assertThrows(NullPointerException.class, () -> topology.addSource("source", (String[]) null));
+        topology.addSource("source", (String[]) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullTopicsWhenAddingSourceWithPattern() {
-        assertThrows(NullPointerException.class, () -> topology.addSource("source", (Pattern) null));
+        topology.addSource("source", (Pattern) null);
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldNotAllowZeroTopicsWhenAddingSource() {
-        assertThrows(TopologyException.class, () -> topology.addSource("source"));
+        topology.addSource("source");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullNameWhenAddingProcessor() {
-        assertThrows(NullPointerException.class, () -> topology.addProcessor(null, () -> new MockApiProcessorSupplier<>().get()));
+        topology.addProcessor(null, () -> new MockApiProcessorSupplier<>().get());
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullProcessorSupplierWhenAddingProcessor() {
-        assertThrows(NullPointerException.class, () -> topology.addProcessor("name",
-            (ProcessorSupplier<Object, Object, Object, Object>) null));
+        topology.addProcessor("name", (ProcessorSupplier<Object, Object, Object, Object>) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullNameWhenAddingSink() {
-        assertThrows(NullPointerException.class, () -> topology.addSink(null, "topic"));
+        topology.addSink(null, "topic");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullTopicWhenAddingSink() {
-        assertThrows(NullPointerException.class, () -> topology.addSink("name", (String) null));
+        topology.addSink("name", (String) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullTopicChooserWhenAddingSink() {
-        assertThrows(NullPointerException.class, () -> topology.addSink("name", (TopicNameExtractor<Object, Object>) null));
+        topology.addSink("name", (TopicNameExtractor<Object, Object>) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullProcessorNameWhenConnectingProcessorAndStateStores() {
-        assertThrows(NullPointerException.class, () -> topology.connectProcessorAndStateStores(null, "store"));
+        topology.connectProcessorAndStateStores(null, "store");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullStoreNameWhenConnectingProcessorAndStateStores() {
-        assertThrows(NullPointerException.class, () -> topology.connectProcessorAndStateStores("processor", (String[]) null));
+        topology.connectProcessorAndStateStores("processor", (String[]) null);
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldNotAllowZeroStoreNameWhenConnectingProcessorAndStateStores() {
-        assertThrows(TopologyException.class, () -> topology.connectProcessorAndStateStores("processor"));
+        topology.connectProcessorAndStateStores("processor");
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAddNullStateStoreSupplier() {
-        assertThrows(NullPointerException.class, () -> topology.addStateStore(null));
+        topology.addStateStore(null);
     }
 
     @Test
@@ -196,14 +196,14 @@ public class TopologyTest {
         } catch (final NullPointerException expected) { }
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldFailOnUnknownSource() {
-        assertThrows(TopologyException.class, () -> topology.addProcessor("processor", new MockApiProcessorSupplier<>(), "source"));
+        topology.addProcessor("processor", new MockApiProcessorSupplier<>(), "source");
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldFailIfNodeIsItsOwnParent() {
-        assertThrows(TopologyException.class, () -> topology.addProcessor("processor", new MockApiProcessorSupplier<>(), "processor"));
+        topology.addProcessor("processor", new MockApiProcessorSupplier<>(), "processor");
     }
 
     @Test
@@ -236,14 +236,14 @@ public class TopologyTest {
         } catch (final NullPointerException expected) { }
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldFailWithUnknownParent() {
-        assertThrows(TopologyException.class, () -> topology.addSink("sink", "topic-2", "source"));
+        topology.addSink("sink", "topic-2", "source");
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldFailIfSinkIsItsOwnParent() {
-        assertThrows(TopologyException.class, () -> topology.addSink("sink", "topic-2", "sink"));
+        topology.addSink("sink", "topic-2", "sink");
     }
 
     @Test
@@ -256,11 +256,11 @@ public class TopologyTest {
         } catch (final TopologyException expected) { }
     }
 
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldNotAllowToAddStateStoreToNonExistingProcessor() {
         mockStoreBuilder();
         EasyMock.replay(storeBuilder);
-        assertThrows(TopologyException.class, () -> topology.addStateStore(storeBuilder, "no-such-processor"));
+        topology.addStateStore(storeBuilder, "no-such-processor");
     }
 
     @Test
@@ -339,6 +339,10 @@ public class TopologyTest {
         final String goodNodeName = "goodGuy";
         final String badNodeName = "badGuy";
 
+        final Properties config = new Properties();
+        config.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "host:1");
+        config.put(StreamsConfig.APPLICATION_ID_CONFIG, "appId");
+        config.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory().getAbsolutePath());
         mockStoreBuilder();
         EasyMock.expect(storeBuilder.build()).andReturn(new MockKeyValueStore("store", false));
         EasyMock.replay(storeBuilder);
@@ -351,7 +355,7 @@ public class TopologyTest {
             .addProcessor(badNodeName, new LocalMockProcessorSupplier(), sourceNodeName);
 
         try {
-            new TopologyTestDriver(topology);
+            new TopologyTestDriver(topology, config);
             fail("Should have thrown StreamsException");
         } catch (final StreamsException e) {
             final String error = e.toString();
@@ -378,19 +382,18 @@ public class TopologyTest {
         }
     }
 
-    @Deprecated // testing old PAPI
-    @Test
+    @Test(expected = TopologyException.class)
     public void shouldNotAllowToAddGlobalStoreWithSourceNameEqualsProcessorName() {
         EasyMock.expect(globalStoreBuilder.name()).andReturn("anyName").anyTimes();
         EasyMock.replay(globalStoreBuilder);
-        assertThrows(TopologyException.class, () -> topology.addGlobalStore(
+        topology.addGlobalStore(
             globalStoreBuilder,
             "sameName",
             null,
             null,
             "anyTopicName",
             "sameName",
-            new MockProcessorSupplier<>()));
+            new MockProcessorSupplier<>());
     }
 
     @Test
@@ -1029,7 +1032,7 @@ public class TopologyTest {
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 // previously, this was
                 //   Processor: KTABLE-MAPVALUES-0000000004 (stores: [KTABLE-MAPVALUES-STATE-STORE-0000000003]
-                // but we added a change not to materialize non-queryable stores. This change shouldn't break compatibility.
+                // but we added a change not to materialize non-queriable stores. This change shouldn't break compatibility.
                 "    Processor: KTABLE-MAPVALUES-0000000004 (stores: [])\n" +
                 "      --> none\n" +
                 "      <-- KTABLE-SOURCE-0000000002\n" +
@@ -1096,7 +1099,7 @@ public class TopologyTest {
                 "      <-- KSTREAM-SOURCE-0000000001\n" +
                 // Previously, this was
                 //   Processor: KTABLE-FILTER-0000000004 (stores: [KTABLE-FILTER-STATE-STORE-0000000003]
-                // but we added a change not to materialize non-queryable stores. This change shouldn't break compatibility.
+                // but we added a change not to materialize non-queriable stores. This change shouldn't break compatibility.
                 "    Processor: KTABLE-FILTER-0000000004 (stores: [])\n" +
                 "      --> none\n" +
                 "      <-- KTABLE-SOURCE-0000000002\n" +
@@ -1224,7 +1227,6 @@ public class TopologyTest {
         return expectedSinkNode;
     }
 
-    @Deprecated // testing old PAPI
     private void addGlobalStoreToTopologyAndExpectedDescription(final String globalStoreName,
                                                                 final String sourceName,
                                                                 final String globalTopicName,

@@ -20,7 +20,6 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.common.ConsumerGroupState;
 import org.apache.kafka.common.KafkaFuture;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.connect.source.SourceTask;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.data.Schema;
@@ -67,7 +66,7 @@ public class MirrorCheckpointTask extends SourceTask {
     private Map<String, List<Checkpoint>> checkpointsPerConsumerGroup;
     public MirrorCheckpointTask() {}
 
-    @VisibleForTesting
+    // for testing
     MirrorCheckpointTask(String sourceClusterAlias, String targetClusterAlias,
             ReplicationPolicy replicationPolicy, OffsetSyncStore offsetSyncStore,
             Map<String, Map<TopicPartition, OffsetAndMetadata>> idleConsumerGroupsOffset,

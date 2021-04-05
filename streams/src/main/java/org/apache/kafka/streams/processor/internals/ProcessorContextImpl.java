@@ -20,6 +20,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.internals.ApiUtils;
 import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.PunctuationType;
 import org.apache.kafka.streams.processor.Punctuator;
@@ -38,7 +39,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.kafka.streams.internals.ApiUtils.prepareMillisCheckFailMsgPrefix;
-import static org.apache.kafka.streams.internals.ApiUtils.validateMillisecondDuration;
 import static org.apache.kafka.streams.processor.internals.AbstractReadOnlyDecorator.getReadOnlyStore;
 import static org.apache.kafka.streams.processor.internals.AbstractReadWriteDecorator.getReadWriteStore;
 
@@ -209,7 +209,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
             key,
             value,
             toInternal.hasTimestamp() ? toInternal.timestamp() : timestamp(),
-            toInternal.hasHeaders() ? toInternal.headers() : headers()
+            headers()
         );
         forward(toForward, toInternal.child());
     }
@@ -225,14 +225,6 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
         throwUnsupportedOperationExceptionIfStandby("forward");
 
         final ProcessorNode<?, ?, ?, ?> previousNode = currentNode();
-        if (previousNode == null) {
-            throw new StreamsException("Current node is unknown. This can happen if 'forward()' is called " +
-                    "in an illegal scope. The root cause could be that a 'Processor' or 'Transformer' instance" +
-                    " is shared. To avoid this error, make sure that your suppliers return new instances " +
-                    "each time 'get()' of Supplier is called and do not return the same object reference " +
-                    "multiple times.");
-        }
-
         final ProcessorRecordContext previousContext = recordContext;
 
         try {
@@ -310,7 +302,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
                                 final Punctuator callback) throws IllegalArgumentException {
         throwUnsupportedOperationExceptionIfStandby("schedule");
         final String msgPrefix = prepareMillisCheckFailMsgPrefix(interval, "interval");
-        return schedule(validateMillisecondDuration(interval, msgPrefix), type, callback);
+        return schedule(ApiUtils.validateMillisecondDuration(interval, msgPrefix), type, callback);
     }
 
     @Override

@@ -17,7 +17,6 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
@@ -273,12 +272,12 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
         return open;
     }
 
-    @VisibleForTesting
+    // Visible for testing
     List<S> getSegments() {
         return segments.allSegments(false);
     }
 
-    @VisibleForTesting
+    // Visible for testing
     void restoreAllInternal(final Collection<KeyValue<byte[], byte[]>> records) {
         try {
             final Map<S, WriteBatch> writeBatchMap = getWriteBatches(records);
@@ -293,7 +292,7 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
         }
     }
 
-    @VisibleForTesting
+    // Visible for testing
     Map<S, WriteBatch> getWriteBatches(final Collection<KeyValue<byte[], byte[]>> records) {
         // advance stream time to the max timestamp in the batch
         for (final KeyValue<byte[], byte[]> record : records) {

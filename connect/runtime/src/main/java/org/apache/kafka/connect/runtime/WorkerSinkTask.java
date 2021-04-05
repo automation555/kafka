@@ -24,7 +24,6 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetCommitCallback;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Avg;
@@ -330,13 +329,13 @@ class WorkerSinkTask extends WorkerTask {
         deliverMessages();
     }
 
-    @VisibleForTesting
+    // Visible for testing
     boolean isCommitting() {
         return committing;
     }
 
     private void doCommitSync(Map<TopicPartition, OffsetAndMetadata> offsets, int seqno) {
-        log.debug("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
+        log.info("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
         try {
             consumer.commitSync(offsets);
             onCommitCompleted(null, seqno, offsets);
@@ -350,7 +349,7 @@ class WorkerSinkTask extends WorkerTask {
     }
 
     private void doCommitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, final int seqno) {
-        log.debug("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
+        log.info("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
         OffsetCommitCallback cb = new OffsetCommitCallback() {
             @Override
             public void onComplete(Map<TopicPartition, OffsetAndMetadata> offsets, Exception error) {
@@ -667,7 +666,7 @@ class WorkerSinkTask extends WorkerTask {
         return sinkTaskMetricsGroup;
     }
 
-    @VisibleForTesting
+    // Visible for testing
     long getNextCommit() {
         return nextCommit;
     }

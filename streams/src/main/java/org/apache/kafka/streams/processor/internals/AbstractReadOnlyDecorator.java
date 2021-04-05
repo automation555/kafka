@@ -160,6 +160,13 @@ abstract class AbstractReadOnlyDecorator<T extends StateStore, K, V> extends Wra
             super(inner);
         }
 
+        @Deprecated
+        @Override
+        public void put(final K key,
+                        final V value) {
+            throw new UnsupportedOperationException(ERROR_MESSAGE);
+        }
+
         @Override
         public void put(final K key,
                         final V value,

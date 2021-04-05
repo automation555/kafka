@@ -19,13 +19,10 @@ package org.apache.kafka.common.security.ssl;
 import org.apache.kafka.common.config.SslConfigs;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
-import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
-import java.io.FileWriter;
-import java.io.IOException;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.Collections;
@@ -33,11 +30,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static java.lang.Thread.sleep;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 
 public class DefaultSslEngineFactoryTest {
 
@@ -203,15 +199,10 @@ public class DefaultSslEngineFactoryTest {
     private DefaultSslEngineFactory factory = new DefaultSslEngineFactory();
     Map<String, Object> configs = new HashMap<>();
 
-    public DefaultSslEngineFactoryTest() throws IOException {
-    }
-
-    @BeforeEach
-    public void setUp() throws IOException {
+    @Before
+    public void setUp() {
         factory = new DefaultSslEngineFactory();
         configs.put(SslConfigs.SSL_PROTOCOL_CONFIG, "TLSv1.2");
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 5000L);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 5000L);
     }
 
     @Test
@@ -223,8 +214,8 @@ public class DefaultSslEngineFactoryTest {
         KeyStore trustStore = factory.truststore();
         List<String> aliases = Collections.list(trustStore.aliases());
         assertEquals(Collections.singletonList("kafka0"), aliases);
-        assertNotNull(trustStore.getCertificate("kafka0"), "Certificate not loaded");
-        assertNull(trustStore.getKey("kafka0", null), "Unexpected private key");
+        assertNotNull("Certificate not loaded", trustStore.getCertificate("kafka0"));
+        assertNull("Unexpected private key", trustStore.getKey("kafka0", null));
     }
 
     @Test
@@ -236,10 +227,10 @@ public class DefaultSslEngineFactoryTest {
         KeyStore trustStore = factory.truststore();
         List<String> aliases = Collections.list(trustStore.aliases());
         assertEquals(Arrays.asList("kafka0", "kafka1"), aliases);
-        assertNotNull(trustStore.getCertificate("kafka0"), "Certificate not loaded");
-        assertNull(trustStore.getKey("kafka0", null), "Unexpected private key");
-        assertNotNull(trustStore.getCertificate("kafka1"), "Certificate not loaded");
-        assertNull(trustStore.getKey("kafka1", null), "Unexpected private key");
+        assertNotNull("Certificate not loaded", trustStore.getCertificate("kafka0"));
+        assertNull("Unexpected private key", trustStore.getKey("kafka0", null));
+        assertNotNull("Certificate not loaded", trustStore.getCertificate("kafka1"));
+        assertNull("Unexpected private key", trustStore.getKey("kafka1", null));
     }
 
     @Test
@@ -277,9 +268,9 @@ public class DefaultSslEngineFactoryTest {
         KeyStore keyStore = factory.keystore();
         List<String> aliases = Collections.list(keyStore.aliases());
         assertEquals(Collections.singletonList("kafka"), aliases);
-        assertNotNull(keyStore.getCertificate("kafka"), "Certificate not loaded");
-        assertNotNull(keyStore.getKey("kafka", keyPassword == null ? null : keyPassword.value().toCharArray()),
-            "Private key not loaded");
+        assertNotNull("Certificate not loaded", keyStore.getCertificate("kafka"));
+        assertNotNull("Private key not loaded",
+                keyStore.getKey("kafka", keyPassword == null ? null : keyPassword.value().toCharArray()));
     }
 
     @Test
@@ -291,8 +282,8 @@ public class DefaultSslEngineFactoryTest {
         KeyStore trustStore = factory.truststore();
         List<String> aliases = Collections.list(trustStore.aliases());
         assertEquals(Collections.singletonList("kafka0"), aliases);
-        assertNotNull(trustStore.getCertificate("kafka0"), "Certificate not found");
-        assertNull(trustStore.getKey("kafka0", null), "Unexpected private key");
+        assertNotNull("Certificate not found", trustStore.getCertificate("kafka0"));
+        assertNull("Unexpected private key", trustStore.getKey("kafka0", null));
     }
 
     @Test
@@ -314,132 +305,20 @@ public class DefaultSslEngineFactoryTest {
         KeyStore keyStore = factory.keystore();
         List<String> aliases = Collections.list(keyStore.aliases());
         assertEquals(Collections.singletonList("kafka"), aliases);
-        assertNotNull(keyStore.getCertificate("kafka"), "Certificate not found");
-        assertNotNull(keyStore.getKey("kafka", KEY_PASSWORD.value().toCharArray()), "Private key not found");
+        assertNotNull("Certificate not found", keyStore.getCertificate("kafka"));
+        assertNotNull("Private key not found", keyStore.getKey("kafka", KEY_PASSWORD.value().toCharArray()));
     }
 
     private String pemFilePath(String pem) throws Exception {
         return TestUtils.tempFile(pem).getAbsolutePath();
     }
 
-    private Password pemAsConfigValue(String... pemValues) {
+    private Password pemAsConfigValue(String... pemValues)  throws Exception {
         StringBuilder builder = new StringBuilder();
         for (String pem : pemValues) {
             builder.append(pem);
             builder.append("\n");
         }
         return new Password(builder.toString().trim());
-    }
-
-    @Test
-    public void testKeyStoreFileTriggerReload() throws Exception {
-        MockTime time = new MockTime(0L, 0L, 0L);
-        DefaultSslEngineFactory factory = new DefaultSslEngineFactory(time);
-        configs.put(SslConfigs.SSL_PROTOCOL_CONFIG, "TLSv1.2");
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 1000L);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, Long.MAX_VALUE);
-
-        final String filePath = pemFilePath(pemAsConfigValue(ENCRYPTED_KEY, CERTCHAIN).value());
-
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG, filePath);
-        configs.put(SslConfigs.SSL_KEY_PASSWORD_CONFIG, KEY_PASSWORD);
-        configs.put(SslConfigs.SSL_KEYSTORE_TYPE_CONFIG, DefaultSslEngineFactory.PEM_TYPE);
-        factory.configure(configs);
-
-        // Make sure the thread starts to listen for file changes.
-        sleep(1000);
-
-        final FileWriter writer = new FileWriter(filePath);
-        writer.write(pemAsConfigValue(KEY, CERTCHAIN).value());
-        writer.flush();
-        writer.close();
-
-        TestUtils.waitForCondition(() -> factory.securityFileChangeListener().lastLoadFailure() != null,
-            "key store not reloaded or encountered expected failure");
-    }
-
-    @Test
-    public void testKeyStoreTimeBasedReload() throws Exception {
-        MockTime time = new MockTime(0L, 0L, 0L);
-        DefaultSslEngineFactory factory = new DefaultSslEngineFactory(time);
-        configs.put(SslConfigs.SSL_PROTOCOL_CONFIG, "TLSv1.2");
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 1000L);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, Long.MAX_VALUE);
-
-        final String filePath = pemFilePath(pemAsConfigValue(ENCRYPTED_KEY, CERTCHAIN).value());
-
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG, filePath);
-        configs.put(SslConfigs.SSL_KEY_PASSWORD_CONFIG, KEY_PASSWORD);
-        configs.put(SslConfigs.SSL_KEYSTORE_TYPE_CONFIG, DefaultSslEngineFactory.PEM_TYPE);
-        factory.configure(configs);
-
-        final FileWriter writer = new FileWriter(filePath);
-        writer.write(pemAsConfigValue(KEY, CERTCHAIN).value());
-        writer.flush();
-        writer.close();
-
-        time.setCurrentTimeMs(1200L);
-        TestUtils.waitForCondition(() -> factory.securityFileChangeListener().lastLoadFailure() != null,
-            "key store not reloaded or encountered expected failure");
-    }
-
-
-
-    @Test
-    public void testTrustStoreFileTriggerReload() throws Exception {
-        DefaultSslEngineFactory factory = new DefaultSslEngineFactory();
-        configs.put(SslConfigs.SSL_PROTOCOL_CONFIG, "TLSv1.2");
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 1000L);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 1000L);
-
-        final String filePath = pemFilePath(CA1);
-
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, filePath);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, DefaultSslEngineFactory.PEM_TYPE);
-        factory.configure(configs);
-
-        // Make sure the thread starts to listen for file changes.
-        sleep(1000);
-
-        final FileWriter writer = new FileWriter(filePath);
-        writer.write(pemAsConfigValue(CA1, CA2).value());
-        writer.flush();
-        writer.close();
-
-        verifyTrustStoreUpdate(factory);
-    }
-
-    @Test
-    public void testTrustStoreTimeBasedReload() throws Exception {
-        MockTime time = new MockTime(0L, 0L, 0L);
-        DefaultSslEngineFactory factory = new DefaultSslEngineFactory(time);
-        configs.put(SslConfigs.SSL_PROTOCOL_CONFIG, "TLSv1.2");
-        configs.put(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, Long.MAX_VALUE);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, 1000L);
-
-        final String filePath = pemFilePath(CA1);
-
-        configs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, filePath);
-        configs.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, DefaultSslEngineFactory.PEM_TYPE);
-        factory.configure(configs);
-
-        final FileWriter writer = new FileWriter(filePath);
-        writer.write(pemAsConfigValue(CA1, CA2).value());
-        writer.flush();
-        writer.close();
-
-        time.setCurrentTimeMs(1200L);
-
-        verifyTrustStoreUpdate(factory);
-    }
-
-    private void verifyTrustStoreUpdate(DefaultSslEngineFactory factory) throws Exception {
-        TestUtils.waitForCondition(() -> Arrays.asList("kafka0", "kafka1").equals(Collections.list(factory.truststore().aliases())), "store not reloaded");
-
-        KeyStore trustStore = factory.truststore();
-        assertNotNull(trustStore.getCertificate("kafka0"), "Certificate not loaded");
-        assertNull(trustStore.getKey("kafka0", null), "Unexpected private key");
-        assertNotNull(trustStore.getCertificate("kafka1"), "Certificate not loaded");
-        assertNull(trustStore.getKey("kafka1", null), "Unexpected private key");
     }
 }

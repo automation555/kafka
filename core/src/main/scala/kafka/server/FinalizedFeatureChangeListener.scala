@@ -19,7 +19,6 @@ package kafka.server
 
 import java.util.concurrent.{CountDownLatch, LinkedBlockingQueue, TimeUnit}
 
-import kafka.internals.generated.FeatureZNodeData
 import kafka.utils.{Logging, ShutdownableThread}
 import kafka.zk.{FeatureZNode, FeatureZNodeStatus, KafkaZkClient, ZkVersion}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler}
@@ -90,7 +89,7 @@ class FinalizedFeatureChangeListener(private val finalizedFeatureCache: Finalize
         info(s"Feature ZK node at path: $featureZkNodePath does not exist")
         finalizedFeatureCache.clear()
       } else {
-        var maybeFeatureZNode: Option[FeatureZNodeData] = Option.empty
+        var maybeFeatureZNode: Option[FeatureZNode] = Option.empty
         try {
           maybeFeatureZNode = Some(FeatureZNode.decode(mayBeFeatureZNodeBytes.get))
         } catch {
@@ -99,16 +98,16 @@ class FinalizedFeatureChangeListener(private val finalizedFeatureCache: Finalize
             finalizedFeatureCache.clear()
           }
         }
-        maybeFeatureZNode.foreach(featureZNodeData => {
-          featureZNodeData.status match {
-            case FeatureZNodeStatus.Disabled.id => {
+        maybeFeatureZNode.foreach(featureZNode => {
+          featureZNode.status match {
+            case FeatureZNodeStatus.Disabled => {
               info(s"Feature ZK node at path: $featureZkNodePath is in disabled status.")
               finalizedFeatureCache.clear()
             }
-            case FeatureZNodeStatus.Enabled.id => {
-              finalizedFeatureCache.updateOrThrow(FeatureZNode.getFeatures(featureZNodeData), version)
+            case FeatureZNodeStatus.Enabled => {
+              finalizedFeatureCache.updateOrThrow(featureZNode.features, version)
             }
-            case _ => throw new IllegalStateException(s"Unexpected FeatureZNodeStatus found in $featureZNodeData")
+            case _ => throw new IllegalStateException(s"Unexpected FeatureZNodeStatus found in $featureZNode")
           }
         })
       }
@@ -208,7 +207,7 @@ class FinalizedFeatureChangeListener(private val finalizedFeatureCache: Finalize
    * will exit eventually.
    *
    * @param waitOnceForCacheUpdateMs   # of milli seconds to wait for feature cache to be updated once.
-   *                                   (should be > 0)
+   *                                   If this parameter <= 0, no wait operation happens.
    *
    * @throws Exception if feature incompatibility check could not be finished in a timely manner
    */

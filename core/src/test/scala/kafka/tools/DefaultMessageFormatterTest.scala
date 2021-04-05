@@ -15,30 +15,32 @@
   * limitations under the License.
   */
 
-package kafka.tools
+package unit.kafka.tools
 
 import java.io.{ByteArrayOutputStream, Closeable, PrintStream}
 import java.nio.charset.StandardCharsets
 import java.util
+
 import kafka.tools.DefaultMessageFormatter
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.Header
 import org.apache.kafka.common.header.internals.{RecordHeader, RecordHeaders}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.serialization.Deserializer
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.{Arguments, MethodSource}
+import org.junit.Assert._
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
+import org.junit.runners.Parameterized.Parameters
 
 import scala.jdk.CollectionConverters._
 
-class DefaultMessageFormatterTest {
+@RunWith(value = classOf[Parameterized])
+class DefaultMessageFormatterTest(name: String, record: ConsumerRecord[Array[Byte], Array[Byte]], properties: Map[String, String], expected: String) {
   import DefaultMessageFormatterTest._
 
-
-  @ParameterizedTest
-  @MethodSource(Array("parameters"))
-  def testWriteRecord(name: String, record: ConsumerRecord[Array[Byte], Array[Byte]], properties: Map[String, String], expected: String): Unit = {
+  @Test
+  def testWriteRecord()= {
     withResource(new ByteArrayOutputStream()) { baos =>
       withResource(new PrintStream(baos)) { ps =>
         val formatter = buildFormatter(properties)
@@ -52,67 +54,68 @@ class DefaultMessageFormatterTest {
 }
 
 object DefaultMessageFormatterTest {
-  def parameters: java.util.stream.Stream[Arguments] = {
+  @Parameters(name = "Test {index} - {0}")
+  def parameters: java.util.Collection[Array[Object]] = {
     Seq(
-      Arguments.of(
+      Array(
         "print nothing",
         consumerRecord(),
         Map("print.value" -> "false"),
         ""),
-      Arguments.of(
+      Array(
         "print key",
         consumerRecord(),
         Map("print.key" -> "true",
           "print.value" -> "false"),
         "someKey\n"),
-      Arguments.of(
+      Array(
         "print value",
         consumerRecord(),
         Map(),
         "someValue\n"),
-      Arguments.of(
+      Array(
         "print empty timestamp",
         consumerRecord(timestampType = TimestampType.NO_TIMESTAMP_TYPE),
         Map("print.timestamp" -> "true",
             "print.value" -> "false"),
         "NO_TIMESTAMP\n"),
-      Arguments.of(
+      Array(
         "print log append time timestamp",
         consumerRecord(timestampType = TimestampType.LOG_APPEND_TIME),
         Map("print.timestamp" -> "true",
             "print.value" -> "false"),
         "LogAppendTime:1234\n"),
-      Arguments.of(
+      Array(
         "print create time timestamp",
         consumerRecord(timestampType = TimestampType.CREATE_TIME),
         Map("print.timestamp" -> "true",
             "print.value" -> "false"),
         "CreateTime:1234\n"),
-      Arguments.of(
+      Array(
         "print partition",
         consumerRecord(),
         Map("print.partition" -> "true",
             "print.value" -> "false"),
         "Partition:9\n"),
-      Arguments.of(
+      Array(
         "print offset",
         consumerRecord(),
         Map("print.offset" -> "true",
             "print.value" -> "false"),
         "Offset:9876\n"),
-      Arguments.of(
+      Array(
         "print headers",
         consumerRecord(),
         Map("print.headers" -> "true",
             "print.value" -> "false"),
         "h1:v1,h2:v2\n"),
-      Arguments.of(
+      Array(
         "print empty headers",
         consumerRecord(headers = Nil),
         Map("print.headers" -> "true",
             "print.value" -> "false"),
         "NO_HEADERS\n"),
-      Arguments.of(
+      Array(
         "print all possible fields with default delimiters",
         consumerRecord(),
         Map("print.key" -> "true",
@@ -122,7 +125,7 @@ object DefaultMessageFormatterTest {
             "print.headers" -> "true",
             "print.value" -> "true"),
         "CreateTime:1234\tPartition:9\tOffset:9876\th1:v1,h2:v2\tsomeKey\tsomeValue\n"),
-      Arguments.of(
+      Array(
         "print all possible fields with custom delimiters",
         consumerRecord(),
         Map("key.separator" -> "|",
@@ -135,55 +138,55 @@ object DefaultMessageFormatterTest {
             "print.headers" -> "true",
             "print.value" -> "true"),
         "CreateTime:1234|Partition:9|Offset:9876|h1:v1#h2:v2|someKey|someValue^"),
-      Arguments.of(
+      Array(
         "print key with custom deserializer",
         consumerRecord(),
         Map("print.key" -> "true",
             "print.headers" -> "true",
             "print.value" -> "true",
-            "key.deserializer" -> "kafka.tools.UpperCaseDeserializer"),
+            "key.deserializer" -> "unit.kafka.tools.UpperCaseDeserializer"),
         "h1:v1,h2:v2\tSOMEKEY\tsomeValue\n"),
-      Arguments.of(
+      Array(
         "print value with custom deserializer",
         consumerRecord(),
         Map("print.key" -> "true",
             "print.headers" -> "true",
             "print.value" -> "true",
-            "value.deserializer" -> "kafka.tools.UpperCaseDeserializer"),
+            "value.deserializer" -> "unit.kafka.tools.UpperCaseDeserializer"),
         "h1:v1,h2:v2\tsomeKey\tSOMEVALUE\n"),
-      Arguments.of(
+      Array(
         "print headers with custom deserializer",
         consumerRecord(),
         Map("print.key" -> "true",
             "print.headers" -> "true",
             "print.value" -> "true",
-            "headers.deserializer" -> "kafka.tools.UpperCaseDeserializer"),
+            "headers.deserializer" -> "unit.kafka.tools.UpperCaseDeserializer"),
         "h1:V1,h2:V2\tsomeKey\tsomeValue\n"),
-      Arguments.of(
+      Array(
         "print key and value",
         consumerRecord(),
         Map("print.key" -> "true",
             "print.value" -> "true"),
         "someKey\tsomeValue\n"),
-      Arguments.of(
+      Array(
         "print fields in the beginning, middle and the end",
         consumerRecord(),
         Map("print.key" -> "true",
             "print.value" -> "true",
             "print.partition" -> "true"),
         "Partition:9\tsomeKey\tsomeValue\n"),
-      Arguments.of(
+      Array(
         "null value without custom null literal",
         consumerRecord(value = null),
         Map("print.key" -> "true"),
         "someKey\tnull\n"),
-      Arguments.of(
+      Array(
         "null value with custom null literal",
         consumerRecord(value = null),
         Map("print.key" -> "true",
             "null.literal" -> "NULL"),
         "someKey\tNULL\n"),
-    ).asJava.stream()
+    ).asJava
   }
 
   private def buildFormatter(propsToSet: Map[String, String]): DefaultMessageFormatter = {

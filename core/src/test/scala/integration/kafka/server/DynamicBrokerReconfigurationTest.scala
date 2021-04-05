@@ -98,9 +98,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
   private val sslProperties2 = TestUtils.sslConfigs(Mode.SERVER, clientCert = false, Some(trustStoreFile2), "kafka")
   private val invalidSslProperties = invalidSslConfigs
 
-  def addExtraProps(props: Properties): Unit = {
-  }
-
   @Before
   override def setUp(): Unit = {
     startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism)))
@@ -126,7 +123,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       props.put(KafkaConfig.PasswordEncoderSecretProp, "dynamic-config-secret")
       props.put(KafkaConfig.LogRetentionTimeMillisProp, 1680000000.toString)
       props.put(KafkaConfig.LogRetentionTimeHoursProp, 168.toString)
-      addExtraProps(props)
 
       props ++= sslProperties1
       props ++= securityProps(sslProperties1, KEYSTORE_PROPS, listenerPrefix(SecureInternal))
@@ -450,8 +446,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       StandardCopyOption.REPLACE_EXISTING)
     TestUtils.incrementalAlterConfigs(servers, adminClients.head, oldTruststoreProps, perBrokerConfig = true).all.get()
     verifySslProduceConsume(sslProperties1, "alter-truststore-4")
-    // Sleep a short time to wait for config changes propagation
-    Thread.sleep(1000)
     verifySslProduceConsume(sslProperties2, "alter-truststore-5")
 
     // Update internal keystore/truststore and validate new client connections from broker (e.g. controller).
@@ -1241,9 +1235,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
 
   private def fetchBrokerConfigsFromZooKeeper(server: KafkaServer): Properties = {
     val props = adminZkClient.fetchEntityConfig(ConfigType.Broker, server.config.brokerId.toString)
-    val persistentProps = server.config.dynamicConfig.fromPersistentProps(props, perBrokerConfig = true)
-    server.config.dynamicConfig.trimSslStorePaths(persistentProps)
-    persistentProps
+    server.config.dynamicConfig.fromPersistentProps(props, perBrokerConfig = true)
   }
 
   private def awaitInitialPositions(consumer: KafkaConsumer[_, _]): Unit = {

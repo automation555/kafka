@@ -26,7 +26,6 @@ import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
-import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.ProcessorContext;
@@ -94,8 +93,7 @@ public class MeteredTimestampedWindowStoreTest {
             streamsMetrics,
             new StreamsConfig(StreamsTestUtils.getStreamsConfig()),
             MockRecordCollector::new,
-            new ThreadCache(new LogContext("testCache "), 0, streamsMetrics),
-            Time.SYSTEM
+            new ThreadCache(new LogContext("testCache "), 0, streamsMetrics)
         );
     }
 
@@ -202,6 +200,7 @@ public class MeteredTimestampedWindowStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void shouldNotThrowExceptionIfSerdesCorrectlySetFromProcessorContext() {
         EasyMock.expect(innerStoreMock.name()).andStubReturn("mocked-store");
         EasyMock.replay(innerStoreMock);
@@ -216,7 +215,7 @@ public class MeteredTimestampedWindowStoreTest {
         store.init((StateStoreContext) context, innerStoreMock);
 
         try {
-            store.put("key", ValueAndTimestamp.make(42L, 60000), 60000L);
+            store.put("key", ValueAndTimestamp.make(42L, 60000));
         } catch (final StreamsException exception) {
             if (exception.getCause() instanceof ClassCastException) {
                 fail("Serdes are not correctly set from processor context.");
@@ -226,6 +225,7 @@ public class MeteredTimestampedWindowStoreTest {
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void shouldNotThrowExceptionIfSerdesCorrectlySetFromConstructorParameters() {
         EasyMock.expect(innerStoreMock.name()).andStubReturn("mocked-store");
         EasyMock.replay(innerStoreMock);
@@ -240,7 +240,7 @@ public class MeteredTimestampedWindowStoreTest {
         store.init((StateStoreContext) context, innerStoreMock);
 
         try {
-            store.put("key", ValueAndTimestamp.make(42L, 60000), 60000L);
+            store.put("key", ValueAndTimestamp.make(42L, 60000));
         } catch (final StreamsException exception) {
             if (exception.getCause() instanceof ClassCastException) {
                 fail("Serdes are not correctly set from constructor parameters.");

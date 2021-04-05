@@ -17,7 +17,6 @@
 package org.apache.kafka.common.security.ssl;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.SslClientAuth;
 import org.apache.kafka.common.config.SslConfigs;
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs;
@@ -179,7 +178,7 @@ public final class DefaultSslEngineFactory implements SslEngineFactory {
         this.sslContext = null;
     }
 
-    @VisibleForTesting
+    //For Test only
     public SSLContext sslContext() {
         return this.sslContext;
     }
@@ -270,7 +269,7 @@ public final class DefaultSslEngineFactory implements SslEngineFactory {
         }
     }
 
-    @VisibleForTesting
+    // Visibility to override for testing
     protected SecurityStore createKeystore(String type, String path, Password password, Password keyPassword, Password privateKey, Password certificateChain) {
         if (privateKey != null) {
             if (!PEM_TYPE.equals(type))
@@ -331,7 +330,7 @@ public final class DefaultSslEngineFactory implements SslEngineFactory {
         boolean modified();
     }
 
-    @VisibleForTesting
+    // package access for testing
     static class FileBasedStore implements SecurityStore {
         private final String type;
         protected final String path;
@@ -549,8 +548,8 @@ public final class DefaultSslEngineFactory implements SslEngineFactory {
      *
      *   -----BEGIN ENCRYPTED PRIVATE KEY-----
      *   Base64 private key
-     *   -----END ENCRYPTED PRIVATE KEY-----
-     *   Additional data may be included before headers, so we match all entries within the PEM.
+     *   -----BEGIN ENCRYPTED PRIVATE KEY-----
+     *   Additional data may be included before headers, so we match all entres within the PEM.
      */
     static class PemParser {
         private final String name;

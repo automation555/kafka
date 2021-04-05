@@ -22,18 +22,16 @@ import java.util.Properties
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.core.JsonProcessingException
-import com.fasterxml.jackson.databind.node.{ObjectNode, ShortNode}
 import kafka.api.{ApiVersion, KAFKA_0_10_0_IV1, KAFKA_2_7_IV0, LeaderAndIsr}
 import kafka.cluster.{Broker, EndPoint}
 import kafka.common.{NotificationHandler, ZkNodeChangeNotificationListener}
 import kafka.controller.{IsrChangeNotificationHandler, LeaderIsrAndControllerEpoch, ReplicaAssignment}
-import kafka.internals.generated.{FeatureZNodeData, FeatureZNodeDataJsonConverter}
 import kafka.security.authorizer.AclAuthorizer.VersionedAcls
 import kafka.security.authorizer.AclEntry
 import kafka.server.{ConfigType, DelegationTokenManager}
 import kafka.utils.Json
 import kafka.utils.json.JsonObject
-import org.apache.kafka.common.{KafkaException, TopicPartition, Uuid}
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.errors.UnsupportedVersionException
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange, SupportedVersionRange}
 import org.apache.kafka.common.feature.Features._
@@ -48,7 +46,7 @@ import org.apache.zookeeper.data.{ACL, Stat}
 import scala.beans.BeanProperty
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.ArrayBuffer
-import scala.collection.{Map, Seq, immutable, mutable}
+import scala.collection.{Map, Seq, mutable}
 import scala.util.{Failure, Success, Try}
 
 // This file contains objects for encoding/decoding data stored in ZooKeeper nodes (znodes).
@@ -168,7 +166,7 @@ object BrokerIdZNode {
   }
 
   def featuresAsJavaMap(brokerInfo: JsonObject): util.Map[String, util.Map[String, java.lang.Short]] = {
-    asJavaMap(brokerInfo
+    FeatureZNode.asJavaMap(brokerInfo
       .get(FeaturesKey)
       .flatMap(_.to[Option[Map[String, Map[String, Int]]]])
       .map(theMap => theMap.map {
@@ -177,15 +175,6 @@ object BrokerIdZNode {
          }.toMap
       }.toMap)
       .getOrElse(Map[String, Map[String, Short]]()))
-  }
-
-  def asJavaMap(scalaMap: Map[String, Map[String, Short]]): util.Map[String, util.Map[String, java.lang.Short]] = {
-    scalaMap
-      .map {
-        case(featureName, versionInfo) => featureName -> versionInfo.map {
-          case(label, version) => label -> java.lang.Short.valueOf(version)
-        }.asJava
-      }.asJava
   }
 
   /**
@@ -290,12 +279,8 @@ object TopicsZNode {
 }
 
 object TopicZNode {
-  case class TopicIdReplicaAssignment(topic: String,
-                                      topicId: Option[Uuid],
-                                      assignment: Map[TopicPartition, ReplicaAssignment])
   def path(topic: String) = s"${TopicsZNode.path}/$topic"
-  def encode(topicId: Uuid,
-             assignment: collection.Map[TopicPartition, ReplicaAssignment]): Array[Byte] = {
+  def encode(assignment: collection.Map[TopicPartition, ReplicaAssignment]): Array[Byte] = {
     val replicaAssignmentJson = mutable.Map[String, util.List[Int]]()
     val addingReplicasAssignmentJson = mutable.Map[String, util.List[Int]]()
     val removingReplicasAssignmentJson = mutable.Map[String, util.List[Int]]()
@@ -308,17 +293,14 @@ object TopicZNode {
         removingReplicasAssignmentJson += (partition.partition.toString -> replicaAssignment.removingReplicas.asJava)
     }
 
-    val topicAssignment = mutable.Map(
-      "version" -> 3,
-      "topic_id" -> topicId.toString,
+    Json.encodeAsBytes(Map(
+      "version" -> 2,
       "partitions" -> replicaAssignmentJson.asJava,
       "adding_replicas" -> addingReplicasAssignmentJson.asJava,
       "removing_replicas" -> removingReplicasAssignmentJson.asJava
-    )
-
-    Json.encodeAsBytes(topicAssignment.asJava)
+    ).asJava)
   }
-  def decode(topic: String, bytes: Array[Byte]): TopicIdReplicaAssignment = {
+  def decode(topic: String, bytes: Array[Byte]): Map[TopicPartition, ReplicaAssignment] = {
     def getReplicas(replicasJsonOpt: Option[JsonObject], partition: String): Seq[Int] = {
       replicasJsonOpt match {
         case Some(replicasJson) => replicasJson.get(partition) match {
@@ -329,24 +311,21 @@ object TopicZNode {
       }
     }
 
-    Json.parseBytes(bytes).map { js =>
+    Json.parseBytes(bytes).flatMap { js =>
       val assignmentJson = js.asJsonObject
-      val topicId = assignmentJson.get("topic_id").map(_.to[String]).map(Uuid.fromString)
+      val partitionsJsonOpt = assignmentJson.get("partitions").map(_.asJsonObject)
       val addingReplicasJsonOpt = assignmentJson.get("adding_replicas").map(_.asJsonObject)
       val removingReplicasJsonOpt = assignmentJson.get("removing_replicas").map(_.asJsonObject)
-      val partitionsJsonOpt = assignmentJson.get("partitions").map(_.asJsonObject)
-      val partitions = partitionsJsonOpt.map { partitionsJson =>
+      partitionsJsonOpt.map { partitionsJson =>
         partitionsJson.iterator.map { case (partition, replicas) =>
           new TopicPartition(topic, partition.toInt) -> ReplicaAssignment(
             replicas.to[Seq[Int]],
             getReplicas(addingReplicasJsonOpt, partition),
             getReplicas(removingReplicasJsonOpt, partition)
           )
-        }.toMap
-      }.getOrElse(immutable.Map.empty[TopicPartition, ReplicaAssignment])
-
-      TopicIdReplicaAssignment(topic, topicId, partitions)
-    }.getOrElse(TopicIdReplicaAssignment(topic, None, Map.empty[TopicPartition, ReplicaAssignment]))
+        }
+      }
+    }.map(_.toMap).getOrElse(Map.empty)
   }
 }
 
@@ -819,91 +798,119 @@ object DelegationTokenInfoZNode {
  *             written by the controller to the FeatureZNode only when the broker IBP config
  *             is less than KAFKA_2_7_IV0.
  */
-sealed trait FeatureZNodeStatus {
-  def id: Int
+object FeatureZNodeStatus extends Enumeration {
+  type FeatureZNodeStatus = Value
+  val Disabled, Enabled = Value
+
+  def withNameOpt(value: Int): Option[Value] = {
+    values.find(_.id == value)
+  }
 }
 
-object FeatureZNodeStatus {
-  case object Disabled extends FeatureZNodeStatus {
-    val id: Int = 0
-  }
-
-  case object Enabled extends FeatureZNodeStatus {
-    val id: Int = 1
-  }
-
-  def withNameOpt(id: Int): Option[FeatureZNodeStatus] = {
-    id match {
-      case Disabled.id => Some(Disabled)
-      case Enabled.id => Some(Enabled)
-      case _ => Option.empty
-    }
-  }
+/**
+ * Represents the contents of the ZK node containing finalized feature information.
+ *
+ * @param status     the status of the ZK node
+ * @param features   the cluster-wide finalized features
+ */
+case class FeatureZNode(status: FeatureZNodeStatus.FeatureZNodeStatus, features: Features[FinalizedVersionRange]) {
 }
 
 object FeatureZNode {
   private val VersionKey = "version"
+  private val StatusKey = "status"
+  private val FeaturesKey = "features"
+
+  // V1 contains 'version', 'status' and 'features' keys.
+  val V1 = 1
+  val CurrentVersion = V1
 
   def path = "/feature"
 
-  /**
-   * Encodes a FeatureZNodeData to JSON.
-   *
-   * @param data FeatureZNodeData to be encoded
-   *
-   * @return JSON representation of the FeatureZNodeData, as an Array[Byte]
-   */
-  def encode(data: FeatureZNodeData): Array[Byte] = {
-    val version = data.highestSupportedVersion()
-    val node = FeatureZNodeDataJsonConverter.write(data, version).asInstanceOf[ObjectNode]
-    node.set(VersionKey, new ShortNode(version))
-    Json.encodeAsBytes(node)
+  def asJavaMap(scalaMap: Map[String, Map[String, Short]]): util.Map[String, util.Map[String, java.lang.Short]] = {
+    scalaMap
+      .map {
+        case(featureName, versionInfo) => featureName -> versionInfo.map {
+          case(label, version) => label -> java.lang.Short.valueOf(version)
+        }.asJava
+      }.asJava
   }
 
   /**
-   * Decodes the contents of the feature ZK node from Array[Byte] to a FeatureZNodeData.
+   * Encodes a FeatureZNode to JSON.
    *
-   * @param jsonBytes the contents of the feature ZK node
+   * @param featureZNode   FeatureZNode to be encoded
    *
-   * @return the FeatureZNodeData created from jsonBytes
+   * @return               JSON representation of the FeatureZNode, as an Array[Byte]
+   */
+  def encode(featureZNode: FeatureZNode): Array[Byte] = {
+    val jsonMap = collection.mutable.Map(
+      VersionKey -> CurrentVersion,
+      StatusKey -> featureZNode.status.id,
+      FeaturesKey -> featureZNode.features.toMap)
+    Json.encodeAsBytes(jsonMap.asJava)
+  }
+
+  /**
+   * Decodes the contents of the feature ZK node from Array[Byte] to a FeatureZNode.
+   *
+   * @param jsonBytes   the contents of the feature ZK node
+   *
+   * @return            the FeatureZNode created from jsonBytes
    *
    * @throws IllegalArgumentException   if the Array[Byte] can not be decoded.
    */
-  def decode(jsonBytes: Array[Byte]): FeatureZNodeData = {
-    Json.parseBytesAs[ObjectNode](jsonBytes) match {
-      case Right(dataObject) =>
-        val dataVersion = dataObject.get(VersionKey).shortValue()
-
-        val data = try {
-          FeatureZNodeDataJsonConverter.read(dataObject, dataVersion)
-        } catch {
-          case e: Throwable =>
-            throw new IllegalArgumentException(s"Failed to parse feature information: " +
-              s"${new String(jsonBytes, UTF_8)}", e)
-        }
-
-        if (data.status() != FeatureZNodeStatus.Disabled.id && data.status() != FeatureZNodeStatus.Enabled.id) {
-          throw new IllegalArgumentException(
-            s"Malformed status: ${data.status()} found in feature information: ${new String(jsonBytes, UTF_8)}")
-        }
-        if (dataVersion < data.lowestSupportedVersion() || dataVersion > data.highestSupportedVersion()) {
-          throw new IllegalArgumentException(s"Unsupported version: $dataVersion of feature information: " +
+  def decode(jsonBytes: Array[Byte]): FeatureZNode = {
+    Json.tryParseBytes(jsonBytes) match {
+      case Right(js) =>
+        val featureInfo = js.asJsonObject
+        val version = featureInfo(VersionKey).to[Int]
+        if (version < V1) {
+          throw new IllegalArgumentException(s"Unsupported version: $version of feature information: " +
             s"${new String(jsonBytes, UTF_8)}")
         }
-        data
+
+        val featuresMap = featureInfo
+          .get(FeaturesKey)
+          .flatMap(_.to[Option[Map[String, Map[String, Int]]]])
+
+        if (featuresMap.isEmpty) {
+          throw new IllegalArgumentException("Features map can not be absent in: " +
+            s"${new String(jsonBytes, UTF_8)}")
+        }
+        val features = asJavaMap(
+          featuresMap
+            .map(theMap => theMap.map {
+              case (featureName, versionInfo) => featureName -> versionInfo.map {
+                case (label, version) => label -> version.asInstanceOf[Short]
+              }
+            }).getOrElse(Map[String, Map[String, Short]]()))
+
+        val statusInt = featureInfo
+          .get(StatusKey)
+          .flatMap(_.to[Option[Int]])
+        if (statusInt.isEmpty) {
+          throw new IllegalArgumentException("Status can not be absent in feature information: " +
+            s"${new String(jsonBytes, UTF_8)}")
+        }
+        val status = FeatureZNodeStatus.withNameOpt(statusInt.get)
+        if (status.isEmpty) {
+          throw new IllegalArgumentException(
+            s"Malformed status: $statusInt found in feature information: ${new String(jsonBytes, UTF_8)}")
+        }
+
+        var finalizedFeatures: Features[FinalizedVersionRange] = null
+        try {
+          finalizedFeatures = fromFinalizedFeaturesMap(features)
+        } catch {
+          case e: Exception => throw new IllegalArgumentException(
+            "Unable to convert to finalized features from map: " + features, e)
+        }
+        FeatureZNode(status.get, finalizedFeatures)
       case Left(e) =>
         throw new IllegalArgumentException(s"Failed to parse feature information: " +
           s"${new String(jsonBytes, UTF_8)}", e)
     }
-  }
-
-  def getFeatures(data: FeatureZNodeData): Features[FinalizedVersionRange] = {
-    val featuresMap = data.features().asScala.map{ feature =>
-      val versionRange = feature.versionRange()
-      (feature.featureName(),
-        new FinalizedVersionRange(versionRange.minValue(), versionRange.maxValue()))
-    }.toMap.asJava
-    Features.finalizedFeatures(featuresMap)
   }
 }
 

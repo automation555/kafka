@@ -113,8 +113,7 @@ public class GlobalStreamThreadTest {
             new StreamsMetricsImpl(new Metrics(), "test-client", StreamsConfig.METRICS_LATEST, time),
             time,
             "clientId",
-            stateRestoreListener,
-            e -> { }
+            stateRestoreListener
         );
     }
 
@@ -148,8 +147,7 @@ public class GlobalStreamThreadTest {
             new StreamsMetricsImpl(new Metrics(), "test-client", StreamsConfig.METRICS_LATEST, time),
             time,
             "clientId",
-            stateRestoreListener,
-            e -> { }
+            stateRestoreListener
         );
 
         try {

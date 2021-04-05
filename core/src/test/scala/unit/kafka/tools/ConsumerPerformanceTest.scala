@@ -18,23 +18,22 @@
 package kafka.tools
 
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
 import java.text.SimpleDateFormat
 
-import kafka.utils.Exit
-import kafka.utils.consoletable.ConsoleTable
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
-import org.junit.jupiter.api.Test
+import kafka.utils.{Exit, TestUtils}
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class ConsumerPerformanceTest {
 
   private val outContent = new ByteArrayOutputStream()
   private val dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss:SSS")
-  private val consoleTableBuilder = new ConsoleTable.ConsoleTableBuilder
 
   @Test
   def testDetailedHeaderMatchBody(): Unit = {
     testHeaderMatchContent(detailed = true, 2,
-      () => ConsumerPerformance.printConsumerProgress(1, 1024 * 1024, 0, 1, 0, 0, 1, dateFormat, 1L, consoleTableBuilder))
+      () => ConsumerPerformance.printConsumerProgress(1, 1024 * 1024, 0, 1, 0, 0, 1, dateFormat, 1L))
   }
 
   @Test
@@ -98,8 +97,31 @@ class ConsumerPerformanceTest {
     assertEquals("test", config.topic)
     assertEquals(10, config.numMessages)
   }
-
+  
   @Test
+  def testConfigWithRecognizedOptionOverride(): Unit = {
+    val propsFile = TestUtils.tempFile()
+    val propsStream = Files.newOutputStream(propsFile.toPath)
+    propsStream.write("group.id=test_group_id\n".getBytes())
+    propsStream.write("client.id=test_client_id".getBytes())
+    propsStream.close()
+    //Given
+    val args: Array[String] = Array(
+      "--broker-list", "localhost:9092",
+      "--topic", "test",
+      "--group", "test_group_id2",
+      "--messages", "10",
+      "--consumer.config", propsFile.getAbsolutePath
+    )
+    //When
+    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
+
+    //Then
+    assertEquals("test_group_id", config.props.getProperty("group.id"))
+    assertEquals("test_client_id", config.props.getProperty("client.id"))
+  }
+
+  @Test(expected = classOf[IllegalArgumentException])
   def testConfigWithUnrecognizedOption(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
@@ -109,13 +131,17 @@ class ConsumerPerformanceTest {
       "--messages", "10",
       "--new-consumer"
     )
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsumerPerformance.ConsumerPerfConfig(args))
-    finally Exit.resetExitProcedure()
+    try {
+      //When
+      new ConsumerPerformance.ConsumerPerfConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   private def testHeaderMatchContent(detailed: Boolean, expectedOutputLineCount: Int, fun: () => Unit): Unit = {
     Console.withOut(outContent) {
-      ConsumerPerformance.printHeader(detailed, consoleTableBuilder)
+      ConsumerPerformance.printHeader(detailed)
       fun()
 
       val contents = outContent.toString.split("\n")

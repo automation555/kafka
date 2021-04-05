@@ -22,7 +22,6 @@ import org.apache.kafka.connect.util.clusters.EmbeddedConnectCluster;
 import org.apache.kafka.test.IntegrationTest;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -269,8 +268,6 @@ public class RebalanceSourceConnectorsIntegrationTest {
                 WORKER_SETUP_DURATION_MS, "Connect and tasks are imbalanced between the workers.");
     }
 
-    // should enable it after KAFKA-12495 fixed
-    @Ignore
     @Test
     public void testMultipleWorkersRejoining() throws Exception {
         // create test topic
@@ -362,7 +359,9 @@ public class RebalanceSourceConnectorsIntegrationTest {
                     tasks.values().size(),
                     tasks.values().stream().distinct().collect(Collectors.toList()).size());
             assertTrue("Connectors are imbalanced: " + formatAssignment(connectors), maxConnectors - minConnectors < 2);
+            if (minConnectors > 1) assertEquals("Some workers have no connectors", connectors.size(), connect.workers().size());
             assertTrue("Tasks are imbalanced: " + formatAssignment(tasks), maxTasks - minTasks < 2);
+            if (minTasks > 1) assertEquals("Some workers have no tasks", tasks.size(), connect.workers().size());
             return true;
         } catch (Exception e) {
             log.error("Could not check connector state info.", e);

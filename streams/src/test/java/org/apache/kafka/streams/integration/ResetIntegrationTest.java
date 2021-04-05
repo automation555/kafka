@@ -73,18 +73,8 @@ public class ResetIntegrationTest extends AbstractResetIntegrationTest {
     }
 
     @Test
-    public void testResetWhenLongSessionTimeoutConfiguredWithForceOption() throws Exception {
-        super.testResetWhenLongSessionTimeoutConfiguredWithForceOption();
-    }
-
-    @Test
     public void testReprocessingFromScratchAfterResetWithIntermediateUserTopic() throws Exception {
-        super.testReprocessingFromScratchAfterResetWithIntermediateUserTopic(false);
-    }
-
-    @Test
-    public void testReprocessingFromScratchAfterResetWithIntermediateInternalTopic() throws Exception {
-        super.testReprocessingFromScratchAfterResetWithIntermediateUserTopic(true);
+        super.testReprocessingFromScratchAfterResetWithIntermediateUserTopic();
     }
 
     @Test
@@ -103,8 +93,8 @@ public class ResetIntegrationTest extends AbstractResetIntegrationTest {
     }
 
     @Test
-    public void testResetWhenInternalTopicsAreSpecified() throws Exception {
-        super.testResetWhenInternalTopicsAreSpecified();
+    public void testReprocessingFromScratchAfterResetAllExternalTopics() throws Exception {
+        super.testReprocessingFromScratchAfterResetAllExternalTopics();
     }
 
     @Test
@@ -121,10 +111,4 @@ public class ResetIntegrationTest extends AbstractResetIntegrationTest {
     public void shouldNotAllowToResetWhenIntermediateTopicAbsent() throws Exception {
         super.shouldNotAllowToResetWhenIntermediateTopicAbsent();
     }
-
-    @Test
-    public void shouldNotAllowToResetWhenSpecifiedInternalTopicAbsent() throws Exception {
-        super.shouldNotAllowToResetWhenSpecifiedInternalTopicAbsent();
-    }
-
 }

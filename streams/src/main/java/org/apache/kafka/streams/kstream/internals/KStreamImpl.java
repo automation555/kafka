@@ -35,10 +35,7 @@ import org.apache.kafka.streams.kstream.Named;
 import org.apache.kafka.streams.kstream.Predicate;
 import org.apache.kafka.streams.kstream.Printed;
 import org.apache.kafka.streams.kstream.Produced;
-import org.apache.kafka.streams.kstream.RecordValue;
-import org.apache.kafka.streams.kstream.RecordValueSerde;
 import org.apache.kafka.streams.kstream.Repartitioned;
-import org.apache.kafka.streams.kstream.RecordHeadersMapper;
 import org.apache.kafka.streams.kstream.StreamJoined;
 import org.apache.kafka.streams.kstream.TransformerSupplier;
 import org.apache.kafka.streams.kstream.ValueJoiner;
@@ -115,10 +112,6 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
     private static final String MAP_NAME = "KSTREAM-MAP-";
 
     private static final String MAPVALUES_NAME = "KSTREAM-MAPVALUES-";
-
-    private static final String MAPRECORDVALUE_NAME = "KSTREAM-MAPRECORDVALUE-";
-
-    private static final String SETRECORDHEADERS_NAME = "KSTREAM-SETRECORDHEADERS-";
 
     private static final String PROCESSOR_NAME = "KSTREAM-PROCESSOR-";
 
@@ -320,62 +313,8 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
     }
 
     @Override
-    public KStream<K, RecordValue<V>> mapRecordValue() {
-        return mapRecordValue(NamedInternal.empty());
-    }
-
-    @Override
-    public KStream<K, RecordValue<V>> mapRecordValue(final Named named) {
-        Objects.requireNonNull(named, "named can't be null");
-
-        final String name = new NamedInternal(named).orElseGenerateWithPrefix(builder, MAPRECORDVALUE_NAME);
-        final ProcessorParameters<? super K, ? super V, ?, ?> processorParameters =
-            new ProcessorParameters<>(new KStreamMapRecordValue<>(), name);
-        final ProcessorGraphNode<? super K, ? super V> mapValuesProcessorNode =
-            new ProcessorGraphNode<>(name, processorParameters);
-        mapValuesProcessorNode.setValueChangingOperation(true);
-
-        builder.addGraphNode(graphNode, mapValuesProcessorNode);
-
-        // value serde cannot be preserved
-        return new KStreamImpl<>(
-            name,
-            keySerde,
-            new RecordValueSerde<>(valueSerde),
-            subTopologySourceNodes,
-            repartitionRequired,
-            mapValuesProcessorNode,
-            builder);
-    }
-
-    @Override
-    public KStream<K, V> setRecordHeaders(final RecordHeadersMapper<? super K, ? super V> mapper,
-        final Named named) {
-        Objects.requireNonNull(mapper, "mapper can't be null");
-        Objects.requireNonNull(named, "named can't be null");
-
-        final String name = new NamedInternal(named).orElseGenerateWithPrefix(builder, SETRECORDHEADERS_NAME);
-        final ProcessorParameters<? super K, ? super V, ?, ?> processorParameters =
-            new ProcessorParameters<>(new KStreamSetRecordHeaders<>(mapper), name);
-        final ProcessorGraphNode<? super K, ? super V> setRecordHeadersNode =
-            new ProcessorGraphNode<>(name, processorParameters);
-
-        builder.addGraphNode(graphNode, setRecordHeadersNode);
-
-        // key and value serde cannot be preserved
-        return new KStreamImpl<>(
-            name,
-            keySerde,
-            valueSerde,
-            subTopologySourceNodes,
-            true,
-            setRecordHeadersNode,
-            builder);
-    }
-
-    @Override
-    public KStream<K, V> setRecordHeaders(final RecordHeadersMapper<? super K, ? super V> action) {
-        return setRecordHeaders(action, NamedInternal.empty());
+    public <KR, VR> KStream<KR, VR> flatMap(final KeyValueMapper<? super K, ? super V, ? extends Iterable<? extends KeyValue<? extends KR, ? extends VR>>> mapper) {
+        return flatMap(mapper, NamedInternal.empty());
     }
 
     @Override
@@ -395,11 +334,6 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
 
         // key and value serde cannot be preserved
         return new KStreamImpl<>(name, null, null, subTopologySourceNodes, true, flatMapNode, builder);
-    }
-
-    @Override
-    public <KR, VR> KStream<KR, VR> flatMap(final KeyValueMapper<? super K, ? super V, ? extends Iterable<? extends KeyValue<? extends KR, ? extends VR>>> mapper) {
-        return flatMap(mapper, NamedInternal.empty());
     }
 
     @Override
@@ -664,8 +598,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
 
         final RepartitionedInternal<K, V> repartitionedInternal = new RepartitionedInternal<>(repartitioned);
 
-        final String name = repartitionedInternal.name() != null ? repartitionedInternal.name() : builder
-            .newProcessorName(REPARTITION_NAME);
+        final String name = new NamedInternal(repartitionedInternal.name()).orElseGenerateWithPrefix(builder, REPARTITION_NAME);
 
         final Serde<V> valueSerde = repartitionedInternal.valueSerde() == null ? this.valueSerde : repartitionedInternal.valueSerde();
         final Serde<K> keySerde = repartitionedInternal.keySerde() == null ? this.keySerde : repartitionedInternal.keySerde();
@@ -1309,8 +1242,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
     public <KR, VR> KStream<KR, VR> transform(final TransformerSupplier<? super K, ? super V, KeyValue<KR, VR>> transformerSupplier,
                                               final String... stateStoreNames) {
         Objects.requireNonNull(transformerSupplier, "transformerSupplier can't be null");
-        final String name = builder.newProcessorName(TRANSFORM_NAME);
-        return flatTransform(new TransformerSupplierAdapter<>(transformerSupplier), Named.as(name), stateStoreNames);
+        return flatTransform(new TransformerSupplierAdapter<>(transformerSupplier), NamedInternal.empty(), stateStoreNames);
     }
 
     @Override
@@ -1325,8 +1257,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
     public <K1, V1> KStream<K1, V1> flatTransform(final TransformerSupplier<? super K, ? super V, Iterable<KeyValue<K1, V1>>> transformerSupplier,
                                                   final String... stateStoreNames) {
         Objects.requireNonNull(transformerSupplier, "transformerSupplier can't be null");
-        final String name = builder.newProcessorName(TRANSFORM_NAME);
-        return flatTransform(transformerSupplier, Named.as(name), stateStoreNames);
+        return flatTransform(transformerSupplier, NamedInternal.empty(), stateStoreNames);
     }
 
     @Override
@@ -1341,7 +1272,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
             Objects.requireNonNull(stateStoreName, "stateStoreNames can't contain `null` as store name");
         }
 
-        final String name = new NamedInternal(named).name();
+        final String name = new NamedInternal(named).orElseGenerateWithPrefix(builder, TRANSFORM_NAME);
         final StatefulProcessorNode<? super K, ? super V> transformNode = new StatefulProcessorNode<>(
             name,
             new ProcessorParameters<>(new KStreamFlatTransform<>(transformerSupplier), name),
@@ -1496,7 +1427,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
     @Override
     public void process(final ProcessorSupplier<? super K, ? super V> processorSupplier,
                         final String... stateStoreNames) {
-        process(processorSupplier, Named.as(builder.newProcessorName(PROCESSOR_NAME)), stateStoreNames);
+        process(processorSupplier, NamedInternal.empty(), stateStoreNames);
     }
 
     @Override
@@ -1511,7 +1442,7 @@ public class KStreamImpl<K, V> extends AbstractStream<K, V> implements KStream<K
             Objects.requireNonNull(stateStoreName, "stateStoreNames can't be null");
         }
 
-        final String name = new NamedInternal(named).name();
+        final String name = new NamedInternal(named).orElseGenerateWithPrefix(builder, PROCESSOR_NAME);
         final StatefulProcessorNode<? super K, ? super V> processNode = new StatefulProcessorNode<>(
             name,
             new ProcessorParameters<>(processorSupplier, name),

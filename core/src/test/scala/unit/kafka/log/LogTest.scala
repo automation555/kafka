@@ -45,7 +45,7 @@ import org.easymock.EasyMock
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
 
-import scala.collection.{Iterable, Map, Set, mutable}
+import scala.collection.{Iterable, Map, mutable}
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -109,13 +109,15 @@ class LogTest {
           val logDirFailureChannel: LogDirFailureChannel = new LogDirFailureChannel(1)
 
           val producerStateManager = new ProducerStateManager(topicPartition, logDir, maxPidExpirationMs)
-          val log = new Log(logDir, config, logStartOffset, logRecoveryPoint, time.scheduler, brokerTopicStats, time, maxPidExpirationMs,
+          val log = new Log(
+            new LocalLog(logDir, config, logRecoveryPoint, time.scheduler, time, topicPartition, logDirFailureChannel),
+            config, logStartOffset, time.scheduler, brokerTopicStats, time, maxPidExpirationMs,
             LogManager.ProducerIdExpirationCheckIntervalMs, topicPartition, producerStateManager, logDirFailureChannel, hadCleanShutdown) {
-            override def recoverLog(segmentsWithFailedSanityCheck: Set[LogSegment]): Long = {
+            override def loadSegments(): Unit = {
               if (simulateError)
                 throw new RuntimeException
               cleanShutdownInterceptedValue = hadCleanShutdown
-              super.recoverLog(segmentsWithFailedSanityCheck)
+              super.loadSegments()
             }
           }
           log
@@ -1021,12 +1023,9 @@ class LogTest {
       val maxProducerIdExpirationMs = 60 * 60 * 1000
       val topicPartition = Log.parseTopicPartitionName(logDir)
       val producerStateManager = new ProducerStateManager(topicPartition, logDir, maxProducerIdExpirationMs)
-
+      val logDirFailureChannel = new LogDirFailureChannel(10)
       // Intercept all segment read calls
-      new Log(logDir, logConfig, logStartOffset = 0, recoveryPoint = recoveryPoint, mockTime.scheduler,
-        brokerTopicStats, mockTime, maxProducerIdExpirationMs, LogManager.ProducerIdExpirationCheckIntervalMs,
-        topicPartition, producerStateManager, new LogDirFailureChannel(10), hadCleanShutdown = false) {
-
+      val localLog = new LocalLog(logDir, logConfig, recoveryPoint, mockTime.scheduler, mockTime, topicPartition, logDirFailureChannel) {
         override def addSegment(segment: LogSegment): LogSegment = {
           val wrapper = new LogSegment(segment.log, segment.lazyOffsetIndex, segment.lazyTimeIndex, segment.txnIndex, segment.baseOffset,
             segment.indexIntervalBytes, segment.rollJitterMs, mockTime) {
@@ -1045,6 +1044,11 @@ class LogTest {
           super.addSegment(wrapper)
         }
       }
+
+      new Log(localLog,
+        logConfig, logStartOffset = 0, mockTime.scheduler,
+        brokerTopicStats, mockTime, maxProducerIdExpirationMs, LogManager.ProducerIdExpirationCheckIntervalMs,
+        topicPartition, producerStateManager, logDirFailureChannel, hadCleanShutdown = false)
     }
 
     // Retain snapshots for the last 2 segments
@@ -1116,18 +1120,20 @@ class LogTest {
     EasyMock.replay(stateManager)
 
     val config = LogConfig(new Properties())
-    val log = new Log(logDir,
+    val logDirFailureChannel = new LogDirFailureChannel(1)
+    val topicPartition = Log.parseTopicPartitionName(logDir)
+    val log = new Log(
+      new LocalLog(logDir, config, 0L, mockTime.scheduler, mockTime, topicPartition, logDirFailureChannel),
       config,
       logStartOffset = 0L,
-      recoveryPoint = 0L,
       scheduler = mockTime.scheduler,
       brokerTopicStats = brokerTopicStats,
       time = mockTime,
       maxProducerIdExpirationMs = 300000,
       producerIdExpirationCheckIntervalMs = 30000,
-      topicPartition = Log.parseTopicPartitionName(logDir),
+      topicPartition,
       producerStateManager = stateManager,
-      logDirFailureChannel = new LogDirFailureChannel(1),
+      logDirFailureChannel,
       hadCleanShutdown = false)
 
     EasyMock.verify(stateManager)
@@ -1195,16 +1201,16 @@ class LogTest {
     val logProps = new Properties()
     logProps.put(LogConfig.MessageFormatVersionProp, "0.10.2")
     val config = LogConfig(logProps)
-    new Log(logDir,
+    val topicPartition = Log.parseTopicPartitionName(logDir)
+    new Log(new LocalLog(logDir, config, 0L, mockTime.scheduler, mockTime, topicPartition, null),
       config,
       logStartOffset = 0L,
-      recoveryPoint = 0L,
       scheduler = mockTime.scheduler,
       brokerTopicStats = brokerTopicStats,
       time = mockTime,
       maxProducerIdExpirationMs = 300000,
       producerIdExpirationCheckIntervalMs = 30000,
-      topicPartition = Log.parseTopicPartitionName(logDir),
+      topicPartition,
       producerStateManager = stateManager,
       logDirFailureChannel = null)
 
@@ -1233,10 +1239,10 @@ class LogTest {
     val logProps = new Properties()
     logProps.put(LogConfig.MessageFormatVersionProp, "0.10.2")
     val config = LogConfig(logProps)
-    new Log(logDir,
+    val topicPartition = Log.parseTopicPartitionName(logDir)
+    new Log(new LocalLog(logDir, config, 0L, mockTime.scheduler, mockTime, topicPartition, null),
       config,
       logStartOffset = 0L,
-      recoveryPoint = 0L,
       scheduler = mockTime.scheduler,
       brokerTopicStats = brokerTopicStats,
       time = mockTime,
@@ -1273,10 +1279,10 @@ class LogTest {
     val logProps = new Properties()
     logProps.put(LogConfig.MessageFormatVersionProp, "0.11.0")
     val config = LogConfig(logProps)
-    new Log(logDir,
+    val topicPartition = Log.parseTopicPartitionName(logDir)
+    new Log(new LocalLog(logDir, config, 0L, mockTime.scheduler, mockTime, topicPartition, null),
       config,
       logStartOffset = 0L,
-      recoveryPoint = 0L,
       scheduler = mockTime.scheduler,
       brokerTopicStats = brokerTopicStats,
       time = mockTime,
@@ -2591,7 +2597,7 @@ class LogTest {
     val numMessages = 200
     val logConfig = LogTest.createLogConfig(segmentBytes = 200, indexIntervalBytes = 1)
     var log = createLog(logDir, logConfig)
-    for (i <- 0 until numMessages)
+    for(i <- 0 until numMessages)
       log.appendAsLeader(TestUtils.singletonRecords(value = TestUtils.randomBytes(10), timestamp = mockTime.milliseconds + i * 10), leaderEpoch = 0)
     val indexFiles = log.logSegments.map(_.lazyOffsetIndex.file)
     val timeIndexFiles = log.logSegments.map(_.lazyTimeIndex.file)
@@ -2606,7 +2612,7 @@ class LogTest {
     assertEquals(numMessages, log.logEndOffset, "Should have %d messages when log is reopened".format(numMessages))
     assertTrue(log.logSegments.head.offsetIndex.entries > 0, "The index should have been rebuilt")
     assertTrue(log.logSegments.head.timeIndex.entries > 0, "The time index should have been rebuilt")
-    for (i <- 0 until numMessages) {
+    for(i <- 0 until numMessages) {
       assertEquals(i, readLog(log, i, 100).records.batches.iterator.next().lastOffset)
       if (i == 0)
         assertEquals(log.logSegments.head.baseOffset, log.fetchOffsetByTimestamp(mockTime.milliseconds + i * 10).get.offset)
@@ -2614,32 +2620,6 @@ class LogTest {
         assertEquals(i, log.fetchOffsetByTimestamp(mockTime.milliseconds + i * 10).get.offset)
     }
     log.close()
-  }
-
-  @Test
-  def testMissingIndexWithCorruptedFlushedSegmentThrows(): Unit = {
-    // publish the messages and close the log
-    val numMessages = 200
-    val logConfig = LogTest.createLogConfig(segmentBytes = 200, indexIntervalBytes = 1)
-    val log = createLog(logDir, logConfig)
-    for (i <- 0 until numMessages)
-      log.appendAsLeader(TestUtils.singletonRecords(value = TestUtils.randomBytes(10), timestamp = mockTime.milliseconds + i * 10), leaderEpoch = 0)
-    log.flush(log.logEndOffset)
-    val recoveryPoint = log.recoveryPoint
-    val segment = log.logSegments.take(2).last
-    val segmentFile = segment.log.file
-    val indexFile = segment.lazyOffsetIndex.file
-    log.close()
-
-    // write garbage to the segment file and delete corresponding index
-    val bw = new BufferedWriter(new FileWriter(segmentFile))
-    bw.write("corruptRecord")
-    bw.close()
-    indexFile.delete()
-
-    // reopening the log should now fail, regardless of whether the shutdown was clean or not
-    assertThrows(classOf[KafkaStorageException], () => createLog(logDir, logConfig, recoveryPoint = recoveryPoint))
-    assertThrows(classOf[KafkaStorageException], () => createLog(logDir, logConfig, recoveryPoint = recoveryPoint, lastShutdownClean = false))
   }
 
   @Test

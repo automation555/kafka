@@ -96,17 +96,19 @@ class LogCleanerManagerTest extends Logging {
     val tpDir = new File(logDir, "A-1")
 
     // the exception should be catched and the partition that caused it marked as uncleanable
-    class LogMock(dir: File, config: LogConfig) extends Log(dir, config, 0L, 0L,
+    class LogMock(dir: File, config: LogConfig, logDirFailureChannel: LogDirFailureChannel) extends Log(
+      new LocalLog(dir, config, 0L, time.scheduler, time, topicPartition, logDirFailureChannel),
+      config, 0L,
       time.scheduler, new BrokerTopicStats, time, 60 * 60 * 1000, LogManager.ProducerIdExpirationCheckIntervalMs,
-      topicPartition, new ProducerStateManager(tp, tpDir, 60 * 60 * 1000),
-      new LogDirFailureChannel(10), topicId = None, keepPartitionMetadataFile = true) {
+      topicPartition, new ProducerStateManager(tp, tpDir, 60 * 60 * 1000), logDirFailureChannel: LogDirFailureChannel) {
 
       // Throw an error in getFirstBatchTimestampForSegments since it is called in grabFilthiestLog()
       override def getFirstBatchTimestampForSegments(segments: Iterable[LogSegment]): Iterable[Long] =
         throw new IllegalStateException("Error!")
     }
 
-    val log: Log = new LogMock(tpDir, createLowRetentionLogConfig(logSegmentSize, LogConfig.Compact))
+    val logDirFailureChannel = new LogDirFailureChannel(10)
+    val log: Log = new LogMock(tpDir, createLowRetentionLogConfig(logSegmentSize, LogConfig.Compact), logDirFailureChannel)
     writeRecords(log = log,
       numBatches = logSegmentsCount * 2,
       recordsPerBatch = 10,
@@ -756,9 +758,7 @@ class LogCleanerManagerTest extends Logging {
       brokerTopicStats = new BrokerTopicStats,
       maxProducerIdExpirationMs = 60 * 60 * 1000,
       producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
-      logDirFailureChannel = new LogDirFailureChannel(10),
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      logDirFailureChannel = new LogDirFailureChannel(10))
   }
 
   private def createLowRetentionLogConfig(segmentSize: Int, cleanupPolicy: String): LogConfig = {
@@ -802,7 +802,7 @@ class LogCleanerManagerTest extends Logging {
     Log(dir = dir, config = config, logStartOffset = 0L, recoveryPoint = 0L, scheduler = time.scheduler,
       time = time, brokerTopicStats = new BrokerTopicStats, maxProducerIdExpirationMs = 60 * 60 * 1000,
       producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
-      logDirFailureChannel = new LogDirFailureChannel(10), topicId = None, keepPartitionMetadataFile = true)
+      logDirFailureChannel = new LogDirFailureChannel(10))
 
   private def records(key: Int, value: Int, timestamp: Long) =
     MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord(timestamp, key.toString.getBytes, value.toString.getBytes))

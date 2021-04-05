@@ -28,7 +28,6 @@ import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.utils.CoreUtils._
 import kafka.utils.{Logging, Pool}
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.KafkaStorageException
 
@@ -67,7 +66,7 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
 
   protected override def loggerName = classOf[LogCleaner].getName
 
-  @VisibleForTesting
+  // package-private for testing
   private[log] val offsetCheckpointFile = "cleaner-offset-checkpoint"
 
   /* the offset checkpoints holding the last cleaned point for each log */
@@ -488,8 +487,8 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
 
   /**
    * Returns an immutable set of the uncleanable partitions for a given log directory
+   * Only used for testing
    */
-  @VisibleForTesting
   private[log] def uncleanablePartitions(logDir: String): Set[TopicPartition] = {
     var partitions: Set[TopicPartition] = Set()
     inLock(lock) { partitions ++= uncleanablePartitions.getOrElse(logDir, partitions) }
@@ -601,6 +600,9 @@ private[log] object LogCleanerManager extends Logging {
 
       // the active segment is always uncleanable
       Option(log.activeSegment.baseOffset),
+
+      // we do not want to clean past the high watermark
+      Option(log.highWatermark),
 
       // the first segment whose largest message timestamp is within a minimum time lag from now
       if (minCompactionLagMs > 0) {

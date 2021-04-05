@@ -1,6 +1,6 @@
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements. See the NOTICE file distributed with!!!
+ * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
@@ -26,8 +26,8 @@ import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.TopicPartition
 import kafka.utils.{ShutdownableThread, TestUtils}
 import kafka.server.{BaseRequestTest, KafkaConfig}
-import org.junit.Assert._
-import org.junit.Before
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.BeforeEach
 
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.{ArrayBuffer, Buffer}
@@ -73,7 +73,7 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
     properties.setProperty(KafkaConfig.GroupInitialRebalanceDelayMsProp, "10")
   }
 
-  @Before
+  @BeforeEach
   override def setUp(): Unit = {
     super.setUp()
 
@@ -103,9 +103,23 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
   }
 
   protected def sendRecords(producer: KafkaProducer[Array[Byte], Array[Byte]], numRecords: Int,
-                            tp: TopicPartition): Seq[ProducerRecord[Array[Byte], Array[Byte]]] = {
+                            tp: TopicPartition,
+                            startingTimestamp: Long = System.currentTimeMillis()): Seq[ProducerRecord[Array[Byte], Array[Byte]]] = {
     val records = (0 until numRecords).map { i =>
-      val record = new ProducerRecord(tp.topic(), tp.partition(), i.toLong, s"key $i".getBytes, s"value $i".getBytes)
+      val timestamp = startingTimestamp + i.toLong
+      val record = new ProducerRecord(tp.topic(), tp.partition(), timestamp, s"key $i".getBytes, s"value $i".getBytes)
+      producer.send(record)
+      record
+    }
+    producer.flush()
+
+    records
+  }
+
+  protected def sendDuplicateRecords(producer: KafkaProducer[Array[Byte], Array[Byte]], numRecords: Int,
+                                     timestampOffset: Long, tp: TopicPartition): Seq[ProducerRecord[Array[Byte], Array[Byte]]] = {
+    val records = (0 until numRecords).map { i =>
+      val record = new ProducerRecord(tp.topic(), tp.partition(), i.toLong + timestampOffset, s"key".getBytes, s"value: $i".getBytes)
       producer.send(record)
       record
     }
@@ -134,8 +148,8 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
         val timestamp = startingTimestamp + i
         assertEquals(timestamp.toLong, record.timestamp)
       } else
-        assertTrue(s"Got unexpected timestamp ${record.timestamp}. Timestamp should be between [$startingTimestamp, $now}]",
-          record.timestamp >= startingTimestamp && record.timestamp <= now)
+        assertTrue(record.timestamp >= startingTimestamp && record.timestamp <= now,
+          s"Got unexpected timestamp ${record.timestamp}. Timestamp should be between [$startingTimestamp, $now}]")
       assertEquals(offset.toLong, record.offset)
       val keyAndValueIndex = startingKeyAndValueIndex + i
       assertEquals(s"key $keyAndValueIndex", new String(record.key))
@@ -150,32 +164,8 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
                                      numRecords: Int,
                                      maxPollRecords: Int = Int.MaxValue): ArrayBuffer[ConsumerRecord[K, V]] = {
     val records = new ArrayBuffer[ConsumerRecord[K, V]]
-//    val topics = Seq("topic1", "topic2", "topic3")
-
-//    val partitions = topics.flatMap { topic =>
-//      (0 until 30).map(new TopicPartition(topic, _))
-//    }
-
     def pollAction(polledRecords: ConsumerRecords[K, V]): Boolean = {
       assertTrue(polledRecords.asScala.size <= maxPollRecords)
-      if (polledRecords.count() > 0) {
-//        System.err.println("!!! r.cou:" + polledRecords.count())
-
-//        partitions.foreach(partition => {
-//          try {
-//            val pos = consumer.position(partition)
-//            if (pos > 0) {
-//              System.err.print(" p:" + partition)
-//            }
-//          } catch {
-//            case e: Throwable =>
-//          }
-//        })
-
-//        polledRecords.records("topic1").forEach(r => println("!!! t1:" + r.partition()))
-//        polledRecords.records("topic2").forEach(r => println("!!! t2:" + r.partition()))
-//        polledRecords.records("topic3").forEach(r => println("!!! t3:" + r.partition()))
-      }
       records ++= polledRecords.asScala
       records.size >= numRecords
     }
@@ -248,7 +238,7 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
 
   /**
     * Create 'numOfConsumersToAdd' consumers add then to the consumer group 'consumerGroup', and create corresponding
-    * pollers for these consumers..
+    * pollers for these consumers.
     *
     *
     * @param numOfConsumersToAdd number of consumers to create and add to the consumer group

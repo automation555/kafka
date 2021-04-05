@@ -19,12 +19,11 @@ package kafka.coordinator.transaction
 
 import java.util
 import java.util.concurrent.{BlockingQueue, ConcurrentHashMap, LinkedBlockingQueue}
-import kafka.api.KAFKA_2_8_IV0
+
 import kafka.common.{InterBrokerSendThread, RequestAndCompletionHandler}
 import kafka.metrics.KafkaMetricsGroup
-import kafka.server.{KafkaConfig, MetadataCache, RequestLocal}
-import kafka.utils.Implicits._
-import kafka.utils.{CoreUtils, Logging}
+import kafka.server.{KafkaConfig, MetadataCache}
+import kafka.utils.{CoreUtils, Logging, ToolsUtils}
 import org.apache.kafka.clients._
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network._
@@ -32,11 +31,11 @@ import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.WriteTxnMarkersRequest.TxnMarkerEntry
 import org.apache.kafka.common.requests.{TransactionResult, WriteTxnMarkersRequest}
 import org.apache.kafka.common.security.JaasContext
-import org.apache.kafka.common.utils.{BufferSupplier, LogContext, Time}
+import org.apache.kafka.common.utils.{LogContext, Time}
 import org.apache.kafka.common.{Node, Reconfigurable, TopicPartition}
 
-import scala.collection.{concurrent, immutable}
 import scala.jdk.CollectionConverters._
+import scala.collection.{concurrent, immutable}
 
 object TransactionMarkerChannelManager {
   def apply(config: KafkaConfig,
@@ -80,8 +79,7 @@ object TransactionMarkerChannelManager {
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       config.socketReceiveBufferBytes,
       config.requestTimeoutMs,
-      config.connectionSetupTimeoutMs,
-      config.connectionSetupTimeoutMaxMs,
+      ClientDnsLookup.DEFAULT,
       time,
       false,
       new ApiVersions,
@@ -115,7 +113,7 @@ class TxnMarkerQueue(@volatile var destination: Node) {
   }
 
   def forEachTxnTopicPartition[B](f:(Int, BlockingQueue[TxnIdAndMarkerEntry]) => B): Unit =
-    markersPerTxnTopicPartition.forKeyValue { (partition, queue) =>
+    markersPerTxnTopicPartition.foreach { case (partition, queue) =>
       if (!queue.isEmpty) f(partition, queue)
     }
 
@@ -125,14 +123,11 @@ class TxnMarkerQueue(@volatile var destination: Node) {
   def totalNumMarkers(txnTopicPartition: Int): Int = markersPerTxnTopicPartition.get(txnTopicPartition).fold(0)(_.size)
 }
 
-class TransactionMarkerChannelManager(
-  config: KafkaConfig,
-  metadataCache: MetadataCache,
-  networkClient: NetworkClient,
-  txnStateManager: TransactionStateManager,
-  time: Time
-) extends InterBrokerSendThread("TxnMarkerSenderThread-" + config.brokerId, networkClient, config.requestTimeoutMs, time)
-  with Logging with KafkaMetricsGroup {
+class TransactionMarkerChannelManager(config: KafkaConfig,
+                                      metadataCache: MetadataCache,
+                                      networkClient: NetworkClient,
+                                      txnStateManager: TransactionStateManager,
+                                      time: Time) extends InterBrokerSendThread("TxnMarkerSenderThread-" + config.brokerId, networkClient, time) with Logging with KafkaMetricsGroup {
 
   this.logIdent = "[Transaction Marker Channel Manager " + config.brokerId + "]: "
 
@@ -146,12 +141,12 @@ class TransactionMarkerChannelManager(
 
   private val transactionsWithPendingMarkers = new ConcurrentHashMap[String, PendingCompleteTxn]
 
-  val writeTxnMarkersRequestVersion: Short =
-    if (config.interBrokerProtocolVersion >= KAFKA_2_8_IV0) 1
-    else 0
+  override val requestTimeoutMs: Int = config.requestTimeoutMs
 
   newGauge("UnknownDestinationQueueSize", () => markersQueueForUnknownBroker.totalNumMarkers)
   newGauge("LogAppendRetryQueueSize", () => txnLogAppendRetryQueue.size)
+
+  override def generateRequests() = drainQueuedTransactionMarkers()
 
   override def shutdown(): Unit = {
     super.shutdown()
@@ -188,7 +183,7 @@ class TransactionMarkerChannelManager(
     }
   }
 
-  override def generateRequests(): Iterable[RequestAndCompletionHandler] = {
+  private[transaction] def drainQueuedTransactionMarkers(): Iterable[RequestAndCompletionHandler] = {
     retryLogAppends()
     val txnIdAndMarkerEntries: java.util.List[TxnIdAndMarkerEntry] = new util.ArrayList[TxnIdAndMarkerEntry]()
     markersQueueForUnknownBroker.forEachTxnTopicPartition { case (_, queue) =>
@@ -206,7 +201,6 @@ class TransactionMarkerChannelManager(
       addTxnMarkersToBrokerQueue(transactionalId, producerId, producerEpoch, txnResult, coordinatorEpoch, topicPartitions)
     }
 
-    val currentTimeMs = time.milliseconds()
     markersQueuePerBroker.values.map { brokerRequestQueue =>
       val txnIdAndMarkerEntries = new util.ArrayList[TxnIdAndMarkerEntry]()
       brokerRequestQueue.forEachTxnTopicPartition { case (_, queue) =>
@@ -216,22 +210,18 @@ class TransactionMarkerChannelManager(
     }.filter { case (_, entries) => !entries.isEmpty }.map { case (node, entries) =>
       val markersToSend = entries.asScala.map(_.txnMarkerEntry).asJava
       val requestCompletionHandler = new TransactionMarkerRequestCompletionHandler(node.id, txnStateManager, this, entries)
-      val request = new WriteTxnMarkersRequest.Builder(writeTxnMarkersRequestVersion, markersToSend)
-
-      RequestAndCompletionHandler(
-        currentTimeMs,
-        node,
-        request,
-        requestCompletionHandler
-      )
+      RequestAndCompletionHandler(node, new WriteTxnMarkersRequest.Builder(markersToSend), requestCompletionHandler)
     }
   }
 
-  private def writeTxnCompletion(pendingCompleteTxn: PendingCompleteTxn): Unit = {
-    val transactionalId = pendingCompleteTxn.transactionalId
-    val txnMetadata = pendingCompleteTxn.txnMetadata
-    val newMetadata = pendingCompleteTxn.newMetadata
-    val coordinatorEpoch = pendingCompleteTxn.coordinatorEpoch
+  private def writeTxnCompletion(pendingCommitTxn: PendingCompleteTxn): Unit = {
+    transactionsWithPendingMarkers.remove(pendingCommitTxn.transactionalId)
+
+    val transactionalId = pendingCommitTxn.transactionalId
+    val txnMetadata = pendingCommitTxn.txnMetadata
+    val newMetadata = pendingCommitTxn.newMetadata
+    val coordinatorEpoch = pendingCommitTxn.coordinatorEpoch
+    val respCallbackOpt = pendingCommitTxn.responseCallbackOpt
 
     trace(s"Completed sending transaction markers for $transactionalId; begin transition " +
       s"to ${newMetadata.txnState}")
@@ -240,30 +230,36 @@ class TransactionMarkerChannelManager(
       case Left(Errors.NOT_COORDINATOR) =>
         info(s"No longer the coordinator for $transactionalId with coordinator epoch " +
           s"$coordinatorEpoch; cancel appending $newMetadata to transaction log")
+        ToolsUtils.maybeResonseCallback(respCallbackOpt, Errors.NOT_COORDINATOR)
 
       case Left(Errors.COORDINATOR_LOAD_IN_PROGRESS) =>
         info(s"Loading the transaction partition that contains $transactionalId while my " +
           s"current coordinator epoch is $coordinatorEpoch; so cancel appending $newMetadata to " +
           s"transaction log since the loading process will continue the remaining work")
+        ToolsUtils.maybeResonseCallback(respCallbackOpt, Errors.COORDINATOR_LOAD_IN_PROGRESS)
 
       case Left(unexpectedError) =>
+        ToolsUtils.maybeResonseCallback(respCallbackOpt, unexpectedError)
         throw new IllegalStateException(s"Unhandled error $unexpectedError when fetching current transaction state")
 
       case Right(Some(epochAndMetadata)) =>
         if (epochAndMetadata.coordinatorEpoch == coordinatorEpoch) {
           debug(s"Sending $transactionalId's transaction markers for $txnMetadata with " +
             s"coordinator epoch $coordinatorEpoch succeeded, trying to append complete transaction log now")
-          tryAppendToLog(PendingCompleteTxn(transactionalId, coordinatorEpoch, txnMetadata, newMetadata))
+
+          tryAppendToLog(PendingCompleteTxn(transactionalId, coordinatorEpoch, txnMetadata, newMetadata, respCallbackOpt))
         } else {
           info(s"The cached metadata $txnMetadata has changed to $epochAndMetadata after " +
             s"completed sending the markers with coordinator epoch $coordinatorEpoch; abort " +
             s"transiting the metadata to $newMetadata as it may have been updated by another process")
+          ToolsUtils.maybeResonseCallback(respCallbackOpt, Errors.NOT_COORDINATOR)
         }
 
       case Right(None) =>
         val errorMsg = s"The coordinator still owns the transaction partition for $transactionalId, " +
           s"but there is no metadata in the cache; this is not expected"
         fatal(errorMsg)
+        ToolsUtils.maybeResonseCallback(respCallbackOpt, Errors.UNKNOWN_SERVER_ERROR)
         throw new IllegalStateException(errorMsg)
     }
   }
@@ -271,15 +267,19 @@ class TransactionMarkerChannelManager(
   def addTxnMarkersToSend(coordinatorEpoch: Int,
                           txnResult: TransactionResult,
                           txnMetadata: TransactionMetadata,
-                          newMetadata: TxnTransitMetadata): Unit = {
+                          newMetadata: TxnTransitMetadata,
+                          responseCallbackOpt: Option[Errors => Unit] = None): Unit = {
     val transactionalId = txnMetadata.transactionalId
-    val pendingCompleteTxn = PendingCompleteTxn(
+
+    val pendingCommitTxn = PendingCompleteTxn(
       transactionalId,
       coordinatorEpoch,
       txnMetadata,
-      newMetadata)
+      newMetadata,
+      responseCallbackOpt
+    )
 
-    transactionsWithPendingMarkers.put(transactionalId, pendingCompleteTxn)
+    transactionsWithPendingMarkers.put(transactionalId, pendingCommitTxn)
     addTxnMarkersToBrokerQueue(transactionalId, txnMetadata.producerId,
       txnMetadata.producerEpoch, txnResult, coordinatorEpoch, txnMetadata.topicPartitions.toSet)
     maybeWriteTxnCompletion(transactionalId)
@@ -293,24 +293,26 @@ class TransactionMarkerChannelManager(
     }
   }
 
-  def maybeWriteTxnCompletion(transactionalId: String): Unit = {
-    Option(transactionsWithPendingMarkers.get(transactionalId)).foreach { pendingCompleteTxn =>
-      if (!hasPendingMarkersToWrite(pendingCompleteTxn.txnMetadata) &&
-          transactionsWithPendingMarkers.remove(transactionalId, pendingCompleteTxn)) {
-        writeTxnCompletion(pendingCompleteTxn)
+  private def maybeWriteTxnCompletion(transactionalId: String): Unit = {
+    Option(transactionsWithPendingMarkers.get(transactionalId)).foreach { pendingCommitTxn =>
+      if (!hasPendingMarkersToWrite(pendingCommitTxn.txnMetadata)) {
+        writeTxnCompletion(pendingCommitTxn)
       }
     }
   }
 
-  private def tryAppendToLog(txnLogAppend: PendingCompleteTxn): Unit = {
+  private def tryAppendToLog(txnLogAppend: PendingCompleteTxn) = {
     // try to append to the transaction log
-    def appendCallback(error: Errors): Unit =
+    def appendCallback(error: Errors): Unit = {
+      val responseCallbackOpt = txnLogAppend.responseCallbackOpt
       error match {
         case Errors.NONE =>
           trace(s"Completed transaction for ${txnLogAppend.transactionalId} with coordinator epoch ${txnLogAppend.coordinatorEpoch}, final state after commit: ${txnLogAppend.txnMetadata.state}")
+          ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.NONE)
 
         case Errors.NOT_COORDINATOR =>
           info(s"No longer the coordinator for transactionalId: ${txnLogAppend.transactionalId} while trying to append to transaction log, skip writing to transaction log")
+          ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.NOT_COORDINATOR)
 
         case Errors.COORDINATOR_NOT_AVAILABLE =>
           info(s"Not available to append $txnLogAppend: possible causes include ${Errors.UNKNOWN_TOPIC_OR_PARTITION}, ${Errors.NOT_ENOUGH_REPLICAS}, " +
@@ -322,15 +324,18 @@ class TransactionMarkerChannelManager(
         case Errors.COORDINATOR_LOAD_IN_PROGRESS =>
           info(s"Coordinator is loading the partition ${txnStateManager.partitionFor(txnLogAppend.transactionalId)} and hence cannot complete append of $txnLogAppend; " +
             s"skip writing to transaction log as the loading process should complete it")
+          ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.COORDINATOR_LOAD_IN_PROGRESS)
 
         case other: Errors =>
           val errorMsg = s"Unexpected error ${other.exceptionName} while appending to transaction log for ${txnLogAppend.transactionalId}"
           fatal(errorMsg)
+          ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.UNKNOWN_SERVER_ERROR)
           throw new IllegalStateException(errorMsg)
       }
+    }
 
-    txnStateManager.appendTransactionToLog(txnLogAppend.transactionalId, txnLogAppend.coordinatorEpoch,
-      txnLogAppend.newMetadata, appendCallback, _ == Errors.COORDINATOR_NOT_AVAILABLE, RequestLocal(BufferSupplier.NO_CACHING))
+    txnStateManager.appendTransactionToLog(txnLogAppend.transactionalId, txnLogAppend.coordinatorEpoch, txnLogAppend.newMetadata, appendCallback,
+      _ == Errors.COORDINATOR_NOT_AVAILABLE)
   }
 
   def addTxnMarkersToBrokerQueue(transactionalId: String,
@@ -345,10 +350,12 @@ class TransactionMarkerChannelManager(
     }
 
     for ((broker: Option[Node], topicPartitions: immutable.Set[TopicPartition]) <- partitionsByDestination) {
+      val pendingCompleteTxn = transactionsWithPendingMarkers.get(transactionalId)
+      val responseCallbackOpt = pendingCompleteTxn.responseCallbackOpt
       broker match {
         case Some(brokerNode) =>
           val marker = new TxnMarkerEntry(producerId, producerEpoch, coordinatorEpoch, result, topicPartitions.toList.asJava)
-          val txnIdAndMarker = TxnIdAndMarkerEntry(transactionalId, marker)
+          val txnIdAndMarker = TxnIdAndMarkerEntry(transactionalId, marker, responseCallbackOpt)
 
           if (brokerNode == Node.noNode) {
             // if the leader of the partition is known but node not available, put it into an unknown broker queue
@@ -363,11 +370,13 @@ class TransactionMarkerChannelManager(
             case Left(error) =>
               info(s"Encountered $error trying to fetch transaction metadata for $transactionalId with coordinator epoch $coordinatorEpoch; cancel sending markers to its partition leaders")
               transactionsWithPendingMarkers.remove(transactionalId)
+              ToolsUtils.maybeResonseCallback(responseCallbackOpt, error)
 
             case Right(Some(epochAndMetadata)) =>
               if (epochAndMetadata.coordinatorEpoch != coordinatorEpoch) {
                 info(s"The cached metadata has changed to $epochAndMetadata (old coordinator epoch is $coordinatorEpoch) since preparing to send markers; cancel sending markers to its partition leaders")
                 transactionsWithPendingMarkers.remove(transactionalId)
+                ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.NOT_COORDINATOR)
               } else {
                 // if the leader of the partition is unknown, skip sending the txn marker since
                 // the partition is likely to be deleted already
@@ -387,6 +396,7 @@ class TransactionMarkerChannelManager(
               val errorMsg = s"The coordinator still owns the transaction partition for $transactionalId, but there is " +
                 s"no metadata in the cache; this is not expected"
               fatal(errorMsg)
+              ToolsUtils.maybeResonseCallback(responseCallbackOpt, Errors.UNKNOWN_SERVER_ERROR)
               throw new IllegalStateException(errorMsg)
 
           }
@@ -413,17 +423,24 @@ class TransactionMarkerChannelManager(
   def removeMarkersForTxnId(transactionalId: String): Unit = {
     transactionsWithPendingMarkers.remove(transactionalId)
   }
+
+  def completeSendMarkersForTxnId(transactionalId: String): Unit = {
+    maybeWriteTxnCompletion(transactionalId)
+  }
 }
 
-case class TxnIdAndMarkerEntry(txnId: String, txnMarkerEntry: TxnMarkerEntry)
+case class TxnIdAndMarkerEntry(txnId: String,
+                               txnMarkerEntry: TxnMarkerEntry,
+                               responseCallbackOpt: Option[Errors => Unit] = None)
 
 case class PendingCompleteTxn(transactionalId: String,
                               coordinatorEpoch: Int,
                               txnMetadata: TransactionMetadata,
-                              newMetadata: TxnTransitMetadata) {
+                              newMetadata: TxnTransitMetadata,
+                              responseCallbackOpt: Option[Errors => Unit] = None) {
 
   override def toString: String = {
-    "PendingCompleteTxn(" +
+    "TxnLogAppend(" +
       s"transactionalId=$transactionalId, " +
       s"coordinatorEpoch=$coordinatorEpoch, " +
       s"txnMetadata=$txnMetadata, " +

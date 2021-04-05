@@ -21,7 +21,7 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.streams.state.internals.Murmur3;
+import org.apache.kafka.common.utils.Murmur3;
 import org.junit.Test;
 
 import java.util.Map;
@@ -30,7 +30,6 @@ import static java.util.Objects.requireNonNull;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThrows;
 
 public class SubscriptionResponseWrapperSerdeTest {
     private static final class NonNullableSerde<T> implements Serde<T>, Serializer<T>, Deserializer<T> {
@@ -126,11 +125,10 @@ public class SubscriptionResponseWrapperSerdeTest {
         assertEquals(foreignValue, result.getForeignValue());
     }
 
-    @Test
+    @Test(expected = UnsupportedVersionException.class)
     @SuppressWarnings("unchecked")
     public void shouldThrowExceptionWithBadVersionTest() {
         final long[] hashedValue = null;
-        assertThrows(UnsupportedVersionException.class,
-            () -> new SubscriptionResponseWrapper<>(hashedValue, "foreignValue", (byte) 0xFF));
+        new SubscriptionResponseWrapper<>(hashedValue, "foreignValue", (byte) 0xFF);
     }
 }

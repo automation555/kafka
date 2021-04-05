@@ -148,11 +148,11 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
 
         if (epochInRequestDiffFromCurrentEpoch < 0) {
           // stale broker epoch in LEADER_AND_ISR
-          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, ApiKeys.LEADER_AND_ISR, requestBuilder)
         }
         else {
           // broker epoch in LEADER_AND_ISR >= current broker epoch
-          sendAndVerifySuccessfulResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifySuccessfulResponse(controllerChannelManager, ApiKeys.LEADER_AND_ISR, requestBuilder)
           TestUtils.waitUntilLeaderIsKnown(Seq(broker2), tp, 10000)
         }
       }
@@ -179,11 +179,11 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
 
         if (epochInRequestDiffFromCurrentEpoch < 0) {
           // stale broker epoch in UPDATE_METADATA
-          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, ApiKeys.UPDATE_METADATA, requestBuilder)
         }
         else {
           // broker epoch in UPDATE_METADATA >= current broker epoch
-          sendAndVerifySuccessfulResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifySuccessfulResponse(controllerChannelManager, ApiKeys.UPDATE_METADATA, requestBuilder)
           TestUtils.waitUntilMetadataIsPropagated(Seq(broker2), tp.topic(), tp.partition(), 10000)
           assertEquals(brokerId2,
             broker2.metadataCache.getPartitionInfo(tp.topic(), tp.partition()).get.basePartitionState.leader)
@@ -199,11 +199,11 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
 
         if (epochInRequestDiffFromCurrentEpoch < 0) {
           // stale broker epoch in STOP_REPLICA
-          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager, ApiKeys.STOP_REPLICA, requestBuilder)
         }
         else {
           // broker epoch in STOP_REPLICA >= current broker epoch
-          sendAndVerifySuccessfulResponse(controllerChannelManager, requestBuilder)
+          sendAndVerifySuccessfulResponse(controllerChannelManager, ApiKeys.STOP_REPLICA, requestBuilder)
           assertTrue(broker2.replicaManager.getPartition(tp).isEmpty)
         }
       }
@@ -231,23 +231,22 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
     }, "Broker epoch mismatches")
   }
 
-  private def sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager: ControllerChannelManager,
-                                                      builder: AbstractControlRequest.Builder[_ <: AbstractControlRequest]): Unit = {
+  private def sendAndVerifyStaleBrokerEpochInResponse(controllerChannelManager: ControllerChannelManager, apiKeys: ApiKeys,
+                                               builder: AbstractControlRequest.Builder[_ <: AbstractControlRequest]): Unit = {
     var staleBrokerEpochDetected = false
-    controllerChannelManager.sendRequest(brokerId2, builder, response => {
-      staleBrokerEpochDetected = response.errorCounts().containsKey(Errors.STALE_BROKER_EPOCH)
-    })
+    controllerChannelManager.sendRequest(brokerId2, apiKeys, builder,
+      response => {staleBrokerEpochDetected = response.errorCounts().containsKey(Errors.STALE_BROKER_EPOCH)})
     TestUtils.waitUntilTrue(() => staleBrokerEpochDetected, "Broker epoch should be stale")
     assertTrue("Stale broker epoch not detected by the broker", staleBrokerEpochDetected)
   }
 
-  private def sendAndVerifySuccessfulResponse(controllerChannelManager: ControllerChannelManager,
+  private def sendAndVerifySuccessfulResponse(controllerChannelManager: ControllerChannelManager, apiKeys: ApiKeys,
                                               builder: AbstractControlRequest.Builder[_ <: AbstractControlRequest]): Unit = {
     @volatile var succeed = false
-    controllerChannelManager.sendRequest(brokerId2, builder, response => {
+    controllerChannelManager.sendRequest(brokerId2, apiKeys, builder,
+      response => {
         succeed = response.errorCounts().isEmpty ||
-          (response.errorCounts().containsKey(Errors.NONE) && response.errorCounts().size() == 1)
-    })
+          (response.errorCounts().containsKey(Errors.NONE) && response.errorCounts().size() == 1)})
     TestUtils.waitUntilTrue(() => succeed, "Should receive response with no errors")
   }
 }

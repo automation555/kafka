@@ -61,9 +61,11 @@ import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.util.Callback;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.SinkUtils;
-
 import org.slf4j.Logger;
 
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -88,16 +90,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
 
 import static org.apache.kafka.connect.runtime.WorkerConfig.TOPIC_TRACKING_ENABLE_CONFIG;
 import static org.apache.kafka.connect.runtime.distributed.ConnectProtocol.CONNECT_PROTOCOL_V0;
 import static org.apache.kafka.connect.runtime.distributed.ConnectProtocolCompatibility.EAGER;
 import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V1;
 import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V2;
-
-import jakarta.ws.rs.core.Response;
 
 /**
  * <p>
@@ -365,16 +363,10 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         if (checkForKeyRotation(now)) {
             log.debug("Distributing new session key");
             keyExpiration = Long.MAX_VALUE;
-            try {
-                configBackingStore.putSessionKey(new SessionKey(
-                    keyGenerator.generateKey(),
-                    now
-                ));
-            } catch (Exception e) {
-                log.info("Failed to write new session key to config topic; forcing a read to the end of the config topic before possibly retrying");
-                canReadConfigs = false;
-                return;
-            }
+            configBackingStore.putSessionKey(new SessionKey(
+                keyGenerator.generateKey(),
+                now
+            ));
         }
 
         // Process any external requests
@@ -410,7 +402,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             log.debug("Scheduled rebalance at: {} (now: {} nextRequestTimeoutMs: {}) ",
                     scheduledRebalance, now, nextRequestTimeoutMs);
         }
-        if (internalRequestValidationEnabled() && keyExpiration < Long.MAX_VALUE) {
+        if (isLeader() && internalRequestValidationEnabled() && keyExpiration < Long.MAX_VALUE) {
             nextRequestTimeoutMs = Math.min(nextRequestTimeoutMs, Math.max(keyExpiration - now, 0));
             log.debug("Scheduled next key rotation at: {} (now: {} nextRequestTimeoutMs: {}) ",
                     keyExpiration, now, nextRequestTimeoutMs);
@@ -1181,11 +1173,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
      * @return true if successful, false if timed out
      */
     private boolean readConfigToEnd(long timeoutMs) {
-        if (configState.offset() < assignment.offset()) {
-            log.info("Current config state offset {} is behind group assignment {}, reading to end of config log", configState.offset(), assignment.offset());
-        } else {
-            log.info("Reading to end of config log; current config state offset: {}", configState.offset());
-        }
+        log.info("Current config state offset {} is behind group assignment {}, reading to end of config log", configState.offset(), assignment.offset());
         try {
             configBackingStore.refresh(timeoutMs, TimeUnit.MILLISECONDS);
             configState = configBackingStore.snapshot();
@@ -1585,10 +1573,11 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
             synchronized (DistributedHerder.this) {
                 DistributedHerder.this.sessionKey = sessionKey.key();
-                // Track the expiration of the key if and only if this worker is the leader
+                // Track the expiration of the key.
                 // Followers will receive rotated keys from the leader and won't be responsible for
-                // tracking expiration and distributing new keys themselves
-                if (isLeader() && keyRotationIntervalMs > 0) {
+                // tracking expiration and distributing new keys themselves, but may become leaders
+                // later on and will need to know when to update the key.
+                if (keyRotationIntervalMs > 0) {
                     DistributedHerder.this.keyExpiration = sessionKey.creationTimestamp() + keyRotationIntervalMs;
                 }
             }

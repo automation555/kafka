@@ -29,7 +29,7 @@
     <suppress id="dontUseSystemExit"
               files="Exit.java"/>
     <suppress checks="ClassFanOutComplexity"
-              files="(Fetcher|Sender|SenderTest|ConsumerCoordinator|KafkaConsumer|KafkaProducer|Utils|TransactionManager|TransactionManagerTest|KafkaAdminClient|NetworkClient|Admin|KafkaRaftClient|KafkaRaftClientTest|RaftClientTestContext|StreamThread).java"/>
+              files="(Fetcher|Sender|SenderTest|ConsumerCoordinator|KafkaConsumer|KafkaProducer|Utils|TransactionManager|TransactionManagerTest|KafkaAdminClient|NetworkClient|Admin|KafkaRaftClient|KafkaRaftClientTest|RaftClientTestContext).java"/>
     <suppress checks="ClassFanOutComplexity"
               files="(SaslServerAuthenticator|SaslAuthenticatorTest).java"/>
     <suppress checks="ClassFanOutComplexity"
@@ -101,7 +101,10 @@
               files="RequestResponseTest.java|FetcherTest.java|KafkaAdminClientTest.java"/>
 
     <suppress checks="NPathComplexity"
-              files="MemoryRecordsTest|MetricsTest|RequestResponseTest|TestSslUtils|AclAuthorizerBenchmark"/>
+              files="MemoryRecordsTest|MetricsTest|RequestResponseTest|TestSslUtils|AclAuthorizerBenchmark|MockConsumer"/>
+
+    <suppress checks="CyclomaticComplexity"
+              files="MockConsumer"/>
 
     <suppress checks="(WhitespaceAround|LocalVariableName|ImportControl|AvoidStarImport)"
               files="Murmur3Test.java"/>
@@ -146,6 +149,9 @@
 
     <suppress checks="MethodLength"
               files="(RequestResponse|WorkerSinkTask)Test.java"/>
+
+    <suppress checks="JavaNCSS"
+              files="DistributedHerderTest.java"/>
 
     <!-- Streams -->
     <suppress checks="ClassFanOutComplexity"
@@ -265,7 +271,7 @@
 
     <!-- metadata -->
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(ReplicationControlManager|ReplicationControlManagerTest).java"/>
+              files="(ReplicationControlManager).java"/>
     <suppress checks="ClassFanOutComplexity"
               files="(QuorumController|ReplicationControlManager).java"/>
     <suppress checks="CyclomaticComplexity"

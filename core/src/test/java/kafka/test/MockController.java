@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test;
 
 import org.apache.kafka.clients.admin.AlterConfigOp;
@@ -26,9 +25,7 @@ import org.apache.kafka.common.message.AlterIsrResponseData;
 import org.apache.kafka.common.message.BrokerHeartbeatRequestData;
 import org.apache.kafka.common.message.BrokerRegistrationRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
-import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
-import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult;
 import org.apache.kafka.common.message.ElectLeadersRequestData;
 import org.apache.kafka.common.message.ElectLeadersResponseData;
 import org.apache.kafka.common.protocol.Errors;
@@ -45,14 +42,10 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicLong;
-
 
 public class MockController implements Controller {
-    private final static NotControllerException NOT_CONTROLLER_EXCEPTION =
-        new NotControllerException("This is not the correct controller for this cluster.");
-
-    private final AtomicLong nextTopicId = new AtomicLong(1);
+    private final static NotControllerException NOT_CONTROLLER_EXCEPTION = new NotControllerException(
+        "This is not the correct controller for this cluster.");
 
     public static class Builder {
         private final Map<String, MockTopic> initialTopics = new HashMap<>();
@@ -65,6 +58,7 @@ public class MockController implements Controller {
         public MockController build() {
             return new MockController(initialTopics.values());
         }
+
     }
 
     private volatile boolean active = true;
@@ -82,28 +76,8 @@ public class MockController implements Controller {
     }
 
     @Override
-    synchronized public CompletableFuture<CreateTopicsResponseData>
-            createTopics(CreateTopicsRequestData request) {
-        CreateTopicsResponseData response = new CreateTopicsResponseData();
-        for (CreatableTopic topic : request.topics()) {
-            if (topics.containsKey(topic.name())) {
-                response.topics().add(new CreatableTopicResult().
-                    setName(topic.name()).
-                    setErrorCode(Errors.TOPIC_ALREADY_EXISTS.code()));
-            } else {
-                long topicId = nextTopicId.getAndAdd(1);
-                Uuid topicUuid = new Uuid(0, topicId);
-                topicNameToId.put(topic.name(), topicUuid);
-                topics.put(topicUuid, new MockTopic(topic.name(), topicUuid));
-                response.topics().add(new CreatableTopicResult().
-                    setName(topic.name()).
-                    setErrorCode(Errors.NONE.code()).
-                    setTopicId(topicUuid));
-                // For a better mock, we might want to return configs, replication
-                // factor, etc.
-            }
-        }
-        return CompletableFuture.completedFuture(response);
+    public CompletableFuture<CreateTopicsResponseData> createTopics(CreateTopicsRequestData request) {
+        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -119,6 +93,7 @@ public class MockController implements Controller {
             this.name = name;
             this.id = id;
         }
+
     }
 
     private final Map<String, Uuid> topicNameToId = new HashMap<>();
@@ -126,8 +101,8 @@ public class MockController implements Controller {
     private final Map<Uuid, MockTopic> topics = new HashMap<>();
 
     @Override
-    synchronized public CompletableFuture<Map<String, ResultOrError<Uuid>>>
-            findTopicIds(Collection<String> topicNames) {
+    synchronized public CompletableFuture<Map<String, ResultOrError<Uuid>>> findTopicIds(
+                                                                                         Collection<String> topicNames) {
         Map<String, ResultOrError<Uuid>> results = new HashMap<>();
         for (String topicName : topicNames) {
             if (!topicNameToId.containsKey(topicName)) {
@@ -140,8 +115,8 @@ public class MockController implements Controller {
     }
 
     @Override
-    synchronized public CompletableFuture<Map<Uuid, ResultOrError<String>>>
-            findTopicNames(Collection<Uuid> topicIds) {
+    synchronized public CompletableFuture<Map<Uuid, ResultOrError<String>>> findTopicNames(
+                                                                                           Collection<Uuid> topicIds) {
         Map<Uuid, ResultOrError<String>> results = new HashMap<>();
         for (Uuid topicId : topicIds) {
             MockTopic topic = topics.get(topicId);
@@ -155,8 +130,7 @@ public class MockController implements Controller {
     }
 
     @Override
-    synchronized public CompletableFuture<Map<Uuid, ApiError>>
-            deleteTopics(Collection<Uuid> topicIds) {
+    synchronized public CompletableFuture<Map<Uuid, ApiError>> deleteTopics(Collection<Uuid> topicIds) {
         if (!active) {
             CompletableFuture<Map<Uuid, ApiError>> future = new CompletableFuture<>();
             future.completeExceptionally(NOT_CONTROLLER_EXCEPTION);
@@ -176,7 +150,8 @@ public class MockController implements Controller {
     }
 
     @Override
-    public CompletableFuture<Map<ConfigResource, ResultOrError<Map<String, String>>>> describeConfigs(Map<ConfigResource, Collection<String>> resources) {
+    public CompletableFuture<Map<ConfigResource, ResultOrError<Map<String, String>>>> describeConfigs(
+                                                                                                      Map<ConfigResource, Collection<String>> resources) {
         throw new UnsupportedOperationException();
     }
 
@@ -192,26 +167,25 @@ public class MockController implements Controller {
 
     @Override
     public CompletableFuture<Map<ConfigResource, ApiError>> incrementalAlterConfigs(
-            Map<ConfigResource, Map<String, Map.Entry<AlterConfigOp.OpType, String>>> configChanges,
-            boolean validateOnly) {
+                                                                                    Map<ConfigResource, Map<String, Map.Entry<AlterConfigOp.OpType, String>>> configChanges,
+                                                                                    boolean validateOnly) {
         throw new UnsupportedOperationException();
     }
 
     @Override
     public CompletableFuture<Map<ConfigResource, ApiError>> legacyAlterConfigs(
-            Map<ConfigResource, Map<String, String>> newConfigs, boolean validateOnly) {
+                                                                               Map<ConfigResource, Map<String, String>> newConfigs,
+                                                                               boolean validateOnly) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public CompletableFuture<BrokerHeartbeatReply>
-            processBrokerHeartbeat(BrokerHeartbeatRequestData request) {
+    public CompletableFuture<BrokerHeartbeatReply> processBrokerHeartbeat(BrokerHeartbeatRequestData request) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public CompletableFuture<BrokerRegistrationReply>
-            registerBroker(BrokerRegistrationRequestData request) {
+    public CompletableFuture<BrokerRegistrationReply> registerBroker(BrokerRegistrationRequestData request) {
         throw new UnsupportedOperationException();
     }
 
@@ -221,8 +195,9 @@ public class MockController implements Controller {
     }
 
     @Override
-    public CompletableFuture<Map<ClientQuotaEntity, ApiError>>
-            alterClientQuotas(Collection<ClientQuotaAlteration> quotaAlterations, boolean validateOnly) {
+    public CompletableFuture<Map<ClientQuotaEntity, ApiError>> alterClientQuotas(
+                                                                                 Collection<ClientQuotaAlteration> quotaAlterations,
+                                                                                 boolean validateOnly) {
         throw new UnsupportedOperationException();
     }
 
@@ -244,4 +219,5 @@ public class MockController implements Controller {
     public void close() {
         beginShutdown();
     }
+
 }

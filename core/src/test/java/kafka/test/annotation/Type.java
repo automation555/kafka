@@ -14,12 +14,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test.annotation;
 
 import kafka.test.ClusterConfig;
 import kafka.test.junit.RaftClusterInvocationContext;
 import kafka.test.junit.ZkClusterInvocationContext;
+
 import org.junit.jupiter.api.extension.TestTemplateInvocationContext;
 
 import java.util.function.Consumer;
@@ -30,29 +30,39 @@ import java.util.function.Consumer;
 public enum Type {
     RAFT {
         @Override
-        public void invocationContexts(ClusterConfig config, Consumer<TestTemplateInvocationContext> invocationConsumer) {
+        public void invocationContexts(ClusterConfig config,
+                                       Consumer<TestTemplateInvocationContext> invocationConsumer) {
             invocationConsumer.accept(new RaftClusterInvocationContext(config.copyOf()));
         }
+
     },
     ZK {
         @Override
-        public void invocationContexts(ClusterConfig config, Consumer<TestTemplateInvocationContext> invocationConsumer) {
+        public void invocationContexts(ClusterConfig config,
+                                       Consumer<TestTemplateInvocationContext> invocationConsumer) {
             invocationConsumer.accept(new ZkClusterInvocationContext(config.copyOf()));
         }
+
     },
     BOTH {
         @Override
-        public void invocationContexts(ClusterConfig config, Consumer<TestTemplateInvocationContext> invocationConsumer) {
+        public void invocationContexts(ClusterConfig config,
+                                       Consumer<TestTemplateInvocationContext> invocationConsumer) {
             invocationConsumer.accept(new RaftClusterInvocationContext(config.copyOf()));
             invocationConsumer.accept(new ZkClusterInvocationContext(config.copyOf()));
         }
+
     },
     DEFAULT {
         @Override
-        public void invocationContexts(ClusterConfig config, Consumer<TestTemplateInvocationContext> invocationConsumer) {
+        public void invocationContexts(ClusterConfig config,
+                                       Consumer<TestTemplateInvocationContext> invocationConsumer) {
             throw new UnsupportedOperationException("Cannot create invocation contexts for DEFAULT type");
         }
+
     };
 
-    public abstract void invocationContexts(ClusterConfig config, Consumer<TestTemplateInvocationContext> invocationConsumer);
+    public abstract void invocationContexts(ClusterConfig config,
+                                            Consumer<TestTemplateInvocationContext> invocationConsumer);
+
 }

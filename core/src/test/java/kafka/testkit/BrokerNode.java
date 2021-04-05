@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.testkit;
 
 import org.apache.kafka.common.Uuid;
@@ -53,15 +52,14 @@ public class BrokerNode implements TestKitNode {
                 incarnationId = Uuid.randomUuid();
             }
             if (logDataDirectories == null) {
-                logDataDirectories = Collections.
-                    singletonList(String.format("broker_%d_data0", id));
+                logDataDirectories = Collections.singletonList(String.format("broker_%d_data0", id));
             }
             if (metadataDirectory == null) {
                 metadataDirectory = logDataDirectories.get(0);
             }
-            return new BrokerNode(id, incarnationId, metadataDirectory,
-                logDataDirectories);
+            return new BrokerNode(id, incarnationId, metadataDirectory, logDataDirectories);
         }
+
     }
 
     private final int id;
@@ -69,10 +67,7 @@ public class BrokerNode implements TestKitNode {
     private final String metadataDirectory;
     private final List<String> logDataDirectories;
 
-    BrokerNode(int id,
-               Uuid incarnationId,
-               String metadataDirectory,
-               List<String> logDataDirectories) {
+    BrokerNode(int id, Uuid incarnationId, String metadataDirectory, List<String> logDataDirectories) {
         this.id = id;
         this.incarnationId = incarnationId;
         this.metadataDirectory = metadataDirectory;
@@ -96,4 +91,5 @@ public class BrokerNode implements TestKitNode {
     public List<String> logDataDirectories() {
         return logDataDirectories;
     }
+
 }

@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.metrics;
 
 import com.yammer.metrics.core.Metric;
@@ -43,15 +42,13 @@ public class FilteringJmxReporter extends JmxReporter {
     public void updatePredicate(Predicate<MetricName> predicate) {
         this.metricPredicate = predicate;
         // re-register metrics on update
-        getMetricsRegistry()
-            .allMetrics()
-            .forEach((name, metric) -> {
-                if (metricPredicate.test(name)) {
-                    super.onMetricAdded(name, metric);
-                } else {
-                    super.onMetricRemoved(name);
-                }
+        getMetricsRegistry().allMetrics().forEach((name, metric) -> {
+            if (metricPredicate.test(name)) {
+                super.onMetricAdded(name, metric);
+            } else {
+                super.onMetricRemoved(name);
             }
-            );
+        });
     }
+
 }

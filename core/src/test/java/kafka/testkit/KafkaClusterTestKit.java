@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.testkit;
 
 import kafka.raft.KafkaRaftManager;
@@ -27,6 +26,7 @@ import kafka.server.MetaProperties;
 import kafka.server.Server;
 import kafka.tools.StorageTool;
 import kafka.utils.Logging;
+
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
@@ -42,10 +42,9 @@ import org.apache.kafka.raft.RaftConfig;
 import org.apache.kafka.raft.metadata.MetaLogRaftShim;
 import org.apache.kafka.raft.metadata.MetadataRecordSerde;
 import org.apache.kafka.test.TestUtils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.Option;
-import scala.collection.JavaConverters;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -73,15 +72,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import scala.Option;
+import scala.collection.JavaConverters;
 
 @SuppressWarnings("deprecation") // Needed for Scala 2.12 compatibility
 public class KafkaClusterTestKit implements AutoCloseable {
     private final static Logger log = LoggerFactory.getLogger(KafkaClusterTestKit.class);
 
     /**
-     * This class manages a future which is completed with the proper value for
-     * controller.quorum.voters once the randomly assigned ports for all the controllers are
-     * known.
+     * This class manages a future which is completed with the proper value for controller.quorum.voters once the
+     * randomly assigned ports for all the controllers are known.
      */
     private static class ControllerQuorumVotersFutureManager implements AutoCloseable {
         private final int expectedControllers;
@@ -95,11 +95,9 @@ public class KafkaClusterTestKit implements AutoCloseable {
         synchronized void registerPort(int nodeId, int port) {
             controllerPorts.put(nodeId, port);
             if (controllerPorts.size() >= expectedControllers) {
-                future.complete(controllerPorts.entrySet().stream().
-                    collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        entry -> new RaftConfig.InetAddressSpec(new InetSocketAddress("localhost", entry.getValue()))
-                    )));
+                future.complete(controllerPorts.entrySet().stream()
+                    .collect(Collectors.toMap(Map.Entry::getKey, entry -> new RaftConfig.InetAddressSpec(
+                        new InetSocketAddress("localhost", entry.getValue())))));
             }
         }
 
@@ -111,6 +109,7 @@ public class KafkaClusterTestKit implements AutoCloseable {
         public void close() {
             future.cancel(true);
         }
+
     }
 
     public static class Builder {
@@ -130,18 +129,17 @@ public class KafkaClusterTestKit implements AutoCloseable {
             Map<Integer, ControllerServer> controllers = new HashMap<>();
             Map<Integer, BrokerServer> brokers = new HashMap<>();
             Map<Integer, KafkaRaftManager> raftManagers = new HashMap<>();
-            String uninitializedQuorumVotersString = nodes.controllerNodes().keySet().stream().
-                map(controllerNode -> String.format("%d@0.0.0.0:0", controllerNode)).
-                collect(Collectors.joining(","));
+            String uninitializedQuorumVotersString = nodes.controllerNodes().keySet().stream()
+                .map(controllerNode -> String.format("%d@0.0.0.0:0", controllerNode))
+                .collect(Collectors.joining(","));
             /*
-              Number of threads = Total number of brokers + Total number of controllers + Total number of Raft Managers
-                                = Total number of brokers + Total number of controllers * 2
-                                  (Raft Manager per broker/controller)
+             * Number of threads = Total number of brokers + Total number of controllers + Total number of Raft Managers
+             * = Total number of brokers + Total number of controllers * 2 (Raft Manager per broker/controller)
              */
             int numOfExecutorThreads = (nodes.brokerNodes().size() + nodes.controllerNodes().size()) * 2;
             ExecutorService executorService = null;
-            ControllerQuorumVotersFutureManager connectFutureManager =
-                new ControllerQuorumVotersFutureManager(nodes.controllerNodes().size());
+            ControllerQuorumVotersFutureManager connectFutureManager = new ControllerQuorumVotersFutureManager(
+                nodes.controllerNodes().size());
             File baseDirectory = null;
 
             try {
@@ -152,40 +150,30 @@ public class KafkaClusterTestKit implements AutoCloseable {
                 for (ControllerNode node : nodes.controllerNodes().values()) {
                     Map<String, String> props = new HashMap<>(configProps);
                     props.put(KafkaConfig$.MODULE$.ProcessRolesProp(), "controller");
-                    props.put(KafkaConfig$.MODULE$.NodeIdProp(),
-                        Integer.toString(node.id()));
-                    props.put(KafkaConfig$.MODULE$.MetadataLogDirProp(),
-                        node.metadataDirectory());
-                    props.put(KafkaConfig$.MODULE$.ListenerSecurityProtocolMapProp(),
-                        "CONTROLLER:PLAINTEXT");
-                    props.put(KafkaConfig$.MODULE$.ListenersProp(),
-                        "CONTROLLER://localhost:0");
-                    props.put(KafkaConfig$.MODULE$.ControllerListenerNamesProp(),
-                        "CONTROLLER");
+                    props.put(KafkaConfig$.MODULE$.NodeIdProp(), Integer.toString(node.id()));
+                    props.put(KafkaConfig$.MODULE$.MetadataLogDirProp(), node.metadataDirectory());
+                    props.put(KafkaConfig$.MODULE$.ListenerSecurityProtocolMapProp(), "CONTROLLER:PLAINTEXT");
+                    props.put(KafkaConfig$.MODULE$.ListenersProp(), "CONTROLLER://localhost:0");
+                    props.put(KafkaConfig$.MODULE$.ControllerListenerNamesProp(), "CONTROLLER");
                     // Note: we can't accurately set controller.quorum.voters yet, since we don't
-                    // yet know what ports each controller will pick.  Set it to a dummy string \
+                    // yet know what ports each controller will pick. Set it to a dummy string \
                     // for now as a placeholder.
                     props.put(RaftConfig.QUORUM_VOTERS_CONFIG, uninitializedQuorumVotersString);
                     setupNodeDirectories(baseDirectory, node.metadataDirectory(), Collections.emptyList());
                     KafkaConfig config = new KafkaConfig(props, false, Option.empty());
 
                     String threadNamePrefix = String.format("controller%d_", node.id());
-                    MetaProperties metaProperties = MetaProperties.apply(nodes.clusterId().toString(), node.id());
+                    MetaProperties metaProperties = MetaProperties.apply(nodes.clusterId().toString(),
+                        node.id());
                     TopicPartition metadataPartition = new TopicPartition(KafkaRaftServer.MetadataTopic(), 0);
-                    KafkaRaftManager<ApiMessageAndVersion> raftManager = new KafkaRaftManager<>(
-                        metaProperties, config, new MetadataRecordSerde(), metadataPartition,
-                        Time.SYSTEM, new Metrics(), Option.apply(threadNamePrefix), connectFutureManager.future);
-                    MetaLogManager metaLogShim = new MetaLogRaftShim(raftManager.kafkaRaftClient(), config.nodeId());
-                    ControllerServer controller = new ControllerServer(
-                        nodes.controllerProperties(node.id()),
-                        config,
-                        metaLogShim,
-                        raftManager,
-                        Time.SYSTEM,
-                        new Metrics(),
-                        Option.apply(threadNamePrefix),
-                        connectFutureManager.future
-                    );
+                    KafkaRaftManager<ApiMessageAndVersion> raftManager = new KafkaRaftManager<>(metaProperties,
+                        config, new MetadataRecordSerde(), metadataPartition, Time.SYSTEM, new Metrics(),
+                        Option.apply(threadNamePrefix), connectFutureManager.future);
+                    MetaLogManager metaLogShim = new MetaLogRaftShim(raftManager.kafkaRaftClient(),
+                        config.nodeId());
+                    ControllerServer controller = new ControllerServer(nodes.controllerProperties(node.id()),
+                        config, metaLogShim, raftManager, Time.SYSTEM, new Metrics(),
+                        Option.apply(threadNamePrefix), connectFutureManager.future);
                     controllers.put(node.id(), controller);
                     controller.socketServerFirstBoundPortFuture().whenComplete((port, e) -> {
                         if (e != null) {
@@ -199,23 +187,17 @@ public class KafkaClusterTestKit implements AutoCloseable {
                 for (BrokerNode node : nodes.brokerNodes().values()) {
                     Map<String, String> props = new HashMap<>(configProps);
                     props.put(KafkaConfig$.MODULE$.ProcessRolesProp(), "broker");
-                    props.put(KafkaConfig$.MODULE$.BrokerIdProp(),
-                        Integer.toString(node.id()));
-                    props.put(KafkaConfig$.MODULE$.MetadataLogDirProp(),
-                        node.metadataDirectory());
-                    props.put(KafkaConfig$.MODULE$.LogDirsProp(),
-                        String.join(",", node.logDataDirectories()));
+                    props.put(KafkaConfig$.MODULE$.BrokerIdProp(), Integer.toString(node.id()));
+                    props.put(KafkaConfig$.MODULE$.MetadataLogDirProp(), node.metadataDirectory());
+                    props.put(KafkaConfig$.MODULE$.LogDirsProp(), String.join(",", node.logDataDirectories()));
                     props.put(KafkaConfig$.MODULE$.ListenerSecurityProtocolMapProp(),
                         "EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT");
-                    props.put(KafkaConfig$.MODULE$.ListenersProp(),
-                        "EXTERNAL://localhost:0");
+                    props.put(KafkaConfig$.MODULE$.ListenersProp(), "EXTERNAL://localhost:0");
                     props.put(KafkaConfig$.MODULE$.InterBrokerListenerNameProp(),
                         nodes.interBrokerListenerName().value());
-                    props.put(KafkaConfig$.MODULE$.ControllerListenerNamesProp(),
-                        "CONTROLLER");
+                    props.put(KafkaConfig$.MODULE$.ControllerListenerNamesProp(), "CONTROLLER");
 
-                    setupNodeDirectories(baseDirectory, node.metadataDirectory(),
-                        node.logDataDirectories());
+                    setupNodeDirectories(baseDirectory, node.metadataDirectory(), node.logDataDirectories());
 
                     // Just like above, we set a placeholder voter list here until we
                     // find out what ports the controllers picked.
@@ -223,23 +205,18 @@ public class KafkaClusterTestKit implements AutoCloseable {
                     KafkaConfig config = new KafkaConfig(props, false, Option.empty());
 
                     String threadNamePrefix = String.format("broker%d_", node.id());
-                    MetaProperties metaProperties = MetaProperties.apply(nodes.clusterId().toString(), node.id());
+                    MetaProperties metaProperties = MetaProperties.apply(nodes.clusterId().toString(),
+                        node.id());
                     TopicPartition metadataPartition = new TopicPartition(KafkaRaftServer.MetadataTopic(), 0);
-                    KafkaRaftManager<ApiMessageAndVersion> raftManager = new KafkaRaftManager<>(
-                            metaProperties, config, new MetadataRecordSerde(), metadataPartition,
-                            Time.SYSTEM, new Metrics(), Option.apply(threadNamePrefix), connectFutureManager.future);
-                    MetaLogManager metaLogShim = new MetaLogRaftShim(raftManager.kafkaRaftClient(), config.nodeId());
-                    BrokerServer broker = new BrokerServer(
-                        config,
-                        nodes.brokerProperties(node.id()),
-                        metaLogShim,
-                        Time.SYSTEM,
-                        new Metrics(),
-                        Option.apply(threadNamePrefix),
+                    KafkaRaftManager<ApiMessageAndVersion> raftManager = new KafkaRaftManager<>(metaProperties,
+                        config, new MetadataRecordSerde(), metadataPartition, Time.SYSTEM, new Metrics(),
+                        Option.apply(threadNamePrefix), connectFutureManager.future);
+                    MetaLogManager metaLogShim = new MetaLogRaftShim(raftManager.kafkaRaftClient(),
+                        config.nodeId());
+                    BrokerServer broker = new BrokerServer(config, nodes.brokerProperties(node.id()),
+                        metaLogShim, Time.SYSTEM, new Metrics(), Option.apply(threadNamePrefix),
                         JavaConverters.asScalaBuffer(Collections.<String>emptyList()).toSeq(),
-                        connectFutureManager.future,
-                        Server.SUPPORTED_FEATURES()
-                    );
+                        connectFutureManager.future, Server.SUPPORTED_FEATURES());
                     brokers.put(node.id(), broker);
                     raftManagers.put(node.id(), raftManager);
                 }
@@ -263,19 +240,20 @@ public class KafkaClusterTestKit implements AutoCloseable {
                 }
                 throw e;
             }
-            return new KafkaClusterTestKit(executorService, nodes, controllers,
-                brokers, raftManagers, connectFutureManager, baseDirectory);
+            return new KafkaClusterTestKit(executorService, nodes, controllers, brokers, raftManagers,
+                connectFutureManager, baseDirectory);
         }
 
-        static private void setupNodeDirectories(File baseDirectory,
-                                                 String metadataDirectory,
-                                                 Collection<String> logDataDirectories) throws Exception {
+        static private void setupNodeDirectories(File baseDirectory, String metadataDirectory,
+                                                 Collection<String> logDataDirectories)
+            throws Exception {
             Files.createDirectories(new File(baseDirectory, "local").toPath());
             Files.createDirectories(Paths.get(metadataDirectory));
             for (String logDataDirectory : logDataDirectories) {
                 Files.createDirectories(Paths.get(logDataDirectory));
             }
         }
+
     }
 
     private final ExecutorService executorService;
@@ -286,10 +264,8 @@ public class KafkaClusterTestKit implements AutoCloseable {
     private final ControllerQuorumVotersFutureManager controllerQuorumVotersFutureManager;
     private final File baseDirectory;
 
-    private KafkaClusterTestKit(ExecutorService executorService,
-                                TestKitNodes nodes,
-                                Map<Integer, ControllerServer> controllers,
-                                Map<Integer, BrokerServer> brokers,
+    private KafkaClusterTestKit(ExecutorService executorService, TestKitNodes nodes,
+                                Map<Integer, ControllerServer> controllers, Map<Integer, BrokerServer> brokers,
                                 Map<Integer, KafkaRaftManager> raftManagers,
                                 ControllerQuorumVotersFutureManager controllerQuorumVotersFutureManager,
                                 File baseDirectory) {
@@ -314,14 +290,14 @@ public class KafkaClusterTestKit implements AutoCloseable {
             for (Entry<Integer, BrokerServer> entry : brokers.entrySet()) {
                 int nodeId = entry.getKey();
                 BrokerServer broker = entry.getValue();
-                formatNodeAndLog(nodes.brokerProperties(nodeId), broker.config().metadataLogDir(),
-                    broker, futures::add);
+                formatNodeAndLog(nodes.brokerProperties(nodeId), broker.config().metadataLogDir(), broker,
+                    futures::add);
             }
-            for (Future<?> future: futures) {
+            for (Future<?> future : futures) {
                 future.get();
             }
         } catch (Exception e) {
-            for (Future<?> future: futures) {
+            for (Future<?> future : futures) {
                 future.cancel(true);
             }
             throw e;
@@ -334,9 +310,8 @@ public class KafkaClusterTestKit implements AutoCloseable {
             try (ByteArrayOutputStream stream = new ByteArrayOutputStream()) {
                 try (PrintStream out = new PrintStream(stream)) {
                     StorageTool.formatCommand(out,
-                            JavaConverters.asScalaBuffer(Collections.singletonList(metadataLogDir)).toSeq(),
-                            properties,
-                            false);
+                        JavaConverters.asScalaBuffer(Collections.singletonList(metadataLogDir)).toSeq(),
+                        properties, false);
                 } finally {
                     for (String line : stream.toString().split(String.format("%n"))) {
                         loggingMixin.info(() -> line);
@@ -360,11 +335,11 @@ public class KafkaClusterTestKit implements AutoCloseable {
             for (BrokerServer broker : brokers.values()) {
                 futures.add(executorService.submit(broker::startup));
             }
-            for (Future<?> future: futures) {
+            for (Future<?> future : futures) {
                 future.get();
             }
         } catch (Exception e) {
-            for (Future<?> future: futures) {
+            for (Future<?> future : futures) {
                 future.cancel(true);
             }
             throw e;
@@ -385,8 +360,8 @@ public class KafkaClusterTestKit implements AutoCloseable {
     public Properties controllerClientProperties() throws ExecutionException, InterruptedException {
         Properties properties = new Properties();
         if (!controllers.isEmpty()) {
-            Collection<Node> controllerNodes = RaftConfig.voterConnectionsToNodes(
-                controllerQuorumVotersFutureManager.future.get());
+            Collection<Node> controllerNodes = RaftConfig
+                .voterConnectionsToNodes(controllerQuorumVotersFutureManager.future.get());
 
             StringBuilder bld = new StringBuilder();
             String prefix = "";
@@ -397,8 +372,7 @@ public class KafkaClusterTestKit implements AutoCloseable {
             }
             properties.setProperty(RaftConfig.QUORUM_VOTERS_CONFIG, bld.toString());
             properties.setProperty(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG,
-                controllerNodes.stream().map(n -> n.host() + ":" + n.port()).
-                    collect(Collectors.joining(",")));
+                controllerNodes.stream().map(n -> n.host() + ":" + n.port()).collect(Collectors.joining(",")));
         }
         return properties;
     }
@@ -414,9 +388,8 @@ public class KafkaClusterTestKit implements AutoCloseable {
                 ListenerName listenerName = nodes.externalListenerName();
                 int port = broker.boundPort(listenerName);
                 if (port <= 0) {
-                    throw new RuntimeException("Broker " + brokerId + " does not yet " +
-                        "have a bound port for " + listenerName + ".  Did you start " +
-                        "the cluster yet?");
+                    throw new RuntimeException("Broker " + brokerId + " does not yet "
+                        + "have a bound port for " + listenerName + ".  Did you start " + "the cluster yet?");
                 }
                 bld.append(prefix).append("localhost:").append(port);
                 prefix = ",";
@@ -450,8 +423,8 @@ public class KafkaClusterTestKit implements AutoCloseable {
             for (Entry<Integer, BrokerServer> entry : brokers.entrySet()) {
                 int brokerId = entry.getKey();
                 BrokerServer broker = entry.getValue();
-                futureEntries.add(new SimpleImmutableEntry<>("broker" + brokerId,
-                    executorService.submit(broker::shutdown)));
+                futureEntries.add(
+                    new SimpleImmutableEntry<>("broker" + brokerId, executorService.submit(broker::shutdown)));
             }
             waitForAllFutures(futureEntries);
             futureEntries.clear();
@@ -483,12 +456,12 @@ public class KafkaClusterTestKit implements AutoCloseable {
         }
     }
 
-    private void waitForAllFutures(List<Entry<String, Future<?>>> futureEntries)
-            throws Exception {
+    private void waitForAllFutures(List<Entry<String, Future<?>>> futureEntries) throws Exception {
         for (Entry<String, Future<?>> entry : futureEntries) {
             log.debug("waiting for {} to shut down.", entry.getKey());
             entry.getValue().get();
             log.debug("{} successfully shut down.", entry.getKey());
         }
     }
+
 }

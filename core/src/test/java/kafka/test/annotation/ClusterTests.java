@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test.annotation;
 
 import org.junit.jupiter.api.TestTemplate;
@@ -32,4 +31,5 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 @TestTemplate
 public @interface ClusterTests {
     ClusterTest[] value();
+
 }

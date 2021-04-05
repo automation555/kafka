@@ -14,22 +14,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.metrics;
-
-import com.yammer.metrics.core.MetricsRegistry;
 
 import org.apache.kafka.common.Reconfigurable;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.metrics.JmxReporter;
+
+import com.yammer.metrics.core.MetricsRegistry;
 
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
 /**
- * This class encapsulates the default yammer metrics registry for Kafka server,
- * and configures the set of exported JMX metrics for Yammer metrics.
+ * This class encapsulates the default yammer metrics registry for Kafka server, and configures the set of exported JMX
+ * metrics for Yammer metrics.
  *
  * KafkaYammerMetrics.defaultRegistry() should always be used instead of Metrics.defaultRegistry()
  */
@@ -73,4 +72,5 @@ public class KafkaYammerMetrics implements Reconfigurable {
         Predicate<String> mBeanPredicate = JmxReporter.compilePredicate(configs);
         jmxReporter.updatePredicate(metricName -> mBeanPredicate.test(metricName.getMBeanName()));
     }
+
 }

@@ -14,11 +14,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test;
 
 import kafka.network.SocketServer;
 import kafka.test.annotation.ClusterTest;
+
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.common.network.ListenerName;
 
@@ -28,8 +28,7 @@ import java.util.Properties;
 public interface ClusterInstance {
 
     enum ClusterType {
-        ZK,
-        RAFT
+        ZK, RAFT
     }
 
     /**
@@ -44,8 +43,8 @@ public interface ClusterInstance {
     ClusterConfig config();
 
     /**
-     * The listener for this cluster as configured by {@link ClusterTest} or by {@link ClusterConfig}. If
-     * unspecified by those sources, this will return the listener for the default security protocol PLAINTEXT
+     * The listener for this cluster as configured by {@link ClusterTest} or by {@link ClusterConfig}. If unspecified by
+     * those sources, this will return the listener for the default security protocol PLAINTEXT
      */
     ListenerName clientListener();
 
@@ -94,4 +93,5 @@ public interface ClusterInstance {
     void start();
 
     void stop();
+
 }

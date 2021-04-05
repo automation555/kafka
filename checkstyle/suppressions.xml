@@ -19,11 +19,17 @@
               files="(FieldSpec|MessageDataGenerator).java"/>
     <suppress id="dontUseSystemExit"
               files="MessageGenerator.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="generator[\\/]src[\\/](main|test)[\\/].+.java$"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="generator[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
-    <!-- core -->
+    <!-- Core -->
     <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
               files="core[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
     <suppress checks="NPathComplexity" files="ClusterTestExtensions.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="core[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
     <!-- Clients -->
     <suppress id="dontUseSystemExit"
@@ -81,8 +87,10 @@
     <suppress checks="(UnnecessaryParentheses|BooleanExpressionComplexity|CyclomaticComplexity|WhitespaceAfter|LocalVariableName)"
               files="Murmur3.java"/>
 
-    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
-            files="clients[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="clients[\\/]src[\\/](main|test)[\\/].+.java$"/>
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|ImportOrder|AvoidStarImport)"
+              files="clients[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
     <suppress checks="NPathComplexity"
             files="MessageTest.java"/>
@@ -135,7 +143,12 @@
     <suppress checks="NPathComplexity"
               files="(DistributedHerder|RestClient|RestServer|JsonConverter|KafkaConfigBackingStore|FileStreamSourceTask|TopicAdmin).java"/>
 
-    <!-- connect tests-->
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="connect.+[\\/]src[\\/](main|test)[\\/].+.java$"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="connect.+[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+
+    <!-- Connect tests-->
     <suppress checks="ClassDataAbstractionCoupling"
               files="(DistributedHerder|KafkaBasedLog|WorkerSourceTaskWithTopicCreation|WorkerSourceTask)Test.java"/>
 
@@ -179,11 +192,12 @@
     <suppress checks="FinalLocalVariable"
               files="^(?!.*[\\/]org[\\/]apache[\\/]kafka[\\/]streams[\\/].*$)"/>
 
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="streams[\\/]src[\\/](main|test)[\\/].+.java$"/>
+
     <!-- Generated code -->
-    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|ImportOrder|AvoidStarImport)"
               files="streams[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
-    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
-              files="raft[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
     <suppress checks="ImportControl" files="FetchResponseData.java"/>
     <suppress checks="ImportControl" files="RecordsSerdeTest.java"/>
@@ -221,10 +235,18 @@
               files="TopologyTestDriver.java"/>
     <suppress checks="ClassDataAbstractionCoupling"
               files="TopologyTestDriver.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="streams[\\/]test-utils[\\/]src[\\/](main|test)[\\/].+.java$"/>
 
     <!-- Streams examples -->
     <suppress id="dontUseSystemExit"
               files="PageViewTypedDemo.java|PipeDemo.java|TemperatureDemo.java|WordCountDemo.java|WordCountProcessorDemo.java|WordCountTransformerDemo.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="examples[\\/]src[\\/](main|test)[\\/].+.java$"/>
+
+    <!-- Jmh-benchmarks -->
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="jmh-benchmarks[\\/]src[\\/](main|test)[\\/].+.java$"/>
 
     <!-- Tools -->
     <suppress checks="ClassDataAbstractionCoupling"
@@ -249,10 +271,14 @@
               files="VerifiableConsumer.java"/>
     <suppress id="dontUseSystemExit"
               files="VerifiableProducer.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="tools[\\/]src[\\/](main|test)[\\/].+.java$"/>
 
     <!-- Shell -->
     <suppress checks="CyclomaticComplexity"
               files="(GlobComponent).java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="shell[\\/]src[\\/](main|test)[\\/].+.java$"/>
 
     <!-- Log4J-Appender -->
     <suppress checks="CyclomaticComplexity"
@@ -262,8 +288,10 @@
               files="KafkaLog4jAppender.java"/>
     <suppress checks="JavaNCSS"
               files="RequestResponseTest.java"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="log4j-appender[\\/]src[\\/](main|test)[\\/].+.java$"/>
 
-    <!-- metadata -->
+    <!-- Metadata -->
     <suppress checks="ClassDataAbstractionCoupling"
               files="(ReplicationControlManager|ReplicationControlManagerTest).java"/>
     <suppress checks="ClassFanOutComplexity"
@@ -272,10 +300,14 @@
               files="(ReplicationControlManager).java"/>
     <suppress checks="NPathComplexity"
               files="KafkaEventQueue.java"/>
-    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
-            files="metadata[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="metadata[\\/]src[\\/](main|test)[\\/].+.java$"/>
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|ImportOrder|AvoidStarImport)"
+              files="metadata[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
-    <!-- jmh-benchmarks -->
-   <suppress checks="(ClassFanOutComplexity|ClassDataAbstractionCoupling)"
-             files="KafkaApisFetchBenchmark.java"/>
+    <!-- Raft -->
+    <suppress checks="(ImportOrder|AvoidStarImport)"
+              files="raft[\\/]src[\\/](main|test)[\\/].+.java$"/>
+    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|ImportOrder|AvoidStarImport)"
+              files="raft[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 </suppressions>

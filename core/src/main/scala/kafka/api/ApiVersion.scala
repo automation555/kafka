@@ -149,21 +149,6 @@ object ApiVersion {
   def apiVersionsResponse(
     throttleTimeMs: Int,
     minRecordVersion: RecordVersion,
-    controllerApiVersions: Option[NodeApiVersions],
-    listenerType: ListenerType
-  ): ApiVersionsResponse = {
-    apiVersionsResponse(
-      throttleTimeMs,
-      minRecordVersion,
-      Features.emptySupportedFeatures,
-      controllerApiVersions,
-      listenerType
-    )
-  }
-
-  def apiVersionsResponse(
-    throttleTimeMs: Int,
-    minRecordVersion: RecordVersion,
     latestSupportedFeatures: Features[SupportedVersionRange],
     controllerApiVersions: Option[NodeApiVersions],
     listenerType: ListenerType
@@ -179,15 +164,14 @@ object ApiVersion {
     )
   }
 
-  def apiVersionsResponse(
-    throttleTimeMs: Int,
-    minRecordVersion: RecordVersion,
-    latestSupportedFeatures: Features[SupportedVersionRange],
-    finalizedFeatures: Features[FinalizedVersionRange],
-    finalizedFeaturesEpoch: Long,
-    controllerApiVersions: Option[NodeApiVersions],
-    listenerType: ListenerType
-  ): ApiVersionsResponse = {
+  def apiVersionsResponse(throttleTimeMs: Int,
+                          minRecordVersion: RecordVersion,
+                          latestSupportedFeatures: Features[SupportedVersionRange],
+                          finalizedFeatures: Features[FinalizedVersionRange],
+                          finalizedFeaturesEpoch: Long,
+                          controllerApiVersions: Option[NodeApiVersions],
+                          listenerType: ListenerType
+                         ): ApiVersionsResponse = {
     val apiKeys = controllerApiVersions match {
       case None => ApiVersionsResponse.filterApis(minRecordVersion, listenerType)
       case Some(controllerApiVersion) => ApiVersionsResponse.intersectForwardableApis(

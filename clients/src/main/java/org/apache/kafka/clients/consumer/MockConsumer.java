@@ -40,6 +40,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -446,7 +447,13 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public final synchronized void close() {
+    public synchronized void close() {
+        close(KafkaConsumer.DEFAULT_CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Deprecated
+    @Override
+    public synchronized void close(long timeout, TimeUnit unit) {
         this.closed = true;
     }
 
@@ -549,7 +556,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
 
     @Override
     public ConsumerGroupMetadata groupMetadata() {
-        return new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty());
+        return new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty(), false);
     }
 
     @Override

@@ -131,7 +131,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         }
     }
 
-    private RebalanceProtocol protocol;
+    private final RebalanceProtocol protocol;
 
     /**
      * Initialize the coordination manager.
@@ -170,7 +170,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.pendingAsyncCommits = new AtomicInteger();
         this.asyncCommitFenced = new AtomicBoolean(false);
         this.groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId,
-            JoinGroupRequest.UNKNOWN_GENERATION_ID, JoinGroupRequest.UNKNOWN_MEMBER_ID, rebalanceConfig.groupInstanceId);
+            JoinGroupRequest.UNKNOWN_GENERATION_ID, JoinGroupRequest.UNKNOWN_MEMBER_ID, rebalanceConfig.groupInstanceId, false);
         this.throwOnFetchStableOffsetsUnsupported = throwOnFetchStableOffsetsUnsupported;
 
         if (autoCommitEnabled)
@@ -198,7 +198,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             Collections.sort(supportedProtocols);
 
             protocol = supportedProtocols.get(supportedProtocols.size() - 1);
-            log.debug("Using rebalance protocol {}", protocol);
         } else {
             protocol = null;
         }
@@ -357,25 +356,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
 
-        log.debug("{} assignor selected by the group coordinator", assignor);
-
-        List<RebalanceProtocol> assignorSupportedProtocols = assignor.supportedProtocols();
-        Collections.sort(assignorSupportedProtocols);
-        RebalanceProtocol newProtocol = assignorSupportedProtocols.get(assignorSupportedProtocols.size() - 1);
-        if (newProtocol.id() < protocol.id()) {
-            log.error("Latest commonly supported rebalance protocol is {} which is lower than the current commonly supported rebalance protocol {}. "
-                          + "Downgrading rebalance protocol is not supported; once you are on {} you must make sure that all consumers are configured "
-                          + "with an assignor that supports this protocol. The group coordinator selected the {} assignor. If multiple assignors are "
-                          + "supported by all consumers, make sure the first assignor in the partition.assignment.strategy list is one that supports {}.",
-                      newProtocol, protocol, protocol, protocol);
-            throw new IllegalStateException("Can't downgrade the consumer group rebalance protocol");
-        } else if (protocol != newProtocol) {
-            protocol = newProtocol;
-            log.info("Updating rebalance protocol to {} as highest commonly supported protocol", protocol);
-        }
-
         // Give the assignor a chance to update internal state based on the received assignment
-        groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId, generation, memberId, rebalanceConfig.groupInstanceId);
+        groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId, generation, memberId, rebalanceConfig.groupInstanceId, isLeader);
 
         Set<TopicPartition> ownedPartitions = new HashSet<>(subscriptions.assignedPartitions());
 
@@ -391,10 +373,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         Set<TopicPartition> assignedPartitions = new HashSet<>(assignment.partitions());
 
         if (!subscriptions.checkAssignmentMatchedSubscription(assignedPartitions)) {
-            final String reason = String.format("received assignment %s does not match the current subscription %s; " +
-                    "it is likely that the subscription has changed since we joined the group, will re-join with current subscription",
-                    assignment.partitions(), subscriptions.prettyString());
-            requestRejoin(reason);
+            log.warn("We received an assignment {} that doesn't match our current subscription {}; it is likely " +
+                "that the subscription has changed since we joined the group. Will try re-join the group with current subscription",
+                assignment.partitions(), subscriptions.prettyString());
+
+            requestRejoin();
 
             return;
         }
@@ -425,9 +408,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 firstException.compareAndSet(null, invokePartitionsRevoked(revokedPartitions));
 
                 // If revoked any partitions, need to re-join the group afterwards
-                final String reason = String.format("need to revoke partitions %s as indicated " +
-                        "by the current assignment and re-join", revokedPartitions);
-                requestRejoin(reason);
+                log.info("Need to revoke partitions {} and re-join the group", revokedPartitions);
+                requestRejoin();
             }
         }
 
@@ -787,17 +769,19 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // we need to rejoin if we performed the assignment and metadata has changed;
         // also for those owned-but-no-longer-existed partitions we should drop them as lost
         if (assignmentSnapshot != null && !assignmentSnapshot.matches(metadataSnapshot)) {
-            final String reason = String.format("cached metadata has changed from %s at the beginning of the rebalance to %s",
-                assignmentSnapshot, metadataSnapshot);
-            requestRejoin(reason);
+            log.info("Requesting to re-join the group and trigger rebalance since the assignment metadata has changed from {} to {}",
+                    assignmentSnapshot, metadataSnapshot);
+
+            requestRejoin();
             return true;
         }
 
         // we need to join if our subscription has changed since the last join
         if (joinedSubscription != null && !joinedSubscription.equals(subscriptions.subscription())) {
-            final String reason = String.format("subscription has changed from %s at the beginning of the rebalance to %s",
+            log.info("Requesting to re-join the group and trigger rebalance since the subscription has changed from {} to {}",
                 joinedSubscription, subscriptions.subscription());
-            requestRejoin(reason);
+
+            requestRejoin();
             return true;
         }
 
@@ -1252,7 +1236,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                              * request re-join but do not reset generations. If the callers decide to retry they
                              * can go ahead and call poll to finish up the rebalance first, and then try commit again.
                              */
-                            requestRejoin("offset commit failed since group is already rebalancing");
+                            requestRejoin();
                             future.raise(new RebalanceInProgressException("Offset commit cannot be completed since the " +
                                 "consumer group is executing a rebalance at the moment. You can try completing the rebalance " +
                                 "by calling poll() and then retry commit again"));

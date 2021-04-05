@@ -176,7 +176,7 @@ subprojects {
     options.encoding = 'UTF-8'
     options.compilerArgs << "-Xlint:all"
     // temporary exclusions until all the warnings are fixed
-    if (!project.path.startsWith(":connect"))
+    if (!project.name.equals('clients'))
       options.compilerArgs << "-Xlint:-rawtypes"
     options.compilerArgs << "-Xlint:-serial"
     options.compilerArgs << "-Xlint:-try"
@@ -1041,6 +1041,9 @@ project(':clients') {
   }
 
   compileJava.dependsOn 'processMessages'
+  compileJava {
+    options.compilerArgs << "-Xlint:rawtypes"
+  }
 
   compileTestJava.dependsOn 'processTestMessages'
 

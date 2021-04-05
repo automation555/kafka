@@ -32,7 +32,7 @@ import java.util.Map;
 public class DeleteTopicsResult {
     final Map<String, KafkaFuture<Void>> futures;
 
-    protected DeleteTopicsResult(Map<String, KafkaFuture<Void>> futures) {
+    DeleteTopicsResult(Map<String, KafkaFuture<Void>> futures) {
         this.futures = futures;
     }
 
@@ -48,6 +48,6 @@ public class DeleteTopicsResult {
      * Return a future which succeeds only if all the topic deletions succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
     }
 }

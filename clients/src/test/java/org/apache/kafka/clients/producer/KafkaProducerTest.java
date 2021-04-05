@@ -20,14 +20,12 @@ import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.KafkaClient;
 import org.apache.kafka.clients.MockClient;
 import org.apache.kafka.clients.NodeApiVersions;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.producer.internals.ProducerInterceptors;
 import org.apache.kafka.clients.producer.internals.ProducerMetadata;
 import org.apache.kafka.clients.producer.internals.Sender;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
@@ -42,7 +40,6 @@ import org.apache.kafka.common.message.EndTxnResponseData;
 import org.apache.kafka.common.message.InitProducerIdResponseData;
 import org.apache.kafka.common.message.TxnOffsetCommitRequestData;
 import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.metrics.stats.Avg;
 import org.apache.kafka.common.network.Selectable;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
@@ -69,9 +66,6 @@ import org.apache.kafka.test.TestUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
-import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -180,7 +174,7 @@ public class KafkaProducerTest {
     public void testNoSerializerProvided() {
         Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9000");
-        new KafkaProducer(producerProps);
+        new KafkaProducer<>(producerProps);
     }
 
     @Test
@@ -210,19 +204,6 @@ public class KafkaProducerTest {
             fail("Constructor should throw exception");
         } catch (ConfigException e) {
             assertTrue("Unexpected exception message: " + e.getMessage(), e.getMessage().contains("not string key"));
-        }
-    }
-
-    @Test
-    public void testConstructorWitDefaults() {
-        Properties defProps = new Properties();
-        defProps.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
-        Properties newProps = new Properties(defProps);
-
-        try {
-            new KafkaProducer<>(newProps, new StringSerializer(), new StringSerializer());
-        } catch (ConfigException e) {
-            fail("Constructor should have worked with default properties");
         }
     }
 
@@ -1206,23 +1187,6 @@ public class KafkaProducerTest {
         client.waitForRequests(1, 2000);
         producer.close(Duration.ofMillis(1000));
         assertionDoneLatch.await(5000, TimeUnit.MILLISECONDS);
-    }
-
-    @Test
-    public void testProducerJmxPrefix() throws  Exception {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
-        props.put("client.id", "client-1");
-
-        KafkaProducer<String, String> producer = new KafkaProducer<>(
-                props, new StringSerializer(), new StringSerializer());
-
-        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
-        MetricName testMetricName = producer.metrics.metricName("test-metric",
-                "grp1", "test metric");
-        producer.metrics.addMetric(testMetricName, new Avg());
-        Assert.assertNotNull(server.getObjectInstance(new ObjectName("kafka.producer:type=grp1,client-id=client-1")));
-        producer.close();
     }
 
     private ProducerMetadata newMetadata(long refreshBackoffMs, long expirationMs) {

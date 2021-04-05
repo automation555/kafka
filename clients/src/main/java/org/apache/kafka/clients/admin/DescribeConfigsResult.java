@@ -36,7 +36,7 @@ public class DescribeConfigsResult {
 
     private final Map<ConfigResource, KafkaFuture<Config>> futures;
 
-    protected DescribeConfigsResult(Map<ConfigResource, KafkaFuture<Config>> futures) {
+    DescribeConfigsResult(Map<ConfigResource, KafkaFuture<Config>> futures) {
         this.futures = futures;
     }
 
@@ -52,7 +52,7 @@ public class DescribeConfigsResult {
      * Return a future which succeeds only if all the config descriptions succeed.
      */
     public KafkaFuture<Map<ConfigResource, Config>> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0])).
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0])).
                 thenApply(new KafkaFuture.BaseFunction<Void, Map<ConfigResource, Config>>() {
                     @Override
                     public Map<ConfigResource, Config> apply(Void v) {

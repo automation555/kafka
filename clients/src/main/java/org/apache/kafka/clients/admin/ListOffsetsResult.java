@@ -35,7 +35,7 @@ public class ListOffsetsResult {
 
     private final Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures;
 
-    public ListOffsetsResult(Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures) {
+    ListOffsetsResult(Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures) {
         this.futures = futures;
     }
 
@@ -56,7 +56,7 @@ public class ListOffsetsResult {
      * retrieved.
      */
     public KafkaFuture<Map<TopicPartition, ListOffsetsResultInfo>> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]))
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]))
                 .thenApply(new KafkaFuture.BaseFunction<Void, Map<TopicPartition, ListOffsetsResultInfo>>() {
                     @Override
                     public Map<TopicPartition, ListOffsetsResultInfo> apply(Void v) {
@@ -80,7 +80,7 @@ public class ListOffsetsResult {
         private final long timestamp;
         private final Optional<Integer> leaderEpoch;
 
-        public ListOffsetsResultInfo(long offset, long timestamp, Optional<Integer> leaderEpoch) {
+        ListOffsetsResultInfo(long offset, long timestamp, Optional<Integer> leaderEpoch) {
             this.offset = offset;
             this.timestamp = timestamp;
             this.leaderEpoch = leaderEpoch;

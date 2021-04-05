@@ -208,8 +208,11 @@ public class Sender implements Runnable {
 
     private void addToInflightBatches(List<ProducerBatch> batches) {
         for (ProducerBatch batch : batches) {
-            List<ProducerBatch> inflightBatchList = inFlightBatches.computeIfAbsent(
-                batch.topicPartition, k -> new ArrayList<>());
+            List<ProducerBatch> inflightBatchList = inFlightBatches.get(batch.topicPartition);
+            if (inflightBatchList == null) {
+                inflightBatchList = new ArrayList<>();
+                inFlightBatches.put(batch.topicPartition, inflightBatchList);
+            }
             inflightBatchList.add(batch);
         }
     }
@@ -432,14 +435,13 @@ public class Sender implements Runnable {
         }
 
         TransactionManager.TxnRequestHandler nextRequestHandler = transactionManager.nextRequest(accumulator.hasIncomplete());
-        if (nextRequestHandler == null) {
+        if (nextRequestHandler == null)
             return false;
-        }
 
         AbstractRequest.Builder<?> requestBuilder = nextRequestHandler.requestBuilder();
         Node targetNode = null;
         try {
-            targetNode = awaitNodeReady(nextRequestHandler.coordinatorType());
+            targetNode = awaitNodeReady(nextRequestHandler.coordinatorType(), nextRequestHandler.coordinatorKey());
             if (targetNode == null) {
                 maybeFindCoordinatorAndRetry(nextRequestHandler);
                 return true;
@@ -507,9 +509,9 @@ public class Sender implements Runnable {
         return running;
     }
 
-    private Node awaitNodeReady(FindCoordinatorRequest.CoordinatorType coordinatorType) throws IOException {
+    private Node awaitNodeReady(FindCoordinatorRequest.CoordinatorType coordinatorType, String coordinatorKey) throws IOException {
         Node node = coordinatorType != null ?
-                transactionManager.coordinator(coordinatorType) :
+                transactionManager.coordinator(coordinatorType, coordinatorKey) :
                 client.leastLoadedNode(time.milliseconds());
 
         if (node != null && NetworkClientUtils.awaitReady(client, node, time, requestTimeoutMs)) {
@@ -569,9 +571,7 @@ public class Sender implements Runnable {
      * @param correlationId The correlation id for the request
      * @param now The current POSIX timestamp in milliseconds
      */
-    private void completeBatch(ProducerBatch batch,
-                               ProduceResponse.PartitionResponse response,
-                               long correlationId,
+    private void completeBatch(ProducerBatch batch, ProduceResponse.PartitionResponse response, long correlationId,
                                long now) {
         Errors error = response.error;
 
@@ -740,9 +740,7 @@ public class Sender implements Runnable {
         }
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
                 produceRecordsByPartition, transactionalId);
-
-        RequestCompletionHandler callback =
-            response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
+        RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,

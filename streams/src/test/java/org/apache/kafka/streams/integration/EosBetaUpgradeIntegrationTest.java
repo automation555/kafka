@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.streams.integration;
 
+import java.time.Duration;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Partitioner;
@@ -23,6 +24,7 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.IsolationLevel;
+import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.LongDeserializer;
 import org.apache.kafka.common.serialization.LongSerializer;
@@ -35,14 +37,16 @@ import org.apache.kafka.streams.StoreQueryParameters;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.StreamsConfig.InternalConfig;
-import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
 import org.apache.kafka.streams.integration.utils.EmbeddedKafkaCluster;
 import org.apache.kafka.streams.integration.utils.IntegrationTestUtils;
 import org.apache.kafka.streams.integration.utils.IntegrationTestUtils.StableAssignmentListener;
 import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.Transformer;
 import org.apache.kafka.streams.kstream.TransformerSupplier;
+import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.processor.PunctuationType;
+import org.apache.kafka.streams.processor.Punctuator;
 import org.apache.kafka.streams.processor.internals.DefaultKafkaClientSupplier;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
@@ -53,17 +57,15 @@ import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.StreamsTestUtils;
 import org.apache.kafka.test.TestUtils;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.io.File;
-import java.io.IOException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -82,10 +84,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static org.apache.kafka.common.utils.Utils.mkSet;
+import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.getStore;
 import static org.apache.kafka.test.TestUtils.waitForCondition;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
 @RunWith(Parameterized.class)
 @Category({IntegrationTest.class})
@@ -103,8 +106,8 @@ public class EosBetaUpgradeIntegrationTest {
     public boolean injectError;
 
     private static final int NUM_BROKERS = 3;
-    private static final int MAX_POLL_INTERVAL_MS = (int) Duration.ofSeconds(100L).toMillis();
-    private static final long MAX_WAIT_TIME_MS = Duration.ofMinutes(1L).toMillis();
+    private static final int MAX_POLL_INTERVAL_MS = 100 * 1000;
+    private static final int MAX_WAIT_TIME_MS = 60 * 1000;
 
     private static final List<KeyValue<KafkaStreams.State, KafkaStreams.State>> CLOSE =
         Collections.unmodifiableList(
@@ -116,35 +119,28 @@ public class EosBetaUpgradeIntegrationTest {
     private static final List<KeyValue<KafkaStreams.State, KafkaStreams.State>> CRASH =
         Collections.unmodifiableList(
             Collections.singletonList(
-                KeyValue.pair(State.PENDING_ERROR, State.ERROR)
+                KeyValue.pair(KafkaStreams.State.RUNNING, KafkaStreams.State.ERROR)
+            )
+        );
+    private static final List<KeyValue<KafkaStreams.State, KafkaStreams.State>> CLOSE_CRASHED =
+        Collections.unmodifiableList(
+            Arrays.asList(
+                KeyValue.pair(KafkaStreams.State.ERROR, KafkaStreams.State.PENDING_SHUTDOWN),
+                KeyValue.pair(KafkaStreams.State.PENDING_SHUTDOWN, KafkaStreams.State.NOT_RUNNING)
             )
         );
 
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(
         NUM_BROKERS,
         Utils.mkProperties(Collections.singletonMap("auto.create.topics.enable", "false"))
     );
-
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
 
     private static String applicationId;
     private final static int NUM_TOPIC_PARTITIONS = 4;
     private final static String CONSUMER_GROUP_ID = "readCommitted";
     private final static String MULTI_PARTITION_INPUT_TOPIC = "multiPartitionInputTopic";
     private final static String MULTI_PARTITION_OUTPUT_TOPIC = "multiPartitionOutputTopic";
-    private final static String APP_DIR_1 = "appDir1";
-    private final static String APP_DIR_2 = "appDir2";
-    private final static String UNEXPECTED_EXCEPTION_MSG = "Fail the test since we got an unexpected exception, or " +
-        "there are too many exceptions thrown, please check standard error log for more info.";
     private final String storeName = "store";
 
     private final StableAssignmentListener assignmentListener = new StableAssignmentListener();
@@ -157,15 +153,30 @@ public class EosBetaUpgradeIntegrationTest {
     private final AtomicInteger commitCounterClient2 = new AtomicInteger(-1);
     private final AtomicInteger commitRequested = new AtomicInteger(0);
 
-    private int testNumber = 0;
-    private Map<String, Integer> exceptionCounts = new HashMap<String, Integer>() {
-        {
-            put(APP_DIR_1, 0);
-            put(APP_DIR_2, 0);
-        }
-    };
+    // Note: this pattern only works when we just have a single instance running with a single thread
+    // If we want to extend the test or reuse this CommitPunctuator we should tighten it up
+    private final AtomicBoolean requestCommit = new AtomicBoolean(false);
+    private static class CommitPunctuator implements Punctuator {
+        final ProcessorContext context;
+        final AtomicBoolean requestCommit;
 
-    private volatile boolean hasUnexpectedError = false;
+        public CommitPunctuator(final ProcessorContext context, final AtomicBoolean requestCommit) {
+            this.context = context;
+            this.requestCommit = requestCommit;
+        }
+
+        @Override
+        public void punctuate(final long timestamp) {
+            if (requestCommit.get()) {
+                context.commit();
+                requestCommit.set(false);
+            }
+        }
+    }
+
+    private Throwable uncaughtException;
+
+    private int testNumber = 0;
 
     @Before
     public void createTopics() throws Exception {
@@ -181,6 +192,7 @@ public class EosBetaUpgradeIntegrationTest {
     }
 
     @Test
+    @Ignore
     public void shouldUpgradeFromEosAlphaToEosBeta() throws Exception {
         // We use two KafkaStreams clients that we upgrade from eos-alpha to eos-beta. During the upgrade,
         // we ensure that there are pending transaction and verify that data is processed correctly.
@@ -251,7 +263,7 @@ public class EosBetaUpgradeIntegrationTest {
 
         try {
             // phase 1: start both clients
-            streams1Alpha = getKafkaStreams(APP_DIR_1, StreamsConfig.EXACTLY_ONCE);
+            streams1Alpha = getKafkaStreams("appDir1", StreamsConfig.EXACTLY_ONCE);
             streams1Alpha.setStateListener(
                 (newState, oldState) -> stateTransitions1.add(KeyValue.pair(oldState, newState))
             );
@@ -262,7 +274,7 @@ public class EosBetaUpgradeIntegrationTest {
             assignmentListener.waitForNextStableAssignment(MAX_WAIT_TIME_MS);
             waitForRunning(stateTransitions1);
 
-            streams2Alpha = getKafkaStreams(APP_DIR_2, StreamsConfig.EXACTLY_ONCE);
+            streams2Alpha = getKafkaStreams("appDir2", StreamsConfig.EXACTLY_ONCE);
             streams2Alpha.setStateListener(
                 (newState, oldState) -> stateTransitions2.add(KeyValue.pair(oldState, newState))
             );
@@ -309,18 +321,16 @@ public class EosBetaUpgradeIntegrationTest {
             //   p-2: 10 rec + C ---> 5 rec (pending)
             //   p-3: 10 rec + C ---> 5 rec (pending)
             // crash case: (we just assumes that we inject the error for p-0; in reality it might be a different partition)
-            //             (we don't crash right away and write one record less)
             //   p-0: 10 rec + C ---> 4 rec (pending)
             //   p-1: 10 rec + C ---> 5 rec (pending)
             //   p-2: 10 rec + C ---> 5 rec (pending)
             //   p-3: 10 rec + C ---> 5 rec (pending)
             final Set<Long> cleanKeys = mkSet(0L, 1L, 2L, 3L);
-            final Set<Long> keysFirstClientAlpha = keysFromInstance(streams1Alpha);
-            final long firstFailingKeyForCrashCase = keysFirstClientAlpha.iterator().next();
-            cleanKeys.remove(firstFailingKeyForCrashCase);
+            final Set<Long> keyFilterFirstClient = keysFromInstance(streams1Alpha);
+            final long potentiallyFirstFailingKey = keyFilterFirstClient.iterator().next();
+            cleanKeys.remove(potentiallyFirstFailingKey);
 
             final List<KeyValue<Long, Long>> uncommittedInputDataBeforeFirstUpgrade = new LinkedList<>();
-            final HashMap<Long, Long> uncommittedState = new HashMap<>(committedState);
             if (!injectError) {
                 uncommittedInputDataBeforeFirstUpgrade.addAll(
                     prepareData(10L, 15L, 0L, 1L, 2L, 3L)
@@ -328,7 +338,7 @@ public class EosBetaUpgradeIntegrationTest {
                 writeInputData(uncommittedInputDataBeforeFirstUpgrade);
 
                 expectedUncommittedResult.addAll(
-                    computeExpectedResult(uncommittedInputDataBeforeFirstUpgrade, uncommittedState)
+                    computeExpectedResult(uncommittedInputDataBeforeFirstUpgrade, new HashMap<>(committedState))
                 );
                 verifyUncommitted(expectedUncommittedResult);
             } else {
@@ -337,7 +347,7 @@ public class EosBetaUpgradeIntegrationTest {
                     uncommittedInputDataWithoutFailingKey.addAll(prepareData(10L, 15L, key));
                 }
                 uncommittedInputDataWithoutFailingKey.addAll(
-                    prepareData(10L, 14L, firstFailingKeyForCrashCase)
+                    prepareData(10L, 14L, potentiallyFirstFailingKey)
                 );
                 uncommittedInputDataBeforeFirstUpgrade.addAll(uncommittedInputDataWithoutFailingKey);
                 writeInputData(uncommittedInputDataWithoutFailingKey);
@@ -348,20 +358,19 @@ public class EosBetaUpgradeIntegrationTest {
                 verifyUncommitted(expectedUncommittedResult);
             }
 
-            // phase 4: (stop first client)
+            // phase 4: (stop/crash first client)
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
-            // stop case: (client 1 will commit its two tasks on close())
-            //   p-0: 10 rec + C   +   5 rec ---> C
-            //   p-1: 10 rec + C   +   5 rec ---> C
-            //   p-2: 10 rec + C   +   5 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec (pending)
-            // crash case: (we write the last record that will trigger the crash; both TX from client 1 will be aborted
-            //              during fail over by client 2 and retried)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec (pending)
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec (pending)
-            //   p-2: 10 rec + C   +   5 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec (pending)
+            // stop case:
+            //   p-0: 10 rec + C + 5 rec ---> C
+            //   p-1: 10 rec + C + 5 rec ---> C
+            //   p-2: 10 rec + C + 5 rec (pending)
+            //   p-3: 10 rec + C + 5 rec (pending)
+            // crash case:
+            //   p-0: 10 rec + C + 4 rec ---> A + 5 rec (pending)
+            //   p-1: 10 rec + C + 5 rec ---> A + 5 rec (pending)
+            //   p-2: 10 rec + C + 5 rec (pending)
+            //   p-3: 10 rec + C + 5 rec (pending)
             stateTransitions2.clear();
             assignmentListener.prepareForRebalance();
 
@@ -373,7 +382,7 @@ public class EosBetaUpgradeIntegrationTest {
                 errorInjectedClient1.set(true);
 
                 final List<KeyValue<Long, Long>> dataPotentiallyFirstFailingKey =
-                    prepareData(14L, 15L, firstFailingKeyForCrashCase);
+                    prepareData(14L, 15L, potentiallyFirstFailingKey);
                 uncommittedInputDataBeforeFirstUpgrade.addAll(dataPotentiallyFirstFailingKey);
                 writeInputData(dataPotentiallyFirstFailingKey);
             }
@@ -384,7 +393,7 @@ public class EosBetaUpgradeIntegrationTest {
                 final List<KeyValue<Long, Long>> committedInputDataDuringFirstUpgrade =
                     uncommittedInputDataBeforeFirstUpgrade
                         .stream()
-                        .filter(pair -> keysFirstClientAlpha.contains(pair.key))
+                        .filter(pair -> keyFilterFirstClient.contains(pair.key))
                         .collect(Collectors.toList());
 
                 final List<KeyValue<Long, Long>> expectedCommittedResult =
@@ -395,40 +404,37 @@ public class EosBetaUpgradeIntegrationTest {
                 expectedUncommittedResult.addAll(computeExpectedResult(
                     uncommittedInputDataBeforeFirstUpgrade
                         .stream()
-                        .filter(pair -> keysFirstClientAlpha.contains(pair.key))
+                        .filter(pair -> keyFilterFirstClient.contains(pair.key))
                         .collect(Collectors.toList()),
                     new HashMap<>(committedState)
                 ));
                 verifyUncommitted(expectedUncommittedResult);
-                waitForStateTransitionContains(stateTransitions1, CRASH);
 
                 errorInjectedClient1.set(false);
                 stateTransitions1.clear();
                 streams1Alpha.close();
-                assertFalse(UNEXPECTED_EXCEPTION_MSG, hasUnexpectedError);
+                waitForStateTransition(stateTransitions1, CLOSE_CRASHED);
             }
 
             // phase 5: (restart first client)
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
-            // stop case: (client 2 (alpha) will commit the two revoked task that migrate back to client 1)
-            //            (note: we may or may not get newly committed data, depending if the already committed tasks
-            //             migrate back to client 1, or different tasks)
-            //            (below we show the case for which we don't get newly committed data)
-            //   p-0: 10 rec + C   +   5 rec ---> C
-            //   p-1: 10 rec + C   +   5 rec ---> C
-            //   p-2: 10 rec + C   +   5 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec (pending)
-            // crash case: (client 2 (alpha) will commit all tasks even only two tasks are revoked and migrate back to client 1)
-            //             (note: because nothing was committed originally, we always get newly committed data)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec ---> C
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec ---> C
-            //   p-2: 10 rec + C   +   5 rec ---> C
-            //   p-3: 10 rec + C   +   5 rec ---> C
+            // stop case:
+            //   p-0: 10 rec + C + 5 rec + C
+            //   p-1: 10 rec + C + 5 rec + C
+            //   p-2: 10 rec + C + 5 rec ---> C
+            //   p-3: 10 rec + C + 5 rec ---> C
+            // crash case:
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec ---> C
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec ---> C
+            //   p-2: 10 rec + C + 5 rec ---> C
+            //   p-3: 10 rec + C + 5 rec ---> C
+            requestCommit.set(true);
+            waitForCondition(() -> !requestCommit.get(), "Punctuator did not request commit for running client");
             commitRequested.set(0);
             stateTransitions1.clear();
             stateTransitions2.clear();
-            streams1Beta = getKafkaStreams(APP_DIR_1, StreamsConfig.EXACTLY_ONCE_BETA);
+            streams1Beta = getKafkaStreams("appDir1", StreamsConfig.EXACTLY_ONCE_BETA);
             streams1Beta.setStateListener((newState, oldState) -> stateTransitions1.add(KeyValue.pair(oldState, newState)));
             assignmentListener.prepareForRebalance();
             streams1Beta.start();
@@ -436,18 +442,15 @@ public class EosBetaUpgradeIntegrationTest {
             waitForRunning(stateTransitions1);
             waitForRunning(stateTransitions2);
 
-            final Set<Long> newlyCommittedKeys;
+            final Set<Long> committedKeys = mkSet(0L, 1L, 2L, 3L);
             if (!injectError) {
-                newlyCommittedKeys = keysFromInstance(streams1Beta);
-                newlyCommittedKeys.removeAll(keysFirstClientAlpha);
-            } else {
-                newlyCommittedKeys = mkSet(0L, 1L, 2L, 3L);
+                committedKeys.removeAll(keyFilterFirstClient);
             }
 
             final List<KeyValue<Long, Long>> expectedCommittedResultAfterRestartFirstClient = computeExpectedResult(
                 uncommittedInputDataBeforeFirstUpgrade
                     .stream()
-                    .filter(pair -> newlyCommittedKeys.contains(pair.key))
+                    .filter(pair -> committedKeys.contains(pair.key))
                     .collect(Collectors.toList()),
                 committedState
             );
@@ -456,46 +459,33 @@ public class EosBetaUpgradeIntegrationTest {
             // phase 6: (complete second batch of data; crash: let second client fail on commit)
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
-            // stop case: (both client commit regularly)
-            //            (depending on the task movement in phase 5, we may or may not get newly committed data;
-            //             we show the case for which p-2 and p-3 are newly committed below)
-            //   p-0: 10 rec + C   +   5 rec + C ---> 5 rec + C
-            //   p-1: 10 rec + C   +   5 rec + C ---> 5 rec + C
-            //   p-2: 10 rec + C   +   5 rec     ---> 5 rec + C
-            //   p-3: 10 rec + C   +   5 rec     ---> 5 rec + C
-            // crash case: (second/alpha client fails and both TX are aborted)
-            //             (first/beta client reprocessed the 10 records and commits TX)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C ---> 5 rec + C
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C ---> 5 rec + C
-            //   p-2: 10 rec + C   +   5 rec + C             ---> 5 rec + A + 5 rec + C
-            //   p-3: 10 rec + C   +   5 rec + C             ---> 5 rec + A + 5 rec + C
+            // stop case:
+            //   p-0: 10 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-1: 10 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-2: 10 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-3: 10 rec + C + 5 rec + C ---> 5 rec + C
+            // crash case:
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C ---> 5 rec + C
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C ---> 5 rec + C
+            //   p-2: 10 rec + C + 5 rec + C ---> 5 rec + A + 5 rec + C
+            //   p-3: 10 rec + C + 5 rec + C ---> 5 rec + A + 5 rec + C
             commitCounterClient1.set(0);
 
             if (!injectError) {
-                final List<KeyValue<Long, Long>> finishSecondBatch = prepareData(15L, 20L, 0L, 1L, 2L, 3L);
-                writeInputData(finishSecondBatch);
+                final List<KeyValue<Long, Long>> committedInputDataDuringUpgrade =
+                    prepareData(15L, 20L, 0L, 1L, 2L, 3L);
+                writeInputData(committedInputDataDuringUpgrade);
 
-                final List<KeyValue<Long, Long>> committedInputDataDuringUpgrade = uncommittedInputDataBeforeFirstUpgrade
-                    .stream()
-                    .filter(pair -> !keysFirstClientAlpha.contains(pair.key))
-                    .filter(pair -> !newlyCommittedKeys.contains(pair.key))
-                    .collect(Collectors.toList());
-                committedInputDataDuringUpgrade.addAll(
-                    finishSecondBatch
-                );
-
-                expectedUncommittedResult.addAll(
-                    computeExpectedResult(finishSecondBatch, uncommittedState)
-                );
                 final List<KeyValue<Long, Long>> expectedCommittedResult =
                     computeExpectedResult(committedInputDataDuringUpgrade, committedState);
                 verifyCommitted(expectedCommittedResult);
+                expectedUncommittedResult.addAll(expectedCommittedResult);
             } else {
-                final Set<Long> keysFirstClientBeta = keysFromInstance(streams1Beta);
-                final Set<Long> keysSecondClientAlpha = keysFromInstance(streams2Alpha);
+                final Set<Long> keysFirstClient = keysFromInstance(streams1Beta);
+                final Set<Long> keysSecondClient = keysFromInstance(streams2Alpha);
 
                 final List<KeyValue<Long, Long>> committedInputDataAfterFirstUpgrade =
-                    prepareData(15L, 20L, keysFirstClientBeta.toArray(new Long[0]));
+                    prepareData(15L, 20L, keysFirstClient.toArray(new Long[0]));
                 writeInputData(committedInputDataAfterFirstUpgrade);
 
                 final List<KeyValue<Long, Long>> expectedCommittedResultBeforeFailure =
@@ -505,16 +495,16 @@ public class EosBetaUpgradeIntegrationTest {
 
                 commitCounterClient2.set(0);
 
-                final Iterator<Long> it = keysSecondClientAlpha.iterator();
+                final Iterator<Long> it = keysSecondClient.iterator();
                 final Long otherKey = it.next();
                 final Long failingKey = it.next();
 
                 final List<KeyValue<Long, Long>> uncommittedInputDataAfterFirstUpgrade =
-                    prepareData(15L, 19L, keysSecondClientAlpha.toArray(new Long[0]));
+                    prepareData(15L, 19L, keysSecondClient.toArray(new Long[0]));
                 uncommittedInputDataAfterFirstUpgrade.addAll(prepareData(19L, 20L, otherKey));
                 writeInputData(uncommittedInputDataAfterFirstUpgrade);
 
-                uncommittedState.putAll(committedState);
+                final Map<Long, Long> uncommittedState = new HashMap<>(committedState);
                 expectedUncommittedResult.addAll(
                     computeExpectedResult(uncommittedInputDataAfterFirstUpgrade, uncommittedState)
                 );
@@ -538,12 +528,12 @@ public class EosBetaUpgradeIntegrationTest {
 
                 assignmentListener.waitForNextStableAssignment(MAX_WAIT_TIME_MS);
 
-                waitForStateTransitionContains(stateTransitions2, CRASH);
+                waitForStateTransition(stateTransitions2, CRASH);
 
                 commitErrorInjectedClient2.set(false);
                 stateTransitions2.clear();
                 streams2Alpha.close();
-                assertFalse(UNEXPECTED_EXCEPTION_MSG, hasUnexpectedError);
+                waitForStateTransition(stateTransitions2, CLOSE_CRASHED);
 
                 final List<KeyValue<Long, Long>> expectedCommittedResultAfterFailure =
                     computeExpectedResult(uncommittedInputDataAfterFirstUpgrade, committedState);
@@ -552,7 +542,7 @@ public class EosBetaUpgradeIntegrationTest {
             }
 
             // 7. only for crash case:
-            //     7a. restart the failed second client in eos-alpha mode and wait until rebalance stabilizes
+            //     7a. restart the second client in eos-alpha mode and wait until rebalance stabilizes
             //     7b. write third batch of input data
             //         * fail the first (i.e., eos-beta) client during commit
             //         * the eos-alpha client should not pickup the pending offsets
@@ -560,10 +550,10 @@ public class EosBetaUpgradeIntegrationTest {
             //     7c. restart the first client in eos-beta mode and wait until rebalance stabilizes
             //
             // crash case:
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C + 5 rec + C ---> 10 rec + A + 10 rec + C
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C + 5 rec + C ---> 10 rec + A + 10 rec + C
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C ---> 10 rec + C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C ---> 10 rec + C
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C + 5 rec + C ---> 10 rec + A + 10 rec + C
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C + 5 rec + C ---> 10 rec + A + 10 rec + C
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C ---> 10 rec + C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C ---> 10 rec + C
             if (!injectError) {
                 streams2AlphaTwo = streams2Alpha;
             } else {
@@ -572,7 +562,7 @@ public class EosBetaUpgradeIntegrationTest {
                 commitCounterClient2.set(-1);
                 stateTransitions1.clear();
                 stateTransitions2.clear();
-                streams2AlphaTwo = getKafkaStreams(APP_DIR_2, StreamsConfig.EXACTLY_ONCE);
+                streams2AlphaTwo = getKafkaStreams("appDir2", StreamsConfig.EXACTLY_ONCE);
                 streams2AlphaTwo.setStateListener(
                     (newState, oldState) -> stateTransitions2.add(KeyValue.pair(oldState, newState))
                 );
@@ -583,11 +573,11 @@ public class EosBetaUpgradeIntegrationTest {
                 waitForRunning(stateTransitions2);
 
                 // 7b. write third batch of input data
-                final Set<Long> keysFirstClientBeta = keysFromInstance(streams1Beta);
-                final Set<Long> keysSecondClientAlphaTwo = keysFromInstance(streams2AlphaTwo);
+                final Set<Long> keysFirstClient = keysFromInstance(streams1Beta);
+                final Set<Long> keysSecondClient = keysFromInstance(streams2AlphaTwo);
 
                 final List<KeyValue<Long, Long>> committedInputDataBetweenUpgrades =
-                    prepareData(20L, 30L, keysSecondClientAlphaTwo.toArray(new Long[0]));
+                    prepareData(20L, 30L, keysSecondClient.toArray(new Long[0]));
                 writeInputData(committedInputDataBetweenUpgrades);
 
                 final List<KeyValue<Long, Long>> expectedCommittedResultBeforeFailure =
@@ -597,16 +587,16 @@ public class EosBetaUpgradeIntegrationTest {
 
                 commitCounterClient2.set(0);
 
-                final Iterator<Long> it = keysFirstClientBeta.iterator();
+                final Iterator<Long> it = keysFirstClient.iterator();
                 final Long otherKey = it.next();
                 final Long failingKey = it.next();
 
                 final List<KeyValue<Long, Long>> uncommittedInputDataBetweenUpgrade =
-                    prepareData(20L, 29L, keysFirstClientBeta.toArray(new Long[0]));
+                    prepareData(20L, 29L, keysFirstClient.toArray(new Long[0]));
                 uncommittedInputDataBetweenUpgrade.addAll(prepareData(29L, 30L, otherKey));
                 writeInputData(uncommittedInputDataBetweenUpgrade);
 
-                uncommittedState.putAll(committedState);
+                final Map<Long, Long> uncommittedState = new HashMap<>(committedState);
                 expectedUncommittedResult.addAll(
                     computeExpectedResult(uncommittedInputDataBetweenUpgrade, uncommittedState)
                 );
@@ -628,13 +618,12 @@ public class EosBetaUpgradeIntegrationTest {
                 verifyUncommitted(expectedUncommittedResult);
 
                 assignmentListener.waitForNextStableAssignment(MAX_WAIT_TIME_MS);
-
-                waitForStateTransitionContains(stateTransitions1, CRASH);
+                waitForStateTransition(stateTransitions1, CRASH);
 
                 commitErrorInjectedClient1.set(false);
                 stateTransitions1.clear();
                 streams1Beta.close();
-                assertFalse(UNEXPECTED_EXCEPTION_MSG, hasUnexpectedError);
+                waitForStateTransition(stateTransitions1, CLOSE_CRASHED);
 
                 final List<KeyValue<Long, Long>> expectedCommittedResultAfterFailure =
                     computeExpectedResult(uncommittedInputDataBetweenUpgrade, committedState);
@@ -644,7 +633,7 @@ public class EosBetaUpgradeIntegrationTest {
                 // 7c. restart the first client in eos-beta mode and wait until rebalance stabilizes
                 stateTransitions1.clear();
                 stateTransitions2.clear();
-                streams1BetaTwo = getKafkaStreams(APP_DIR_1, StreamsConfig.EXACTLY_ONCE_BETA);
+                streams1BetaTwo = getKafkaStreams("appDir1", StreamsConfig.EXACTLY_ONCE_BETA);
                 streams1BetaTwo.setStateListener((newState, oldState) -> stateTransitions1.add(KeyValue.pair(oldState, newState)));
                 assignmentListener.prepareForRebalance();
                 streams1BetaTwo.start();
@@ -653,24 +642,23 @@ public class EosBetaUpgradeIntegrationTest {
                 waitForRunning(stateTransitions2);
             }
 
-            // phase 8: (write partial last batch of data)
+            // phase 8: (write partial fourth batch of data)
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
             // stop case:
-            //   p-0: 10 rec + C   +   5 rec + C + 5 rec + C ---> 5 rec (pending)
-            //   p-1: 10 rec + C   +   5 rec + C + 5 rec + C ---> 5 rec (pending)
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + C ---> 5 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + C ---> 5 rec (pending)
-            // crash case: (we just assumes that we inject the error for p-2; in reality it might be a different partition)
-            //             (we don't crash right away and write one record less)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C ---> 5 rec (pending)
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C ---> 5 rec (pending)
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C              ---> 4 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C              ---> 5 rec (pending)
+            //   p-0: 10 rec + C + 5 rec + C + 5 rec + C ---> 5 rec (pending)
+            //   p-1: 10 rec + C + 5 rec + C + 5 rec + C ---> 5 rec (pending)
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + C ---> 5 rec (pending)
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + C ---> 5 rec (pending)
+            // crash case:  (we just assumes that we inject the error for p-2; in reality it might be a different partition)
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C ---> 5 rec (pending)
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C ---> 5 rec (pending)
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C ---> 4 rec (pending)
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C ---> 5 rec (pending)
             cleanKeys.addAll(mkSet(0L, 1L, 2L, 3L));
-            final Set<Long> keysSecondClientAlphaTwo = keysFromInstance(streams2AlphaTwo);
-            final long secondFailingKeyForCrashCase = keysSecondClientAlphaTwo.iterator().next();
-            cleanKeys.remove(secondFailingKeyForCrashCase);
+            final Set<Long> keyFilterSecondClient = keysFromInstance(streams2AlphaTwo);
+            final long potentiallySecondFailingKey = keyFilterSecondClient.iterator().next();
+            cleanKeys.remove(potentiallySecondFailingKey);
 
             final List<KeyValue<Long, Long>> uncommittedInputDataBeforeSecondUpgrade = new LinkedList<>();
             if (!injectError) {
@@ -689,7 +677,7 @@ public class EosBetaUpgradeIntegrationTest {
                     uncommittedInputDataWithoutFailingKey.addAll(prepareData(30L, 35L, key));
                 }
                 uncommittedInputDataWithoutFailingKey.addAll(
-                    prepareData(30L, 34L, secondFailingKeyForCrashCase)
+                    prepareData(30L, 34L, potentiallySecondFailingKey)
                 );
                 uncommittedInputDataBeforeSecondUpgrade.addAll(uncommittedInputDataWithoutFailingKey);
                 writeInputData(uncommittedInputDataWithoutFailingKey);
@@ -703,17 +691,16 @@ public class EosBetaUpgradeIntegrationTest {
             // phase 9: (stop/crash second client)
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
-            // stop case: (client 2 (alpha) will commit its two tasks on close())
-            //   p-0: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec (pending)
-            //   p-1: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec (pending)
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec ---> C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec ---> C
-            // crash case: (we write the last record that will trigger the crash; both TX from client 2 will be aborted
-            //              during fail over by client 1 and retried)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec (pending)
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec (pending)
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   4 rec ---> A + 5 rec (pending)
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   5 rec ---> A + 5 rec (pending)
+            // stop case:
+            //   p-0: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec (pending)
+            //   p-1: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec (pending)
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec ---> C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec ---> C
+            // crash case:  (we just assumes that we inject the error for p-2; in reality it might be a different partition)
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec (pending)
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec (pending)
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 4 rec ---> A + 5 rec (pending)
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 5 rec ---> A + 5 rec (pending)
             stateTransitions1.clear();
             assignmentListener.prepareForRebalance();
             if (!injectError) {
@@ -724,7 +711,7 @@ public class EosBetaUpgradeIntegrationTest {
                 errorInjectedClient2.set(true);
 
                 final List<KeyValue<Long, Long>> dataPotentiallySecondFailingKey =
-                    prepareData(34L, 35L, secondFailingKeyForCrashCase);
+                    prepareData(34L, 35L, potentiallySecondFailingKey);
                 uncommittedInputDataBeforeSecondUpgrade.addAll(dataPotentiallySecondFailingKey);
                 writeInputData(dataPotentiallySecondFailingKey);
             }
@@ -735,7 +722,7 @@ public class EosBetaUpgradeIntegrationTest {
                 final List<KeyValue<Long, Long>> committedInputDataDuringSecondUpgrade =
                     uncommittedInputDataBeforeSecondUpgrade
                         .stream()
-                        .filter(pair -> keysSecondClientAlphaTwo.contains(pair.key))
+                        .filter(pair -> keyFilterSecondClient.contains(pair.key))
                         .collect(Collectors.toList());
 
                 final List<KeyValue<Long, Long>> expectedCommittedResult =
@@ -746,17 +733,16 @@ public class EosBetaUpgradeIntegrationTest {
                 expectedUncommittedResult.addAll(computeExpectedResult(
                     uncommittedInputDataBeforeSecondUpgrade
                         .stream()
-                        .filter(pair -> keysSecondClientAlphaTwo.contains(pair.key))
+                        .filter(pair -> keyFilterSecondClient.contains(pair.key))
                         .collect(Collectors.toList()),
                     new HashMap<>(committedState)
                 ));
                 verifyUncommitted(expectedUncommittedResult);
-                waitForStateTransitionContains(stateTransitions2, CRASH);
 
                 errorInjectedClient2.set(false);
                 stateTransitions2.clear();
                 streams2AlphaTwo.close();
-                assertFalse(UNEXPECTED_EXCEPTION_MSG, hasUnexpectedError);
+                waitForStateTransition(stateTransitions2, CLOSE_CRASHED);
             }
 
             // phase 10: (restart second client)
@@ -765,20 +751,22 @@ public class EosBetaUpgradeIntegrationTest {
             // the state below indicate the case for which the "original" tasks of client2 are migrated back to client2
             // if a task "switch" happens, we might get additional commits (omitted in the comment for brevity)
             //
-            // stop case: (client 1 (beta) will commit all four tasks if at least one revoked and migrate task needs committing back to client 2)
-            //   p-0: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec ---> C
-            //   p-1: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec ---> C
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C
-            // crash case: (client 1 (beta) will commit all four tasks even only two are migrate back to client 2)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec ---> C
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec ---> C
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   4 rec + A + 5 rec ---> C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   5 rec + A + 5 rec ---> C
+            // stop case:
+            //   p-0: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec ---> C
+            //   p-1: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec ---> C
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C
+            // crash case:  (we just assumes that we inject the error for p-2; in reality it might be a different partition)
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec ---> C
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec ---> C
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 4 rec + A + 5 rec ---> C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 5 rec + A + 5 rec ---> C
+            requestCommit.set(true);
+            waitForCondition(() -> !requestCommit.get(), "Punctuator did not request commit for running client");
             commitRequested.set(0);
             stateTransitions1.clear();
             stateTransitions2.clear();
-            streams2Beta = getKafkaStreams(APP_DIR_1, StreamsConfig.EXACTLY_ONCE_BETA);
+            streams2Beta = getKafkaStreams("appDir1", StreamsConfig.EXACTLY_ONCE_BETA);
             streams2Beta.setStateListener(
                 (newState, oldState) -> stateTransitions2.add(KeyValue.pair(oldState, newState))
             );
@@ -788,18 +776,15 @@ public class EosBetaUpgradeIntegrationTest {
             waitForRunning(stateTransitions1);
             waitForRunning(stateTransitions2);
 
-            newlyCommittedKeys.clear();
+            committedKeys.addAll(mkSet(0L, 1L, 2L, 3L));
             if (!injectError) {
-                newlyCommittedKeys.addAll(keysFromInstance(streams2Beta));
-                newlyCommittedKeys.removeAll(keysSecondClientAlphaTwo);
-            } else {
-                newlyCommittedKeys.addAll(mkSet(0L, 1L, 2L, 3L));
+                committedKeys.removeAll(keyFilterSecondClient);
             }
 
             final List<KeyValue<Long, Long>> expectedCommittedResultAfterRestartSecondClient = computeExpectedResult(
                 uncommittedInputDataBeforeSecondUpgrade
                     .stream()
-                    .filter(pair -> newlyCommittedKeys.contains(pair.key))
+                    .filter(pair -> committedKeys.contains(pair.key))
                     .collect(Collectors.toList()),
                 committedState
             );
@@ -809,35 +794,24 @@ public class EosBetaUpgradeIntegrationTest {
             // expected end state per output partition (C == COMMIT; A == ABORT; ---> indicate the changes):
             //
             // stop case:
-            //   p-0: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C ---> 5 rec + C
-            //   p-1: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C ---> 5 rec + C
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C ---> 5 rec + C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + C   +   5 rec + C ---> 5 rec + C
+            //   p-0: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-1: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + C + 5 rec + C ---> 5 rec + C
             // crash case:  (we just assumes that we inject the error for p-2; in reality it might be a different partition)
-            //   p-0: 10 rec + C   +   4 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec + C             ---> 5 rec + C
-            //   p-1: 10 rec + C   +   5 rec + A + 5 rec + C + 5 rec + C   +   10 rec + A + 10 rec + C   +   5 rec + C             ---> 5 rec + C
-            //   p-2: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   4 rec + A + 5 rec + C ---> 5 rec + C
-            //   p-3: 10 rec + C   +   5 rec + C + 5 rec + A + 5 rec + C   +   10 rec + C                +   5 rec + A + 5 rec + C ---> 5 rec + C
+            //   p-0: 10 rec + C + 4 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-1: 10 rec + C + 5 rec + A + 5 rec + C + 5 rec + C + 10 rec + A + 10 rec + C + 5 rec + C ---> 5 rec + C
+            //   p-2: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 4 rec + A + 5 rec + C ---> 5 rec + C
+            //   p-3: 10 rec + C + 5 rec + C + 5 rec + A + 5 rec + C + 10 rec + C + 5 rec + A + 5 rec + C ---> 5 rec + C
             commitCounterClient1.set(-1);
             commitCounterClient2.set(-1);
 
-            final List<KeyValue<Long, Long>> finishLastBatch =
+            final List<KeyValue<Long, Long>> committedInputDataAfterUpgrade =
                 prepareData(35L, 40L, 0L, 1L, 2L, 3L);
-            writeInputData(finishLastBatch);
-
-            final Set<Long> uncommittedKeys = mkSet(0L, 1L, 2L, 3L);
-            uncommittedKeys.removeAll(keysSecondClientAlphaTwo);
-            uncommittedKeys.removeAll(newlyCommittedKeys);
-            final List<KeyValue<Long, Long>> committedInputDataDuringUpgrade = uncommittedInputDataBeforeSecondUpgrade
-                .stream()
-                .filter(pair -> uncommittedKeys.contains(pair.key))
-                .collect(Collectors.toList());
-            committedInputDataDuringUpgrade.addAll(
-                finishLastBatch
-            );
+            writeInputData(committedInputDataAfterUpgrade);
 
             final List<KeyValue<Long, Long>> expectedCommittedResult =
-                computeExpectedResult(committedInputDataDuringUpgrade, committedState);
+                computeExpectedResult(committedInputDataAfterUpgrade, committedState);
             verifyCommitted(expectedCommittedResult);
         } finally {
             if (streams1Alpha != null) {
@@ -882,19 +856,25 @@ public class EosBetaUpgradeIntegrationTest {
                     KeyValueStore<Long, Long> state = null;
                     AtomicBoolean crash;
                     AtomicInteger sharedCommit;
+                    Cancellable punctuator;
 
                     @Override
                     public void init(final ProcessorContext context) {
                         this.context = context;
                         state = (KeyValueStore<Long, Long>) context.getStateStore(storeName);
                         final String clientId = context.appConfigs().get(StreamsConfig.CLIENT_ID_CONFIG).toString();
-                        if (APP_DIR_1.equals(clientId)) {
+                        if ("appDir1".equals(clientId)) {
                             crash = errorInjectedClient1;
                             sharedCommit = commitCounterClient1;
                         } else {
                             crash = errorInjectedClient2;
                             sharedCommit = commitCounterClient2;
                         }
+                        punctuator = context.schedule(
+                            Duration.ofMillis(100),
+                            PunctuationType.WALL_CLOCK_TIME,
+                            new CommitPunctuator(context, requestCommit)
+                        );
                     }
 
                     @Override
@@ -927,7 +907,9 @@ public class EosBetaUpgradeIntegrationTest {
                     }
 
                     @Override
-                    public void close() {}
+                    public void close() {
+                        punctuator.cancel();
+                    }
                 };
             } }, storeNames)
             .to(MULTI_PARTITION_OUTPUT_TOPIC);
@@ -936,12 +918,11 @@ public class EosBetaUpgradeIntegrationTest {
         properties.put(StreamsConfig.CLIENT_ID_CONFIG, appDir);
         properties.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, processingGuarantee);
         properties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, Long.MAX_VALUE);
-        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.METADATA_MAX_AGE_CONFIG), Duration.ofSeconds(1L).toMillis());
+        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.METADATA_MAX_AGE_CONFIG), "1000");
         properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG), "earliest");
-        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG), (int) Duration.ofSeconds(5L).toMillis());
-        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), (int) Duration.ofSeconds(5L).minusMillis(1L).toMillis());
+        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG), 5 * 1000);
+        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), 5 * 1000 - 1);
         properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG), MAX_POLL_INTERVAL_MS);
-        properties.put(StreamsConfig.producerPrefix(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG), (int) Duration.ofMinutes(1L).toMillis());
         properties.put(StreamsConfig.producerPrefix(ProducerConfig.PARTITIONER_CLASS_CONFIG), KeyPartitioner.class);
         properties.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
         properties.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory().getPath() + File.separator + appDir);
@@ -956,24 +937,13 @@ public class EosBetaUpgradeIntegrationTest {
         );
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), config, new TestKafkaClientSupplier());
-        streams.setUncaughtExceptionHandler(e -> {
-            if (!injectError) {
-                // we don't expect any exception thrown in stop case
+
+        streams.setUncaughtExceptionHandler((t, e) -> {
+            if (uncaughtException != null) {
                 e.printStackTrace(System.err);
-                hasUnexpectedError = true;
-            } else {
-                int exceptionCount = (int) exceptionCounts.get(appDir);
-                // should only have our injected exception or commit exception, and 2 exceptions for each stream
-                if (++exceptionCount > 2 || !(e instanceof RuntimeException) ||
-                    !(e.getMessage().contains("test exception"))) {
-                    // The exception won't cause the test fail since we actually "expected" exception thrown and failed the stream.
-                    // So, log to stderr for debugging when the exception is not what we expected, and fail in the main thread
-                    e.printStackTrace(System.err);
-                    hasUnexpectedError = true;
-                }
-                exceptionCounts.put(appDir, exceptionCount);
+                fail("Should only get one uncaught exception from Streams.");
             }
-            return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
+            uncaughtException = e;
         });
 
         return streams;
@@ -994,20 +964,7 @@ public class EosBetaUpgradeIntegrationTest {
         waitForCondition(
             () -> observed.equals(expected),
             MAX_WAIT_TIME_MS,
-            () -> "Client did not have the expected state transition on time. Observers transitions: " + observed
-                    + "Expected transitions: " + expected
-        );
-    }
-
-    private void waitForStateTransitionContains(final List<KeyValue<KafkaStreams.State, KafkaStreams.State>> observed,
-                                                final List<KeyValue<KafkaStreams.State, KafkaStreams.State>> expected)
-            throws Exception {
-
-        waitForCondition(
-            () -> observed.containsAll(expected),
-            MAX_WAIT_TIME_MS,
-            () -> "Client did not have the expected state transition on time. Observers transitions: " + observed
-                    + "Expected transitions: " + expected
+            () -> "Client did not startup on time. Observers transitions: " + observed
         );
     }
 
@@ -1065,8 +1022,7 @@ public class EosBetaUpgradeIntegrationTest {
                     )
                 ),
                 MULTI_PARTITION_OUTPUT_TOPIC,
-                numberOfRecords,
-                MAX_WAIT_TIME_MS
+                numberOfRecords
             );
         }
 
@@ -1085,15 +1041,7 @@ public class EosBetaUpgradeIntegrationTest {
         addAllKeys(allKeys, expectedResult);
 
         for (final Long key : allKeys) {
-            try {
-                assertThat(getAllRecordPerKey(key, result), equalTo(getAllRecordPerKey(key, expectedResult)));
-            } catch (final AssertionError error) {
-                throw new AssertionError(
-                    "expected result: " + expectedResult.stream().map(KeyValue::toString).collect(Collectors.joining(", ")) +
-                    "\nreceived records: " + result.stream().map(KeyValue::toString).collect(Collectors.joining(", ")),
-                    error
-                );
-            }
+            assertThat(getAllRecordPerKey(key, result), equalTo(getAllRecordPerKey(key, expectedResult)));
         }
     }
 
@@ -1129,27 +1077,18 @@ public class EosBetaUpgradeIntegrationTest {
     }
 
     private Set<Long> keysFromInstance(final KafkaStreams streams) throws Exception {
-        final Set<Long> keys = new HashSet<>();
-        waitForCondition(
-            () -> {
-                final ReadOnlyKeyValueStore<Long, Long> store = streams.store(
-                    StoreQueryParameters.fromNameAndType(storeName, QueryableStoreTypes.keyValueStore())
-                );
-
-                keys.clear();
-                try (final KeyValueIterator<Long, Long> it = store.all()) {
-                    while (it.hasNext()) {
-                        final KeyValue<Long, Long> row = it.next();
-                        keys.add(row.key);
-                    }
-                }
-
-                return true;
-            },
+        final ReadOnlyKeyValueStore<Long, Long> store = getStore(
             MAX_WAIT_TIME_MS,
-            "Could not get keys from store: " + storeName
+            streams,
+            StoreQueryParameters.fromNameAndType(storeName, QueryableStoreTypes.keyValueStore())
         );
-
+        final Set<Long> keys = new HashSet<>();
+        try (final KeyValueIterator<Long, Long> it = store.all()) {
+            while (it.hasNext()) {
+                final KeyValue<Long, Long> row = it.next();
+                keys.add(row.key);
+            }
+        }
         return keys;
     }
 
@@ -1187,7 +1126,7 @@ public class EosBetaUpgradeIntegrationTest {
         public ErrorInjector(final Map<String, Object> configs) {
             super(configs, new ByteArraySerializer(), new ByteArraySerializer());
             final String clientId = configs.get(ProducerConfig.CLIENT_ID_CONFIG).toString();
-            if (clientId.contains(APP_DIR_1)) {
+            if (clientId.contains("appDir1")) {
                 crash = commitErrorInjectedClient1;
             } else {
                 crash = commitErrorInjectedClient2;
@@ -1195,12 +1134,12 @@ public class EosBetaUpgradeIntegrationTest {
         }
 
         @Override
-        public void commitTransaction() {
+        public void commitTransaction() throws ProducerFencedException {
             super.flush(); // we flush to ensure that the offsets are written
             if (!crash.compareAndSet(true, false)) {
                 super.commitTransaction();
             } else {
-                throw new RuntimeException("Injected producer commit test exception.");
+                throw new RuntimeException("Injected producer commit exception.");
             }
         }
     }

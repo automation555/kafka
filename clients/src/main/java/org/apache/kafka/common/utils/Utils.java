@@ -23,7 +23,6 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.network.TransferableChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +71,8 @@ import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collector;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -82,7 +83,7 @@ public final class Utils {
 
     // This matches URIs of formats: host:port and protocol:\\host:port
     // IPv6 is supported with [ip] pattern
-    private static final Pattern HOST_PORT_PATTERN = Pattern.compile(".*?\\[?([0-9a-zA-Z\\-%._:]*)\\]?:([0-9]+)");
+    private static final Pattern HOST_PORT_PATTERN = Pattern.compile("(.*?)\\[?([0-9a-zA-Z\\-%._:]*)\\]?:([0-9]+)");
 
     private static final Pattern VALID_HOST_CHARACTERS = Pattern.compile("([0-9a-zA-Z\\-%._:]*)");
 
@@ -480,7 +481,13 @@ public final class Utils {
      */
     public static String getHost(String address) {
         Matcher matcher = HOST_PORT_PATTERN.matcher(address);
-        return matcher.matches() ? matcher.group(1) : null;
+        if (matcher.matches()) {
+            if (!matcher.group(1).isEmpty()) {
+                log.warn("Address '" + address + "' should be in host:port format, but includes a protocol part. Using a protocol here will be an error in a future release.");
+            }
+            return matcher.group(2);
+        }
+        return null;
     }
 
     /**
@@ -490,7 +497,13 @@ public final class Utils {
      */
     public static Integer getPort(String address) {
         Matcher matcher = HOST_PORT_PATTERN.matcher(address);
-        return matcher.matches() ? Integer.parseInt(matcher.group(2)) : null;
+        if (matcher.matches()) {
+            if (!matcher.group(1).isEmpty()) {
+                log.warn("Address '" + address + "' should be in host:port format, but includes a protocol part. Using a protocol here will be an error in a future release.");
+            }
+            return Integer.parseInt(matcher.group(3));
+        }
+        return null;
     }
 
     /**
@@ -779,7 +792,21 @@ public final class Utils {
      * @param properties A map of properties to add
      * @return The properties object
      */
-    public static Properties mkProperties(final Map<String, Object> properties) {
+    public static Properties mkProperties(final Map<String, String> properties) {
+        final Properties result = new Properties();
+        for (final Map.Entry<String, String> entry : properties.entrySet()) {
+            result.setProperty(entry.getKey(), entry.getValue());
+        }
+        return result;
+    }
+
+    /**
+     * Creates a {@link Properties} from a map
+     *
+     * @param properties A map of properties to add
+     * @return The properties object
+     */
+    public static Properties mkObjectProperties(final Map<String, Object> properties) {
         final Properties result = new Properties();
         for (final Map.Entry<String, Object> entry : properties.entrySet()) {
             result.put(entry.getKey(), entry.getValue());
@@ -843,6 +870,15 @@ public final class Utils {
                 return FileVisitResult.CONTINUE;
             }
         });
+    }
+
+    /**
+     * Returns an empty collection if this list is null
+     * @param other
+     * @return
+     */
+    public static <T> List<T> safe(List<T> other) {
+        return other == null ? Collections.emptyList() : other;
     }
 
    /**
@@ -910,6 +946,18 @@ public final class Utils {
     }
 
     /**
+     * An {@link AutoCloseable} interface without a throws clause in the signature
+     *
+     * This is used with lambda expressions in try-with-resources clauses
+     * to avoid casting un-checked exceptions to checked exceptions unnecessarily.
+     */
+    @FunctionalInterface
+    public interface UncheckedCloseable extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    /**
      * Closes {@code closeable} and if an exception is thrown, it is logged at the WARN level.
      */
     public static void closeQuietly(AutoCloseable closeable, String name) {
@@ -946,7 +994,7 @@ public final class Utils {
     /**
      * A cheap way to deterministically convert a number to a positive value. When the input is
      * positive, the original value is returned. When the input number is negative, the returned
-     * positive value is the original value bit AND against 0x7fffffff which is not its absolute
+     * positive value is the original value bit AND against 0x7fffffff which is not its absolutely
      * value.
      *
      * Note: changing this method in the future will possibly cause partition selection not to be
@@ -1041,7 +1089,7 @@ public final class Utils {
      *
      * @throws IOException If an I/O error occurs
      */
-    public static void readFully(InputStream inputStream, ByteBuffer destinationBuffer) throws IOException {
+    public static final void readFully(InputStream inputStream, ByteBuffer destinationBuffer) throws IOException {
         if (!destinationBuffer.hasArray())
             throw new IllegalArgumentException("destinationBuffer must be backed by an array");
         int initialOffset = destinationBuffer.arrayOffset() + destinationBuffer.position();
@@ -1060,29 +1108,6 @@ public final class Utils {
     public static void writeFully(FileChannel channel, ByteBuffer sourceBuffer) throws IOException {
         while (sourceBuffer.hasRemaining())
             channel.write(sourceBuffer);
-    }
-
-    /**
-     * Trying to write data in source buffer to a {@link TransferableChannel}, we may need to call this method multiple
-     * times since this method doesn't ensure the data in the source buffer can be fully written to the destination channel.
-     *
-     * @param destChannel The destination channel
-     * @param position From which the source buffer will be written
-     * @param length The max size of bytes can be written
-     * @param sourceBuffer The source buffer
-     *
-     * @return The length of the actual written data
-     * @throws IOException If an I/O error occurs
-     */
-    public static long tryWriteTo(TransferableChannel destChannel,
-                                  int position,
-                                  int length,
-                                  ByteBuffer sourceBuffer) throws IOException {
-
-        ByteBuffer dup = sourceBuffer.duplicate();
-        dup.position(position);
-        dup.limit(position + length);
-        return destChannel.write(dup);
     }
 
     /**
@@ -1114,6 +1139,15 @@ public final class Utils {
         return res;
     }
 
+    public static <T> List<T> concatListsUnmodifiable(List<T> left, List<T> right) {
+        return concatLists(left, right, Collections::unmodifiableList);
+    }
+
+    public static <T> List<T> concatLists(List<T> left, List<T> right, Function<List<T>, List<T>> finisher) {
+        return Stream.concat(left.stream(), right.stream())
+                .collect(Collectors.collectingAndThen(Collectors.toList(), finisher));
+    }
+
     public static int to32BitField(final Set<Byte> bytes) {
         int value = 0;
         for (final byte b : bytes)
@@ -1137,6 +1171,18 @@ public final class Utils {
             count++;
         }
         return result;
+    }
+
+    public static <K1, V1, K2, V2> Map<K2, V2> transformMap(
+            Map<? extends K1, ? extends V1> map,
+            Function<K1, K2> keyMapper,
+            Function<V1, V2> valueMapper) {
+        return map.entrySet().stream().collect(
+            Collectors.toMap(
+                entry -> keyMapper.apply(entry.getKey()),
+                entry -> valueMapper.apply(entry.getValue())
+            )
+        );
     }
 
     /**
@@ -1275,14 +1321,5 @@ public final class Utils {
     @SuppressWarnings("unchecked")
     public static <S> Iterator<S> covariantCast(Iterator<? extends S> iterator) {
         return (Iterator<S>) iterator;
-    }
-
-    /**
-     * Checks if a string is null, empty or whitespace only.
-     * @param str a string to be checked
-     * @return true if the string is null, empty or whitespace only; otherwise, return false.
-     */    
-    public static boolean isBlank(String str) {
-        return str == null || str.trim().isEmpty();
     }
 }

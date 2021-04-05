@@ -26,7 +26,7 @@ import javax.rmi.ssl.SslRMIClientSocketFactory
 
 import joptsimple.OptionParser
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.math._
 import kafka.utils.{CommandLineUtils, Exit, Logging}
@@ -51,7 +51,7 @@ object JmxTool extends Logging {
         .describedAs("name")
         .ofType(classOf[String])
     val attributesOpt =
-      parser.accepts("attributes", "The list of attributes to include in the query. This is a comma-separated list. If no " +
+      parser.accepts("attributes", "The whitelist of attributes to query. This is a comma-separated list. If no " +
         "attributes are specified all objects will be queried.")
         .withRequiredArg
         .describedAs("name")
@@ -95,6 +95,18 @@ object JmxTool extends Logging {
       .defaultsTo(false)
     val waitOpt = parser.accepts("wait", "Wait for requested JMX objects to become available before starting output. " +
       "Only supported when the list of objects is non-empty and contains no object name patterns.")
+    val waitTimeoutOpt = parser.accepts("wait-timeout", "In milliseconds, how long to wait for requested JMX objects. " +
+      "Only applies when '--wait' flag is specified.")
+      .withOptionalArg
+      .describedAs("ms")
+      .ofType(classOf[java.lang.Integer])
+      .defaultsTo(10000)
+    val waitBackoffOpt = parser.accepts("wait-backoff", "In milliseconds, the wait interval in between queries for requested JMX objects. " +
+      "Only applies when '--wait' flag is specified.")
+      .withOptionalArg
+      .describedAs("ms")
+      .ofType(classOf[java.lang.Integer])
+      .defaultsTo(100)
     val helpOpt = parser.accepts("help", "Print usage information.")
 
 
@@ -111,11 +123,13 @@ object JmxTool extends Logging {
     val url = new JMXServiceURL(options.valueOf(jmxServiceUrlOpt))
     val interval = options.valueOf(reportingIntervalOpt).intValue
     val oneTime = interval < 0 || options.has(oneTimeOpt)
-    val attributesIncludeExists = options.has(attributesOpt)
-    val attributesInclude = if(attributesIncludeExists) Some(options.valueOf(attributesOpt).split(",").filterNot(_.equals(""))) else None
+    val attributesWhitelistExists = options.has(attributesOpt)
+    val attributesWhitelist = if(attributesWhitelistExists) Some(options.valueOf(attributesOpt).split(",").filterNot(_.equals(""))) else None
     val dateFormatExists = options.has(dateFormatOpt)
     val dateFormat = if(dateFormatExists) Some(new SimpleDateFormat(options.valueOf(dateFormatOpt))) else None
     val wait = options.has(waitOpt)
+    val waitTimeoutMs = options.valueOf(waitTimeoutOpt).intValue
+    val waitBackoffMs = options.valueOf(waitBackoffOpt).intValue
 
     val reportFormat = parseFormat(options.valueOf(reportFormatOpt).toLowerCase)
     val reportFormatOriginal = reportFormat.equals("original")
@@ -170,13 +184,12 @@ object JmxTool extends Logging {
     var names: Iterable[ObjectName] = null
     def namesSet = Option(names).toSet.flatten
     def foundAllObjects = queries.toSet == namesSet
-    val waitTimeoutMs = 10000
     if (!hasPatternQueries) {
       val start = System.currentTimeMillis
       do {
         if (names != null) {
           System.err.println("Could not find all object names, retrying")
-          Thread.sleep(100)
+          Thread.sleep(waitBackoffMs)
         }
         names = queries.flatMap((name: ObjectName) => mbsc.queryNames(name, null).asScala)
       } while (wait && System.currentTimeMillis - start < waitTimeoutMs && !foundAllObjects)
@@ -190,7 +203,7 @@ object JmxTool extends Logging {
     }
 
     val numExpectedAttributes: Map[ObjectName, Int] =
-      if (!attributesIncludeExists)
+      if (!attributesWhitelistExists)
         names.map{name: ObjectName =>
           val mbean = mbsc.getMBeanInfo(name)
           (name, mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).size)}.toMap
@@ -200,10 +213,10 @@ object JmxTool extends Logging {
             val mbean = mbsc.getMBeanInfo(name)
             val attributes = mbsc.getAttributes(name, mbean.getAttributes.map(_.getName))
             val expectedAttributes = attributes.asScala.asInstanceOf[mutable.Buffer[Attribute]]
-              .filter(attr => attributesInclude.get.contains(attr.getName))
+              .filter(attr => attributesWhitelist.get.contains(attr.getName))
             (name, expectedAttributes.size)}.toMap.filter(_._2 > 0)
         else
-          queries.map((_, attributesInclude.get.length)).toMap
+          queries.map((_, attributesWhitelist.get.length)).toMap
       }
 
     if(numExpectedAttributes.isEmpty) {
@@ -211,7 +224,7 @@ object JmxTool extends Logging {
     }
 
     // print csv header
-    val keys = List("time") ++ queryAttributes(mbsc, names, attributesInclude).keys.toArray.sorted
+    val keys = List("time") ++ queryAttributes(mbsc, names, attributesWhitelist).keys.toArray.sorted
     if(reportFormatOriginal && keys.size == numExpectedAttributes.values.sum + 1) {
       println(keys.map("\"" + _ + "\"").mkString(","))
     }
@@ -219,7 +232,7 @@ object JmxTool extends Logging {
     var keepGoing = true
     while (keepGoing) {
       val start = System.currentTimeMillis
-      val attributes = queryAttributes(mbsc, names, attributesInclude)
+      val attributes = queryAttributes(mbsc, names, attributesWhitelist)
       attributes("time") = dateFormat match {
         case Some(dFormat) => dFormat.format(new Date)
         case None => System.currentTimeMillis().toString
@@ -249,17 +262,17 @@ object JmxTool extends Logging {
     }
   }
 
-  def queryAttributes(mbsc: MBeanServerConnection, names: Iterable[ObjectName], attributesInclude: Option[Array[String]]): mutable.Map[String, Any] = {
+  def queryAttributes(mbsc: MBeanServerConnection, names: Iterable[ObjectName], attributesWhitelist: Option[Array[String]]): mutable.Map[String, Any] = {
     val attributes = new mutable.HashMap[String, Any]()
     for (name <- names) {
       val mbean = mbsc.getMBeanInfo(name)
       for (attrObj <- mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).asScala) {
         val attr = attrObj.asInstanceOf[Attribute]
-        attributesInclude match {
+        attributesWhitelist match {
           case Some(allowedAttributes) =>
             if (allowedAttributes.contains(attr.getName))
-              attributes(name.toString + ":" + attr.getName) = attr.getValue
-          case None => attributes(name.toString + ":" + attr.getName) = attr.getValue
+              attributes(name + ":" + attr.getName) = attr.getValue
+          case None => attributes(name + ":" + attr.getName) = attr.getValue
         }
       }
     }

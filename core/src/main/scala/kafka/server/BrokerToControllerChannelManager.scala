@@ -168,7 +168,7 @@ class BrokerToControllerChannelManagerImpl(
   threadNamePrefix: Option[String],
   retryTimeoutMs: Long
 ) extends BrokerToControllerChannelManager with Logging {
-  private val logContext = new LogContext(s"[BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName] ")
+  private val logContext = new LogContext(s"[broker-${config.brokerId}-to-controller] ")
   private val manualMetadataUpdater = new ManualMetadataUpdater()
   private val apiVersions = new ApiVersions()
   private val currentNodeApiVersions = NodeApiVersions.create()
@@ -195,18 +195,18 @@ class BrokerToControllerChannelManagerImpl(
         config.saslInterBrokerHandshakeRequestEnable,
         logContext
       )
-      val selectorBuilder = new Selector.Builder()
-      selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
-                                    .withConnectionMaxIdleMs(Selector.NO_IDLE_TIMEOUT_MS)
-                                    .withMetrics(metrics)
-                                    .withTime(time)
-                                    .withMetricGrpPrefix(channelName)
-                                    .withMetricTags(Map("BrokerId" -> config.brokerId.toString).asJava)
-                                    .withMetricsPerConnection(false)
-                                    .withChannelBuilder(channelBuilder)
-                                    .withLogContext(logContext);
-
-      val selector = selectorBuilder.build()
+      val selector = new Selector(
+        NetworkReceive.UNLIMITED,
+        Selector.NO_IDLE_TIMEOUT_MS,
+        Selector.ENABLE_TCP_NODELAY,
+        metrics,
+        time,
+        channelName,
+        Map("BrokerId" -> config.brokerId.toString).asJava,
+        false,
+        channelBuilder,
+        logContext
+      )
       new NetworkClient(
         selector,
         manualMetadataUpdater,
@@ -227,8 +227,8 @@ class BrokerToControllerChannelManagerImpl(
       )
     }
     val threadName = threadNamePrefix match {
-      case None => s"BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName"
-      case Some(name) => s"$name:BrokerToControllerChannelManager broker=${config.brokerId} name=$channelName"
+      case None => s"broker-${config.brokerId}-to-controller-send-thread"
+      case Some(name) => s"$name:broker-${config.brokerId}-to-controller-send-thread"
     }
 
     new BrokerToControllerRequestThread(
@@ -296,10 +296,6 @@ class BrokerToControllerRequestThread(
   private val requestQueue = new LinkedBlockingDeque[BrokerToControllerQueueItem]()
   private val activeController = new AtomicReference[Node](null)
 
-  // Used for testing
-  @volatile
-  private[server] var started = false
-
   def activeControllerAddress(): Option[Node] = {
     Option(activeController.get())
   }
@@ -309,9 +305,6 @@ class BrokerToControllerRequestThread(
   }
 
   def enqueue(request: BrokerToControllerQueueItem): Unit = {
-    if (!started) {
-      throw new IllegalStateException("Cannot enqueue a request if the request thread is not running")
-    }
     requestQueue.add(request)
     if (activeControllerAddress().isDefined) {
       wakeup()
@@ -387,10 +380,5 @@ class BrokerToControllerRequestThread(
           super.pollOnce(maxTimeoutMs = 100)
       }
     }
-  }
-
-  override def start(): Unit = {
-    super.start()
-    started = true
   }
 }

@@ -455,17 +455,18 @@ private class ReplicaFetcherBlockingSend(sourceNode: Node,
   private val networkClient = {
     val logContext = new LogContext()
     val channelBuilder = org.apache.kafka.clients.ClientUtils.createChannelBuilder(consumerConfig, time, logContext)
-    val selectorBuilder = new Selector.Builder()
-    selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
-                                .withConnectionMaxIdleMs(consumerConfig.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG))
-                                .withMetrics(metrics)
-                                .withTime(time)
-                                .withMetricGrpPrefix("replica-fetcher")
-                                .withMetricTags(Map("broker-id" -> sourceNode.id.toString, "fetcher-id" -> fetcherId.toString).asJava)
-                                .withMetricsPerConnection(false)
-                                .withChannelBuilder(channelBuilder)
-                                .withLogContext(logContext);
-    val selector = selectorBuilder.build()
+    val selector = new Selector(
+      NetworkReceive.UNLIMITED,
+      consumerConfig.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
+      consumerConfig.getBoolean(ConsumerConfig.SOCKET_TCP_NODELAY_CONFIG),
+      metrics,
+      time,
+      "replica-fetcher",
+      Map("broker-id" -> sourceNode.id.toString, "fetcher-id" -> fetcherId.toString).asJava,
+      false,
+      channelBuilder,
+      logContext
+    )
     new NetworkClient(
       selector,
       new ManualMetadataUpdater(),

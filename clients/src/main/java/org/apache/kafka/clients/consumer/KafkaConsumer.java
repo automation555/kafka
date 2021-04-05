@@ -742,16 +742,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             Sensor throttleTimeSensor = Fetcher.throttleTimeSensor(metrics, metricsRegistry);
             int heartbeatIntervalMs = config.getInt(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG);
 
+            Selector selector = new Selector(config.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
+                    config.getBoolean(ConsumerConfig.SOCKET_TCP_NODELAY_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext);
             ApiVersions apiVersions = new ApiVersions();
-            Selector.Builder selectorBuilder = new Selector.Builder();
-            selectorBuilder.withConnectionMaxIdleMs(config.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG))
-                    .withMetrics(metrics)
-                    .withTime(time)
-                    .withMetricGrpPrefix(metricGrpPrefix)
-                    .withChannelBuilder(channelBuilder)
-                    .withLogContext(logContext);
             NetworkClient netClient = new NetworkClient(
-                    selectorBuilder.build(),
+                    selector,
                     this.metadata,
                     clientId,
                     100, // a fixed large enough value will suffice for max in-flight requests

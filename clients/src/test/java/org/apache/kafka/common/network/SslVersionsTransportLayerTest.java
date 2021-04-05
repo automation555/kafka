@@ -167,13 +167,6 @@ public class SslVersionsTransportLayerTest {
             new SslTransportLayerTest.TestSslChannelBuilder(Mode.CLIENT);
         channelBuilder.configureBufferSizes(null, null, null);
         channelBuilder.configure(sslClientConfigs);
-        Selector.Builder selectorBuilder = new Selector.Builder();
-        selectorBuilder.withConnectionMaxIdleMs(100 * 5000)
-                .withMetrics(new Metrics())
-                .withTime(TIME)
-                .withMetricGrpPrefix("MetricGroup")
-                .withChannelBuilder(channelBuilder)
-                .withLogContext(new LogContext());
-        return selectorBuilder.build();
+        return new Selector(100 * 5000, true, new Metrics(), TIME, "MetricGroup", channelBuilder, new LogContext());
     }
 }

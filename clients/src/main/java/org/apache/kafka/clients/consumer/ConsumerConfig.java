@@ -236,6 +236,9 @@ public class ConsumerConfig extends AbstractConfig {
     /** <code>socket.connection.setup.timeout.max.ms</code> */
     public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG;
 
+    /** <code>socket.tcp.no.delay</code> */
+    public static final String SOCKET_TCP_NODELAY_CONFIG = CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG;
+
     /** <code>connections.max.idle.ms</code> */
     public static final String CONNECTIONS_MAX_IDLE_MS_CONFIG = CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG;
 
@@ -322,7 +325,8 @@ public class ConsumerConfig extends AbstractConfig {
                                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                                         Type.STRING,
                                         ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
-                                        in(ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                                        in(ClientDnsLookup.DEFAULT.toString(),
+                                           ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
                                         Importance.MEDIUM,
                                         CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC)
@@ -494,6 +498,11 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
                                         Importance.MEDIUM,
                                         CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
+                                .define(SOCKET_TCP_NODELAY_CONFIG,
+                                        Type.BOOLEAN,
+                                        CommonClientConfigs.DEFAULT_SOCKET_TCP_NODELAY,
+                                        Importance.LOW,
+                                        CommonClientConfigs.SOCKET_TCP_NODELAY_DOC)
                                 /* default is set to be a bit lower than the server default (10 min), to avoid both client and server closing connection at same time */
                                 .define(CONNECTIONS_MAX_IDLE_MS_CONFIG,
                                         Type.LONG,
@@ -559,6 +568,7 @@ public class ConsumerConfig extends AbstractConfig {
 
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
+        CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
         Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
         maybeOverrideClientId(refinedConfigs);
         return refinedConfigs;
@@ -578,15 +588,41 @@ public class ConsumerConfig extends AbstractConfig {
         }
     }
 
-    protected static Map<String, Object> appendDeserializerToConfig(Map<String, Object> configs,
-                                                                    Deserializer<?> keyDeserializer,
-                                                                    Deserializer<?> valueDeserializer) {
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
+    public static Map<String, Object> addDeserializerToConfig(Map<String, Object> configs,
+                                                              Deserializer<?> keyDeserializer,
+                                                              Deserializer<?> valueDeserializer) {
+        return appendDeserializerToConfig(configs, keyDeserializer, valueDeserializer);
+    }
+
+    static Map<String, Object> appendDeserializerToConfig(Map<String, Object> configs,
+            Deserializer<?> keyDeserializer,
+            Deserializer<?> valueDeserializer) {
         Map<String, Object> newConfigs = new HashMap<>(configs);
         if (keyDeserializer != null)
             newConfigs.put(KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass());
         if (valueDeserializer != null)
             newConfigs.put(VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer.getClass());
         return newConfigs;
+    }
+
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
+    public static Properties addDeserializerToConfig(Properties properties,
+                                                     Deserializer<?> keyDeserializer,
+                                                     Deserializer<?> valueDeserializer) {
+        Properties newProperties = new Properties();
+        newProperties.putAll(properties);
+        if (keyDeserializer != null)
+            newProperties.put(KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass().getName());
+        if (valueDeserializer != null)
+            newProperties.put(VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer.getClass().getName());
+        return newProperties;
     }
 
     boolean maybeOverrideEnableAutoCommit() {

@@ -53,14 +53,7 @@ public class SslTransportTls12Tls13Test {
         LogContext logContext = new LogContext();
         ChannelBuilder channelBuilder = new SslChannelBuilder(Mode.CLIENT, null, false, logContext);
         channelBuilder.configure(sslClientConfigs);
-        Selector.Builder selectorBuilder = new Selector.Builder();
-        selectorBuilder.withConnectionMaxIdleMs(5000)
-                .withMetrics(new Metrics())
-                .withTime(TIME)
-                .withMetricGrpPrefix("MetricGroup")
-                .withChannelBuilder(channelBuilder)
-                .withLogContext(logContext);
-        this.selector = selectorBuilder.build();
+        this.selector = new Selector(5000, true, new Metrics(), TIME, "MetricGroup", channelBuilder, logContext);
     }
 
     @AfterEach
@@ -167,13 +160,6 @@ public class SslTransportTls12Tls13Test {
         SslTransportLayerTest.TestSslChannelBuilder channelBuilder = new SslTransportLayerTest.TestSslChannelBuilder(Mode.CLIENT);
         channelBuilder.configureBufferSizes(null, null, null);
         channelBuilder.configure(sslClientConfigs);
-        Selector.Builder selectorBuilder = new Selector.Builder();
-        selectorBuilder.withConnectionMaxIdleMs(100 * 5000)
-                .withMetrics(new Metrics())
-                .withTime(TIME)
-                .withMetricGrpPrefix("MetricGroup")
-                .withChannelBuilder(channelBuilder)
-                .withLogContext(new LogContext());
-        this.selector = selectorBuilder.build();
+        this.selector = new Selector(100 * 5000, true, new Metrics(), TIME, "MetricGroup", channelBuilder, new LogContext());
     }
 }

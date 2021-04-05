@@ -60,6 +60,7 @@ class SocketServerTest {
   val props = TestUtils.createBrokerConfig(0, TestUtils.MockZkConnect, port = 0)
   props.put("listeners", "PLAINTEXT://localhost:0")
   props.put("num.network.threads", "1")
+  props.put("socket.tcp.no.delay", "true")
   props.put("socket.send.buffer.bytes", "300000")
   props.put("socket.receive.buffer.bytes", "300000")
   props.put("queued.max.requests", "50")
@@ -513,7 +514,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
           credentialProvider, memoryPool, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def connectionId(socket: Socket): String = overrideConnectionId
           override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
@@ -1096,7 +1097,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean = false): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
           credentialProvider, MemoryPool.NONE, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def sendResponse(response: RequestChannel.Response, responseSend: Send): Unit = {
             conn.close()
@@ -1140,7 +1141,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
           credentialProvider, memoryPool, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
             val testableSelector = new TestableSelector(config, channelBuilder, time, metrics)
@@ -1562,15 +1563,8 @@ class SocketServerTest {
       val testableSelector = testableServer.testableSelector
       testableSelector.updateMinWakeup(2)
 
-      val sleepTimeMs = idleTimeMs / 2 + 1
       val (socket, request) = makeSocketWithBufferedRequests(testableServer, testableSelector, proxyServer)
-      // advance mock time in increments to verify that muted sockets with buffered data dont have their idle time updated
-      // additional calls to poll() should not update the channel last idle time
-      for (_ <- 0 to 3) {
-        time.sleep(sleepTimeMs)
-        testableSelector.operationCounts.clear()
-        testableSelector.waitForOperations(SelectorOperation.Poll, 1)
-      }
+      time.sleep(idleTimeMs + 1)
       testableServer.waitForChannelClose(request.context.connectionId, locallyClosed = false)
 
       val otherSocket = sslConnect(testableServer)
@@ -1582,30 +1576,7 @@ class SocketServerTest {
       shutdownServerAndMetrics(testableServer)
     }
   }
-  
-  @Test
-  def testUnmuteChannelWithBufferedReceives(): Unit = {
-    val time = new MockTime()
-    props ++= sslServerProps
-    val testableServer = new TestableSocketServer(time = time)
-    testableServer.startup()
-    val proxyServer = new ProxyServer(testableServer)
-    try {
-      val testableSelector = testableServer.testableSelector
-      val (socket, request) = makeSocketWithBufferedRequests(testableServer, testableSelector, proxyServer)
-      testableSelector.operationCounts.clear()
-      testableSelector.waitForOperations(SelectorOperation.Poll, 1)
-      val keysWithBufferedRead: util.Set[SelectionKey] = JTestUtils.fieldValue(testableSelector, classOf[Selector], "keysWithBufferedRead")
-      assertEquals(Set.empty, keysWithBufferedRead.asScala)
-      processRequest(testableServer.dataPlaneRequestChannel, request)
-      // buffered requests should be processed after channel is unmuted
-      receiveRequest(testableServer.dataPlaneRequestChannel)
-      socket.close()
-    } finally {
-      proxyServer.close()
-      shutdownServerAndMetrics(testableServer)
-    }
-  }
+
   /**
    * Tests exception handling in [[Processor.processCompletedReceives]]. Exception is
    * injected into [[Selector.mute]] which is used to mute the channel when a receive is complete.
@@ -1934,7 +1905,7 @@ class SocketServerTest {
     override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                               protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean = false): Processor = {
       new Processor(id, time, config.socketRequestMaxBytes, requestChannel, connectionQuotas, config.connectionsMaxIdleMs,
-        config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics, credentialProvider,
+        config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics, credentialProvider,
         memoryPool, new LogContext(), connectionQueueSize, isPrivilegedListener, apiVersionManager) {
 
         override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
@@ -1987,7 +1958,7 @@ class SocketServerTest {
   }
 
   class TestableSelector(config: KafkaConfig, channelBuilder: ChannelBuilder, time: Time, metrics: Metrics, metricTags: mutable.Map[String, String] = mutable.Map.empty)
-    extends Selector(config.socketRequestMaxBytes, config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs,
+    extends Selector(config.socketRequestMaxBytes, config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay,
       metrics, time, "socket-server", metricTags.asJava, false, true, channelBuilder, MemoryPool.NONE, new LogContext()) {
 
     val failures = mutable.Map[SelectorOperation, Throwable]()

@@ -85,100 +85,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * This class is not thread safe!
  */
 public class Selector implements Selectable, AutoCloseable {
+
     public static final long NO_IDLE_TIMEOUT_MS = -1;
     public static final int NO_FAILED_AUTHENTICATION_DELAY = 0;
-
-    public static final class Builder {
-
-        private int maxReceiveSize;
-        private long connectionMaxIdleMs;
-        private int failedAuthenticationDelayMs;
-        private Metrics metrics;
-        private Time time;
-        private String metricGrpPrefix;
-        private Map<String, String> metricTags;
-        private boolean metricsPerConnection;
-        private boolean recordTimePerConnection;
-        private ChannelBuilder channelBuilder;
-        private MemoryPool memoryPool;
-        private LogContext logContext;
-
-        public Builder() {
-            this.maxReceiveSize = NetworkReceive.UNLIMITED;
-            this.failedAuthenticationDelayMs = NO_FAILED_AUTHENTICATION_DELAY;
-            this.metricsPerConnection = true;
-            this.metricTags = Collections.emptyMap();
-            this.recordTimePerConnection = false;
-            this.memoryPool = MemoryPool.NONE;
-        }
-
-        public Builder withMaxReceiveSize(int maxReceiveSize) {
-            this.maxReceiveSize = maxReceiveSize;
-            return this;
-        }
-
-        public Builder withConnectionMaxIdleMs(long connectionMaxIdleMs) {
-            this.connectionMaxIdleMs = connectionMaxIdleMs;
-            return this;
-        }
-
-        public Builder withFailedAuthenticationDelayMs(int failedAuthenticationDelayMs) {
-            this.failedAuthenticationDelayMs = failedAuthenticationDelayMs;
-            return this;
-        }
-
-        public Builder withMetrics(Metrics metrics) {
-            this.metrics = metrics;
-            return this;
-        }
-
-        public Builder withTime(Time time) {
-            this.time = time;
-            return this;
-        }
-
-        public Builder withMetricGrpPrefix(String metricGrpPrefix) {
-            this.metricGrpPrefix = metricGrpPrefix;
-            return this;
-        }
-
-        public Builder withMetricTags(Map<String, String> metricTags) {
-            this.metricTags = metricTags;
-            return this;
-        }
-
-        public Builder withMetricsPerConnection(boolean metricsPerConnection) {
-            this.metricsPerConnection = metricsPerConnection;
-            return this;
-        }
-
-        public Builder withRecordTimePerConnection(boolean recordTimePerConnection) {
-            this.recordTimePerConnection = recordTimePerConnection;
-            return this;
-        }
-
-        public Builder withChannelBuilder(ChannelBuilder channelBuilder) {
-            this.channelBuilder = channelBuilder;
-            return this;
-        }
-
-        public Builder withMemoryPool(MemoryPool memoryPool) {
-            this.memoryPool = memoryPool;
-            return this;
-        }
-
-        public Builder withLogContext(LogContext logContext) {
-            this.logContext = logContext;
-            return this;
-        }
-
-        public Selector build() {
-            return new Selector(maxReceiveSize, connectionMaxIdleMs, failedAuthenticationDelayMs, metrics,
-                    time, metricGrpPrefix, metricTags, metricsPerConnection, recordTimePerConnection, channelBuilder, memoryPool, logContext);
-        }
-    }
-
-
+    public static final boolean ENABLE_TCP_NODELAY = true;
 
     private enum CloseMode {
         GRACEFUL(true),            // process outstanding buffered receives, notify disconnect
@@ -215,6 +125,7 @@ public class Selector implements Selectable, AutoCloseable {
     private final MemoryPool memoryPool;
     private final long lowMemThreshold;
     private final int failedAuthenticationDelayMs;
+    private final boolean tcpNoDelay;
 
     //indicates if the previous call to poll was able to make progress in reading already-buffered data.
     //this is used to prevent tight loops when memory is not available to read any more data
@@ -226,6 +137,7 @@ public class Selector implements Selectable, AutoCloseable {
      * @param connectionMaxIdleMs Max idle connection time (use {@link #NO_IDLE_TIMEOUT_MS} to disable idle timeout)
      * @param failedAuthenticationDelayMs Minimum time by which failed authentication response and channel close should be delayed by.
      *                                    Use {@link #NO_FAILED_AUTHENTICATION_DELAY} to disable this delay.
+     * @param tcpNoDelay The Nagle algorithm (TCP_NODELAY) socket option flag. Use {@link #ENABLE_TCP_NODELAY} to disable this delay.
      * @param metrics Registry for Selector metrics
      * @param time Time implementation
      * @param metricGrpPrefix Prefix for the group of metrics registered by Selector
@@ -237,6 +149,7 @@ public class Selector implements Selectable, AutoCloseable {
     public Selector(int maxReceiveSize,
             long connectionMaxIdleMs,
             int failedAuthenticationDelayMs,
+            boolean tcpNoDelay,
             Metrics metrics,
             Time time,
             String metricGrpPrefix,
@@ -273,6 +186,58 @@ public class Selector implements Selectable, AutoCloseable {
         this.lowMemThreshold = (long) (0.1 * this.memoryPool.size());
         this.failedAuthenticationDelayMs = failedAuthenticationDelayMs;
         this.delayedClosingChannels = (failedAuthenticationDelayMs > NO_FAILED_AUTHENTICATION_DELAY) ? new LinkedHashMap<String, DelayedAuthenticationFailureClose>() : null;
+        this.tcpNoDelay = tcpNoDelay;
+    }
+
+    public Selector(int maxReceiveSize,
+                    long connectionMaxIdleMs,
+                    boolean tcpNoDelay,
+                    Metrics metrics,
+                    Time time,
+                    String metricGrpPrefix,
+                    Map<String, String> metricTags,
+                    boolean metricsPerConnection,
+                    boolean recordTimePerConnection,
+                    ChannelBuilder channelBuilder,
+                    MemoryPool memoryPool,
+                    LogContext logContext) {
+        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags,
+                metricsPerConnection, recordTimePerConnection, channelBuilder, memoryPool, logContext);
+    }
+
+    public Selector(int maxReceiveSize,
+                    long connectionMaxIdleMs,
+                    int failedAuthenticationDelayMs,
+                    boolean tcpNoDelay,
+                    Metrics metrics,
+                    Time time,
+                    String metricGrpPrefix,
+                    Map<String, String> metricTags,
+                    boolean metricsPerConnection,
+                    ChannelBuilder channelBuilder,
+                    LogContext logContext) {
+        this(maxReceiveSize, connectionMaxIdleMs, failedAuthenticationDelayMs, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, false, channelBuilder, MemoryPool.NONE, logContext);
+    }
+
+    public Selector(int maxReceiveSize,
+                    long connectionMaxIdleMs,
+                    boolean tcpNoDelay,
+                    Metrics metrics,
+                    Time time,
+                    String metricGrpPrefix,
+                    Map<String, String> metricTags,
+                    boolean metricsPerConnection,
+                    ChannelBuilder channelBuilder,
+                    LogContext logContext) {
+        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, channelBuilder, logContext);
+    }
+
+    public Selector(long connectionMaxIdleMS, boolean tcpNoDelay, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
+        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, tcpNoDelay, metrics, time, metricGrpPrefix, Collections.emptyMap(), true, channelBuilder, logContext);
+    }
+
+    public Selector(long connectionMaxIdleMS, int failedAuthenticationDelayMs, boolean tcpNoDelay, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
+        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, failedAuthenticationDelayMs, tcpNoDelay, metrics, time, metricGrpPrefix, Collections.<String, String>emptyMap(), true, channelBuilder, logContext);
     }
 
     /**
@@ -332,7 +297,7 @@ public class Selector implements Selectable, AutoCloseable {
             socket.setSendBufferSize(sendBufferSize);
         if (receiveBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setReceiveBufferSize(receiveBufferSize);
-        socket.setTcpNoDelay(true);
+        socket.setTcpNoDelay(tcpNoDelay);
     }
 
     /**
@@ -619,7 +584,7 @@ public class Selector implements Selectable, AutoCloseable {
                     attemptRead(channel);
                 }
 
-                if (channel.hasBytesBuffered() && !explicitlyMutedChannels.contains(channel)) {
+                if (channel.hasBytesBuffered()) {
                     //this channel has bytes enqueued in intermediary buffers that we could not read
                     //(possibly because no memory). it may be the case that the underlying socket will
                     //not come up in the next poll() and so we need to remember this channel for the
@@ -785,7 +750,6 @@ public class Selector implements Selectable, AutoCloseable {
     private void mute(KafkaChannel channel) {
         channel.mute();
         explicitlyMutedChannels.add(channel);
-        keysWithBufferedRead.remove(channel.selectionKey());
     }
 
     @Override
@@ -798,9 +762,6 @@ public class Selector implements Selectable, AutoCloseable {
         // Remove the channel from explicitlyMutedChannels only if the channel has been actually unmuted.
         if (channel.maybeUnmute()) {
             explicitlyMutedChannels.remove(channel);
-            if (channel.hasBytesBuffered()) {
-                keysWithBufferedRead.add(channel.selectionKey());
-            }
         }
     }
 

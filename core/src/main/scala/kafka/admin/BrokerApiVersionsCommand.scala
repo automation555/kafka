@@ -108,7 +108,7 @@ object BrokerApiVersionsCommand {
                             val client: ConsumerNetworkClient,
                             val bootstrapBrokers: List[Node]) extends Logging {
 
-    @volatile var running = true
+    @volatile var running: Boolean = true
     val pendingFutures = new ConcurrentLinkedQueue[RequestFuture[ClientResponse]]()
 
     val networkThread = new KafkaThread("admin-client-network-thread", () => {
@@ -135,7 +135,7 @@ object BrokerApiVersionsCommand {
     private def send(target: Node,
                      api: ApiKeys,
                      request: AbstractRequest.Builder[_ <: AbstractRequest]): AbstractResponse = {
-      val future = client.send(target, request)
+      val future: RequestFuture[ClientResponse] = client.send(target, request)
       pendingFutures.add(future)
       future.awaitDone(Long.MaxValue, TimeUnit.MILLISECONDS)
       pendingFutures.remove(future)
@@ -255,6 +255,11 @@ object BrokerApiVersionsCommand {
           CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
           ConfigDef.Importance.MEDIUM,
           CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
+        .define(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG,
+          ConfigDef.Type.BOOLEAN,
+          CommonClientConfigs.DEFAULT_SOCKET_TCP_NODELAY,
+          ConfigDef.Importance.LOW,
+          CommonClientConfigs.SOCKET_TCP_NODELAY_DOC)
         .define(
           CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG,
           ConfigDef.Type.LONG,
@@ -288,21 +293,22 @@ object BrokerApiVersionsCommand {
       val requestTimeoutMs = config.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG)
       val connectionSetupTimeoutMs = config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG)
       val connectionSetupTimeoutMaxMs = config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG)
+      val tcpNoDelay = config.getBoolean(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG)
       val retryBackoffMs = config.getLong(CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG)
 
       val brokerUrls = config.getList(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
       val clientDnsLookup = config.getString(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG)
       val brokerAddresses = ClientUtils.parseAndValidateAddresses(brokerUrls, clientDnsLookup)
       metadata.bootstrap(brokerAddresses)
-      val selectorBuilder = new Selector.Builder()
-      selectorBuilder.withConnectionMaxIdleMs(DefaultConnectionMaxIdleMs)
-                          .withMetrics(metrics)
-                          .withTime(time)
-                          .withMetricGrpPrefix("admin")
-                          .withChannelBuilder(channelBuilder)
-                          .withLogContext(logContext);
 
-      val selector = selectorBuilder.build()
+      val selector = new Selector(
+        DefaultConnectionMaxIdleMs,
+        tcpNoDelay,
+        metrics,
+        time,
+        "admin",
+        channelBuilder,
+        logContext)
 
       val networkClient = new NetworkClient(
         selector,

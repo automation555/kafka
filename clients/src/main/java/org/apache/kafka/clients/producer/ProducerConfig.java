@@ -229,6 +229,9 @@ public class ProducerConfig extends AbstractConfig {
     /** <code>socket.connection.setup.timeout.max.ms</code> */
     public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG;
 
+    /** <code>socket.tcp.no.delay</code> */
+    public static final String SOCKET_TCP_NODELAY_CONFIG = CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG;
+
     /** <code>connections.max.idle.ms</code> */
     public static final String CONNECTIONS_MAX_IDLE_MS_CONFIG = CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG;
 
@@ -291,7 +294,8 @@ public class ProducerConfig extends AbstractConfig {
                                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                                         Type.STRING,
                                         ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
-                                        in(ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                                        in(ClientDnsLookup.DEFAULT.toString(),
+                                           ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
                                         Importance.MEDIUM,
                                         CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC)
@@ -381,6 +385,11 @@ public class ProducerConfig extends AbstractConfig {
                                         CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
                                         Importance.MEDIUM,
                                         CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
+                                .define(SOCKET_TCP_NODELAY_CONFIG,
+                                        Type.BOOLEAN,
+                                        CommonClientConfigs.DEFAULT_SOCKET_TCP_NODELAY,
+                                        Importance.LOW,
+                                        CommonClientConfigs.SOCKET_TCP_NODELAY_DOC)
                                 /* default is set to be a bit lower than the server default (10 min), to avoid both client and server closing connection at same time */
                                 .define(CONNECTIONS_MAX_IDLE_MS_CONFIG,
                                         Type.LONG,
@@ -433,6 +442,7 @@ public class ProducerConfig extends AbstractConfig {
 
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
+        CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
         Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
         maybeOverrideEnableIdempotence(refinedConfigs);
         maybeOverrideClientId(refinedConfigs);
@@ -490,6 +500,15 @@ public class ProducerConfig extends AbstractConfig {
         }
     }
 
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
+    public static Map<String, Object> addSerializerToConfig(Map<String, Object> configs,
+                                                            Serializer<?> keySerializer, Serializer<?> valueSerializer) {
+        return appendSerializerToConfig(configs, keySerializer, valueSerializer);
+    }
+
     static Map<String, Object> appendSerializerToConfig(Map<String, Object> configs,
             Serializer<?> keySerializer,
             Serializer<?> valueSerializer) {
@@ -499,6 +518,22 @@ public class ProducerConfig extends AbstractConfig {
         if (valueSerializer != null)
             newConfigs.put(VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer.getClass());
         return newConfigs;
+    }
+
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
+    public static Properties addSerializerToConfig(Properties properties,
+                                                   Serializer<?> keySerializer,
+                                                   Serializer<?> valueSerializer) {
+        Properties newProperties = new Properties();
+        newProperties.putAll(properties);
+        if (keySerializer != null)
+            newProperties.put(KEY_SERIALIZER_CLASS_CONFIG, keySerializer.getClass().getName());
+        if (valueSerializer != null)
+            newProperties.put(VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer.getClass().getName());
+        return newProperties;
     }
 
     public ProducerConfig(Properties props) {

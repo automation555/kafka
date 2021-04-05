@@ -25,10 +25,7 @@ import java.util.Map;
 
 /**
  * The result of the {@link Admin#deleteTopics(Collection)} call.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class DeleteTopicsResult {
     final Map<String, KafkaFuture<Void>> futures;
 
@@ -48,6 +45,6 @@ public class DeleteTopicsResult {
      * Return a future which succeeds only if all the topic deletions succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 }

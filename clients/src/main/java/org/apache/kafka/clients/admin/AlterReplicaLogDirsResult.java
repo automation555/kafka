@@ -35,7 +35,6 @@ import org.apache.kafka.common.errors.UnknownServerException;
  * To retrieve the detailed result per specified {@link TopicPartitionReplica}, use {@link #values()}. To retrieve the
  * overall result only, use {@link #all()}.
  */
-@InterfaceStability.Evolving
 public class AlterReplicaLogDirsResult {
     private final Map<TopicPartitionReplica, KafkaFuture<Void>> futures;
 
@@ -74,6 +73,6 @@ public class AlterReplicaLogDirsResult {
      * if not, it throws an {@link Exception} described in {@link #values()} method.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 }

@@ -27,10 +27,7 @@ import org.apache.kafka.common.annotation.InterfaceStability;
 
 /**
  * The result of the {@link AdminClient#listOffsets(Map)} call.
- *
- * The API of this class is evolving, see {@link AdminClient} for details.
  */
-@InterfaceStability.Evolving
 public class ListOffsetsResult {
 
     private final Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures;
@@ -56,7 +53,7 @@ public class ListOffsetsResult {
      * retrieved.
      */
     public KafkaFuture<Map<TopicPartition, ListOffsetsResultInfo>> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]))
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]))
                 .thenApply(new KafkaFuture.BaseFunction<Void, Map<TopicPartition, ListOffsetsResultInfo>>() {
                     @Override
                     public Map<TopicPartition, ListOffsetsResultInfo> apply(Void v) {

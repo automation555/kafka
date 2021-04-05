@@ -24,10 +24,7 @@ import java.util.Map;
 
 /**
  * The result of the {@link Admin#deleteConsumerGroups(Collection)} call.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class DeleteConsumerGroupsResult {
     private final Map<String, KafkaFuture<Void>> futures;
 
@@ -47,6 +44,6 @@ public class DeleteConsumerGroupsResult {
      * Return a future which succeeds only if all the consumer group deletions succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 }

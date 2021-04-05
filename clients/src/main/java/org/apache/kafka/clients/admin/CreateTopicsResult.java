@@ -26,16 +26,13 @@ import java.util.stream.Collectors;
 
 /**
  * The result of {@link Admin#createTopics(Collection)}.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class CreateTopicsResult {
     final static int UNKNOWN = -1;
 
     private final Map<String, KafkaFuture<TopicMetadataAndConfig>> futures;
 
-    protected CreateTopicsResult(Map<String, KafkaFuture<TopicMetadataAndConfig>> futures) {
+    CreateTopicsResult(Map<String, KafkaFuture<TopicMetadataAndConfig>> futures) {
         this.futures = futures;
     }
 
@@ -52,7 +49,7 @@ public class CreateTopicsResult {
      * Return a future which succeeds if all the topic creations succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 
     /**
@@ -94,7 +91,7 @@ public class CreateTopicsResult {
         return futures.get(topic).thenApply(TopicMetadataAndConfig::replicationFactor);
     }
 
-    public static class TopicMetadataAndConfig {
+    static class TopicMetadataAndConfig {
         private final ApiException exception;
         private final int numPartitions;
         private final int replicationFactor;

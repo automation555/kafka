@@ -17,24 +17,14 @@
 
 package org.apache.kafka.clients.admin;
 
-import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.annotation.InterfaceStability;
-import org.apache.kafka.common.security.token.delegation.DelegationToken;
+import java.util.Collection;
 
 /**
- * The result of the {@link KafkaAdminClient#createDelegationToken(CreateDelegationTokenOptions)} call.
+ * Options for {@link Admin#electPreferredLeaders(Collection, ElectPreferredLeadersOptions)}.
+ *
+ * @deprecated Since 2.4.0. Use {@link Admin#electLeaders(ElectionType, Set, ElectLeadersOptions)}.
  */
-public class CreateDelegationTokenResult {
-    private final KafkaFuture<DelegationToken> delegationToken;
-
-    CreateDelegationTokenResult(KafkaFuture<DelegationToken> delegationToken) {
-        this.delegationToken = delegationToken;
-    }
-
-    /**
-     * Returns a future which yields a delegation token
-     */
-    public KafkaFuture<DelegationToken> delegationToken() {
-        return delegationToken;
-    }
+@Deprecated
+public class ElectPreferredLeadersOptions extends AbstractOptions<ElectPreferredLeadersOptions> {
 }

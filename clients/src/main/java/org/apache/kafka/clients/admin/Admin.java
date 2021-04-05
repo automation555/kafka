@@ -24,7 +24,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -37,8 +36,6 @@ import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.config.ConfigResource;
-import org.apache.kafka.common.quota.ClientQuotaAlteration;
-import org.apache.kafka.common.quota.ClientQuotaFilter;
 import org.apache.kafka.common.requests.LeaveGroupResponse;
 
 /**
@@ -46,12 +43,7 @@ import org.apache.kafka.common.requests.LeaveGroupResponse;
  * <p>
  * The minimum broker version required is 0.10.0.0. Methods with stricter requirements will specify the minimum broker
  * version required.
- * <p>
- * This client was introduced in 0.11.0.0 and the API is still evolving. We will try to evolve the API in a compatible
- * manner, but we reserve the right to make breaking changes in minor releases, if necessary. We will update the
- * {@code InterfaceStability} annotation and this notice once the API is considered stable.
  */
-@InterfaceStability.Evolving
 public interface Admin extends AutoCloseable {
 
     /**
@@ -411,6 +403,7 @@ public interface Admin extends AutoCloseable {
         return incrementalAlterConfigs(configs, new AlterConfigsOptions());
     }
 
+
     /**
      * Incrementally update the configuration for the specified resources.
      * <p>
@@ -490,13 +483,6 @@ public interface Admin extends AutoCloseable {
     default DescribeLogDirsResult describeLogDirs(Collection<Integer> brokers) {
         return describeLogDirs(brokers, new DescribeLogDirsOptions());
     }
-
-
-    /**
-     * Get boolean value topic exists from Kafka Cluster
-     * @topic Name of topic
-     */
-    boolean topicExists(String topic) throws ExecutionException, InterruptedException;
 
     /**
      * Query the information of all log directories on the given set of brokers
@@ -1140,85 +1126,6 @@ public interface Admin extends AutoCloseable {
      * @return The ListOffsetsResult.
      */
     ListOffsetsResult listOffsets(Map<TopicPartition, OffsetSpec> topicPartitionOffsets, ListOffsetsOptions options);
-
-    /**
-     * Describes all entities matching the provided filter that have at least one client quota configuration
-     * value defined.
-     * <p>
-     * This is a convenience method for {@link #describeClientQuotas(ClientQuotaFilter, DescribeClientQuotasOptions)}
-     * with default options. See the overload for more details.
-     * <p>
-     * This operation is supported by brokers with version 2.6.0 or higher.
-     *
-     * @param filter the filter to apply to match entities
-     * @return the DescribeClientQuotasResult containing the result
-     */
-    default DescribeClientQuotasResult describeClientQuotas(ClientQuotaFilter filter) {
-        return describeClientQuotas(filter, new DescribeClientQuotasOptions());
-    }
-
-    /**
-     * Describes all entities matching the provided filter that have at least one client quota configuration
-     * value defined.
-     * <p>
-     * The following exceptions can be anticipated when calling {@code get()} on the future from the
-     * returned {@link DescribeClientQuotasResult}:
-     * <ul>
-     *   <li>{@link org.apache.kafka.common.errors.ClusterAuthorizationException}
-     *   If the authenticated user didn't have describe access to the cluster.</li>
-     *   <li>{@link org.apache.kafka.common.errors.InvalidRequestException}
-     *   If the request details are invalid. e.g., an invalid entity type was specified.</li>
-     *   <li>{@link org.apache.kafka.common.errors.TimeoutException}
-     *   If the request timed out before the describe could finish.</li>
-     * </ul>
-     * <p>
-     * This operation is supported by brokers with version 2.6.0 or higher.
-     *
-     * @param filter the filter to apply to match entities
-     * @param options the options to use
-     * @return the DescribeClientQuotasResult containing the result
-     */
-    DescribeClientQuotasResult describeClientQuotas(ClientQuotaFilter filter, DescribeClientQuotasOptions options);
-
-    /**
-     * Alters client quota configurations with the specified alterations.
-     * <p>
-     * This is a convenience method for {@link #alterClientQuotas(Collection, AlterClientQuotasOptions)}
-     * with default options. See the overload for more details.
-     * <p>
-     * This operation is supported by brokers with version 2.6.0 or higher.
-     *
-     * @param entries the alterations to perform
-     * @return the AlterClientQuotasResult containing the result
-     */
-    default AlterClientQuotasResult alterClientQuotas(Collection<ClientQuotaAlteration> entries) {
-        return alterClientQuotas(entries, new AlterClientQuotasOptions());
-    }
-
-    /**
-     * Alters client quota configurations with the specified alterations.
-     * <p>
-     * Alterations for a single entity are atomic, but across entities is not guaranteed. The resulting
-     * per-entity error code should be evaluated to resolve the success or failure of all updates.
-     * <p>
-     * The following exceptions can be anticipated when calling {@code get()} on the futures obtained from
-     * the returned {@link AlterClientQuotasResult}:
-     * <ul>
-     *   <li>{@link org.apache.kafka.common.errors.ClusterAuthorizationException}
-     *   If the authenticated user didn't have alter access to the cluster.</li>
-     *   <li>{@link org.apache.kafka.common.errors.InvalidRequestException}
-     *   If the request details are invalid. e.g., a configuration key was specified more than once for an entity.</li>
-     *   <li>{@link org.apache.kafka.common.errors.TimeoutException}
-     *   If the request timed out before the alterations could finish. It cannot be guaranteed whether the update
-     *   succeed or not.</li>
-     * </ul>
-     * <p>
-     * This operation is supported by brokers with version 2.6.0 or higher.
-     *
-     * @param entries the alterations to perform
-     * @return the AlterClientQuotasResult containing the result
-     */
-    AlterClientQuotasResult alterClientQuotas(Collection<ClientQuotaAlteration> entries, AlterClientQuotasOptions options);
 
     /**
      * Get the metrics kept by the adminClient

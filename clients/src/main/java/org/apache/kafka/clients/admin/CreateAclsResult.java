@@ -26,10 +26,7 @@ import java.util.Map;
 
 /**
  * The result of the {@link Admin#createAcls(Collection)} call.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class CreateAclsResult {
     private final Map<AclBinding, KafkaFuture<Void>> futures;
 
@@ -49,6 +46,6 @@ public class CreateAclsResult {
      * Return a future which succeeds only if all the ACL creations succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 }

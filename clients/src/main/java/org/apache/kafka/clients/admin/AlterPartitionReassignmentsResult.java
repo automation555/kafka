@@ -25,10 +25,7 @@ import java.util.Map;
 
 /**
  * The result of {@link AdminClient#alterPartitionReassignments(Map, AlterPartitionReassignmentsOptions)}.
- *
- * The API of this class is evolving. See {@link AdminClient} for details.
  */
-@InterfaceStability.Evolving
 public class AlterPartitionReassignmentsResult {
     private final Map<TopicPartition, KafkaFuture<Void>> futures;
 
@@ -54,6 +51,6 @@ public class AlterPartitionReassignmentsResult {
      * Return a future which succeeds only if all the reassignments were successfully initiated.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
     }
 }

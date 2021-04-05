@@ -28,10 +28,7 @@ import org.apache.kafka.common.requests.DescribeLogDirsResponse.LogDirInfo;
 
 /**
  * The result of the {@link Admin#describeLogDirs(Collection)} call.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class DescribeLogDirsResult {
     private final Map<Integer, KafkaFuture<Map<String, LogDirInfo>>> futures;
 
@@ -50,7 +47,7 @@ public class DescribeLogDirsResult {
      * Return a future which succeeds only if all the brokers have responded without error
      */
     public KafkaFuture<Map<Integer, Map<String, LogDirInfo>>> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0])).
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0])).
             thenApply(new KafkaFuture.BaseFunction<Void, Map<Integer, Map<String, LogDirInfo>>>() {
                 @Override
                 public Map<Integer, Map<String, LogDirInfo>> apply(Void v) {

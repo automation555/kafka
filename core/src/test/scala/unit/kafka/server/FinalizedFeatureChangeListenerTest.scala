@@ -19,13 +19,14 @@ package kafka.server
 
 import java.util.concurrent.{CountDownLatch, TimeoutException}
 
+import kafka.internals.generated.FeatureZNodeData
 import kafka.zk.{FeatureZNode, FeatureZNodeStatus, ZkVersion, ZooKeeperTestHarness}
 import kafka.utils.TestUtils
 import org.apache.kafka.common.utils.Exit
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange, SupportedVersionRange}
 import org.apache.kafka.test.{TestUtils => JTestUtils}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertNotEquals, assertThrows, assertTrue}
-import org.junit.jupiter.api.Test
+import org.junit.Assert.{assertEquals, assertFalse, assertNotEquals, assertThrows, assertTrue}
+import org.junit.Test
 
 import scala.jdk.CollectionConverters._
 
@@ -44,7 +45,16 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
     val finalizedFeaturesMap = Map[String, FinalizedVersionRange](
       "feature_1" -> new FinalizedVersionRange(2, 3))
     val finalizedFeatures = Features.finalizedFeatures(finalizedFeaturesMap.asJava)
-    zkClient.createFeatureZNode(FeatureZNode(FeatureZNodeStatus.Enabled, finalizedFeatures))
+    val newNodeData = new FeatureZNodeData()
+      .setStatus(FeatureZNodeStatus.Enabled.id)
+      .setFeatures(finalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+        new FeatureZNodeData.Feature()
+          .setFeatureName(featureName)
+          .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+            .setMinValue(versionRange.min())
+            .setMaxValue(versionRange.max()))
+      }.toSeq.asJava)
+    zkClient.createFeatureZNode(newNodeData)
     val (mayBeFeatureZNodeBytes, version) = zkClient.getDataAndVersion(FeatureZNode.path)
     assertNotEquals(version, ZkVersion.UnknownVersion)
     assertFalse(mayBeFeatureZNodeBytes.isEmpty)
@@ -87,7 +97,16 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
     val listener = createListener(cache, Some(initialFinalizedFeatures))
 
     def updateAndCheckCache(finalizedFeatures: Features[FinalizedVersionRange]): Unit = {
-      zkClient.updateFeatureZNode(FeatureZNode(FeatureZNodeStatus.Enabled, finalizedFeatures))
+      val newNodeData = new FeatureZNodeData()
+        .setStatus(FeatureZNodeStatus.Enabled.id)
+        .setFeatures(finalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+          new FeatureZNodeData.Feature()
+            .setFeatureName(featureName)
+            .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+              .setMinValue(versionRange.min())
+              .setMaxValue(versionRange.max()))
+        }.toSeq.asJava)
+      zkClient.updateFeatureZNode(newNodeData)
       val (mayBeFeatureZNodeNewBytes, updatedVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
       assertNotEquals(updatedVersion, ZkVersion.UnknownVersion)
       assertFalse(mayBeFeatureZNodeNewBytes.isEmpty)
@@ -147,7 +166,16 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
 
     val updatedFinalizedFeaturesMap = Map[String, FinalizedVersionRange]()
     val updatedFinalizedFeatures = Features.finalizedFeatures(updatedFinalizedFeaturesMap.asJava)
-    zkClient.updateFeatureZNode(FeatureZNode(FeatureZNodeStatus.Disabled, updatedFinalizedFeatures))
+    val newNodeData = new FeatureZNodeData()
+      .setStatus(FeatureZNodeStatus.Enabled.id)
+      .setFeatures(updatedFinalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+        new FeatureZNodeData.Feature()
+          .setFeatureName(featureName)
+          .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+            .setMinValue(versionRange.min())
+            .setMaxValue(versionRange.max()))
+      }.toSeq.asJava)
+    zkClient.updateFeatureZNode(newNodeData)
     val (mayBeFeatureZNodeNewBytes, updatedVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
     assertNotEquals(updatedVersion, ZkVersion.UnknownVersion)
     assertFalse(mayBeFeatureZNodeNewBytes.isEmpty)
@@ -166,17 +194,30 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
     val cache = new FinalizedFeatureCache(createBrokerFeatures())
     val listener = createListener(cache, Some(initialFinalizedFeatures))
 
-    assertThrows(classOf[TimeoutException], () => cache.waitUntilEpochOrThrow(initialFinalizedFeatures.epoch + 1, JTestUtils.DEFAULT_MAX_WAIT_MS))
+    assertThrows(
+      classOf[TimeoutException],
+      () => cache.waitUntilEpochOrThrow(initialFinalizedFeatures.epoch + 1, JTestUtils.DEFAULT_MAX_WAIT_MS))
 
     val updatedFinalizedFeaturesMap = Map[String, FinalizedVersionRange]()
     val updatedFinalizedFeatures = Features.finalizedFeatures(updatedFinalizedFeaturesMap.asJava)
-    zkClient.updateFeatureZNode(FeatureZNode(FeatureZNodeStatus.Disabled, updatedFinalizedFeatures))
+    val newNodeData = new FeatureZNodeData()
+      .setStatus(FeatureZNodeStatus.Disabled.id)
+      .setFeatures(updatedFinalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+        new FeatureZNodeData.Feature()
+          .setFeatureName(featureName)
+          .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+            .setMinValue(versionRange.min())
+            .setMaxValue(versionRange.max()))
+      }.toSeq.asJava)
+    zkClient.updateFeatureZNode(newNodeData)
     val (mayBeFeatureZNodeNewBytes, updatedVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
     assertNotEquals(updatedVersion, ZkVersion.UnknownVersion)
     assertFalse(mayBeFeatureZNodeNewBytes.isEmpty)
     assertTrue(updatedVersion > initialFinalizedFeatures.epoch)
 
-    assertThrows(classOf[TimeoutException], () => cache.waitUntilEpochOrThrow(updatedVersion, JTestUtils.DEFAULT_MAX_WAIT_MS))
+    assertThrows(
+      classOf[TimeoutException],
+      () => cache.waitUntilEpochOrThrow(updatedVersion, JTestUtils.DEFAULT_MAX_WAIT_MS))
     assertTrue(cache.get.isEmpty)
     assertTrue(listener.isListenerInitiated)
   }
@@ -193,7 +234,16 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
     val incompatibleFinalizedFeaturesMap = Map[String, FinalizedVersionRange](
       "feature_1" -> new FinalizedVersionRange(2, 5))
     val incompatibleFinalizedFeatures = Features.finalizedFeatures(incompatibleFinalizedFeaturesMap.asJava)
-    zkClient.createFeatureZNode(FeatureZNode(FeatureZNodeStatus.Enabled, incompatibleFinalizedFeatures))
+    val newNodeData = new FeatureZNodeData()
+      .setStatus(FeatureZNodeStatus.Enabled.id)
+      .setFeatures(incompatibleFinalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+        new FeatureZNodeData.Feature()
+          .setFeatureName(featureName)
+          .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+            .setMinValue(versionRange.min())
+            .setMaxValue(versionRange.max()))
+      }.toSeq.asJava)
+    zkClient.createFeatureZNode(newNodeData)
     val (mayBeFeatureZNodeBytes, initialVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
     assertNotEquals(initialVersion, ZkVersion.UnknownVersion)
     assertFalse(mayBeFeatureZNodeBytes.isEmpty)
@@ -244,7 +294,16 @@ class FinalizedFeatureChangeListenerTest extends ZooKeeperTestHarness {
         brokerFeatures.supportedFeatures.get("feature_1").min(),
         (brokerFeatures.supportedFeatures.get("feature_1").max() + 1).asInstanceOf[Short]))
     val incompatibleFinalizedFeatures = Features.finalizedFeatures(incompatibleFinalizedFeaturesMap.asJava)
-    zkClient.updateFeatureZNode(FeatureZNode(FeatureZNodeStatus.Enabled, incompatibleFinalizedFeatures))
+    val newNodeData = new FeatureZNodeData()
+      .setStatus(FeatureZNodeStatus.Enabled.id)
+      .setFeatures(incompatibleFinalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
+        new FeatureZNodeData.Feature()
+          .setFeatureName(featureName)
+          .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
+            .setMinValue(versionRange.min())
+            .setMaxValue(versionRange.max()))
+      }.toSeq.asJava)
+    zkClient.updateFeatureZNode(newNodeData)
     val (mayBeFeatureZNodeIncompatibleBytes, updatedVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
     assertNotEquals(updatedVersion, ZkVersion.UnknownVersion)
     assertFalse(mayBeFeatureZNodeIncompatibleBytes.isEmpty)

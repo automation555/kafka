@@ -22,6 +22,7 @@ import com.yammer.metrics.core.MetricName
 import kafka.api.LeaderAndIsr
 import kafka.cluster.Broker
 import kafka.controller.{KafkaController, LeaderIsrAndControllerEpoch, ReplicaAssignment}
+import kafka.internals.generated.FeatureZNodeData
 import kafka.log.LogConfig
 import kafka.metrics.KafkaMetricsGroup
 import kafka.security.authorizer.AclAuthorizer.{NoAcls, VersionedAcls}
@@ -30,7 +31,6 @@ import kafka.server.ConfigType
 import kafka.utils.Logging
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zookeeper._
-import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
 import org.apache.kafka.common.security.token.delegation.{DelegationToken, TokenInformation}
@@ -63,7 +63,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
   import KafkaZkClient._
 
-  @VisibleForTesting
+  // Only for testing
   private[kafka] def currentZooKeeper: ZooKeeper = zooKeeperClient.currentZooKeeper
 
   // This variable holds the Zookeeper session id at the moment a Broker gets registered in Zookeeper and the subsequent
@@ -1630,7 +1630,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     createRecursive(path, data = null, throwIfPathExists = false)
   }
 
-  def createFeatureZNode(nodeContents: FeatureZNode): Unit = {
+  def createFeatureZNode(nodeContents: FeatureZNodeData): Unit = {
     val createRequest = CreateRequest(
       FeatureZNode.path,
       FeatureZNode.encode(nodeContents),
@@ -1640,7 +1640,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     response.maybeThrow()
   }
 
-  def updateFeatureZNode(nodeContents: FeatureZNode): Int = {
+  def updateFeatureZNode(nodeContents: FeatureZNodeData): Int = {
     val setRequest = SetDataRequest(
       FeatureZNode.path,
       FeatureZNode.encode(nodeContents),

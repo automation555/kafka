@@ -25,10 +25,31 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.TrustManagerFactory;
 import java.util.Set;
 
+import static org.apache.kafka.common.config.ConfigDef.Range.atLeast;
+
 public class SslConfigs {
     /*
      * NOTE: DO NOT CHANGE EITHER CONFIG NAMES AS THESE ARE PART OF THE PUBLIC API AND CHANGE WILL BREAK USER CODE.
      */
+
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String PRINCIPAL_BUILDER_CLASS_CONFIG = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_CONFIG;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String PRINCIPAL_BUILDER_CLASS_DOC = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_DOC;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release. In recent versions,
+     *   the config is optional and there is no default.
+     */
+    // use FQN to avoid import deprecation warning
+    @Deprecated
+    public static final String DEFAULT_PRINCIPAL_BUILDER_CLASS =
+            org.apache.kafka.common.security.auth.DefaultPrincipalBuilder.class.getName();
 
     public static final String SSL_PROTOCOL_CONFIG = "ssl.protocol";
     public static final String SSL_PROTOCOL_DOC = "The SSL protocol used to generate the SSLContext. "
@@ -86,8 +107,13 @@ public class SslConfigs {
         + "Default SSL engine factory supports only PEM format with X.509 certificates.";
 
     public static final String SSL_KEYSTORE_LOCATION_CONFIG = "ssl.keystore.location";
-    public static final String SSL_KEYSTORE_LOCATION_DOC = "The location of the key store file. "
+    public static final String SSL_KEYSTORE_LOCATION_DOC = "The location of the key store file."
         + "This is optional for client and can be used for two-way authentication for client.";
+
+    public static final String SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG = "ssl.keystore.location.refresh.interval.ms";
+    public static final String SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_DOC = "The refresh interval for in-place ssl keystore updates. In general, "
+        + "the update should trigger immediately when user modifies the security file path through file watch service, while "
+        +  "this configuration is defining a time based guarantee of store reloading in worst case";
 
     public static final String SSL_KEYSTORE_PASSWORD_CONFIG = "ssl.keystore.password";
     public static final String SSL_KEYSTORE_PASSWORD_DOC = "The store password for the key store file. "
@@ -103,7 +129,12 @@ public class SslConfigs {
     public static final String DEFAULT_SSL_TRUSTSTORE_TYPE = "JKS";
 
     public static final String SSL_TRUSTSTORE_LOCATION_CONFIG = "ssl.truststore.location";
-    public static final String SSL_TRUSTSTORE_LOCATION_DOC = "The location of the trust store file. ";
+    public static final String SSL_TRUSTSTORE_LOCATION_DOC = "The location of the trust store file.";
+
+    public static final String SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG = "ssl.truststore.location.refresh.interval.ms";
+    public static final String SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_DOC = "The refresh interval for in-place ssl truststore updates. In general, "
+        + "the update should trigger immediately when user modifies the security file path through file watch service, while "
+        + "this configuration is defining a time based guarantee of store reloading in worst case";
 
     public static final String SSL_TRUSTSTORE_PASSWORD_CONFIG = "ssl.truststore.password";
     public static final String SSL_TRUSTSTORE_PASSWORD_DOC = "The password for the trust store file. "
@@ -130,6 +161,17 @@ public class SslConfigs {
     public static final String SSL_ENGINE_FACTORY_CLASS_CONFIG = "ssl.engine.factory.class";
     public static final String SSL_ENGINE_FACTORY_CLASS_DOC = "The class of type org.apache.kafka.common.security.auth.SslEngineFactory to provide SSLEngine objects. Default value is org.apache.kafka.common.security.ssl.DefaultSslEngineFactory";
 
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String SSL_CLIENT_AUTH_CONFIG = BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG;
+    /**
+     * @deprecated As of 1.0.0. This field will be removed in a future major release.
+     */
+    @Deprecated
+    public static final String SSL_CLIENT_AUTH_DOC = BrokerSecurityConfigs.SSL_CLIENT_AUTH_DOC;
+
     public static void addClientSslSupport(ConfigDef config) {
         config.define(SslConfigs.SSL_PROTOCOL_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_PROTOCOL, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_PROTOCOL_DOC)
                 .define(SslConfigs.SSL_PROVIDER_CONFIG, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_PROVIDER_DOC)
@@ -137,6 +179,7 @@ public class SslConfigs {
                 .define(SslConfigs.SSL_ENABLED_PROTOCOLS_CONFIG, ConfigDef.Type.LIST, SslConfigs.DEFAULT_SSL_ENABLED_PROTOCOLS, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_ENABLED_PROTOCOLS_DOC)
                 .define(SslConfigs.SSL_KEYSTORE_TYPE_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_KEYSTORE_TYPE, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_KEYSTORE_TYPE_DOC)
                 .define(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG, ConfigDef.Type.STRING, null,  ConfigDef.Importance.HIGH, SslConfigs.SSL_KEYSTORE_LOCATION_DOC)
+                .define(SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, Type.LONG, 300_000L, atLeast(0L), ConfigDef.Importance.LOW, SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_DOC)
                 .define(SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG, ConfigDef.Type.PASSWORD, null, ConfigDef.Importance.HIGH, SslConfigs.SSL_KEYSTORE_PASSWORD_DOC)
                 .define(SslConfigs.SSL_KEY_PASSWORD_CONFIG, ConfigDef.Type.PASSWORD, null, ConfigDef.Importance.HIGH, SslConfigs.SSL_KEY_PASSWORD_DOC)
                 .define(SslConfigs.SSL_KEYSTORE_KEY_CONFIG, Type.PASSWORD, null,  ConfigDef.Importance.HIGH, SslConfigs.SSL_KEYSTORE_KEY_DOC)
@@ -144,6 +187,7 @@ public class SslConfigs {
                 .define(SslConfigs.SSL_TRUSTSTORE_CERTIFICATES_CONFIG, ConfigDef.Type.PASSWORD, null,  ConfigDef.Importance.HIGH, SslConfigs.SSL_TRUSTSTORE_CERTIFICATES_DOC)
                 .define(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_TRUSTSTORE_TYPE, ConfigDef.Importance.MEDIUM, SslConfigs.SSL_TRUSTSTORE_TYPE_DOC)
                 .define(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, ConfigDef.Type.STRING, null, ConfigDef.Importance.HIGH, SslConfigs.SSL_TRUSTSTORE_LOCATION_DOC)
+                .define(SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG, Type.LONG, 300_000L, atLeast(0L), ConfigDef.Importance.LOW, SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_DOC)
                 .define(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, ConfigDef.Type.PASSWORD, null, ConfigDef.Importance.HIGH, SslConfigs.SSL_TRUSTSTORE_PASSWORD_DOC)
                 .define(SslConfigs.SSL_KEYMANAGER_ALGORITHM_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_KEYMANGER_ALGORITHM, ConfigDef.Importance.LOW, SslConfigs.SSL_KEYMANAGER_ALGORITHM_DOC)
                 .define(SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_CONFIG, ConfigDef.Type.STRING, SslConfigs.DEFAULT_SSL_TRUSTMANAGER_ALGORITHM, ConfigDef.Importance.LOW, SslConfigs.SSL_TRUSTMANAGER_ALGORITHM_DOC)
@@ -155,10 +199,12 @@ public class SslConfigs {
     public static final Set<String> RECONFIGURABLE_CONFIGS = Utils.mkSet(
             SslConfigs.SSL_KEYSTORE_TYPE_CONFIG,
             SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG,
+            SslConfigs.SSL_KEYSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG,
             SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG,
             SslConfigs.SSL_KEY_PASSWORD_CONFIG,
             SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG,
             SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG,
+            SslConfigs.SSL_TRUSTSTORE_LOCATION_REFRESH_INTERVAL_MS_CONFIG,
             SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG,
             SslConfigs.SSL_KEYSTORE_CERTIFICATE_CHAIN_CONFIG,
             SslConfigs.SSL_KEYSTORE_KEY_CONFIG,

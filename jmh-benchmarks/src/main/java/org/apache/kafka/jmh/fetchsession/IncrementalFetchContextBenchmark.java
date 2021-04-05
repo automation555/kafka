@@ -17,18 +17,14 @@
 
 package org.apache.kafka.jmh.fetchsession;
 
-import kafka.server.FetchContext;
-import kafka.server.FetchManager;
-import kafka.server.FetchSession;
 import kafka.server.CachedPartition;
-import kafka.server.FetchSessionCache;
-import kafka.utils.MockTime;
-import org.apache.kafka.common.TopicPartition;
+import kafka.server.FetchSession;
+import kafka.server.IncrementalFetchContext;
 import org.apache.kafka.common.message.FetchResponseData;
 import org.apache.kafka.common.requests.FetchMetadata;
-import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
-import org.apache.kafka.common.utils.ImplicitLinkedHashCollection;
+import org.apache.kafka.common.utils.Time;
+import org.mockito.Mockito;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -36,21 +32,16 @@ import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
-import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
-import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 @State(Scope.Benchmark)
@@ -58,132 +49,74 @@ import java.util.stream.IntStream;
 @Warmup(iterations = 5)
 @Measurement(iterations = 10)
 @BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
-
+@OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class IncrementalFetchContextBenchmark {
-    @Param({"10", "20", "50"})
-    private int topicCount;
-    @Param({"10", "20", "50"})
-    private int partitionCount;
-    @Param({"5", "10", "50"})
-    private int toForgetPercentage;
 
-    private MockTime time;
-    private FetchManager fetchManager;
-    private Map<TopicPartition, FetchRequest.PartitionData> fullReqData;
-    private LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> fullRespData;
-    private FetchResponse fullResponse;
-    private FetchContext incrementalFetchContext;
-    private Map<TopicPartition, FetchRequest.PartitionData> incrementalReqData;
-    private List<TopicPartition> toForget;
-    private FetchMetadata incrementalMetadata;
-    private LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> incrementalRespData;
-    private FetchSessionCache cache;
-    private FetchSession session;
-    private int sessionId;
+    private final List<FetchResponseData.PartitionData> partitionData = partitionData();
+    private final IncrementalFetchContext fetchContext = incrementalFetchContext();
 
+    private List<FetchResponseData.FetchableTopicResponse> topicResponses;
 
-    @Setup(Level.Trial)
+    // updateAndGenerateResponseData remove fields from topicResponses so we have to initialize topicResponses for each invocation
+    @Setup(Level.Invocation)
     public void setup() {
-        time = new MockTime();
-        cache = new FetchSessionCache(1000, 120000);
-        fetchManager = new FetchManager(time, cache);
-
-        // FullFetchContext setup
-        List<TopicPartition> topics = new ArrayList<>();
-        IntStream.range(0, topicCount).forEach(topicNum -> {
-            String topicName = "topic" + topicNum;
-            for (int partitionId = 0; partitionId < partitionCount; partitionId++) {
-                topics.add(new TopicPartition(topicName, partitionId));
-            }
-        });
-        fullReqData = new HashMap<>();
-        fullRespData = new LinkedHashMap<>();
-        topics.forEach(tp -> {
-            FetchRequest.PartitionData partitionData = new FetchRequest.PartitionData(0,
-                    0, 4096, Optional.empty());
-            fullReqData.put(tp, partitionData);
-
-            FetchResponseData.PartitionData respPartitionData = new FetchResponseData.PartitionData()
-                    .setPartitionIndex(tp.partition())
-                    .setLastStableOffset(0)
-                    .setHighWatermark(0)
-                    .setLogStartOffset(0);
-            fullRespData.put(tp, respPartitionData);
-        });
-
-        // IncrementalFetchContext setup
-        // Let's add a fraction of the current topicPartitions to the session. Say, 1/10.
-        List<TopicPartition> incrementalTopics = new ArrayList<>();
-        IntStream.range(0, topicCount).forEach(topicNum -> {
-            String topicName = "incrementalTopic" + topicNum;
-            for (int partitionId = 0; partitionId < partitionCount; partitionId += 10) {
-                incrementalTopics.add(new TopicPartition(topicName, partitionId));
-            }
-        });
-        incrementalReqData = new HashMap<>();
-        incrementalRespData = new LinkedHashMap<>();
-        incrementalTopics.forEach(tp -> {
-            FetchRequest.PartitionData partitionData = new FetchRequest.PartitionData(
-                    0, 0, 4096, Optional.empty());
-            incrementalReqData.put(tp, partitionData);
-
-            FetchResponseData.PartitionData respPartitionData = new FetchResponseData.PartitionData()
-                    .setPartitionIndex(tp.partition())
-                    .setLastStableOffset(0)
-                    .setHighWatermark(0)
-                    .setLogStartOffset(0);
-            incrementalRespData.put(tp, respPartitionData);
-        });
-        // Add responses from session
-        incrementalRespData.putAll(fullRespData);
-
-        // Add some topicPartitions toForget
-        toForget = new ArrayList<>();
-        IntStream.range(0, topics.size()).forEach(tpNum -> {
-            if (tpNum % (100 / toForgetPercentage) == 0) {
-                toForget.add(topics.get(tpNum));
-                incrementalRespData.remove(topics.get(tpNum));
-            }
-        });
-    }
-    @Setup(Level.Iteration)
-    public void setupIncrementalInfo() {
-        FetchContext fullFetchContext = fetchManager.newContext(FetchMetadata.INITIAL, fullReqData, Collections.emptyList(), false);
-        fullResponse = fullFetchContext.updateAndGenerateResponseData(fullRespData);
-
-        FetchMetadata newIncremental = FetchMetadata.newIncremental(fullResponse.sessionId());
-        incrementalFetchContext = fetchManager.newContext(newIncremental, incrementalReqData, toForget, false);
-
-        sessionId = cache.maybeCreateSession(time.milliseconds(), false, fullRespData.size(), this::createPartitions);
-        incrementalMetadata = newIncremental.nextIncremental();
-        session = cache.get(sessionId).get();
+        topicResponses = topicResponses();
     }
 
-    @TearDown(Level.Iteration)
-    public void removeSessions() {
-        cache.remove(fullResponse.sessionId());
-        cache.remove(sessionId);
+    private List<FetchResponseData.FetchableTopicResponse> topicResponses() {
+        List<FetchResponseData.FetchableTopicResponse> topicResponses = new LinkedList<>();
+        topicResponses.add(new FetchResponseData.FetchableTopicResponse()
+            .setTopic("foo")
+            .setPartitions(new LinkedList<>(partitionData)));
+        return topicResponses;
     }
 
-    private ImplicitLinkedHashCollection<CachedPartition> createPartitions() {
-        ImplicitLinkedHashCollection<CachedPartition> cachedPartitions = new ImplicitLinkedHashCollection<>(fullRespData.size());
-        fullRespData.forEach((part, respData) -> {
-            FetchRequest.PartitionData reqData = fullReqData.get(part);
-            cachedPartitions.mustAdd(new CachedPartition(part, reqData, respData));
+    private static List<FetchResponseData.PartitionData> partitionData() {
+        return Collections.unmodifiableList(IntStream.range(0, 2000)
+            .mapToObj(i -> new FetchResponseData.PartitionData()
+                .setPartitionIndex(i)
+                .setLastStableOffset(0)
+                .setLogStartOffset(0))
+                .collect(Collectors.toList()));
+    }
+
+    private static IncrementalFetchContext incrementalFetchContext() {
+        FetchMetadata metadata = Mockito.mock(FetchMetadata.class);
+        Mockito.when(metadata.epoch()).thenReturn(100);
+
+        CachedPartition cp = Mockito.mock(CachedPartition.class);
+        Mockito.when(cp.maybeUpdateResponseData(
+                Mockito.any(FetchResponseData.PartitionData.class),
+                Mockito.anyBoolean())).thenAnswer(invocation -> {
+            FetchResponseData.PartitionData partitionData = invocation.getArgument(0);
+            return partitionData.partitionIndex() % 2 == 0;
         });
-        return cachedPartitions;
+
+        FetchSession session = Mockito.mock(FetchSession.class);
+        Mockito.when(session.epoch()).thenReturn(101);
+
+        return new IncrementalFetchContext(Time.SYSTEM, metadata, session) {
+            @Override
+            public CachedPartition cachedPartition(String topic, int partition) {
+                return cp;
+            }
+
+            @Override
+            public void update(CachedPartition cp) {
+
+            }
+        };
     }
 
     @Benchmark
-    public void updateSession() {
-        session.update(incrementalReqData, toForget, incrementalMetadata);
-
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    public FetchResponse updateAndGenerateResponseData() {
+        return fetchContext.updateAndGenerateResponseData(topicResponses);
     }
 
     @Benchmark
-    public void updateAndGenerateResponseDataForIncrementalContext() {
-        incrementalFetchContext.updateAndGenerateResponseData(incrementalRespData);
-
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    public int getResponseSize() {
+        return fetchContext.getResponseSize(topicResponses, FetchResponseData.HIGHEST_SUPPORTED_VERSION);
     }
 }

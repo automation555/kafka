@@ -18,7 +18,6 @@ package kafka.server
 
 import kafka.server.QuotaType._
 import kafka.utils.Logging
-import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.server.quota.ClientQuotaCallback
 import org.apache.kafka.common.utils.Time
@@ -49,7 +48,7 @@ sealed trait QuotaType
 object QuotaFactory extends Logging {
 
   object UnboundedQuota extends ReplicaQuota {
-    override def isThrottled(topicPartition: TopicPartition): Boolean = false
+    override def isThrottled(topicName: String, partition: Int): Boolean = false
     override def isQuotaExceeded: Boolean = false
     def record(value: Long): Unit = ()
   }
@@ -76,9 +75,9 @@ object QuotaFactory extends Logging {
     val clientQuotaCallback = Option(cfg.getConfiguredInstance(KafkaConfig.ClientQuotaCallbackClassProp,
       classOf[ClientQuotaCallback]))
     QuotaManagers(
-      new ClientQuotaManager(clientConfig(cfg), metrics, Fetch, time, threadNamePrefix, clientQuotaCallback),
-      new ClientQuotaManager(clientConfig(cfg), metrics, Produce, time, threadNamePrefix, clientQuotaCallback),
-      new ClientRequestQuotaManager(clientConfig(cfg), metrics, time, threadNamePrefix, clientQuotaCallback),
+      new ClientQuotaManager(clientFetchConfig(cfg), metrics, Fetch, time, threadNamePrefix, clientQuotaCallback),
+      new ClientQuotaManager(clientProduceConfig(cfg), metrics, Produce, time, threadNamePrefix, clientQuotaCallback),
+      new ClientRequestQuotaManager(clientRequestConfig(cfg), metrics, time, threadNamePrefix, clientQuotaCallback),
       new ControllerMutationQuotaManager(clientControllerMutationConfig(cfg), metrics, time,
         threadNamePrefix, clientQuotaCallback),
       new ReplicationQuotaManager(replicationConfig(cfg), metrics, LeaderReplication, time),
@@ -88,7 +87,27 @@ object QuotaFactory extends Logging {
     )
   }
 
-  def clientConfig(cfg: KafkaConfig): ClientQuotaManagerConfig = {
+  def clientProduceConfig(cfg: KafkaConfig): ClientQuotaManagerConfig = {
+    if (cfg.producerQuotaBytesPerSecondDefault != Long.MaxValue)
+      warn(s"${KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp} has been deprecated in 0.11.0.0 and will be removed in a future release. Use dynamic quota defaults instead.")
+    ClientQuotaManagerConfig(
+      quotaDefault = cfg.producerQuotaBytesPerSecondDefault,
+      numQuotaSamples = cfg.numQuotaSamples,
+      quotaWindowSizeSeconds = cfg.quotaWindowSizeSeconds
+    )
+  }
+
+  def clientFetchConfig(cfg: KafkaConfig): ClientQuotaManagerConfig = {
+    if (cfg.consumerQuotaBytesPerSecondDefault != Long.MaxValue)
+      warn(s"${KafkaConfig.ConsumerQuotaBytesPerSecondDefaultProp} has been deprecated in 0.11.0.0 and will be removed in a future release. Use dynamic quota defaults instead.")
+    ClientQuotaManagerConfig(
+      quotaDefault = cfg.consumerQuotaBytesPerSecondDefault,
+      numQuotaSamples = cfg.numQuotaSamples,
+      quotaWindowSizeSeconds = cfg.quotaWindowSizeSeconds
+    )
+  }
+
+  def clientRequestConfig(cfg: KafkaConfig): ClientQuotaManagerConfig = {
     ClientQuotaManagerConfig(
       numQuotaSamples = cfg.numQuotaSamples,
       quotaWindowSizeSeconds = cfg.quotaWindowSizeSeconds

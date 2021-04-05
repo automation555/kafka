@@ -39,6 +39,9 @@
         Please use the remaining public constructor instead.</li>
     <li>The deprecated config value <code>default</code> for the client config <code>client.dns.lookup</code> has been removed. In the unlikely
         event that you set this config explicitly, we recommend leaving the config unset (<code>use_all_dns_ips</code> is used by default).</li>
+    <li>The deprecated <code>checksum()</code> method has been removed from <code>ConsumerRecord</code> and <code>RecordMetadata</code>. The message
+        format v2, which has been the default since 0.11, moved the checksum from the record to the record batch. As such, these methods
+        don't make sense and no replacements exist.</li>
 </ul>
 
 <h5><a id="upgrade_280_notable" href="#upgrade_280_notable">Notable changes in 2.8.0</a></h5>

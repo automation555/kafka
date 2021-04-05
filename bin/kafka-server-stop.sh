@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -15,21 +15,27 @@
 # limitations under the License.
 SIGNAL=${SIGNAL:-TERM}
 
-OSNAME=$(uname -s)
-if [[ "$OSNAME" == "OS/390" ]]; then
+if [[ $(uname -s) == "OS/390" ]]; then
     if [ -z $JOBNAME ]; then
         JOBNAME="KAFKSTRT"
     fi
     PIDS=$(ps -A -o pid,jobname,comm | grep -i $JOBNAME | grep java | grep -v grep | awk '{print $1}')
-elif [[ "$OSNAME" == "OS400" ]]; then
-    PIDS=$(ps -Af | grep -i 'kafka\.Kafka' | grep java | grep -v grep | awk '{print $2}')
 else
-    PIDS=$(ps ax | grep ' kafka\.Kafka ' | grep java | grep -v grep | awk '{print $1}')
+    PIDS=$(ps ax | grep -i 'kafka\.Kafka' | grep java | grep -v grep | awk '{print $1}')
 fi
 
 if [ -z "$PIDS" ]; then
   echo "No kafka server to stop"
   exit 1
 else
+  count=$(echo $PIDS |wc -w)
+  if [ $count -gt 1 ]; then
+    echo "find $count kafka instances (" $PIDS ") are you sure to kill them all?"
+    read -p "(yes/no) " choice
+    if [ "Xyes" != "X$choice" ]; then
+      echo "stop canceled"
+      exit 1
+    fi
+  fi
   kill -s $SIGNAL $PIDS
 fi

@@ -63,7 +63,7 @@ object LogAppendInfo {
    * For any record failures with InvalidTimestamp or InvalidRecordException, we construct a LogAppendInfo object like the one
    * in unknownLogAppendInfoWithLogStartOffset, but with additiona fields recordErrors and errorMessage
    */
-  def unknownLogAppendInfoWithAdditionalInfo(logStartOffset: Long, recordErrors: Seq[RecordError], errorMessage: String): LogAppendInfo =
+  def unknownLogAppendInfoWithAdditionalInfo(logStartOffset: Long, recordErrors: List[RecordError], errorMessage: String): LogAppendInfo =
     LogAppendInfo(None, -1, RecordBatch.NO_TIMESTAMP, -1L, RecordBatch.NO_TIMESTAMP, logStartOffset,
       RecordConversionStats.EMPTY, NoCompressionCodec, NoCompressionCodec, -1, -1,
       offsetsMonotonic = false, -1L, recordErrors, errorMessage)
@@ -100,7 +100,7 @@ case class LogAppendInfo(var firstOffset: Option[Long],
                          validBytes: Int,
                          offsetsMonotonic: Boolean,
                          lastOffsetOfFirstBatch: Long,
-                         recordErrors: Seq[RecordError] = List(),
+                         recordErrors: List[RecordError] = List(),
                          errorMessage: String = null) {
   /**
    * Get the first offset if it exists, else get the last offset of the first batch
@@ -217,7 +217,7 @@ class Log(@volatile var dir: File,
           scheduler: Scheduler,
           brokerTopicStats: BrokerTopicStats,
           val time: Time,
-          val maxProducerIdExpirationMs: Int,
+          val maxProducerIdExpirationMs: Long,
           val producerIdExpirationCheckIntervalMs: Int,
           val topicPartition: TopicPartition,
           val producerStateManager: ProducerStateManager,
@@ -465,25 +465,25 @@ class Log(@volatile var dir: File,
     Map("topic" -> topicPartition.topic, "partition" -> topicPartition.partition.toString) ++ maybeFutureTag
   }
 
-  newGauge(LogMetricNames.NumLogSegments,
+  newGauge("NumLogSegments",
     new Gauge[Int] {
       def value = numberOfSegments
     },
     tags)
 
-  newGauge(LogMetricNames.LogStartOffset,
+  newGauge("LogStartOffset",
     new Gauge[Long] {
       def value = logStartOffset
     },
     tags)
 
-  newGauge(LogMetricNames.LogEndOffset,
+  newGauge("LogEndOffset",
     new Gauge[Long] {
       def value = logEndOffset
     },
     tags)
 
-  newGauge(LogMetricNames.Size,
+  newGauge("Size",
     new Gauge[Long] {
       def value = size
     },
@@ -1767,7 +1767,7 @@ class Log(@volatile var dir: File,
     if (config.retentionSize < 0 || size < config.retentionSize) return 0
     var diff = size - config.retentionSize
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]) = {
-      if (diff >= 0) {
+      if (diff - segment.size >= 0) {
         diff -= segment.size
         true
       } else {
@@ -2005,7 +2005,6 @@ class Log(@volatile var dir: File,
       lock synchronized {
         checkIfMemoryMappedBufferClosed()
         removeLogMetrics()
-        producerExpireCheck.cancel(true)
         removeAndDeleteSegments(logSegments, asyncDelete = false)
         leaderEpochCache.foreach(_.clear())
         Utils.delete(dir)
@@ -2298,10 +2297,10 @@ class Log(@volatile var dir: File,
    * remove deleted log metrics
    */
   private[log] def removeLogMetrics(): Unit = {
-    removeMetric(LogMetricNames.NumLogSegments, tags)
-    removeMetric(LogMetricNames.LogStartOffset, tags)
-    removeMetric(LogMetricNames.LogEndOffset, tags)
-    removeMetric(LogMetricNames.Size, tags)
+    removeMetric("NumLogSegments", tags)
+    removeMetric("LogStartOffset", tags)
+    removeMetric("LogEndOffset", tags)
+    removeMetric("Size", tags)
   }
 
   /**
@@ -2452,7 +2451,7 @@ object Log {
             scheduler: Scheduler,
             brokerTopicStats: BrokerTopicStats,
             time: Time = Time.SYSTEM,
-            maxProducerIdExpirationMs: Int,
+            maxProducerIdExpirationMs: Long,
             producerIdExpirationCheckIntervalMs: Int,
             logDirFailureChannel: LogDirFailureChannel): Log = {
     val topicPartition = Log.parseTopicPartitionName(dir)
@@ -2624,15 +2623,4 @@ object Log {
   private def isLogFile(file: File): Boolean =
     file.getPath.endsWith(LogFileSuffix)
 
-}
-
-object LogMetricNames {
-  val NumLogSegments: String = "NumLogSegments"
-  val LogStartOffset: String = "LogStartOffset"
-  val LogEndOffset: String = "LogEndOffset"
-  val Size: String = "Size"
-
-  def allMetricNames: List[String] = {
-    List(NumLogSegments, LogStartOffset, LogEndOffset, Size)
-  }
 }

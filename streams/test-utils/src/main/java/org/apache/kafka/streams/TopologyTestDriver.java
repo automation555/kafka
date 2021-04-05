@@ -606,6 +606,7 @@ public class TopologyTestDriver implements Closeable {
             offset,
             timestamp,
             TimestampType.CREATE_TIME,
+            (long) ConsumerRecord.NULL_CHECKSUM,
             key == null ? ConsumerRecord.NULL_SIZE : key.length,
             value == null ? ConsumerRecord.NULL_SIZE : value.length,
             key,
@@ -662,6 +663,7 @@ public class TopologyTestDriver implements Closeable {
             offsetsByTopicOrPatternPartition.get(globalInputTopicPartition).incrementAndGet() - 1,
             timestamp,
             TimestampType.CREATE_TIME,
+            (long) ConsumerRecord.NULL_CHECKSUM,
             key == null ? ConsumerRecord.NULL_SIZE : key.length,
             value == null ? ConsumerRecord.NULL_SIZE : value.length,
             key,
@@ -1356,13 +1358,6 @@ public class TopologyTestDriver implements Closeable {
         @Override
         public void init(final StateStoreContext context, final StateStore root) {
             inner.init(context, root);
-        }
-
-        @Deprecated
-        @Override
-        public void put(final K key,
-                        final V value) {
-            inner.put(key, ValueAndTimestamp.make(value, ConsumerRecord.NO_TIMESTAMP));
         }
 
         @Override

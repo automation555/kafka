@@ -711,24 +711,22 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testPutSameKeyTimestamp() {
         windowStore = buildWindowStore(RETENTION_PERIOD, WINDOW_SIZE, true, Serdes.Integer(), Serdes.String());
         windowStore.init((StateStoreContext) context, windowStore);
 
         final long startTime = SEGMENT_INTERVAL - 4L;
 
-        setCurrentTime(startTime);
-        windowStore.put(0, "zero");
+        windowStore.put(0, "zero", startTime);
 
         assertEquals(
             new HashSet<>(Collections.singletonList("zero")),
             valuesToSet(windowStore.fetch(0, ofEpochMilli(startTime - WINDOW_SIZE),
                 ofEpochMilli(startTime + WINDOW_SIZE))));
 
-        windowStore.put(0, "zero");
-        windowStore.put(0, "zero+");
-        windowStore.put(0, "zero++");
+        windowStore.put(0, "zero", startTime);
+        windowStore.put(0, "zero+", startTime);
+        windowStore.put(0, "zero++", startTime);
 
         assertEquals(
             new HashSet<>(asList("zero", "zero", "zero+", "zero++")),
@@ -776,7 +774,6 @@ public abstract class AbstractWindowBytesStoreTest {
 
     @Test
     public void shouldCloseOpenIteratorsWhenStoreIsClosedAndNotThrowInvalidStateStoreExceptionOnHasNext() {
-        setCurrentTime(0);
         windowStore.put(1, "one", 1L);
         windowStore.put(1, "two", 2L);
         windowStore.put(1, "three", 3L);
@@ -834,18 +831,16 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testDeleteAndUpdate() {
 
         final long currentTime = 0;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "one");
-        windowStore.put(1, "one v2");
+        windowStore.put(1, "one", currentTime);
+        windowStore.put(1, "one v2", currentTime);
 
         WindowStoreIterator<String> iterator = windowStore.fetch(1, 0, currentTime);
         assertEquals(new KeyValue<>(currentTime, "one v2"), iterator.next());
 
-        windowStore.put(1, null);
+        windowStore.put(1, null, currentTime);
         iterator = windowStore.fetch(1, 0, currentTime);
         assertFalse(iterator.hasNext());
     }
@@ -856,9 +851,8 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void shouldThrowNullPointerExceptionOnPutNullKey() {
-        assertThrows(NullPointerException.class, () -> windowStore.put(null, "anyValue"));
+        assertThrows(NullPointerException.class, () -> windowStore.put(null, "anyValue", 0L));
     }
 
     @Test
@@ -1049,11 +1043,9 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testWindowIteratorPeek() {
         final long currentTime = 0;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "one");
+        windowStore.put(1, "one", currentTime);
 
         final KeyValueIterator<Windowed<Integer>, String> iterator = windowStore.fetchAll(0L, currentTime);
 
@@ -1080,25 +1072,20 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void shouldNotThrowConcurrentModificationException() {
         long currentTime = 0;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "one");
+        windowStore.put(1, "one", currentTime);
 
         currentTime += WINDOW_SIZE * 10;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "two");
+        windowStore.put(1, "two", currentTime);
 
         final KeyValueIterator<Windowed<Integer>, String> iterator = windowStore.all();
 
         currentTime += WINDOW_SIZE * 10;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "three");
+        windowStore.put(1, "three", currentTime);
 
         currentTime += WINDOW_SIZE * 10;
-        setCurrentTime(currentTime);
-        windowStore.put(2, "four");
+        windowStore.put(2, "four", currentTime);
 
         // Iterator should return all records in store and not throw exception b/c some were added after fetch
         assertEquals(windowedPair(1, "one", 0), iterator.next());
@@ -1109,25 +1096,21 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testFetchDuplicates() {
         windowStore = buildWindowStore(RETENTION_PERIOD, WINDOW_SIZE, true, Serdes.Integer(), Serdes.String());
         windowStore.init((StateStoreContext) context, windowStore);
 
         long currentTime = 0;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "one");
-        windowStore.put(1, "one-2");
+        windowStore.put(1, "one", currentTime);
+        windowStore.put(1, "one-2", currentTime);
 
         currentTime += WINDOW_SIZE * 10;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "two");
-        windowStore.put(1, "two-2");
+        windowStore.put(1, "two", currentTime);
+        windowStore.put(1, "two-2", currentTime);
 
         currentTime += WINDOW_SIZE * 10;
-        setCurrentTime(currentTime);
-        windowStore.put(1, "three");
-        windowStore.put(1, "three-2");
+        windowStore.put(1, "three", currentTime);
+        windowStore.put(1, "three-2", currentTime);
 
         final WindowStoreIterator<String> iterator = windowStore.fetch(1, 0, WINDOW_SIZE * 10);
 
@@ -1139,47 +1122,26 @@ public abstract class AbstractWindowBytesStoreTest {
     }
 
 
-    @SuppressWarnings("deprecation")
     private void putFirstBatch(final WindowStore<Integer, String> store,
                                @SuppressWarnings("SameParameterValue") final long startTime,
                                final InternalMockProcessorContext context) {
         context.setRecordContext(createRecordContext(startTime));
-        store.put(0, "zero");
-        context.setRecordContext(createRecordContext(startTime + 1L));
-        store.put(1, "one");
-        context.setRecordContext(createRecordContext(startTime + 2L));
-        store.put(2, "two");
-        context.setRecordContext(createRecordContext(startTime + 4L));
-        store.put(4, "four");
-        context.setRecordContext(createRecordContext(startTime + 5L));
-        store.put(5, "five");
+        store.put(0, "zero", startTime);
+        store.put(1, "one", startTime + 1L);
+        store.put(2, "two", startTime + 2L);
+        store.put(4, "four", startTime + 4L);
+        store.put(5, "five", startTime + 5L);
     }
 
-    @SuppressWarnings("deprecation")
     private void putSecondBatch(final WindowStore<Integer, String> store,
                                 @SuppressWarnings("SameParameterValue") final long startTime,
                                 final InternalMockProcessorContext context) {
-        context.setRecordContext(createRecordContext(startTime + 3L));
-        store.put(2, "two+1");
-        context.setRecordContext(createRecordContext(startTime + 4L));
-        store.put(2, "two+2");
-        context.setRecordContext(createRecordContext(startTime + 5L));
-        store.put(2, "two+3");
-        context.setRecordContext(createRecordContext(startTime + 6L));
-        store.put(2, "two+4");
-        context.setRecordContext(createRecordContext(startTime + 7L));
-        store.put(2, "two+5");
-        context.setRecordContext(createRecordContext(startTime + 8L));
-        store.put(2, "two+6");
-    }
-
-    long extractStoreTimestamp(final byte[] binaryKey) {
-        return WindowKeySchema.extractStoreTimestamp(binaryKey);
-    }
-
-    <K> K extractStoreKey(final byte[] binaryKey,
-                          final StateSerdes<K, ?> serdes) {
-        return WindowKeySchema.extractStoreKey(binaryKey, serdes);
+        store.put(2, "two+1", startTime + 3L);
+        store.put(2, "two+2", startTime + 4L);
+        store.put(2, "two+3", startTime + 5L);
+        store.put(2, "two+4", startTime + 6L);
+        store.put(2, "two+5", startTime + 7L);
+        store.put(2, "two+6", startTime + 8L);
     }
 
     private Map<Integer, Set<String>> entriesByKey(final List<KeyValue<byte[], byte[]>> changeLog,
@@ -1187,9 +1149,9 @@ public abstract class AbstractWindowBytesStoreTest {
         final HashMap<Integer, Set<String>> entriesByKey = new HashMap<>();
 
         for (final KeyValue<byte[], byte[]> entry : changeLog) {
-            final long timestamp = extractStoreTimestamp(entry.key);
+            final long timestamp = WindowKeySchema.extractStoreTimestamp(entry.key);
 
-            final Integer key = extractStoreKey(entry.key, serdes);
+            final Integer key = WindowKeySchema.extractStoreKey(entry.key, serdes);
             final String value = entry.value == null ? null : serdes.valueFrom(entry.value);
 
             final Set<String> entries = entriesByKey.computeIfAbsent(key, k -> new HashSet<>());
@@ -1205,10 +1167,6 @@ public abstract class AbstractWindowBytesStoreTest {
 
     private static <K, V> KeyValue<Windowed<K>, V> windowedPair(final K key, final V value, final long timestamp, final long windowSize) {
         return KeyValue.pair(new Windowed<>(key, WindowKeySchema.timeWindowForSize(timestamp, windowSize)), value);
-    }
-
-    protected void setCurrentTime(final long currentTime) {
-        context.setRecordContext(createRecordContext(currentTime));
     }
 
     private ProcessorRecordContext createRecordContext(final long time) {

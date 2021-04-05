@@ -154,13 +154,6 @@ abstract class AbstractReadWriteDecorator<T extends StateStore, K, V> extends Wr
             super(inner);
         }
 
-        @Deprecated
-        @Override
-        public void put(final K key,
-                        final V value) {
-            wrapped().put(key, value);
-        }
-
         @Override
         public void put(final K key,
                         final V value,
@@ -174,6 +167,7 @@ abstract class AbstractReadWriteDecorator<T extends StateStore, K, V> extends Wr
             return wrapped().fetch(key, time);
         }
 
+        @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
         @Override
         public WindowStoreIterator<V> fetch(final K key,
                                             final long timeFrom,
@@ -188,6 +182,7 @@ abstract class AbstractReadWriteDecorator<T extends StateStore, K, V> extends Wr
             return wrapped().backwardFetch(key, timeFrom, timeTo);
         }
 
+        @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
         @Override
         public KeyValueIterator<Windowed<K>, V> fetch(final K keyFrom,
                                                       final K keyTo,
@@ -204,6 +199,7 @@ abstract class AbstractReadWriteDecorator<T extends StateStore, K, V> extends Wr
             return wrapped().backwardFetch(keyFrom, keyTo, timeFrom, timeTo);
         }
 
+        @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
         @Override
         public KeyValueIterator<Windowed<K>, V> fetchAll(final long timeFrom,
                                                          final long timeTo) {

@@ -22,13 +22,12 @@ import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
+import org.apache.kafka.common.config.ConfigDef.NonEmptyString;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.SecurityConfig;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.serialization.Serializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -46,7 +45,6 @@ import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
  * href="http://kafka.apache.org/documentation.html#producerconfigs">Kafka documentation</a>
  */
 public class ProducerConfig extends AbstractConfig {
-    private static final Logger log = LoggerFactory.getLogger(ProducerConfig.class);
 
     /*
      * NOTE: DO NOT CHANGE EITHER CONFIG STRINGS OR THEIR JAVA VARIABLE NAMES AS THESE ARE PART OF THE PUBLIC API AND
@@ -145,17 +143,11 @@ public class ProducerConfig extends AbstractConfig {
 
     /** <code>max.request.size</code> */
     public static final String MAX_REQUEST_SIZE_CONFIG = "max.request.size";
-    private static final String MAX_REQUEST_SIZE_DOC = "The maximum size in bytes of: "
-        + "<ol><li>Each record size before compression.</li><li>Each produce request.</li></ol> "
-        + "<p>"
-        + "Firstly, this configuration is a cap on the maximum uncompressed record batch size. "
-        + "Note that the server has its own cap on the record batch size (after compression if compression is enabled) "
-        + "which may be different from this. "
-        + "<p>"
-        + "And secondly, this configuration will also limit the number of record batches the producer can send in a single request "
-        + "by limiting the total size of the produce request. Because of this, " + BATCH_SIZE_CONFIG
-        + "should not be greater than " + MAX_REQUEST_SIZE_CONFIG + ", otherwise the produce request size can be bigger "
-        + "than " + MAX_REQUEST_SIZE_CONFIG + ".";
+    private static final String MAX_REQUEST_SIZE_DOC =
+        "The maximum size of a request in bytes. This setting will limit the number of record " +
+        "batches the producer will send in a single request to avoid sending huge requests. " +
+        "This is also effectively a cap on the maximum uncompressed record batch size. Note that the server " +
+        "has its own cap on the record batch size (after compression if compression is enabled) which may be different from this.";
 
     /** <code>reconnect.backoff.ms</code> */
     public static final String RECONNECT_BACKOFF_MS_CONFIG = CommonClientConfigs.RECONNECT_BACKOFF_MS_CONFIG;
@@ -165,14 +157,9 @@ public class ProducerConfig extends AbstractConfig {
 
     /** <code>max.block.ms</code> */
     public static final String MAX_BLOCK_MS_CONFIG = "max.block.ms";
-    private static final String MAX_BLOCK_MS_DOC = "The configuration controls how long the <code>KafkaProducer</code>'s <code>send()</code>, <code>partitionsFor()</code>, "
-                                                    + "<code>initTransactions()</code>, <code>sendOffsetsToTransaction()</code>, <code>commitTransaction()</code> "
-                                                    + "and <code>abortTransaction()</code> methods will block. "
-                                                    + "For <code>send()</code> this timeout bounds the total time waiting for both metadata fetch and buffer allocation "
-                                                    + "(blocking in the user-supplied serializers or partitioner is not counted against this timeout). "
-                                                    + "For <code>partitionsFor()</code> this timeout bounds the time spent waiting for metadata if it is unavailable. "
-                                                    + "The transaction-related methods always block, but may timeout if "
-                                                    + "the transaction coordinator could not be discovered or did not respond within the timeout.";
+    private static final String MAX_BLOCK_MS_DOC = "The configuration controls how long <code>KafkaProducer.send()</code> and <code>KafkaProducer.partitionsFor()</code> will block."
+                                                    + "These methods can be blocked either because the buffer is full or metadata unavailable."
+                                                    + "Blocking in the user-supplied serializers or partitioner will not be counted against this timeout.";
 
     /** <code>buffer.memory</code> */
     public static final String BUFFER_MEMORY_CONFIG = "buffer.memory";
@@ -232,12 +219,6 @@ public class ProducerConfig extends AbstractConfig {
     public static final String VALUE_SERIALIZER_CLASS_CONFIG = "value.serializer";
     public static final String VALUE_SERIALIZER_CLASS_DOC = "Serializer class for value that implements the <code>org.apache.kafka.common.serialization.Serializer</code> interface.";
 
-    /** <code>socket.connection.setup.timeout.ms</code> */
-    public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG;
-
-    /** <code>socket.connection.setup.timeout.max.ms</code> */
-    public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG;
-
     /** <code>connections.max.idle.ms</code> */
     public static final String CONNECTIONS_MAX_IDLE_MS_CONFIG = CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG;
 
@@ -263,14 +244,17 @@ public class ProducerConfig extends AbstractConfig {
     /** <code> transaction.timeout.ms </code> */
     public static final String TRANSACTION_TIMEOUT_CONFIG = "transaction.timeout.ms";
     public static final String TRANSACTION_TIMEOUT_DOC = "The maximum amount of time in ms that the transaction coordinator will wait for a transaction status update from the producer before proactively aborting the ongoing transaction." +
-            "If this value is larger than the transaction.max.timeout.ms setting in the broker, the request will fail with a <code>InvalidTxnTimeoutException</code> error.";
+            "If this value is larger than the transaction.max.timeout.ms setting in the broker, the request will fail with a <code>InvalidTransactionTimeout</code> error.";
 
     /** <code> transactional.id </code> */
     public static final String TRANSACTIONAL_ID_CONFIG = "transactional.id";
     public static final String TRANSACTIONAL_ID_DOC = "The TransactionalId to use for transactional delivery. This enables reliability semantics which span multiple producer sessions since it allows the client to guarantee that transactions using the same TransactionalId have been completed prior to starting any new transactions. If no TransactionalId is provided, then the producer is limited to idempotent delivery. " +
-            "If a TransactionalId is configured, <code>enable.idempotence</code> is implied. " +
-            "By default the TransactionId is not configured, which means transactions cannot be used. " +
+            "Note that <code>enable.idempotence</code> must be enabled if a TransactionalId is configured. " +
+            "The default is <code>null</code>, which means transactions cannot be used. " +
             "Note that, by default, transactions require a cluster of at least three brokers which is the recommended setting for production; for development you can change this, by adjusting broker setting <code>transaction.state.log.replication.factor</code>.";
+
+    public static final String ENABLE_FORCE_OLD_MESSAGE = "enable.force.old.message.format";
+    public static final String ENABLE_FORCE_OLD_MESSAGE_DOC = "Record version 1 will be force to use as the produce message format";
 
     /**
      * <code>security.providers</code>
@@ -278,28 +262,13 @@ public class ProducerConfig extends AbstractConfig {
     public static final String SECURITY_PROVIDERS_CONFIG = SecurityConfig.SECURITY_PROVIDERS_CONFIG;
     private static final String SECURITY_PROVIDERS_DOC = SecurityConfig.SECURITY_PROVIDERS_DOC;
 
-    /**
-     * <code>internal.auto.downgrade.txn.commit</code>
-     * Whether or not the producer should automatically downgrade the transactional commit request when the new group metadata
-     * feature is not supported by the broker.
-     * <p>
-     * The purpose of this flag is to make Kafka Streams being capable of working with old brokers when applying this new API.
-     * Non Kafka Streams users who are building their own EOS applications should be careful playing around
-     * with config as there is a risk of violating EOS semantics when turning on this flag.
-     *
-     * <p>
-     * Note: this is an internal configuration and could be changed in the future in a backward incompatible way
-     *
-     */
-    static final String AUTO_DOWNGRADE_TXN_COMMIT = "internal.auto.downgrade.txn.commit";
-
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
 
     static {
         CONFIG = new ConfigDef().define(BOOTSTRAP_SERVERS_CONFIG, Type.LIST, Collections.emptyList(), new ConfigDef.NonNullValidator(), Importance.HIGH, CommonClientConfigs.BOOTSTRAP_SERVERS_DOC)
                                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                                         Type.STRING,
-                                        ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                                        ClientDnsLookup.DEFAULT.toString(),
                                         in(ClientDnsLookup.DEFAULT.toString(),
                                            ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
@@ -358,7 +327,7 @@ public class ProducerConfig extends AbstractConfig {
                                 .define(METRICS_RECORDING_LEVEL_CONFIG,
                                         Type.STRING,
                                         Sensor.RecordingLevel.INFO.toString(),
-                                        in(Sensor.RecordingLevel.INFO.toString(), Sensor.RecordingLevel.DEBUG.toString(), Sensor.RecordingLevel.TRACE.toString()),
+                                        in(Sensor.RecordingLevel.INFO.toString(), Sensor.RecordingLevel.DEBUG.toString()),
                                         Importance.LOW,
                                         CommonClientConfigs.METRICS_RECORDING_LEVEL_DOC)
                                 .define(METRIC_REPORTER_CLASSES_CONFIG,
@@ -381,16 +350,6 @@ public class ProducerConfig extends AbstractConfig {
                                         Type.CLASS,
                                         Importance.HIGH,
                                         VALUE_SERIALIZER_CLASS_DOC)
-                                .define(SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG,
-                                        Type.LONG,
-                                        CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MS,
-                                        Importance.MEDIUM,
-                                        CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_DOC)
-                                .define(SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG,
-                                        Type.LONG,
-                                        CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
-                                        Importance.MEDIUM,
-                                        CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
                                 /* default is set to be a bit lower than the server default (10 min), to avoid both client and server closing connection at same time */
                                 .define(CONNECTIONS_MAX_IDLE_MS_CONFIG,
                                         Type.LONG,
@@ -435,31 +394,21 @@ public class ProducerConfig extends AbstractConfig {
                                         new ConfigDef.NonEmptyString(),
                                         Importance.LOW,
                                         TRANSACTIONAL_ID_DOC)
-                                .defineInternal(AUTO_DOWNGRADE_TXN_COMMIT,
-                                        Type.BOOLEAN,
-                                        false,
-                                        Importance.LOW);
+                                .define(ENABLE_FORCE_OLD_MESSAGE,
+                                        Type.INT,
+                                        null,
+                                        new ConfigDef.NonEmptyString(),
+                                        Importance.LOW,
+                                        ENABLE_FORCE_OLD_MESSAGE_DOC);
     }
 
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
-        CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
-        warnIfBatchSizeGreaterThanMaxRequestSize(this);
         Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
         maybeOverrideEnableIdempotence(refinedConfigs);
         maybeOverrideClientId(refinedConfigs);
         maybeOverrideAcksAndRetries(refinedConfigs);
         return refinedConfigs;
-    }
-
-    private static void warnIfBatchSizeGreaterThanMaxRequestSize(AbstractConfig config) {
-        int batchSize = config.getInt(BATCH_SIZE_CONFIG);
-        int maxRequestSize = config.getInt(MAX_REQUEST_SIZE_CONFIG);
-
-        if (batchSize > maxRequestSize)
-            log.warn("The value of '{}' ({}) should not be greater than the value of '{}' ({}).",
-                    BATCH_SIZE_CONFIG, batchSize,
-                    MAX_REQUEST_SIZE_CONFIG, maxRequestSize);
     }
 
     private void maybeOverrideClientId(final Map<String, Object> configs) {
@@ -512,18 +461,8 @@ public class ProducerConfig extends AbstractConfig {
         }
     }
 
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Map<String, Object> addSerializerToConfig(Map<String, Object> configs,
                                                             Serializer<?> keySerializer, Serializer<?> valueSerializer) {
-        return appendSerializerToConfig(configs, keySerializer, valueSerializer);
-    }
-
-    static Map<String, Object> appendSerializerToConfig(Map<String, Object> configs,
-            Serializer<?> keySerializer,
-            Serializer<?> valueSerializer) {
         Map<String, Object> newConfigs = new HashMap<>(configs);
         if (keySerializer != null)
             newConfigs.put(KEY_SERIALIZER_CLASS_CONFIG, keySerializer.getClass());
@@ -532,10 +471,6 @@ public class ProducerConfig extends AbstractConfig {
         return newConfigs;
     }
 
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Properties addSerializerToConfig(Properties properties,
                                                    Serializer<?> keySerializer,
                                                    Serializer<?> valueSerializer) {
@@ -579,7 +514,7 @@ public class ProducerConfig extends AbstractConfig {
     }
 
     public static void main(String[] args) {
-        System.out.println(CONFIG.toHtml(4, config -> "producerconfigs_" + config));
+        System.out.println(CONFIG.toHtml());
     }
 
 }

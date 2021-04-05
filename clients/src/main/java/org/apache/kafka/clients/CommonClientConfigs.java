@@ -34,7 +34,8 @@ public class CommonClientConfigs {
     /*
      * NOTE: DO NOT CHANGE EITHER CONFIG NAMES AS THESE ARE PART OF THE PUBLIC API AND CHANGE WILL BREAK USER CODE.
      */
-
+    public static final String ENABLE_DYNAMIC_CONFIG_CONFIG = "enable.dynamic.config";
+    public static final String ENABLE_DYNAMIC_CONFIG_DOC = "Specifies wether or not dynamic updates to the clients configuration should take place";
     public static final String BOOTSTRAP_SERVERS_CONFIG = "bootstrap.servers";
     public static final String BOOTSTRAP_SERVERS_DOC = "A list of host/port pairs to use for establishing the initial connection to the Kafka cluster. The client will make use of all servers irrespective of which servers are specified here for bootstrapping&mdash;this list only impacts the initial hosts used to discover the full set of servers. This list should be in the form "
                                                        + "<code>host1:port1,host2:port2,...</code>. Since these servers are just used for the initial connection to "
@@ -50,7 +51,10 @@ public class CommonClientConfigs {
                                                        + "(both the JVM and the OS cache DNS name lookups, however). "
                                                        + "If set to <code>resolve_canonical_bootstrap_servers_only</code>, "
                                                        + "resolve each bootstrap address into a list of canonical names. After "
-                                                       + "the bootstrap phase, this behaves the same as <code>use_all_dns_ips</code>.";
+                                                       + "the bootstrap phase, this behaves the same as <code>use_all_dns_ips</code>. "
+                                                       + "If set to <code>default</code> (deprecated), attempt to connect to the "
+                                                       + "first IP address returned by the lookup, even if the lookup returns multiple "
+                                                       + "IP addresses.";
 
     public static final String METADATA_MAX_AGE_CONFIG = "metadata.max.age.ms";
     public static final String METADATA_MAX_AGE_DOC = "The period of time in milliseconds after which we force a refresh of metadata even if we haven't seen any partition leadership changes to proactively discover any new brokers or partitions.";
@@ -75,9 +79,9 @@ public class CommonClientConfigs {
     public static final String RECONNECT_BACKOFF_MAX_MS_CONFIG = "reconnect.backoff.max.ms";
     public static final String RECONNECT_BACKOFF_MAX_MS_DOC = "The maximum amount of time in milliseconds to wait when reconnecting to a broker that has repeatedly failed to connect. If provided, the backoff per host will increase exponentially for each consecutive connection failure, up to this maximum. After calculating the backoff increase, 20% random jitter is added to avoid connection storms.";
 
+    @Deprecated
     public static final String RETRIES_CONFIG = "retries";
-    public static final String RETRIES_DOC = "Setting a value greater than zero will cause the client to resend any request that fails with a potentially transient error." +
-        " It is recommended to set the value to either zero or `MAX_VALUE` and use corresponding timeout parameters to control how long a client should retry a request.";
+    public static final String RETRIES_DOC = "(Deprecated) Setting a value greater than zero will cause the client to resend any request that fails with a potentially transient error.";
 
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
     public static final String RETRY_BACKOFF_MS_DOC = "The amount of time to wait before attempting to retry a failed request to a given topic partition. This avoids repeatedly sending requests in a tight loop under some failure scenarios.";
@@ -107,7 +111,7 @@ public class CommonClientConfigs {
 
     public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG = "socket.connection.setup.timeout.max.ms";
     public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC = "The maximum amount of time the client will wait for the socket connection to be established. The connection setup timeout will increase exponentially for each consecutive connection failure up to this maximum. To avoid connection storms, a randomization factor of 0.2 will be applied to the timeout resulting in a random range between 20% below and 20% above the computed value.";
-    public static final Long DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS = 30 * 1000L;
+    public static final Long DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS = 127 * 1000L;
 
     public static final String CONNECTIONS_MAX_IDLE_MS_CONFIG = "connections.max.idle.ms";
     public static final String CONNECTIONS_MAX_IDLE_MS_DOC = "Close idle connections after the number of milliseconds specified by this config.";
@@ -181,5 +185,20 @@ public class CommonClientConfigs {
             rval.put(RECONNECT_BACKOFF_MAX_MS_CONFIG, parsedValues.get(RECONNECT_BACKOFF_MS_CONFIG));
         }
         return rval;
+    }
+
+    public static void warnIfDeprecatedDnsLookupValue(AbstractConfig config) {
+        String clientDnsLookupValue = config.getString(CLIENT_DNS_LOOKUP_CONFIG);
+        if (clientDnsLookupValue.equals(ClientDnsLookup.DEFAULT.toString()))
+            log.warn("Configuration '{}' with value '{}' is deprecated and will be removed in " +
+                "future version. Please use '{}' or another non-deprecated value.",
+                CLIENT_DNS_LOOKUP_CONFIG, ClientDnsLookup.DEFAULT,
+                ClientDnsLookup.USE_ALL_DNS_IPS);
+    }
+
+    public static void warnIfDeprecatedRetriesValue(AbstractConfig config) {
+        if (config.originals().containsKey(RETRIES_CONFIG)) {
+            log.warn("Configuration '{}' is deprecated and will be removed in future version.", RETRIES_CONFIG);
+        }
     }
 }

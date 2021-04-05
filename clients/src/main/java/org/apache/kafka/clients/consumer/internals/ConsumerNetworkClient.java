@@ -127,7 +127,7 @@ public class ConsumerNetworkClient implements Closeable {
         long now = time.milliseconds();
         RequestFutureCompletionHandler completionHandler = new RequestFutureCompletionHandler();
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
-            requestTimeoutMs, completionHandler);
+                requestTimeoutMs, completionHandler);
         unsent.put(node, clientRequest);
 
         // wakeup the client in case it is blocking in poll so that we can send the queued request
@@ -139,6 +139,15 @@ public class ConsumerNetworkClient implements Closeable {
         lock.lock();
         try {
             return client.leastLoadedNode(time.milliseconds());
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean ready(Node node, long now) {
+        lock.lock();
+        try {
+            return client.ready(node, now);
         } finally {
             lock.unlock();
         }
@@ -634,7 +643,7 @@ public class ConsumerNetworkClient implements Closeable {
     /*
      * A thread-safe helper class to hold requests per node that have not been sent yet
      */
-    private static final class UnsentRequests {
+    private final static class UnsentRequests {
         private final ConcurrentMap<Node, ConcurrentLinkedQueue<ClientRequest>> unsent;
 
         private UnsentRequests() {
@@ -644,7 +653,11 @@ public class ConsumerNetworkClient implements Closeable {
         public void put(Node node, ClientRequest request) {
             // the lock protects the put from a concurrent removal of the queue for the node
             synchronized (unsent) {
-                ConcurrentLinkedQueue<ClientRequest> requests = unsent.computeIfAbsent(node, key -> new ConcurrentLinkedQueue<>());
+                ConcurrentLinkedQueue<ClientRequest> requests = unsent.get(node);
+                if (requests == null) {
+                    requests = new ConcurrentLinkedQueue<>();
+                    unsent.put(node, requests);
+                }
                 requests.add(request);
             }
         }

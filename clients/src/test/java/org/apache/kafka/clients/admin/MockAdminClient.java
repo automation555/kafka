@@ -29,6 +29,7 @@ import org.apache.kafka.common.TopicPartitionReplica;
 import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.acl.AclOperation;
+import org.apache.kafka.common.config.ClientConfigAlteration;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.errors.InvalidReplicationFactorException;
@@ -481,11 +482,6 @@ public class MockAdminClient extends AdminClient {
     }
 
     @Override
-    synchronized public RemoveMembersFromConsumerGroupResult removeMembersFromConsumerGroup(String groupId, Collection<String> memberIds) {
-        throw new UnsupportedOperationException("Not implemented yet");
-    }
-
-    @Override
     synchronized public CreateAclsResult createAcls(Collection<AclBinding> acls, CreateAclsOptions options) {
         throw new UnsupportedOperationException("Not implemented yet");
     }
@@ -832,13 +828,13 @@ public class MockAdminClient extends AdminClient {
     }
 
     @Override
-    public DescribeUserScramCredentialsResult describeUserScramCredentials(List<String> users, DescribeUserScramCredentialsOptions options) {
-        throw new UnsupportedOperationException("Not implemented yet");
+    public DescribeClientConfigsResult describeClientConfigs(ClientQuotaFilter filter, DescribeClientQuotasOptions options) {
+        throw new UnsupportedOperationException("Not implement yet");
     }
 
     @Override
-    public AlterUserScramCredentialsResult alterUserScramCredentials(List<UserScramCredentialAlteration> alterations, AlterUserScramCredentialsOptions options) {
-        throw new UnsupportedOperationException("Not implemented yet");
+    public AlterClientConfigsResult alterClientConfigs(Collection<ClientConfigAlteration> entries, AlterClientQuotasOptions options) {
+        throw new UnsupportedOperationException("Not implement yet");
     }
 
     @Override

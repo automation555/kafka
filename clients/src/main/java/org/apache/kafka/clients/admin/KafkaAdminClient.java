@@ -53,6 +53,7 @@ import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.annotation.InterfaceStability;
+import org.apache.kafka.common.config.ClientConfigAlteration;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.ApiException;
@@ -65,10 +66,8 @@ import org.apache.kafka.common.errors.KafkaStorageException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.ThrottlingQuotaExceededException;
 import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.common.errors.UnacceptableCredentialException;
 import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
-import org.apache.kafka.common.errors.UnsupportedSaslMechanismException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsRequestData;
@@ -78,7 +77,6 @@ import org.apache.kafka.common.message.AlterReplicaLogDirsRequestData.AlterRepli
 import org.apache.kafka.common.message.AlterReplicaLogDirsRequestData.AlterReplicaLogDirTopic;
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData.AlterReplicaLogDirPartitionResult;
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData.AlterReplicaLogDirTopicResult;
-import org.apache.kafka.common.message.AlterUserScramCredentialsRequestData;
 import org.apache.kafka.common.message.CreateAclsRequestData;
 import org.apache.kafka.common.message.CreateAclsRequestData.AclCreation;
 import org.apache.kafka.common.message.CreateAclsResponseData.AclCreationResult;
@@ -115,8 +113,6 @@ import org.apache.kafka.common.message.DescribeGroupsResponseData.DescribedGroup
 import org.apache.kafka.common.message.DescribeLogDirsRequestData;
 import org.apache.kafka.common.message.DescribeLogDirsRequestData.DescribableLogDirTopic;
 import org.apache.kafka.common.message.DescribeLogDirsResponseData;
-import org.apache.kafka.common.message.DescribeUserScramCredentialsRequestData;
-import org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData;
 import org.apache.kafka.common.message.ExpireDelegationTokenRequestData;
 import org.apache.kafka.common.message.FindCoordinatorRequestData;
 import org.apache.kafka.common.message.IncrementalAlterConfigsRequestData;
@@ -154,6 +150,8 @@ import org.apache.kafka.common.quota.ClientQuotaEntity;
 import org.apache.kafka.common.quota.ClientQuotaFilter;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
+import org.apache.kafka.common.requests.AlterClientConfigsRequest;
+import org.apache.kafka.common.requests.AlterClientConfigsResponse;
 import org.apache.kafka.common.requests.AlterClientQuotasRequest;
 import org.apache.kafka.common.requests.AlterClientQuotasResponse;
 import org.apache.kafka.common.requests.AlterConfigsRequest;
@@ -162,8 +160,6 @@ import org.apache.kafka.common.requests.AlterPartitionReassignmentsRequest;
 import org.apache.kafka.common.requests.AlterPartitionReassignmentsResponse;
 import org.apache.kafka.common.requests.AlterReplicaLogDirsRequest;
 import org.apache.kafka.common.requests.AlterReplicaLogDirsResponse;
-import org.apache.kafka.common.requests.AlterUserScramCredentialsRequest;
-import org.apache.kafka.common.requests.AlterUserScramCredentialsResponse;
 import org.apache.kafka.common.requests.ApiError;
 import org.apache.kafka.common.requests.CreateAclsRequest;
 import org.apache.kafka.common.requests.CreateAclsResponse;
@@ -183,6 +179,8 @@ import org.apache.kafka.common.requests.DeleteTopicsRequest;
 import org.apache.kafka.common.requests.DeleteTopicsResponse;
 import org.apache.kafka.common.requests.DescribeAclsRequest;
 import org.apache.kafka.common.requests.DescribeAclsResponse;
+import org.apache.kafka.common.requests.DescribeClientConfigsRequest;
+import org.apache.kafka.common.requests.DescribeClientConfigsResponse;
 import org.apache.kafka.common.requests.DescribeClientQuotasRequest;
 import org.apache.kafka.common.requests.DescribeClientQuotasResponse;
 import org.apache.kafka.common.requests.DescribeConfigsRequest;
@@ -193,8 +191,6 @@ import org.apache.kafka.common.requests.DescribeGroupsRequest;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
 import org.apache.kafka.common.requests.DescribeLogDirsRequest;
 import org.apache.kafka.common.requests.DescribeLogDirsResponse;
-import org.apache.kafka.common.requests.DescribeUserScramCredentialsRequest;
-import org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse;
 import org.apache.kafka.common.requests.ElectLeadersRequest;
 import org.apache.kafka.common.requests.ElectLeadersResponse;
 import org.apache.kafka.common.requests.ExpireDelegationTokenRequest;
@@ -224,7 +220,6 @@ import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.RenewDelegationTokenRequest;
 import org.apache.kafka.common.requests.RenewDelegationTokenResponse;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
-import org.apache.kafka.common.security.scram.internals.ScramFormatter;
 import org.apache.kafka.common.security.token.delegation.DelegationToken;
 import org.apache.kafka.common.security.token.delegation.TokenInformation;
 import org.apache.kafka.common.utils.AppInfoParser;
@@ -236,8 +231,6 @@ import org.slf4j.Logger;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -894,7 +887,7 @@ public class KafkaAdminClient extends AdminClient {
                 Call call = iter.next();
                 int remainingMs = calcTimeoutMsRemainingAsInt(now, call.deadlineMs);
                 if (remainingMs < 0) {
-                    call.fail(now, new TimeoutException(msg + " Call: " + call.callName));
+                    call.fail(now, new TimeoutException(msg));
                     iter.remove();
                     numTimedOut++;
                 } else {
@@ -1080,7 +1073,7 @@ public class KafkaAdminClient extends AdminClient {
                     continue;
                 }
                 ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now,
-                        true, requestTimeoutMs, null, null, null);
+                        true, requestTimeoutMs, null);
                 log.debug("Sending {} to {}. correlationId={}", requestBuilder, node, clientRequest.correlationId());
                 client.send(clientRequest, now);
                 getOrCreateListValue(callsInFlight, node.idString()).add(call);
@@ -3750,16 +3743,6 @@ public class KafkaAdminClient extends AdminClient {
     }
 
     @Override
-    public RemoveMembersFromConsumerGroupResult removeMembersFromConsumerGroup(String groupId, Collection<String> memberIds) {
-        Set<MemberToRemove> members = new HashSet<>();
-        memberIds.forEach(memberId -> {
-            members.add(new MemberToRemove(memberId));
-        });
-        RemoveMembersFromConsumerGroupOptions options = new RemoveMembersFromConsumerGroupOptions(members);
-        return removeMembersFromConsumerGroup(groupId, options);
-    }
-
-    @Override
     public RemoveMembersFromConsumerGroupResult removeMembersFromConsumerGroup(String groupId,
                                                                                RemoveMembersFromConsumerGroupOptions options) {
         final long startFindCoordinatorMs = time.milliseconds();
@@ -4093,180 +4076,62 @@ public class KafkaAdminClient extends AdminClient {
         return new AlterClientQuotasResult(Collections.unmodifiableMap(futures));
     }
 
-    @Override
-    public DescribeUserScramCredentialsResult describeUserScramCredentials(List<String> users, DescribeUserScramCredentialsOptions options) {
-        final KafkaFutureImpl<DescribeUserScramCredentialsResponseData> dataFuture = new KafkaFutureImpl<>();
+    public DescribeClientConfigsResult describeClientConfigs(ClientQuotaFilter filter, DescribeClientQuotasOptions options) {
+        KafkaFutureImpl<Map<ClientQuotaEntity, Map<String, String>>> future = new KafkaFutureImpl<>();
+
         final long now = time.milliseconds();
-        Call call = new Call("describeUserScramCredentials", calcDeadlineMs(now, options.timeoutMs()),
+        runnable.call(new Call("describeClientConfigs", calcDeadlineMs(now, options.timeoutMs()),
                 new LeastLoadedNodeProvider()) {
-            @Override
-            public DescribeUserScramCredentialsRequest.Builder createRequest(int timeoutMs) {
-                return new DescribeUserScramCredentialsRequest.Builder(
-                        new DescribeUserScramCredentialsRequestData().setUsers(users.stream().map(user ->
-                                new DescribeUserScramCredentialsRequestData.UserName().setName(user)).collect(Collectors.toList())));
-            }
 
-            @Override
-            public void handleResponse(AbstractResponse abstractResponse) {
-                DescribeUserScramCredentialsResponse response = (DescribeUserScramCredentialsResponse) abstractResponse;
-                DescribeUserScramCredentialsResponseData data = response.data();
-                short messageLevelErrorCode = data.errorCode();
-                if (messageLevelErrorCode != Errors.NONE.code()) {
-                    dataFuture.completeExceptionally(Errors.forCode(messageLevelErrorCode).exception(data.errorMessage()));
-                } else {
-                    dataFuture.complete(data);
+                @Override
+                DescribeClientConfigsRequest.Builder createRequest(int timeoutMs) {
+                    return new DescribeClientConfigsRequest.Builder(filter, null, false);
                 }
-            }
 
-            @Override
-            void handleFailure(Throwable throwable) {
-                dataFuture.completeExceptionally(throwable);
-            }
-        };
-        runnable.call(call, now);
-        return new DescribeUserScramCredentialsResult(dataFuture);
+                @Override
+                void handleResponse(AbstractResponse abstractResponse) {
+                    DescribeClientConfigsResponse response = (DescribeClientConfigsResponse) abstractResponse;
+                    response.complete(future);
+                }
+
+                @Override
+                void handleFailure(Throwable throwable) {
+                    future.completeExceptionally(throwable);
+                }
+            }, now);
+
+        return new DescribeClientConfigsResult(future);
     }
 
     @Override
-    public AlterUserScramCredentialsResult alterUserScramCredentials(List<UserScramCredentialAlteration> alterations,
-                                                                     AlterUserScramCredentialsOptions options) {
-        final long now = time.milliseconds();
-        final Map<String, KafkaFutureImpl<Void>> futures = new HashMap<>();
-        for (UserScramCredentialAlteration alteration: alterations) {
-            futures.put(alteration.user(), new KafkaFutureImpl<>());
+    public AlterClientConfigsResult alterClientConfigs(Collection<ClientConfigAlteration> entries, AlterClientQuotasOptions options) {
+        Map<ClientQuotaEntity, KafkaFutureImpl<Void>> futures = new HashMap<>(entries.size());
+        for (ClientConfigAlteration entry : entries) {
+            futures.put(entry.entity(), new KafkaFutureImpl<>());
         }
-        final Map<String, Exception> userIllegalAlterationExceptions = new HashMap<>();
-        // We need to keep track of users with deletions of an unknown SCRAM mechanism
-        final String usernameMustNotBeEmptyMsg = "Username must not be empty";
-        String passwordMustNotBeEmptyMsg = "Password must not be empty";
-        final String unknownScramMechanismMsg = "Unknown SCRAM mechanism";
-        alterations.stream().filter(a -> a instanceof UserScramCredentialDeletion).forEach(alteration -> {
-            final String user = alteration.user();
-            if (user == null || user.isEmpty()) {
-                userIllegalAlterationExceptions.put(alteration.user(), new UnacceptableCredentialException(usernameMustNotBeEmptyMsg));
-            } else {
-                UserScramCredentialDeletion deletion = (UserScramCredentialDeletion) alteration;
-                ScramMechanism mechanism = deletion.mechanism();
-                if (mechanism == null || mechanism == ScramMechanism.UNKNOWN) {
-                    userIllegalAlterationExceptions.put(user, new UnsupportedSaslMechanismException(unknownScramMechanismMsg));
+
+        final long now = time.milliseconds();
+        runnable.call(new Call("alterClientConfigs", calcDeadlineMs(now, options.timeoutMs()),
+                new LeastLoadedNodeProvider()) {
+
+                @Override
+                AlterClientConfigsRequest.Builder createRequest(int timeoutMs) {
+                    return new AlterClientConfigsRequest.Builder(entries, options.validateOnly());
                 }
-            }
-        });
-        // Creating an upsertion may throw InvalidKeyException or NoSuchAlgorithmException,
-        // so keep track of which users are affected by such a failure so we can fail all their alterations later
-        final Map<String, Map<ScramMechanism, AlterUserScramCredentialsRequestData.ScramCredentialUpsertion>> userInsertions = new HashMap<>();
-        alterations.stream().filter(a -> a instanceof UserScramCredentialUpsertion)
-                .filter(alteration -> !userIllegalAlterationExceptions.containsKey(alteration.user()))
-                .forEach(alteration -> {
-                    final String user = alteration.user();
-                    if (user == null || user.isEmpty()) {
-                        userIllegalAlterationExceptions.put(alteration.user(), new UnacceptableCredentialException(usernameMustNotBeEmptyMsg));
-                    } else {
-                        UserScramCredentialUpsertion upsertion = (UserScramCredentialUpsertion) alteration;
-                        try {
-                            byte[] password = upsertion.password();
-                            if (password == null || password.length == 0) {
-                                userIllegalAlterationExceptions.put(user, new UnacceptableCredentialException(passwordMustNotBeEmptyMsg));
-                            } else {
-                                ScramMechanism mechanism = upsertion.credentialInfo().mechanism();
-                                if (mechanism == null || mechanism == ScramMechanism.UNKNOWN) {
-                                    userIllegalAlterationExceptions.put(user, new UnsupportedSaslMechanismException(unknownScramMechanismMsg));
-                                } else {
-                                    userInsertions.putIfAbsent(user, new HashMap<>());
-                                    userInsertions.get(user).put(mechanism, getScramCredentialUpsertion(upsertion));
-                                }
-                            }
-                        } catch (NoSuchAlgorithmException e) {
-                            // we might overwrite an exception from a previous alteration, but we don't really care
-                            // since we just need to mark this user as having at least one illegal alteration
-                            // and make an exception instance available for completing the corresponding future exceptionally
-                            userIllegalAlterationExceptions.put(user, new UnsupportedSaslMechanismException(unknownScramMechanismMsg));
-                        } catch (InvalidKeyException e) {
-                            // generally shouldn't happen since we deal with the empty password case above,
-                            // but we still need to catch/handle it
-                            userIllegalAlterationExceptions.put(user, new UnacceptableCredentialException(e.getMessage(), e));
-                        }
-                    }
-                });
 
-        // submit alterations only for users that do not have an illegal alteration as identified above
-        Call call = new Call("alterUserScramCredentials", calcDeadlineMs(now, options.timeoutMs()),
-                new ControllerNodeProvider()) {
-            @Override
-            public AlterUserScramCredentialsRequest.Builder createRequest(int timeoutMs) {
-                return new AlterUserScramCredentialsRequest.Builder(
-                        new AlterUserScramCredentialsRequestData().setUpsertions(alterations.stream()
-                                .filter(a -> a instanceof UserScramCredentialUpsertion)
-                                .filter(a -> !userIllegalAlterationExceptions.containsKey(a.user()))
-                                .map(a -> userInsertions.get(a.user()).get(((UserScramCredentialUpsertion) a).credentialInfo().mechanism()))
-                                .collect(Collectors.toList()))
-                        .setDeletions(alterations.stream()
-                                .filter(a -> a instanceof UserScramCredentialDeletion)
-                                .filter(a -> !userIllegalAlterationExceptions.containsKey(a.user()))
-                                .map(d -> getScramCredentialDeletion((UserScramCredentialDeletion) d))
-                                .collect(Collectors.toList())));
-            }
-
-            @Override
-            public void handleResponse(AbstractResponse abstractResponse) {
-                AlterUserScramCredentialsResponse response = (AlterUserScramCredentialsResponse) abstractResponse;
-                // Check for controller change
-                for (Errors error : response.errorCounts().keySet()) {
-                    if (error == Errors.NOT_CONTROLLER) {
-                        handleNotControllerError(error);
-                    }
+                @Override
+                void handleResponse(AbstractResponse abstractResponse) {
+                    AlterClientConfigsResponse response = (AlterClientConfigsResponse) abstractResponse;
+                    response.complete(futures);
                 }
-                /* Now that we have the results for the ones we sent,
-                 * fail any users that have an illegal alteration as identified above.
-                 * Be sure to do this after the NOT_CONTROLLER error check above
-                 * so that all errors are consistent in that case.
-                 */
-                userIllegalAlterationExceptions.entrySet().stream().forEach(entry -> {
-                    futures.get(entry.getKey()).completeExceptionally(entry.getValue());
-                });
-                response.data().results().forEach(result -> {
-                    KafkaFutureImpl<Void> future = futures.get(result.user());
-                    if (future == null) {
-                        log.warn("Server response mentioned unknown user {}", result.user());
-                    } else {
-                        Errors error = Errors.forCode(result.errorCode());
-                        if (error != Errors.NONE) {
-                            future.completeExceptionally(error.exception(result.errorMessage()));
-                        } else {
-                            future.complete(null);
-                        }
-                    }
-                });
-                completeUnrealizedFutures(
-                    futures.entrySet().stream(),
-                    user -> "The broker response did not contain a result for user " + user);
-            }
 
-            @Override
-            void handleFailure(Throwable throwable) {
-                completeAllExceptionally(futures.values(), throwable);
-            }
-        };
-        runnable.call(call, now);
-        return new AlterUserScramCredentialsResult(new HashMap<>(futures));
-    }
+                @Override
+                void handleFailure(Throwable throwable) {
+                    completeAllExceptionally(futures.values(), throwable);
+                }
+            }, now);
 
-    private static AlterUserScramCredentialsRequestData.ScramCredentialUpsertion getScramCredentialUpsertion(UserScramCredentialUpsertion u) throws InvalidKeyException, NoSuchAlgorithmException {
-        AlterUserScramCredentialsRequestData.ScramCredentialUpsertion retval = new AlterUserScramCredentialsRequestData.ScramCredentialUpsertion();
-        return retval.setName(u.user())
-                .setMechanism(u.credentialInfo().mechanism().type())
-                .setIterations(u.credentialInfo().iterations())
-                .setSalt(u.salt())
-                .setSaltedPassword(getSaltedPasword(u.credentialInfo().mechanism(), u.password(), u.salt(), u.credentialInfo().iterations()));
-    }
-
-    private static AlterUserScramCredentialsRequestData.ScramCredentialDeletion getScramCredentialDeletion(UserScramCredentialDeletion d) {
-        return new AlterUserScramCredentialsRequestData.ScramCredentialDeletion().setName(d.user()).setMechanism(d.mechanism().type());
-    }
-
-    private static byte[] getSaltedPasword(ScramMechanism publicScramMechanism, byte[] password, byte[] salt, int iterations) throws NoSuchAlgorithmException, InvalidKeyException {
-        return new ScramFormatter(org.apache.kafka.common.security.scram.internals.ScramMechanism.forMechanismName(publicScramMechanism.mechanismName()))
-                .hi(password, salt, iterations);
+        return new AlterClientConfigsResult(Collections.unmodifiableMap(futures));
     }
 
     /**

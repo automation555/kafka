@@ -33,7 +33,6 @@ import org.apache.kafka.connect.storage.ConverterConfig;
 import org.apache.kafka.connect.storage.ConverterType;
 import org.apache.kafka.connect.storage.HeaderConverter;
 import org.apache.kafka.connect.transforms.Transformation;
-import org.apache.kafka.connect.transforms.predicates.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -164,12 +163,8 @@ public class Plugins {
         return delegatingLoader.converters();
     }
 
-    public Set<PluginDesc<Transformation>> transformations() {
+    public Set<PluginDesc<Transformation<?>>> transformations() {
         return delegatingLoader.transformations();
-    }
-
-    public Set<PluginDesc<Predicate>> predicates() {
-        return delegatingLoader.predicates();
     }
 
     public Set<PluginDesc<ConfigProvider>> configProviders() {
@@ -445,7 +440,8 @@ public class Plugins {
             plugin = newPlugin(klass);
             if (plugin instanceof Versioned) {
                 Versioned versionedPlugin = (Versioned) plugin;
-                if (Utils.isBlank(versionedPlugin.version())) {
+                if (versionedPlugin.version() == null || versionedPlugin.version().trim()
+                    .isEmpty()) {
                     throw new ConnectException("Version not defined for '" + klassName + "'");
                 }
             }

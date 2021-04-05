@@ -115,11 +115,11 @@
     <module name="MethodLength"/>
     <module name="ParameterNumber">
       <!-- default is 8 -->
-      <property name="max" value="13"/>
+      <property name="max" value="14"/>
     </module>
     <module name="ClassDataAbstractionCoupling">
       <!-- default is 7 -->
-      <property name="max" value="30"/>
+      <property name="max" value="25"/>
     </module>
     <module name="BooleanExpressionComplexity">
       <!-- default is 3 -->
@@ -132,7 +132,7 @@
     </module>
     <module name="CyclomaticComplexity">
       <!-- default is 10-->
-      <property name="max" value="16"/>
+      <property name="max" value="18"/>
     </module>
     <module name="JavaNCSS">
       <!-- default is 50 -->

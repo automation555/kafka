@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.common.record;
 
-import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.CloseableIterator;
 
 import java.nio.ByteBuffer;
@@ -210,6 +209,18 @@ public interface RecordBatch extends Iterable<Record> {
      * @return true if it is, false otherwise
      */
     boolean isTransactional();
+
+    /**
+     * Whether or not the base timestamp has been set to the delete horizon
+     * @return true if it is, false otherwise
+     */
+    boolean hasDeleteHorizonMs();
+
+    /**
+     * Get the delete horizon, returns -1L if the first timestamp is not the delete horizon
+     * @return timestamp of the delete horizon
+     */
+    long deleteHorizonMs();
 
     /**
      * Get the partition leader epoch of this record batch.

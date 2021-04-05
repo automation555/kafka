@@ -29,7 +29,7 @@ import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.errors.LogAndContinueExceptionHandler;
 import org.apache.kafka.streams.processor.TimestampExtractor;
-import org.apache.kafka.test.MockInternalProcessorContext;
+import org.apache.kafka.test.InternalMockProcessorContext;
 import org.apache.kafka.test.MockSourceNode;
 import org.apache.kafka.test.MockTimestampExtractor;
 import org.junit.Test;
@@ -60,7 +60,7 @@ public class PartitionGroupTest {
         new MockSourceNode<>(topics, intDeserializer, intDeserializer),
         timestampExtractor,
         new LogAndContinueExceptionHandler(),
-        new MockInternalProcessorContext(),
+        new InternalMockProcessorContext(),
         logContext
     );
     private final RecordQueue queue2 = new RecordQueue(
@@ -68,7 +68,7 @@ public class PartitionGroupTest {
         new MockSourceNode<>(topics, intDeserializer, intDeserializer),
         timestampExtractor,
         new LogAndContinueExceptionHandler(),
-        new MockInternalProcessorContext(),
+        new InternalMockProcessorContext(),
         logContext
     );
 
@@ -380,21 +380,18 @@ public class PartitionGroupTest {
     }
 
     @Test
-    public void shouldEmptyPartitionsOnClear() {
+    public void shouldEmpyPartitionsOnClean() {
         final List<ConsumerRecord<byte[], byte[]>> list = Arrays.asList(
             new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list);
-        group.nextRecord(new PartitionGroup.RecordInfo());
-        group.nextRecord(new PartitionGroup.RecordInfo());
 
         group.clear();
 
         assertThat(group.numBuffered(), equalTo(0));
         assertThat(group.streamTime(), equalTo(RecordQueue.UNKNOWN));
         assertThat(group.nextRecord(new PartitionGroup.RecordInfo()), equalTo(null));
-        assertThat(group.partitionTimestamp(partition1), equalTo(RecordQueue.UNKNOWN));
 
         group.addRawRecords(partition1, list);
     }
@@ -406,16 +403,16 @@ public class PartitionGroupTest {
             new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list);
-        group.nextRecord(new PartitionGroup.RecordInfo());
 
         group.close();
 
         assertThat(group.numBuffered(), equalTo(0));
         assertThat(group.streamTime(), equalTo(RecordQueue.UNKNOWN));
         assertThat(group.nextRecord(new PartitionGroup.RecordInfo()), equalTo(null));
-        assertThat(group.partitionTimestamp(partition1), equalTo(RecordQueue.UNKNOWN));
 
-        // The partition1 should still be able to find.
-        assertThat(group.addRawRecords(partition1, list), equalTo(3));
+        final IllegalStateException exception = assertThrows(
+            IllegalStateException.class,
+            () -> group.addRawRecords(partition1, list));
+        assertThat("Partition topic-1 not found.", equalTo(exception.getMessage()));
     }
 }

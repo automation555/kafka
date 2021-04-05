@@ -47,7 +47,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,12 +62,9 @@ import static org.junit.Assert.assertTrue;
 public class MetadataTest {
 
     private long refreshBackoffMs = 100;
-    private long refreshBackoffMaxMs = 1000;
     private long metadataExpireMs = 1000;
-    private Metadata metadata = new Metadata(refreshBackoffMs, refreshBackoffMaxMs, metadataExpireMs, new LogContext(),
+    private Metadata metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(),
             new ClusterResourceListeners());
-    private final double retryBackoffJitter = Metadata.RETRY_BACKOFF_JITTER;
-    private final int retryBackoffExpBase = Metadata.RETRY_BACKOFF_EXP_BASE;
 
     private static MetadataResponse emptyMetadataResponse() {
         return MetadataResponse.prepareResponse(
@@ -97,7 +93,7 @@ public class MetadataTest {
         }
 
         long largerOfBackoffAndExpire = Math.max(refreshBackoffMs, metadataExpireMs);
-        Metadata metadata = new Metadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, new LogContext(),
+        Metadata metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(),
                 new ClusterResourceListeners());
 
         assertEquals(0, metadata.timeToNextUpdate(now));
@@ -127,7 +123,7 @@ public class MetadataTest {
     public void testUpdateMetadataAllowedImmediatelyAfterBootstrap() {
         MockTime time = new MockTime();
 
-        Metadata metadata = new Metadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, new LogContext(),
+        Metadata metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(),
                 new ClusterResourceListeners());
         metadata.bootstrap(Collections.singletonList(new InetSocketAddress("localhost", 9002)));
 
@@ -145,48 +141,24 @@ public class MetadataTest {
     }
 
     @Test
-    public void testTimeToNextUpdateRetryBackoff() {
+    public void testTimeToNextUpdate_RetryBackoff() {
         long now = 10000;
 
         // lastRefreshMs updated to now.
         metadata.failedUpdate(now);
 
         // Backing off. Remaining time until next try should be returned.
-        assertEquals(refreshBackoffMs, metadata.timeToNextUpdate(now), refreshBackoffMs * retryBackoffJitter);
+        assertEquals(refreshBackoffMs, metadata.timeToNextUpdate(now));
 
         // Even though metadata update requested explicitly, still respects backoff.
         metadata.requestUpdate();
-        assertEquals(refreshBackoffMs, metadata.timeToNextUpdate(now), refreshBackoffMs * retryBackoffJitter);
+        assertEquals(refreshBackoffMs, metadata.timeToNextUpdate(now));
 
         // refreshBackoffMs elapsed.
-        now += refreshBackoffMs * (1 + retryBackoffJitter) + 1;
+        now += refreshBackoffMs;
         // It should return 0 to let next try.
         assertEquals(0, metadata.timeToNextUpdate(now));
         assertEquals(0, metadata.timeToNextUpdate(now + 1));
-    }
-
-    @Test
-    public void testExponentialRetryBackoff() {
-        long now = 10000;
-        long currentRefreshBackoffMs = metadata.timeToNextUpdate(now);
-        
-        for (int i = 0; currentRefreshBackoffMs < refreshBackoffMaxMs * (1 - retryBackoffJitter); i++) {
-            metadata.failedUpdate(now);
-            currentRefreshBackoffMs = metadata.timeToNextUpdate(now);
-            long expected = (long) Math.min(refreshBackoffMaxMs, refreshBackoffMs * Math.pow(retryBackoffExpBase, i));
-            assertEquals(expected, currentRefreshBackoffMs, expected * retryBackoffJitter);
-        }
-
-        // Test the upper bound
-        assertEquals(refreshBackoffMaxMs, currentRefreshBackoffMs, refreshBackoffMaxMs * retryBackoffJitter);
-
-        // Test if the timeout gets reset
-        now += 10000;
-        Metadata.MetadataRequestAndVersion versionAndBuilder = metadata.newMetadataRequestAndVersion(now);
-        metadata.update(versionAndBuilder.requestVersion,
-                TestUtils.metadataUpdateWith(1, Collections.singletonMap("topic", 1)), true, now);
-        currentRefreshBackoffMs = metadata.timeToNextUpdate(now);
-        assertEquals(refreshBackoffMs, currentRefreshBackoffMs, refreshBackoffMs * retryBackoffJitter);
     }
 
     /**
@@ -228,8 +200,8 @@ public class MetadataTest {
             assertFalse(response.hasReliableLeaderEpochs());
             metadata.updateWithCurrentRequestVersion(response, false, 100);
             assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
-            MetadataResponse.PartitionMetadata responseMetadata = this.metadata.partitionMetadataIfCurrent(tp).get();
-            assertEquals(Optional.empty(), responseMetadata.leaderEpoch);
+            MetadataResponse.PartitionMetadata metadata = this.metadata.partitionMetadataIfCurrent(tp).get();
+            assertEquals(Optional.empty(), metadata.leaderEpoch);
         }
 
         for (short version = 9; version <= ApiKeys.METADATA.latestVersion(); version++) {
@@ -238,8 +210,8 @@ public class MetadataTest {
             assertTrue(response.hasReliableLeaderEpochs());
             metadata.updateWithCurrentRequestVersion(response, false, 100);
             assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
-            MetadataResponse.PartitionMetadata responseMetadata = metadata.partitionMetadataIfCurrent(tp).get();
-            assertEquals(Optional.of(10), responseMetadata.leaderEpoch);
+            MetadataResponse.PartitionMetadata info = metadata.partitionMetadataIfCurrent(tp).get();
+            assertEquals(Optional.of(10), info.leaderEpoch);
         }
     }
 
@@ -287,32 +259,25 @@ public class MetadataTest {
         assertEquals(Optional.of(10), metadata.lastSeenLeaderEpoch(tp));
 
         assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
-        MetadataResponse.PartitionMetadata responseMetadata = this.metadata.partitionMetadataIfCurrent(tp).get();
+        MetadataResponse.PartitionMetadata metadata = this.metadata.partitionMetadataIfCurrent(tp).get();
 
-        assertEquals(Arrays.asList(1, 2, 3), responseMetadata.inSyncReplicaIds);
-        assertEquals(Optional.of(10), responseMetadata.leaderEpoch);
+        assertEquals(Arrays.asList(1, 2, 3), metadata.inSyncReplicaIds);
+        assertEquals(Optional.of(10), metadata.leaderEpoch);
     }
 
     @Test
     public void testFailedUpdate() {
-        long lastRefreshMs = 100;
-        long nowMs = 1000;
-        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, lastRefreshMs);
+        long time = 100;
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, time);
 
-        // Should not apply retry backoff after successful attempts
-        assertEquals(lastRefreshMs + metadataExpireMs - nowMs, metadata.timeToNextUpdate(1000));
-        nowMs += 100;
-        metadata.failedUpdate(nowMs);
+        assertEquals(100, metadata.timeToNextUpdate(1000));
+        metadata.failedUpdate(1100);
 
-        // Should apply retry backoff
-        assertEquals(refreshBackoffMs, metadata.timeToNextUpdate(nowMs), refreshBackoffMs * retryBackoffJitter);
-        assertEquals(lastRefreshMs, metadata.lastSuccessfulUpdate());
+        assertEquals(100, metadata.timeToNextUpdate(1100));
+        assertEquals(100, metadata.lastSuccessfulUpdate());
 
-        // Should not apply retry backoff after successful attempts
-        lastRefreshMs = nowMs;
-        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, lastRefreshMs);
-        nowMs += 500;
-        assertEquals(lastRefreshMs + metadataExpireMs - nowMs, metadata.timeToNextUpdate(nowMs));
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, time);
+        assertEquals(100, metadata.timeToNextUpdate(1000));
     }
 
     @Test
@@ -320,7 +285,7 @@ public class MetadataTest {
         MockClusterResourceListener mockClusterListener = new MockClusterResourceListener();
         ClusterResourceListeners listeners = new ClusterResourceListeners();
         listeners.maybeAdd(mockClusterListener);
-        metadata = new Metadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, new LogContext(), listeners);
+        metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(), listeners);
 
         String hostName = "www.example.com";
         metadata.bootstrap(Collections.singletonList(new InetSocketAddress(hostName, 9002)));
@@ -348,10 +313,6 @@ public class MetadataTest {
         boolean[] updateResult = {true, false, false, false, false, true, false, false, false, true};
         TopicPartition tp = new TopicPartition("topic", 0);
 
-        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1,
-                Collections.emptyMap(), Collections.singletonMap("topic", 1), _tp -> 0);
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, 10L);
-
         for (int i = 0; i < epochs.length; i++) {
             metadata.updateLastSeenEpochIfNewer(tp, epochs[i]);
             if (updateResult[i]) {
@@ -362,46 +323,6 @@ public class MetadataTest {
             metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 0L);
             assertFalse(metadata.updateRequested());
         }
-    }
-
-    @Test
-    public void testUpdateLastEpoch() {
-        TopicPartition tp = new TopicPartition("topic-1", 0);
-
-        MetadataResponse metadataResponse = emptyMetadataResponse();
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, 0L);
-
-        // if we have no leader epoch, this call shouldn't do anything
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 0));
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 1));
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 2));
-        assertFalse(metadata.lastSeenLeaderEpoch(tp).isPresent());
-
-        // Metadata with newer epoch is handled
-        metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), Collections.singletonMap("topic-1", 1), _tp -> 10);
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, 1L);
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 10));
-
-        // Don't update to an older one
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 1));
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 10));
-
-        // Don't cause update if it's the same one
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 10));
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 10));
-
-        // Update if we see newer epoch
-        assertTrue(metadata.updateLastSeenEpochIfNewer(tp, 12));
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 12));
-
-        metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), Collections.singletonMap("topic-1", 1), _tp -> 12);
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, 2L);
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 12));
-
-        // Don't overwrite metadata with older epoch
-        metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), Collections.singletonMap("topic-1", 1), _tp -> 11);
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, 3L);
-        assertOptional(metadata.lastSeenLeaderEpoch(tp), leaderAndEpoch -> assertEquals(leaderAndEpoch.intValue(), 12));
     }
 
     @Test
@@ -417,7 +338,6 @@ public class MetadataTest {
             MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), partitionCounts, _tp -> 100);
             metadata.updateWithCurrentRequestVersion(metadataResponse, false, 10L);
             assertNotNull(metadata.fetch().partition(tp));
-            assertTrue(metadata.lastSeenLeaderEpoch(tp).isPresent());
             assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 100);
         }
 
@@ -425,8 +345,7 @@ public class MetadataTest {
         {
             MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), partitionCounts, _tp -> 99,
                 (error, partition, leader, leaderEpoch, replicas, isr, offlineReplicas) ->
-                        new MetadataResponse.PartitionMetadata(error, partition, leader,
-                            leaderEpoch, replicas, Collections.emptyList(), offlineReplicas), ApiKeys.METADATA.latestVersion());
+                        new MetadataResponse.PartitionMetadata(error, partition, leader, leaderEpoch, replicas, Collections.emptyList(), offlineReplicas));
             metadata.updateWithCurrentRequestVersion(metadataResponse, false, 20L);
             assertEquals(metadata.fetch().partition(tp).inSyncReplicas().length, 1);
             assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 100);
@@ -436,8 +355,7 @@ public class MetadataTest {
         {
             MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), partitionCounts, _tp -> 100,
                 (error, partition, leader, leaderEpoch, replicas, isr, offlineReplicas) ->
-                        new MetadataResponse.PartitionMetadata(error, partition, leader,
-                            leaderEpoch, replicas, Collections.emptyList(), offlineReplicas), ApiKeys.METADATA.latestVersion());
+                        new MetadataResponse.PartitionMetadata(error, partition, leader, leaderEpoch, replicas, Collections.emptyList(), offlineReplicas));
             metadata.updateWithCurrentRequestVersion(metadataResponse, false, 20L);
             assertEquals(metadata.fetch().partition(tp).inSyncReplicas().length, 0);
             assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 100);
@@ -461,6 +379,26 @@ public class MetadataTest {
     }
 
     @Test
+    public void testMaybeRequestUpdate() {
+        TopicPartition tp = new TopicPartition("topic-1", 0);
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 0L);
+        assertTrue(metadata.updateLastSeenEpochIfNewer(tp, 1));
+        assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 1);
+
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 1L);
+        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 1));
+        assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 1);
+
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 2L);
+        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 0));
+        assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 1);
+
+        metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 3L);
+        assertTrue(metadata.updateLastSeenEpochIfNewer(tp, 2));
+        assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 2);
+    }
+
+    @Test
     public void testOutOfBandEpochUpdate() {
         Map<String, Integer> partitionCounts = new HashMap<>();
         partitionCounts.put("topic-1", 5);
@@ -468,28 +406,27 @@ public class MetadataTest {
 
         metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 0L);
 
-        assertFalse(metadata.updateLastSeenEpochIfNewer(tp, 99));
+        assertTrue(metadata.updateLastSeenEpochIfNewer(tp, 99));
 
         // Update epoch to 100
         MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), partitionCounts, _tp -> 100);
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, 10L);
         assertNotNull(metadata.fetch().partition(tp));
-        assertTrue(metadata.lastSeenLeaderEpoch(tp).isPresent());
         assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 100);
 
-        // Simulate a leader epoch from another response, like a fetch response or list offsets
+        // Simulate a leader epoch from another response, like a fetch response (not yet implemented)
         assertTrue(metadata.updateLastSeenEpochIfNewer(tp, 101));
 
         // Cache of partition stays, but current partition info is not available since it's stale
         assertNotNull(metadata.fetch().partition(tp));
-        assertEquals(Objects.requireNonNull(metadata.fetch().partitionCountForTopic("topic-1")).longValue(), 5);
+        assertEquals(metadata.fetch().partitionCountForTopic("topic-1").longValue(), 5);
         assertFalse(metadata.partitionMetadataIfCurrent(tp).isPresent());
         assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 101);
 
         // Metadata with older epoch is rejected, metadata state is unchanged
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, 20L);
         assertNotNull(metadata.fetch().partition(tp));
-        assertEquals(Objects.requireNonNull(metadata.fetch().partitionCountForTopic("topic-1")).longValue(), 5);
+        assertEquals(metadata.fetch().partitionCountForTopic("topic-1").longValue(), 5);
         assertFalse(metadata.partitionMetadataIfCurrent(tp).isPresent());
         assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 101);
 
@@ -497,7 +434,7 @@ public class MetadataTest {
         metadataResponse = TestUtils.metadataUpdateWith("dummy", 1, Collections.emptyMap(), partitionCounts, _tp -> 101);
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, 30L);
         assertNotNull(metadata.fetch().partition(tp));
-        assertEquals(Objects.requireNonNull(metadata.fetch().partitionCountForTopic("topic-1")).longValue(), 5);
+        assertEquals(metadata.fetch().partitionCountForTopic("topic-1").longValue(), 5);
         assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
         assertEquals(metadata.lastSeenLeaderEpoch(tp).get().longValue(), 101);
     }
@@ -517,11 +454,6 @@ public class MetadataTest {
         assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
         assertEquals(0, metadata.partitionMetadataIfCurrent(tp).get().partition());
         assertEquals(Optional.of(0), metadata.partitionMetadataIfCurrent(tp).get().leaderId);
-
-        // Since epoch was null, this shouldn't update it
-        metadata.updateLastSeenEpochIfNewer(tp, 10);
-        assertTrue(metadata.partitionMetadataIfCurrent(tp).isPresent());
-        assertFalse(metadata.partitionMetadataIfCurrent(tp).get().leaderEpoch.isPresent());
     }
 
     @Test
@@ -595,7 +527,7 @@ public class MetadataTest {
     public void testPartialMetadataUpdate() {
         Time time = new MockTime();
 
-        metadata = new Metadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, new LogContext(), new ClusterResourceListeners()) {
+        metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(), new ClusterResourceListeners()) {
                 @Override
                 protected MetadataRequest.Builder newMetadataRequestBuilderForNewTopics() {
                     return newMetadataRequestBuilder();
@@ -745,7 +677,7 @@ public class MetadataTest {
             (error, partition, leader, leaderEpoch, replicas, isr, offlineReplicas) ->
                 new MetadataResponse.PartitionMetadata(error, partition, Optional.of(node0.id()), leaderEpoch,
                     Collections.singletonList(node0.id()), Collections.emptyList(),
-                        Collections.singletonList(node1.id())), ApiKeys.METADATA.latestVersion());
+                        Collections.singletonList(node1.id())));
         metadata.updateWithCurrentRequestVersion(emptyMetadataResponse(), false, 0L);
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, 10L);
 
@@ -835,7 +767,7 @@ public class MetadataTest {
         Time time = new MockTime();
 
         final AtomicReference<Set<String>> retainTopics = new AtomicReference<>(new HashSet<>());
-        metadata = new Metadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, new LogContext(), new ClusterResourceListeners()) {
+        metadata = new Metadata(refreshBackoffMs, metadataExpireMs, new LogContext(), new ClusterResourceListeners()) {
                 @Override
                 protected boolean retainTopic(String topic, boolean isInternal, long nowMs) {
                     return retainTopics.get().contains(topic);

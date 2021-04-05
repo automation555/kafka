@@ -43,7 +43,7 @@ Follow instructions in https://kafka.apache.org/quickstart
 
 ### Running a particular test method within a unit/integration test ###
     ./gradlew core:test --tests kafka.api.ProducerFailureHandlingTest.testCannotSendToInternalTopic
-    ./gradlew clients:test --tests org.apache.kafka.clients.MetadataTest.testMetadataUpdateWaitTime
+    ./gradlew clients:test --tests org.apache.kafka.clients.MetadataTest.testTimeToNextUpdate
 
 ### Running a particular unit/integration test with log4j output ###
 Change the log4j setting in either `clients/src/test/resources/log4j.properties` or `core/src/test/resources/log4j.properties`
@@ -69,6 +69,10 @@ Generate coverage for a single module, i.e.:
 ### Building a binary release gzipped tar ball ###
     ./gradlew clean releaseTarGz
 
+The above command will fail if you haven't set up the signing key. To bypass signing the artifact, you can run:
+
+    ./gradlew clean releaseTarGz -x signArchives
+
 The release file can be found inside `./core/build/distributions/`.
 
 ### Building auto generated messages ###
@@ -76,15 +80,6 @@ Sometimes it is only necessary to rebuild the RPC auto-generated message data wh
 fail due to code changes. You can just run:
  
     ./gradlew processMessages processTestMessages
-
-### Running a Kafka broker in ZooKeeper mode
-
-    ./bin/zookeeper-server-start.sh config/zookeeper.properties
-    ./bin/kafka-server-start.sh config/server.properties
-
-### Running a Kafka broker in KRaft (Kafka Raft metadata) mode
-
-See [config/kraft/README.md](https://github.com/apache/kafka/blob/trunk/config/kraft/README.md).
 
 ### Cleaning the build ###
     ./gradlew clean
@@ -130,12 +125,6 @@ build directory (`${project_dir}/bin`) clashes with Kafka's scripts directory an
 to avoid known issues with this configuration.
 
 ### Publishing the jar for all version of Scala and for all projects to maven ###
-The recommended command is:
-
-    ./gradlewAll publish
-
-For backwards compatibility, the following also works:
-
     ./gradlewAll uploadArchives
 
 Please note for this to work you should create/update `${GRADLE_USER_HOME}/gradle.properties` (typically, `~/.gradle/gradle.properties`) and assign the following variables
@@ -159,7 +148,7 @@ Please note for this to work you should create/update user maven settings (typic
        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
        xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
                            https://maven.apache.org/xsd/settings-1.0.0.xsd">
-    ...
+    ...                           
     <servers>
        ...
        <server>
@@ -178,12 +167,6 @@ Please note for this to work you should create/update user maven settings (typic
 
 
 ### Installing the jars to the local Maven repository ###
-The recommended command is:
-
-    ./gradlewAll publishToMavenLocal
-
-For backwards compatibility, the following also works:
-
     ./gradlewAll install
 
 ### Building the test jar ###
@@ -206,20 +189,6 @@ You can run checkstyle using:
 
 The checkstyle warnings will be found in `reports/checkstyle/reports/main.html` and `reports/checkstyle/reports/test.html` files in the
 subproject build directories. They are also printed to the console. The build will fail if Checkstyle fails.
-
-As of present, the auto-formatting configuration is working in progress. Auto-formatting is automatically invoked for the modules listed below when the 'checkstyleMain' or 'checkstyleTest' task is run.
-
-- core
-
-You can also run auto-formatting independently for a single module listed above, like:
-
-    ./gradlew :core:spotlessApply   # auto-format *.java files in core module, without running checkstyleMain or checkstyleTest.
-
-If you are using an IDE, you can use a plugin that provides real-time automatic formatting. For detailed information, refer to the following links:
-
-- [Eclipse](https://checkstyle.org/eclipse-cs)
-- [Intellij](https://plugins.jetbrains.com/plugin/1065-checkstyle-idea)
-- [Vscode](https://marketplace.visualstudio.com/items?itemName=shengchen.vscode-checkstyle)
 
 #### Spotbugs ####
 Spotbugs uses static analysis to look for bugs in the code.

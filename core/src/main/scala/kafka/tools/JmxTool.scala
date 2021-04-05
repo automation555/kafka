@@ -18,14 +18,14 @@
  */
 package kafka.tools
 
-import java.{lang, util}
-import java.util.{Date}
+import java.rmi.UnmarshalException
+import java.util.{Date, Objects}
 import java.text.SimpleDateFormat
-
 import javax.management._
 import javax.management.remote._
 import javax.rmi.ssl.SslRMIClientSocketFactory
-import joptsimple.{ArgumentAcceptingOptionSpec, OptionParser, OptionSpecBuilder}
+
+import joptsimple.OptionParser
 
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable
@@ -41,94 +41,88 @@ import kafka.utils.{CommandLineUtils, Exit, Logging}
   */
 object JmxTool extends Logging {
 
-  case class ToolOptions(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
+    // Parse command line
     val parser = new OptionParser(false)
-    val objectNameOpt: ArgumentAcceptingOptionSpec[String] =
+    val objectNameOpt =
       parser.accepts("object-name", "A JMX object name to use as a query. This can contain wild cards, and this option " +
         "can be given multiple times to specify more than one query. If no objects are specified " +
         "all objects will be queried.")
         .withRequiredArg
         .describedAs("name")
         .ofType(classOf[String])
-    val attributesOpt: ArgumentAcceptingOptionSpec[String] =
-      parser.accepts("attributes", "The list of attributes to include in the query. This is a comma-separated list. If no " +
-        "attributes are specified all attributes will be reported.")
+    val attributesOpt =
+      parser.accepts("attributes", "The whitelist of attributes to query. This is a comma-separated list. If no " +
+        "attributes are specified all objects will be queried.")
         .withRequiredArg
         .describedAs("name")
         .ofType(classOf[String])
-    val reportingIntervalOpt: ArgumentAcceptingOptionSpec[Integer] =
-      parser.accepts("reporting-interval", "Interval in MS with which to poll jmx stats; default value is 2 seconds. " +
-        "Value of -1 equivalent to setting one-time to true")
-        .withRequiredArg
-        .describedAs("ms")
-        .ofType(classOf[java.lang.Integer])
-        .defaultsTo(2000)
-    val oneTimeOpt: ArgumentAcceptingOptionSpec[lang.Boolean] =
-      parser.accepts("one-time", "Flag to indicate run once only.")
-        .withRequiredArg
-        .describedAs("one-time")
-        .ofType(classOf[java.lang.Boolean])
-        .defaultsTo(false)
-    val dateFormatOpt: ArgumentAcceptingOptionSpec[String] =
-      parser.accepts("date-format", "The date format to use for formatting the time field. " +
-        "See java.text.SimpleDateFormat for options.")
-        .withRequiredArg
-        .describedAs("format")
-        .ofType(classOf[String])
-    val jmxServiceUrlOpt: ArgumentAcceptingOptionSpec[String] =
+    val reportingIntervalOpt = parser.accepts("reporting-interval", "Interval in MS with which to poll jmx stats; default value is 2 seconds. " +
+      "Value of -1 equivalent to setting one-time to true")
+      .withRequiredArg
+      .describedAs("ms")
+      .ofType(classOf[java.lang.Integer])
+      .defaultsTo(2000)
+    val oneTimeOpt = parser.accepts("one-time", "Flag to indicate run once only.")
+      .withRequiredArg
+      .describedAs("one-time")
+      .ofType(classOf[java.lang.Boolean])
+      .defaultsTo(false)
+    val dateFormatOpt = parser.accepts("date-format", "The date format to use for formatting the time field. " +
+      "See java.text.SimpleDateFormat for options.")
+      .withRequiredArg
+      .describedAs("format")
+      .ofType(classOf[String])
+    val jmxServiceUrlOpt =
       parser.accepts("jmx-url", "The url to connect to poll JMX data. See Oracle javadoc for JMXServiceURL for details.")
         .withRequiredArg
         .describedAs("service-url")
         .ofType(classOf[String])
         .defaultsTo("service:jmx:rmi:///jndi/rmi://:9999/jmxrmi")
-    val reportFormatOpt: ArgumentAcceptingOptionSpec[String] =
-      parser.accepts("report-format", "output format name: either 'original', 'properties', 'csv', 'tsv' ")
-        .withRequiredArg
-        .describedAs("report-format")
-        .ofType(classOf[java.lang.String])
-        .defaultsTo("original")
-    val jmxAuthPropOpt: ArgumentAcceptingOptionSpec[String] =
-      parser.accepts("jmx-auth-prop", "A mechanism to pass property in the form 'username=password' " +
-        "when enabling remote JMX with password authentication.")
-        .withRequiredArg
-        .describedAs("jmx-auth-prop")
-        .ofType(classOf[String])
-    val jmxSslEnableOpt: ArgumentAcceptingOptionSpec[lang.Boolean] =
-      parser.accepts("jmx-ssl-enable", "Flag to enable remote JMX with SSL.")
-        .withRequiredArg
-        .describedAs("ssl-enable")
-        .ofType(classOf[java.lang.Boolean])
-        .defaultsTo(false)
-    val waitOpt: OptionSpecBuilder = parser.accepts("wait",
-      "Wait for requested JMX objects to become available before starting output. " +
-      "Each of the given names or patterns must select at least one MBean before reporting starts.")
-    val helpOpt: OptionSpecBuilder = parser.accepts("help", "Print usage information.")
+    val reportFormatOpt = parser.accepts("report-format", "output format name: either 'original', 'properties', 'csv', 'tsv' ")
+      .withRequiredArg
+      .describedAs("report-format")
+      .ofType(classOf[java.lang.String])
+      .defaultsTo("original")
+    val jmxAuthPropOpt = parser.accepts("jmx-auth-prop", "A mechanism to pass property in the form 'username=password' " +
+      "when enabling remote JMX with password authentication.")
+      .withRequiredArg
+      .describedAs("jmx-auth-prop")
+      .ofType(classOf[String])
+    val jmxSslEnableOpt = parser.accepts("jmx-ssl-enable", "Flag to enable remote JMX with SSL.")
+      .withRequiredArg
+      .describedAs("ssl-enable")
+      .ofType(classOf[java.lang.Boolean])
+      .defaultsTo(false)
+    val waitOpt = parser.accepts("wait", "Wait for requested JMX objects to become available before starting output. " +
+      "Only supported when the list of objects is non-empty and contains no object name patterns.")
+    val helpOpt = parser.accepts("help", "Print usage information.")
+
+
     if(args.length == 0)
       CommandLineUtils.printUsageAndDie(parser, "Dump JMX values to standard output.")
 
     val options = parser.parse(args : _*)
 
-  }
-
-  def main(args: Array[String]): Unit = {
-    val toolOptions = ToolOptions(args)
-    connectAndExecute(toolOptions) match {
-      case Some(false -> msg) => Exit.exit(1, Some(msg))
-      case Some(true -> msg) => CommandLineUtils.printUsageAndDie(toolOptions.parser, msg)
-      case None =>
+    if(options.has(helpOpt)) {
+      parser.printHelpOn(System.out)
+      Exit.exit(0)
     }
-  }
 
-  def connectAndExecute(toolOptions: ToolOptions): Option[(Boolean, String)] = {
-    if(toolOptions.options.has(toolOptions.helpOpt)) {
-      toolOptions.parser.printHelpOn(System.out)
-      return None
-    } else if (toolOptions.options.valueOf(toolOptions.oneTimeOpt) && toolOptions.options.valueOf(toolOptions.reportingIntervalOpt) != -1) {
-      return Some(true, s"--one-time=true is incompatible with --reporting-interval=${toolOptions.options.valueOf(toolOptions.reportingIntervalOpt)}")
-    }
-    val url = new JMXServiceURL(toolOptions.options.valueOf(toolOptions.jmxServiceUrlOpt))
-    val enablePasswordAuth = toolOptions.options.has(toolOptions.jmxAuthPropOpt)
-    val enableSsl = toolOptions.options.has(toolOptions.jmxSslEnableOpt)
+    val url = new JMXServiceURL(options.valueOf(jmxServiceUrlOpt))
+    val interval = options.valueOf(reportingIntervalOpt).intValue
+    val oneTime = interval < 0 || options.has(oneTimeOpt)
+    val attributesWhitelistExists = options.has(attributesOpt)
+    val attributesWhitelist = if(attributesWhitelistExists) Some(options.valueOf(attributesOpt).split(",").filterNot(_.equals(""))) else None
+    val dateFormatExists = options.has(dateFormatOpt)
+    val dateFormat = if(dateFormatExists) Some(new SimpleDateFormat(options.valueOf(dateFormatOpt))) else None
+    val wait = options.has(waitOpt)
+
+    val reportFormat = parseFormat(options.valueOf(reportFormatOpt).toLowerCase)
+    val reportFormatOriginal = reportFormat.equals("original")
+
+    val enablePasswordAuth = options.has(jmxAuthPropOpt)
+    val enableSsl = options.has(jmxSslEnableOpt)
 
     var jmxc: JMXConnector = null
     var mbsc: MBeanServerConnection = null
@@ -137,8 +131,8 @@ object JmxTool extends Logging {
     val connectTestStarted = System.currentTimeMillis
     do {
       try {
-        Console.err.println(s"Trying to connect to JMX url: $url.")
-        val env = new util.HashMap[String, AnyRef]
+        System.err.println(s"Trying to connect to JMX url: $url.")
+        val env = new java.util.HashMap[String, AnyRef]
         // ssl enable
         if (enableSsl) {
           val csf = new SslRMIClientSocketFactory
@@ -146,7 +140,7 @@ object JmxTool extends Logging {
         }
         // password authentication enable
         if (enablePasswordAuth) {
-          val credentials = toolOptions.options.valueOf(toolOptions.jmxAuthPropOpt).split("=", 2)
+          val credentials = options.valueOf(jmxAuthPropOpt).split("=", 2)
           env.put(JMXConnector.CREDENTIALS, credentials)
         }
         jmxc = JMXConnectorFactory.connect(url, env)
@@ -154,78 +148,93 @@ object JmxTool extends Logging {
         connected = true
       } catch {
         case e : Exception =>
-          Console.err.println(s"Could not connect to JMX url: $url. Exception ${e.getMessage}.")
+          System.err.println(s"Could not connect to JMX url: $url. Exception ${e.getMessage}.")
           e.printStackTrace()
           Thread.sleep(100)
       }
     } while (System.currentTimeMillis - connectTestStarted < connectTimeoutMs && !connected)
 
     if (!connected) {
-      Console.err.println(s"Could not connect to JMX url $url after $connectTimeoutMs ms.")
-      return Some(false -> "Exiting.")
+      System.err.println(s"Could not connect to JMX url $url after $connectTimeoutMs ms.")
+      System.err.println("Exiting.")
+      sys.exit(1)
     }
 
-    execute(toolOptions, mbsc)
-  }
-
-  def execute(toolOptions: ToolOptions, mbsc: MBeanServerConnection, waitTimeoutMs: Long = 10000): Option[(Boolean, String)] = {
-    val interval = toolOptions.options.valueOf(toolOptions.reportingIntervalOpt).intValue
-    val attributesIncludeExists = toolOptions.options.has(toolOptions.attributesOpt)
-    val dateFormatExists = toolOptions.options.has(toolOptions.dateFormatOpt)
-    val oneTime = interval < 0 || toolOptions.options.has(toolOptions.oneTimeOpt)
-    val attributesInclude = if (attributesIncludeExists) Some(toolOptions.options.valueOf(toolOptions.attributesOpt).split(",").filterNot(_.equals(""))) else None
-    val dateFormat = if (dateFormatExists) Some(new SimpleDateFormat(toolOptions.options.valueOf(toolOptions.dateFormatOpt))) else None
-    val wait = toolOptions.options.has(toolOptions.waitOpt)
-    val reportFormat = parseFormat(toolOptions.options.valueOf(toolOptions.reportFormatOpt).toLowerCase)
-    val reportFormatOriginal = reportFormat.equals("original")
     val queries: Iterable[ObjectName] =
-      if (toolOptions.options.has(toolOptions.objectNameOpt))
-        toolOptions.options.valuesOf(toolOptions.objectNameOpt).asScala.map(new ObjectName(_))
+      if(options.has(objectNameOpt))
+        options.valuesOf(objectNameOpt).asScala.map(new ObjectName(_))
       else
         List(null)
 
-    var selectedNames: Map[ObjectName, Set[ObjectName]] = null
-    var foundAllObjects = false
+    val hasPatternQueries = queries.filterNot(Objects.isNull).exists((name: ObjectName) => name.isPattern)
 
-    val start = System.currentTimeMillis
-    do {
-      if (selectedNames != null) {
-        Console.err.println(s"Could not find all object names, retrying")
-        Thread.sleep(100)
-      }
-      selectedNames = queries.map((name: ObjectName) => name -> mbsc.queryNames(name, null).asScala.toSet).toMap
-      foundAllObjects = selectedNames.forall{ case(_, ns) => ns.nonEmpty}
-    } while (wait && System.currentTimeMillis - start < waitTimeoutMs && !foundAllObjects)
-
-    if (!foundAllObjects) {
-      val missing = selectedNames.filter{ case _ -> ns => ns.isEmpty}.keys.mkString(", ")
-      val msg = s"Could not find any objects names matching $missing${if (wait) s" after $waitTimeoutMs ms" else ""}."
-      Console.err.println(msg)
-      return Some(false -> "Exiting.")
+    var names: Iterable[ObjectName] = null
+    def namesSet = Option(names).toSet.flatten
+    def foundAllObjects = queries.toSet == namesSet
+    val waitTimeoutMs = 10000
+    if (!hasPatternQueries) {
+      val start = System.currentTimeMillis
+      do {
+        if (names != null) {
+          System.err.println("Could not find all object names, retrying")
+          Thread.sleep(100)
+        }
+        names = queries.flatMap((name: ObjectName) => mbsc.queryNames(name, null).asScala)
+      } while (wait && System.currentTimeMillis - start < waitTimeoutMs && !foundAllObjects)
     }
 
-    val names = selectedNames.values.flatten
-    val numExpectedAttributes: Map[ObjectName, Int] =
-      if (!attributesIncludeExists)
-        names.map{ name: ObjectName =>
+    if (wait && !foundAllObjects) {
+      val missing = (queries.toSet - namesSet).mkString(", ")
+      System.err.println(s"Could not find all requested object names after $waitTimeoutMs ms. Missing $missing")
+      System.err.println("Exiting.")
+      sys.exit(1)
+    }
+
+    var objectNamesToFilterOut: Set[ObjectName] = Set()
+    var numExpectedAttributes: Map[ObjectName, Int] =
+      if (!attributesWhitelistExists)
+        names.map{name: ObjectName =>
           val mbean = mbsc.getMBeanInfo(name)
-          (name, mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).size)}.toMap
+          try {
+            (name, mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).size)
+          } catch {
+            case _: UnmarshalException => {
+              System.err.println("UnmarshalException caught for " + name.toString + ". Filtering object from results")
+              objectNamesToFilterOut += name
+              (name, 0)
+            }
+          }
+        }.toMap
       else {
-        names.map { name: ObjectName =>
-          val mbean = mbsc.getMBeanInfo(name)
-          val attributes = mbsc.getAttributes(name, mbean.getAttributes.map(_.getName))
-          val expectedAttributes = attributes.asScala.asInstanceOf[mutable.Buffer[Attribute]]
-            .filter(attr => attributesInclude.get.contains(attr.getName))
-          (name, expectedAttributes.size)
-        }.toMap.filter(_._2 > 0)
+        if (!hasPatternQueries)
+          names.map{name: ObjectName =>
+            val mbean = mbsc.getMBeanInfo(name)
+            try {
+              val attributes = mbsc.getAttributes(name, mbean.getAttributes.map(_.getName))
+              val expectedAttributes = attributes.asScala.asInstanceOf[mutable.Buffer[Attribute]]
+                .filter(attr => attributesWhitelist.get.contains(attr.getName))
+              (name, expectedAttributes.size)
+            } catch {
+              case _: UnmarshalException => {
+                System.err.println("UnmarshalException caught for " + name.toString + ". Filtering object from results")
+                objectNamesToFilterOut += name
+                (name, 0)
+              }
+            }
+          }.toMap.filter(_._2 > 0)
+        else
+          queries.map((_, attributesWhitelist.get.length)).toMap
       }
 
+    numExpectedAttributes = numExpectedAttributes.filterNot(kv => objectNamesToFilterOut.contains(kv._1))
+    names = names.filterNot(objectNamesToFilterOut.contains(_))
+
     if(numExpectedAttributes.isEmpty) {
-      return Some(true -> s"No matched attributes for the queried objects ${queries.mkString(",")}.")
+      CommandLineUtils.printUsageAndDie(parser, s"No matched attributes for the queried objects $queries.")
     }
 
     // print csv header
-    val keys = List("time") ++ queryAttributes(mbsc, names, attributesInclude).keys.toArray.sorted
+    val keys = List("time") ++ queryAttributes(mbsc, names, attributesWhitelist).keys.toArray.sorted
     if(reportFormatOriginal && keys.size == numExpectedAttributes.values.sum + 1) {
       println(keys.map("\"" + _ + "\"").mkString(","))
     }
@@ -233,7 +242,7 @@ object JmxTool extends Logging {
     var keepGoing = true
     while (keepGoing) {
       val start = System.currentTimeMillis
-      val attributes = queryAttributes(mbsc, names, attributesInclude)
+      val attributes = queryAttributes(mbsc, names, attributesWhitelist)
       attributes("time") = dateFormat match {
         case Some(dFormat) => dFormat.format(new Date)
         case None => System.currentTimeMillis().toString
@@ -261,16 +270,15 @@ object JmxTool extends Logging {
         Thread.sleep(sleep)
       }
     }
-    None
   }
 
-  def queryAttributes(mbsc: MBeanServerConnection, names: Iterable[ObjectName], attributesInclude: Option[Array[String]]): mutable.Map[String, Any] = {
+  def queryAttributes(mbsc: MBeanServerConnection, names: Iterable[ObjectName], attributesWhitelist: Option[Array[String]]): mutable.Map[String, Any] = {
     val attributes = new mutable.HashMap[String, Any]()
     for (name <- names) {
       val mbean = mbsc.getMBeanInfo(name)
       for (attrObj <- mbsc.getAttributes(name, mbean.getAttributes.map(_.getName)).asScala) {
         val attr = attrObj.asInstanceOf[Attribute]
-        attributesInclude match {
+        attributesWhitelist match {
           case Some(allowedAttributes) =>
             if (allowedAttributes.contains(attr.getName))
               attributes(name.toString + ":" + attr.getName) = attr.getValue

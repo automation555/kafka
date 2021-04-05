@@ -17,13 +17,9 @@
 
 package org.apache.kafka.trogdor.agent;
 
-import static java.util.Arrays.asList;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-
 import com.fasterxml.jackson.databind.node.TextNode;
+import org.apache.kafka.common.metrics.KafkaMetric;
+import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.MockScheduler;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Scheduler;
@@ -54,7 +50,10 @@ import org.apache.kafka.trogdor.rest.WorkerRunning;
 import org.apache.kafka.trogdor.task.NoOpTaskSpec;
 import org.apache.kafka.trogdor.task.SampleTaskSpec;
 import org.apache.kafka.trogdor.task.TaskSpec;
-import org.junit.jupiter.api.Test;
+import org.junit.Assert;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -63,20 +62,25 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.TreeMap;
-import org.junit.jupiter.api.Timeout;
 
-@Timeout(value = 120000, unit = MILLISECONDS)
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
+
 public class AgentTest {
+    @Rule
+    final public Timeout globalTimeout = Timeout.millis(120000);
 
     private static BasicPlatform createBasicPlatform(Scheduler scheduler) {
         TreeMap<String, Node> nodes = new TreeMap<>();
         HashMap<String, String> config = new HashMap<>();
         config.put(Platform.Config.TROGDOR_AGENT_PORT, Integer.toString(Agent.DEFAULT_PORT));
         nodes.put("node01", new BasicNode("node01", "localhost",
-            config, Collections.emptySet()));
+            config, Collections.<String>emptySet()));
         BasicTopology topology = new BasicTopology(nodes);
         return new BasicPlatform("node01", topology,
             scheduler, new BasicPlatform.ShellCommandRunner());
@@ -194,12 +198,16 @@ public class AgentTest {
         client.createWorker(new CreateWorkerRequest(1, "bar", barSpec));
         client.createWorker(new CreateWorkerRequest(1, "bar", barSpec));
 
-        assertThrows(RequestConflictException.class,
-            () -> client.createWorker(new CreateWorkerRequest(1, "foo", barSpec)),
-            "Recreating a request with a different taskId is not allowed");
-        assertThrows(RequestConflictException.class,
-            () -> client.createWorker(new CreateWorkerRequest(1, "bar", fooSpec)),
-            "Recreating a request with a different spec is not allowed");
+        try {
+            client.createWorker(new CreateWorkerRequest(1, "foo", barSpec));
+            Assert.fail("Expected RequestConflictException when re-creating a request with a different taskId.");
+        } catch (RequestConflictException exception) {
+        }
+        try {
+            client.createWorker(new CreateWorkerRequest(1, "bar", fooSpec));
+            Assert.fail("Expected RequestConflictException when re-creating a request with a different spec.");
+        } catch (RequestConflictException exception) {
+        }
 
         new ExpectedTasks().
             addTask(new ExpectedTaskBuilder("foo").
@@ -375,7 +383,7 @@ public class AgentTest {
                     workerState(new WorkerRunning("foo", fooSpec, 0, new TextNode("Added fault foo"))).
                     build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(Collections.singletonList(
+            assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
                 new KiboshFilesUnreadableFaultSpec("/foo", 123))), mockKibosh.read());
             FilesUnreadableFaultSpec barSpec = new FilesUnreadableFaultSpec(0, 900000,
                 Collections.singleton("myAgent"), mockKibosh.tempDir.getPath(), "/bar", 456);
@@ -386,10 +394,10 @@ public class AgentTest {
                 addTask(new ExpectedTaskBuilder("bar").
                     workerState(new WorkerRunning("bar", barSpec, 0, new TextNode("Added fault bar"))).build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(asList(
-                new KiboshFilesUnreadableFaultSpec("/foo", 123),
-                new KiboshFilesUnreadableFaultSpec("/bar", 456))
-            ), mockKibosh.read());
+            assertEquals(new KiboshControlFile(new ArrayList<Kibosh.KiboshFaultSpec>() {{
+                    add(new KiboshFilesUnreadableFaultSpec("/foo", 123));
+                    add(new KiboshFilesUnreadableFaultSpec("/bar", 456));
+                }}), mockKibosh.read());
             time.sleep(1);
             client.stopWorker(new StopWorkerRequest(0));
             new ExpectedTasks().
@@ -398,7 +406,7 @@ public class AgentTest {
                 addTask(new ExpectedTaskBuilder("bar").
                     workerState(new WorkerRunning("bar", barSpec, 0, new TextNode("Added fault bar"))).build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(Collections.singletonList(
+            assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
                 new KiboshFilesUnreadableFaultSpec("/bar", 456))), mockKibosh.read());
         }
     }
@@ -487,4 +495,34 @@ public class AgentTest {
         agent.waitForShutdown();
     }
 
+    @Test
+    public void testAgentMetrics() throws Exception {
+        MockTime time = new MockTime(0, 0, 0);
+        MockScheduler scheduler = new MockScheduler(time);
+        Agent agent = createAgent(scheduler);
+        AgentClient client = new AgentClient.Builder().
+                maxTries(10).target("localhost", agent.port()).build();
+        AgentStatusResponse status = client.status();
+        Metrics metrics = agent.trogdorMetrics.getMetrics();
+
+        assertEquals(Collections.emptyMap(), status.workers());
+        new ExpectedTasks().waitFor(client);
+
+        HashMap<String, Double> expectedMetricMap = new HashMap<>();
+        expectedMetricMap.put("count", 5.0);
+        expectedMetricMap.put("created-task-count", 0.0);
+        expectedMetricMap.put("running-task-count", 0.0);
+        expectedMetricMap.put("done-task-count", 0.0);
+        expectedMetricMap.put("active-agents-count", 1.0);
+
+        assertEquals(5, metrics.metrics().size());
+
+        for (KafkaMetric metric : metrics.metrics().values()) {
+            assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
+            assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
+        }
+
+        agent.beginShutdown();
+        agent.waitForShutdown();
+    }
 };

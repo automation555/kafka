@@ -295,26 +295,29 @@ public class LeaderState implements EpochState {
 
         @Override
         public String toString() {
-            return String.format(
-                "ReplicaState(nodeId=%s, endOffset=%s, lastFetchTimestamp=%s, hasAcknowledgedLeader=%s)",
-                nodeId,
-                endOffset,
-                lastFetchTimestamp,
-                hasAcknowledgedLeader 
-            );
+            return "ReplicaState(" +
+                "nodeId=" + nodeId +
+                ", endOffset=" + endOffset +
+                ", lastFetchTimestamp=" + lastFetchTimestamp +
+                ", hasAcknowledgedLeader=" + hasAcknowledgedLeader +
+                ')';
         }
     }
 
     @Override
+    public boolean canGrantVote(int candidateId, boolean isLogUpToDate) {
+        log.debug("Rejecting vote request from candidate {} since we are already leader in epoch {}",
+            candidateId, epoch);
+        return false;
+    }
+
+    @Override
     public String toString() {
-        return String.format(
-            "Leader(localId=%s, epoch=%s, epochStartOffset=%s, highWatermark=%s, voterStates=%s)",
-            localId,
-            epoch,
-            epochStartOffset,
-            highWatermark,
-            voterStates
-        );
+        return "Leader(" +
+            "localId=" + localId +
+            ", epoch=" + epoch +
+            ", epochStartOffset=" + epochStartOffset +
+            ')';
     }
 
     @Override

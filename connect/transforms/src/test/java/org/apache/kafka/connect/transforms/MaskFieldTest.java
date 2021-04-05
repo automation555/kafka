@@ -26,7 +26,7 @@ import org.apache.kafka.connect.data.Time;
 import org.apache.kafka.connect.data.Timestamp;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -39,8 +39,9 @@ import java.util.List;
 import java.util.Map;
 
 import static java.util.Collections.singletonList;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static java.util.Collections.singletonMap;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 public class MaskFieldTest {
 
@@ -88,7 +89,7 @@ public class MaskFieldTest {
         VALUES_WITH_SCHEMA.put("long", 42L);
         VALUES_WITH_SCHEMA.put("float", 42f);
         VALUES_WITH_SCHEMA.put("double", 42d);
-        VALUES_WITH_SCHEMA.put("string", "hmm");
+        VALUES_WITH_SCHEMA.put("string", "121.164.31.62");
         VALUES_WITH_SCHEMA.put("date", new Date());
         VALUES_WITH_SCHEMA.put("time", new Date());
         VALUES_WITH_SCHEMA.put("timestamp", new Date());
@@ -98,10 +99,15 @@ public class MaskFieldTest {
     }
 
     private static MaskField<SinkRecord> transform(List<String> fields, String replacement) {
+        return transform(fields, replacement, "^[\\w\\W]*");
+    }
+
+    private static MaskField<SinkRecord> transform(List<String> fields, String replacement, String regex) {
         final MaskField<SinkRecord> xform = new MaskField.Value<>();
         Map<String, Object> props = new HashMap<>();
         props.put("fields", fields);
         props.put("replacement", replacement);
+        props.put("regex", regex);
         xform.configure(props);
         return xform;
     }
@@ -113,7 +119,7 @@ public class MaskFieldTest {
     private static void checkReplacementWithSchema(String maskField, Object replacement) {
         SinkRecord record = record(SCHEMA, VALUES_WITH_SCHEMA);
         final Struct updatedValue = (Struct) transform(singletonList(maskField), String.valueOf(replacement)).apply(record).value();
-        assertEquals(replacement, updatedValue.get(maskField), "Invalid replacement for " + maskField + " value");
+        assertEquals("Invalid replacement for " + maskField + " value", replacement, updatedValue.get(maskField));
     }
 
     private static void checkReplacementSchemaless(String maskField, Object replacement) {
@@ -127,7 +133,7 @@ public class MaskFieldTest {
                 .apply(record)
                 .value();
         for (String maskField : maskFields) {
-            assertEquals(replacement, updatedValue.get(maskField), "Invalid replacement for " + maskField + " value");
+            assertEquals("Invalid replacement for " + maskField + " value", replacement, updatedValue.get(maskField));
         }
     }
 
@@ -194,16 +200,61 @@ public class MaskFieldTest {
         checkReplacementSchemaless("bigdec", BigDecimal.valueOf(123.0));
     }
 
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testSchemalessWithReplacementRegex() {
+        final String replacement = "0";
+        final String regex = "\\d*\\.\\d*\\.\\d*\\.\\d*";
+        final String stringField = "string";
+        final String integerField = "int";
+
+        SinkRecord record = record(null, VALUES);
+        Map<String, Object> updatedValue = (Map) transform(Arrays.asList(stringField, integerField), replacement, regex)
+                .apply(record)
+                .value();
+
+        assertEquals(replacement, updatedValue.get(stringField));
+        assertEquals(Integer.valueOf(replacement), updatedValue.get(integerField));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testSchemalessWithReplacementRegexPartial() {
+        final String replacement = "$1.$2.***.***";
+        final String regex = "(\\d*)\\.(\\d*)\\.\\d*\\.\\d*";
+        final String stringField = "string";
+
+        SinkRecord record = record(null, singletonMap(stringField, "121.164.31.62"));
+        Map<String, Object> updatedValue = (Map) transform(singletonList(stringField), replacement, regex)
+                .apply(record)
+                .value();
+
+        assertEquals("121.164.***.***", updatedValue.get(stringField));
+    }
+
     @Test
     public void testSchemalessUnsupportedReplacementType() {
         String exMessage = "Cannot mask value of type";
         Class<DataException> exClass = DataException.class;
 
-        assertThrows(exClass, () -> checkReplacementSchemaless("date", new Date()), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless(Arrays.asList("int", "date"), new Date()), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("bool", false), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("list", singletonList("123")), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("map", Collections.singletonMap("123", "321")), exMessage);
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("date", new Date()));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless(Arrays.asList("int", "date"), new Date()));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("bool", false));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("list", singletonList("123")));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("map", Collections.singletonMap("123", "321")));
+    }
+
+    @Test
+    public void testSchemalessUnsupportedReplacementRegexType() {
+        String exMessage = "Unable to convert";
+        Class<DataException> exClass = DataException.class;
+
+        assertThrows(exMessage, exClass, () -> {
+            String regex = "\\d*\\.\\d*\\.\\d*\\.\\d*";
+            String replacement = "{1}.{2}.***.***";
+            SinkRecord record = record(null, VALUES);
+            transform(Arrays.asList("int", "string"), replacement, regex).apply(record);
+        });
     }
 
     @Test
@@ -219,13 +270,29 @@ public class MaskFieldTest {
     }
 
     @Test
+    public void testWithSchemaAndReplacementRegex() {
+        final String replacement = "0";
+        final String regex = "\\d*\\.\\d*\\.\\d*\\.\\d*";
+        final String stringField = "string";
+        final String integerField = "int";
+
+        SinkRecord record = record(SCHEMA, VALUES_WITH_SCHEMA);
+        Struct updatedValue = (Struct) transform(Arrays.asList(stringField, integerField), replacement, regex)
+                .apply(record)
+                .value();
+
+        assertEquals(replacement, updatedValue.get(stringField));
+        assertEquals(Integer.valueOf(replacement), updatedValue.get(integerField));
+    }
+
+    @Test
     public void testWithSchemaUnsupportedReplacementType() {
         String exMessage = "Cannot mask value of type";
         Class<DataException> exClass = DataException.class;
 
-        assertThrows(exClass, () -> checkReplacementWithSchema("time", new Date()), exMessage);
-        assertThrows(exClass, () -> checkReplacementWithSchema("timestamp", new Date()), exMessage);
-        assertThrows(exClass, () -> checkReplacementWithSchema("array", singletonList(123)), exMessage);
+        assertThrows(exMessage, exClass, () -> checkReplacementWithSchema("time", new Date()));
+        assertThrows(exMessage, exClass, () -> checkReplacementWithSchema("timestamp", new Date()));
+        assertThrows(exMessage, exClass, () -> checkReplacementWithSchema("array", singletonList(123)));
     }
 
     @Test
@@ -233,21 +300,27 @@ public class MaskFieldTest {
         String exMessage = "Invalid value  for configuration replacement";
         Class<DataException> exClass = DataException.class;
 
-        assertThrows(exClass, () -> checkReplacementSchemaless("byte", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("short", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("int", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("long", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("float", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("double", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("bigint", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("bigdec", "foo"), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("int", new Date()), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless("int", new Object()), exMessage);
-        assertThrows(exClass, () -> checkReplacementSchemaless(Arrays.asList("string", "int"), "foo"), exMessage);
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("byte", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("short", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("int", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("long", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("float", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("double", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("bigint", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("bigdec", "foo"));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("int", new Date()));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless("int", new Object()));
+        assertThrows(exMessage, exClass, () -> checkReplacementSchemaless(Arrays.asList("string", "int"), "foo"));
     }
 
     @Test
     public void testEmptyStringReplacementValue() {
-        assertThrows(ConfigException.class, () -> checkReplacementSchemaless("short", ""), "String must be non-empty");
+        assertThrows("String must be non-empty", ConfigException.class, () -> checkReplacementSchemaless("short", ""));
+    }
+
+    @Test
+    public void testInvalidRegexValue() {
+        assertThrows("Invalid regex", ConfigException.class, () ->
+                transform(singletonList("short"), "any", null).apply(record(null, VALUES)));
     }
 }

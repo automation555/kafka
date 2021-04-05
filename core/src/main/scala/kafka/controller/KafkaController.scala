@@ -17,40 +17,35 @@
 package kafka.controller
 
 import java.util
-import java.util.Collections
 import java.util.concurrent.TimeUnit
 
 import kafka.admin.AdminOperationException
 import kafka.api._
 import kafka.common._
-import kafka.controller.KafkaController.AlterIsrCallback
+import kafka.controller.KafkaController.{AlterIsrCallback, AlterReassignmentsCallback, ElectLeadersCallback, ListReassignmentsCallback, UpdateFeaturesCallback, LogDirChangeCallback}
+import kafka.controller.{ReplicaState => CReplicaState}
 import kafka.cluster.Broker
-import kafka.controller.KafkaController.{AlterReassignmentsCallback, ElectLeadersCallback, ListReassignmentsCallback, UpdateFeaturesCallback}
-import kafka.internals.generated.FeatureZNodeData
 import kafka.metrics.{KafkaMetricsGroup, KafkaTimer}
 import kafka.server._
-import kafka.utils._
 import kafka.utils.Implicits._
+import kafka.utils._
 import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zk.{FeatureZNodeStatus, _}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler, ZNodeChildChangeHandler}
-import org.apache.kafka.common.ElectionType
-import org.apache.kafka.common.KafkaException
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{ElectionType, KafkaException, TopicPartition}
 import org.apache.kafka.common.errors.{BrokerNotAvailableException, ControllerMovedException, StaleBrokerEpochException}
-import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData}
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange}
-import org.apache.kafka.common.message.UpdateFeaturesRequestData
+import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData, AlterReplicaStateResponseData, UpdateFeaturesRequestData}
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.requests.{AbstractControlRequest, ApiError, LeaderAndIsrResponse, UpdateFeaturesRequest, UpdateMetadataResponse}
+import org.apache.kafka.common.requests.{AbstractControlRequest, ApiError, LeaderAndIsrResponse, UpdateFeaturesRequest, UpdateMetadataResponse, AlterReplicaStateRequest}
 import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.Code
 
-import scala.collection.{Map, Seq, Set, immutable, mutable}
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.{Map, Seq, Set, immutable, mutable}
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Try}
 
@@ -68,6 +63,7 @@ object KafkaController extends Logging {
   type AlterReassignmentsCallback = Either[Map[TopicPartition, ApiError], ApiError] => Unit
   type AlterIsrCallback = Either[Map[TopicPartition, Either[Errors, LeaderAndIsr]], Errors] => Unit
   type UpdateFeaturesCallback = Either[ApiError, Map[String, ApiError]] => Unit
+  type LogDirChangeCallback = Either[Map[TopicPartition, Either[Errors, CReplicaState]], Errors] => Unit
 }
 
 class KafkaController(val config: KafkaConfig,
@@ -87,7 +83,7 @@ class KafkaController(val config: KafkaConfig,
   @volatile private var brokerInfo = initialBrokerInfo
   @volatile private var _brokerEpoch = initialBrokerEpoch
 
-  private val isAlterIsrEnabled = config.interBrokerProtocolVersion >= KAFKA_2_7_IV2
+  private val isAlterIsrEnabled = config.interBrokerProtocolVersion.isAlterIsrSupported
   private val stateChangeLogger = new StateChangeLogger(config.brokerId, inControllerContext = true, None)
   val controllerContext = new ControllerContext
   var controllerChannelManager = new ControllerChannelManager(controllerContext, config, time, metrics,
@@ -285,14 +281,14 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
-  private def createFeatureZNode(newNode: FeatureZNodeData): Int = {
+  private def createFeatureZNode(newNode: FeatureZNode): Int = {
     info(s"Creating FeatureZNode at path: ${FeatureZNode.path} with contents: $newNode")
     zkClient.createFeatureZNode(newNode)
     val (_, newVersion) = zkClient.getDataAndVersion(FeatureZNode.path)
     newVersion
   }
 
-  private def updateFeatureZNode(updatedNode: FeatureZNodeData): Int = {
+  private def updateFeatureZNode(updatedNode: FeatureZNode): Int = {
     info(s"Updating FeatureZNode at path: ${FeatureZNode.path} with contents: $updatedNode")
     zkClient.updateFeatureZNode(updatedNode)
   }
@@ -377,38 +373,23 @@ class KafkaController(val config: KafkaConfig,
   private def enableFeatureVersioning(): Unit = {
     val (mayBeFeatureZNodeBytes, version) = zkClient.getDataAndVersion(FeatureZNode.path)
     if (version == ZkVersion.UnknownVersion) {
-      val newNodeData = new FeatureZNodeData()
-        .setStatus(FeatureZNodeStatus.Enabled.id)
-        .setFeatures(brokerFeatures.defaultFinalizedFeatures.features().asScala.map{case (featureName, versionRange) =>
-          new FeatureZNodeData.Feature()
-            .setFeatureName(featureName)
-            .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
-              .setMinValue(versionRange.min())
-              .setMaxValue(versionRange.max()))
-        }.toSeq.asJava)
-
-      brokerFeatures.defaultFinalizedFeatures
-      val newVersion = createFeatureZNode(newNodeData)
+      val newVersion = createFeatureZNode(new FeatureZNode(FeatureZNodeStatus.Enabled,
+                                          brokerFeatures.defaultFinalizedFeatures))
       featureCache.waitUntilEpochOrThrow(newVersion, config.zkConnectionTimeoutMs)
     } else {
-      val existingFeatureZNodeData = FeatureZNode.decode(mayBeFeatureZNodeBytes.get)
-      val newFeatures = existingFeatureZNodeData.status match {
-        case FeatureZNodeStatus.Enabled.id => existingFeatureZNodeData.features()
-        case FeatureZNodeStatus.Disabled.id =>
-          if (!existingFeatureZNodeData.features.isEmpty) {
+      val existingFeatureZNode = FeatureZNode.decode(mayBeFeatureZNodeBytes.get)
+      val newFeatures = existingFeatureZNode.status match {
+        case FeatureZNodeStatus.Enabled => existingFeatureZNode.features
+        case FeatureZNodeStatus.Disabled =>
+          if (!existingFeatureZNode.features.empty()) {
             warn(s"FeatureZNode at path: ${FeatureZNode.path} with disabled status" +
-                 s" contains non-empty features: ${existingFeatureZNodeData.features}")
+                 s" contains non-empty features: ${existingFeatureZNode.features}")
           }
-          Collections.emptyList[FeatureZNodeData.Feature]()
-        case _ =>
-          error(s"FeatureZNode at path: ${FeatureZNode.path} with unknown status id: ${existingFeatureZNodeData.status()}")
-          Collections.emptyList[FeatureZNodeData.Feature]()
+          Features.emptyFinalizedFeatures
       }
-      val newFeatureZNodeData = new FeatureZNodeData()
-        .setStatus(FeatureZNodeStatus.Enabled.id)
-        .setFeatures(newFeatures)
-      if (!existingFeatureZNodeData.equals(newFeatureZNodeData)) {
-        val newVersion = updateFeatureZNode(newFeatureZNodeData)
+      val newFeatureZNode = new FeatureZNode(FeatureZNodeStatus.Enabled, newFeatures)
+      if (!newFeatureZNode.equals(existingFeatureZNode)) {
+        val newVersion = updateFeatureZNode(newFeatureZNode)
         featureCache.waitUntilEpochOrThrow(newVersion, config.zkConnectionTimeoutMs)
       }
     }
@@ -430,21 +411,19 @@ class KafkaController(val config: KafkaConfig,
    *    are disabled when IBP config is < than KAFKA_2_7_IV0.
    */
   private def disableFeatureVersioning(): Unit = {
-    val newNodeData = new FeatureZNodeData()
-      .setStatus(FeatureZNodeStatus.Disabled.id)
-      .setFeatures(Collections.emptyList())
+    val newNode = FeatureZNode(FeatureZNodeStatus.Disabled, Features.emptyFinalizedFeatures())
     val (mayBeFeatureZNodeBytes, version) = zkClient.getDataAndVersion(FeatureZNode.path)
     if (version == ZkVersion.UnknownVersion) {
-      createFeatureZNode(newNodeData)
+      createFeatureZNode(newNode)
     } else {
-      val existingFeatureZNodeData = FeatureZNode.decode(mayBeFeatureZNodeBytes.get)
-      if (existingFeatureZNodeData.status == FeatureZNodeStatus.Disabled.id &&
-          !existingFeatureZNodeData.features.isEmpty) {
+      val existingFeatureZNode = FeatureZNode.decode(mayBeFeatureZNodeBytes.get)
+      if (existingFeatureZNode.status == FeatureZNodeStatus.Disabled &&
+          !existingFeatureZNode.features.empty()) {
         warn(s"FeatureZNode at path: ${FeatureZNode.path} with disabled status" +
-             s" contains non-empty features: ${existingFeatureZNodeData.features}")
+             s" contains non-empty features: ${existingFeatureZNode.features}")
       }
-      if (!existingFeatureZNodeData.equals(newNodeData)) {
-        updateFeatureZNode(newNodeData)
+      if (!newNode.equals(existingFeatureZNode)) {
+        updateFeatureZNode(newNode)
       }
     }
   }
@@ -1052,7 +1031,7 @@ class KafkaController(val config: KafkaConfig,
       (topicPartition -> assignment)
 
     val setDataResponse = zkClient.setTopicAssignmentRaw(topicPartition.topic,
-      controllerContext.topicIds(topicPartition.topic),
+      controllerContext.topicIds.get(topicPartition.topic),
       topicAssignment, controllerContext.epochZkVersion)
     setDataResponse.resultCode match {
       case Code.OK =>
@@ -1397,11 +1376,10 @@ class KafkaController(val config: KafkaConfig,
     val offlineReplicas = new ArrayBuffer[TopicPartition]()
     val onlineReplicas = new ArrayBuffer[TopicPartition]()
 
-    leaderAndIsrResponse.partitions.forEach { partition =>
-      val tp = new TopicPartition(partition.topicName, partition.partitionIndex)
-      if (partition.errorCode == Errors.KAFKA_STORAGE_ERROR.code)
+    leaderAndIsrResponse.partitionErrors(controllerContext.topicNames.asJava).forEach{ case (tp, error) =>
+      if (error.code() == Errors.KAFKA_STORAGE_ERROR.code)
         offlineReplicas += tp
-      else if (partition.errorCode == Errors.NONE.code)
+      else if (error.code() == Errors.NONE.code)
         onlineReplicas += tp
     }
 
@@ -1678,9 +1656,11 @@ class KafkaController(val config: KafkaConfig,
   }
 
   private def processTopicIds(topicIdAssignments: Set[TopicIdReplicaAssignment]): Unit = {
-    val updated = zkClient.setTopicIds(topicIdAssignments.filter(_.topicId.isEmpty), controllerContext.epochZkVersion)
-    val allTopicIdAssignments = updated ++ topicIdAssignments.filter(_.topicId.isDefined)
-    allTopicIdAssignments.foreach(topicIdAssignment => controllerContext.addTopicId(topicIdAssignment.topic, topicIdAssignment.topicId.get))
+    if (config.usesTopicId) {
+      val updated = zkClient.setTopicIds(topicIdAssignments.filter(_.topicId.isEmpty), controllerContext.epochZkVersion)
+      val allTopicIdAssignments = updated ++ topicIdAssignments.filter(_.topicId.isDefined)
+      allTopicIdAssignments.foreach(topicIdAssignment => controllerContext.addTopicId(topicIdAssignment.topic, topicIdAssignment.topicId.get))
+    }
   }
 
   private def processLogDirEventNotification(): Unit = {
@@ -1710,7 +1690,7 @@ class KafkaController(val config: KafkaConfig,
       }.toMap
 
       zkClient.setTopicAssignment(topic,
-        controllerContext.topicIds(topic),
+        controllerContext.topicIds.get(topic),
         existingPartitionReplicaAssignment,
         controllerContext.epochZkVersion)
     }
@@ -2091,16 +2071,8 @@ class KafkaController(val config: KafkaConfig,
     // of the existing finalized features in ZK.
     try {
       if (!existingFeatures.equals(targetFeatures)) {
-        val newNodeData = new FeatureZNodeData()
-          .setStatus(FeatureZNodeStatus.Enabled.id)
-          .setFeatures(targetFeatures.map{case (featureName, versionRange) =>
-            new FeatureZNodeData.Feature()
-              .setFeatureName(featureName)
-              .setVersionRange(new FeatureZNodeData.FinalizedVersionRange()
-                .setMinValue(versionRange.min())
-                .setMaxValue(versionRange.max()))
-          }.toSeq.asJava)
-        val newVersion = updateFeatureZNode(newNodeData)
+        val newNode = new FeatureZNode(FeatureZNodeStatus.Enabled, Features.finalizedFeatures(targetFeatures.asJava))
+        val newVersion = updateFeatureZNode(newNode)
         featureCache.waitUntilEpochOrThrow(newVersion, request.data().timeoutMs())
       }
     } catch {
@@ -2192,7 +2164,8 @@ class KafkaController(val config: KafkaConfig,
           case None => zkClient.getPreferredReplicaElection
         }
 
-        val (knownPartitions, unknownPartitions) = partitions.partition(tp => controllerContext.allPartitions.contains(tp))
+        val allPartitions = controllerContext.allPartitions
+        val (knownPartitions, unknownPartitions) = partitions.partition(tp => allPartitions.contains(tp))
         unknownPartitions.foreach { p =>
           info(s"Skipping replica leader election ($electionType) for partition $p by $electionTrigger since it doesn't exist.")
         }
@@ -2401,6 +2374,118 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  def alterReplicaState(alterReplicaStateRequest: AlterReplicaStateRequest,
+                        callback: AlterReplicaStateResponseData => Unit): Unit = {
+
+    val alterReplicaStateRequestDataData = alterReplicaStateRequest.data()
+    val newState = alterReplicaStateRequestDataData.newState()
+    val reason = alterReplicaStateRequestDataData.reason()
+    val replicasToAlterState = mutable.Set[TopicPartition]()
+    alterReplicaStateRequestDataData.topics.forEach { topicReq =>
+      topicReq.partitions.forEach { partitionReq =>
+        val tp = new TopicPartition(topicReq.name, partitionReq.partitionIndex)
+        replicasToAlterState.add(tp)
+      }
+    }
+
+    def responseCallback(results: Either[Map[TopicPartition, Either[Errors, CReplicaState]], Errors]): Unit = {
+      val resp = new AlterReplicaStateResponseData()
+      results match {
+        case Right(error) =>
+          resp.setErrorCode(error.code)
+        case Left(partitionResults) =>
+          resp.setTopics(new util.ArrayList())
+          partitionResults
+            .groupBy { case (tp, _) => tp.topic }   // Group by topic
+            .foreach { case (topic, partitions) =>
+
+              val topicResp = new AlterReplicaStateResponseData.TopicData()
+                .setName(topic)
+                .setPartitions(new util.ArrayList())
+              resp.topics.add(topicResp)
+              partitions.foreach { case (tp, errorOrPartition) =>
+                // Add each partition part to the response (partition or error)
+                errorOrPartition match {
+                  case Left(error) => topicResp.partitions.add(
+                    new AlterReplicaStateResponseData.PartitionData()
+                      .setPartitionIndex(tp.partition)
+                      .setErrorCode(error.code))
+                  case Right(_) => topicResp.partitions.add(
+                    new AlterReplicaStateResponseData.PartitionData()
+                      .setPartitionIndex(tp.partition))
+                }
+              }
+            }
+      }
+      callback.apply(resp)
+    }
+
+    eventManager.put(AlterReplicaStateReceived(alterReplicaStateRequestDataData.brokerId,
+      alterReplicaStateRequestDataData.brokerEpoch, replicasToAlterState, newState, reason, responseCallback))
+  }
+
+  def processAlterReplicaState(brokerId: Int, brokerEpoch: Long,
+                               topicPartitionsToAlterState: Set[TopicPartition], newStateByte: Byte, reason: String,
+                               callback: LogDirChangeCallback): Unit = {
+    if (!isActive) {
+      callback.apply(Right(Errors.NOT_CONTROLLER))
+      return
+    }
+
+    val newState = newStateByte match {
+      case OfflineReplica.state => OfflineReplica
+      case _ =>
+        callback.apply(Right(Errors.UNKNOWN_REPLICA_STATE))
+        info(s"Ignoring AlterReplicaState due to unknown replica state $newStateByte")
+        return
+    }
+
+    val brokerEpochOpt = controllerContext.liveBrokerIdAndEpochs.get(brokerId)
+    if (brokerEpochOpt.isEmpty) {
+      info(s"Ignoring AlterReplicaState due to unknown broker $brokerId")
+      callback.apply(Right(Errors.STALE_BROKER_EPOCH))
+      return
+    }
+
+    if (!brokerEpochOpt.contains(brokerEpoch)) {
+      info(s"Ignoring AlterReplicaState due to stale broker epoch $brokerEpoch for broker $brokerId")
+      callback.apply(Right(Errors.STALE_BROKER_EPOCH))
+      return
+    }
+
+    val response = try {
+      val partitionResponses = mutable.HashMap[TopicPartition, Either[Errors, CReplicaState]]()
+
+      debug(s"Updating Replica State for partitions: $topicPartitionsToAlterState to $newState on broker: $brokerId due to $reason.")
+
+      val replicasToAlterState = topicPartitionsToAlterState.flatMap { tp =>
+        val replicaToAlterState = PartitionAndReplica(new TopicPartition(tp.topic, tp.partition), brokerId)
+        controllerContext.replicaStates.get(replicaToAlterState) match {
+          case Some(replicaState) =>
+            partitionResponses(tp) = Right(newState)
+            // If a replica is already in the desired state, just return it
+            if (replicaState == newState) {
+              None
+            } else {
+              Some(replicaToAlterState)
+            }
+
+          case None =>
+            partitionResponses(tp) = Left(Errors.UNKNOWN_TOPIC_OR_PARTITION)
+            None
+        }
+      }
+
+      replicaStateMachine.handleStateChanges(replicasToAlterState.toSeq, newState)
+      Left(partitionResponses)
+    } catch {
+      case e: Throwable =>
+        error(s"Error when processing AlterReplicaState for partitions: ${topicPartitionsToAlterState.toSeq}", e)
+        Right(Errors.UNKNOWN_SERVER_ERROR)
+    }
+    callback(response)
+  }
+
   private def processControllerChange(): Unit = {
     maybeResign()
   }
@@ -2479,6 +2564,8 @@ class KafkaController(val config: KafkaConfig,
           processIsrChangeNotification()
         case AlterIsrReceived(brokerId, brokerEpoch, isrsToAlter, callback) =>
           processAlterIsr(brokerId, brokerEpoch, isrsToAlter, callback)
+        case AlterReplicaStateReceived(brokerId, brokerEpoch, replicasToAlterState, newState, reason, responseCallback) =>
+          processAlterReplicaState(brokerId, brokerEpoch, replicasToAlterState, newState, reason, responseCallback)
         case Startup =>
           processStartup()
       }
@@ -2739,6 +2826,13 @@ case object IsrChangeNotification extends ControllerEvent {
 case class AlterIsrReceived(brokerId: Int, brokerEpoch: Long, isrsToAlter: Map[TopicPartition, LeaderAndIsr],
                             callback: AlterIsrCallback) extends ControllerEvent {
   override def state: ControllerState = ControllerState.IsrChange
+  override def preempt(): Unit = {}
+}
+
+case class AlterReplicaStateReceived(brokerId: Int, brokerEpoch: Long, replicasToAlterState: Set[TopicPartition],
+                                     newState: Byte, reason: String,
+                                     callback: LogDirChangeCallback) extends ControllerEvent {
+  override def state: ControllerState = ControllerState.LogDirChange
   override def preempt(): Unit = {}
 }
 

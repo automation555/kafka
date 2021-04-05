@@ -23,6 +23,7 @@ import kafka.log.LogManager;
 import kafka.server.AlterIsrManager;
 import kafka.server.BrokerTopicStats;
 import kafka.server.KafkaConfig;
+import kafka.server.LogDirEventManager;
 import kafka.server.LogDirFailureChannel;
 import kafka.server.MetadataCache;
 import kafka.server.QuotaFactory;
@@ -33,7 +34,6 @@ import kafka.utils.KafkaScheduler;
 import kafka.utils.MockTime;
 import kafka.utils.Scheduler;
 import kafka.utils.TestUtils;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Utils;
@@ -89,7 +89,7 @@ public class CheckpointBench {
     private LogManager logManager;
     private AlterIsrManager alterIsrManager;
     private final CachedConfigRepository configRepository = new CachedConfigRepository();
-
+    private LogDirEventManager logDirEventManagerManager;
 
     @SuppressWarnings("deprecation")
     @Setup(Level.Trial)
@@ -118,6 +118,7 @@ public class CheckpointBench {
                         this.time, "");
 
         this.alterIsrManager = TestUtils.createAlterIsrManager();
+        this.logDirEventManagerManager = TestUtils.createMockLogDirEventManager();
         this.replicaManager = new ReplicaManager(
                 this.brokerProperties,
                 this.metrics,
@@ -132,7 +133,8 @@ public class CheckpointBench {
                 this.failureChannel,
                 alterIsrManager,
                 configRepository,
-                Option.empty());
+                Option.empty(),
+                logDirEventManagerManager);
         replicaManager.startup();
 
         List<TopicPartition> topicPartitions = new ArrayList<>();
@@ -146,7 +148,7 @@ public class CheckpointBench {
         OffsetCheckpoints checkpoints = (logDir, topicPartition) -> Option.apply(0L);
         for (TopicPartition topicPartition : topicPartitions) {
             final Partition partition = this.replicaManager.createPartition(topicPartition);
-            partition.createLogIfNotExists(true, false, checkpoints, Option.apply(Uuid.randomUuid()));
+            partition.createLogIfNotExists(true, false, checkpoints);
         }
 
         replicaManager.checkpointHighWatermarks();

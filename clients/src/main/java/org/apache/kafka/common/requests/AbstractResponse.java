@@ -16,11 +16,9 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.Message;
 import org.apache.kafka.common.protocol.MessageUtil;
 import org.apache.kafka.common.protocol.SendBuilder;
 
@@ -52,7 +50,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         return RequestUtils.serialize(header.data(), header.headerVersion(), data(), version);
     }
 
-    @VisibleForTesting
+    // Visible for testing
     final ByteBuffer serialize(short version) {
         return MessageUtil.toByteBuffer(data(), version);
     }
@@ -91,8 +89,6 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         errorCounts.put(error, count + 1);
     }
 
-    protected abstract Message data();
-
     /**
      * Parse a response from the provided buffer. The buffer is expected to hold both
      * the {@link ResponseHeader} as well as the response payload.
@@ -120,7 +116,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
             case FETCH:
                 return FetchResponse.parse(responseBuffer, version);
             case LIST_OFFSETS:
-                return ListOffsetResponse.parse(responseBuffer, version);
+                return ListOffsetsResponse.parse(responseBuffer, version);
             case METADATA:
                 return MetadataResponse.parse(responseBuffer, version);
             case OFFSET_COMMIT:
@@ -233,6 +229,24 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
                 return UpdateFeaturesResponse.parse(responseBuffer, version);
             case ENVELOPE:
                 return EnvelopeResponse.parse(responseBuffer, version);
+            case FETCH_SNAPSHOT:
+                return FetchSnapshotResponse.parse(responseBuffer, version);
+            case DESCRIBE_CLUSTER:
+                return DescribeClusterResponse.parse(responseBuffer, version);
+            case DESCRIBE_PRODUCERS:
+                return DescribeProducersResponse.parse(responseBuffer, version);
+            case BROKER_REGISTRATION:
+                return BrokerRegistrationResponse.parse(responseBuffer, version);
+            case BROKER_HEARTBEAT:
+                return BrokerHeartbeatResponse.parse(responseBuffer, version);
+            case UNREGISTER_BROKER:
+                return UnregisterBrokerResponse.parse(responseBuffer, version);
+            case DESCRIBE_TRANSACTIONS:
+                return DescribeTransactionsResponse.parse(responseBuffer, version);
+            case LIST_TRANSACTIONS:
+                return ListTransactionsResponse.parse(responseBuffer, version);
+            case ALTER_REPLICA_STATE:
+                return AlterReplicaStateResponse.parse(responseBuffer, version);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseResponse`, the " +
                         "code should be updated to do so.", apiKey));

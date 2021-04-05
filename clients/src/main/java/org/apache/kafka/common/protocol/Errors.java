@@ -115,6 +115,7 @@ import org.apache.kafka.common.errors.UnacceptableCredentialException;
 import org.apache.kafka.common.errors.UnknownLeaderEpochException;
 import org.apache.kafka.common.errors.UnknownMemberIdException;
 import org.apache.kafka.common.errors.UnknownProducerIdException;
+import org.apache.kafka.common.errors.UnknownReplicaStateException;
 import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicIdException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
@@ -362,7 +363,8 @@ public enum Errors {
     BROKER_ID_NOT_REGISTERED(102, "The given broker ID was not registered.", BrokerIdNotRegisteredException::new),
     INCONSISTENT_TOPIC_ID(103, "The log's topic ID did not match the topic ID in the request", InconsistentTopicIdException::new),
     INCONSISTENT_CLUSTER_ID(104, "The clusterId in the request does not match that found on the server", InconsistentClusterIdException::new),
-    TRANSACTIONAL_ID_NOT_FOUND(105, "The transactionalId could not be found", TransactionalIdNotFoundException::new);
+    TRANSACTIONAL_ID_NOT_FOUND(105, "The transactionalId could not be found", TransactionalIdNotFoundException::new),
+    UNKNOWN_REPLICA_STATE(106, "Replica state change only support OfflineState, see ReplicaState.state ", UnknownReplicaStateException::new);
 
     private static final Logger log = LoggerFactory.getLogger(Errors.class);
 

@@ -17,7 +17,6 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.FetchRequestData;
 import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -27,7 +26,7 @@ import org.apache.kafka.common.protocol.types.Struct;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
-public abstract class AbstractRequest implements AbstractRequestResponse {
+public abstract class AbstractRequest extends AbstractRequestResponse {
 
     public static abstract class Builder<T extends AbstractRequest> {
         private final ApiKeys apiKey;
@@ -77,13 +76,11 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
     }
 
     private final short version;
-    public final ApiKeys api;
 
     public AbstractRequest(ApiKeys api, short version) {
         if (!api.isVersionSupported(version))
             throw new UnsupportedVersionException("The " + api + " protocol does not support version " + version);
         this.version = version;
-        this.api = api;
     }
 
     /**
@@ -101,7 +98,7 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
      * Use with care, typically {@link #toSend(String, RequestHeader)} should be used instead.
      */
     public ByteBuffer serialize(RequestHeader header) {
-        return RequestUtils.serialize(header.toStruct(), toStruct());
+        return serialize(header.toStruct(), toStruct());
     }
 
     protected abstract Struct toStruct();
@@ -147,7 +144,7 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
             case PRODUCE:
                 return new ProduceRequest(struct, apiVersion);
             case FETCH:
-                return new FetchRequest(new FetchRequestData(struct, apiVersion), apiVersion);
+                return new FetchRequest(struct, apiVersion);
             case LIST_OFFSETS:
                 return new ListOffsetRequest(struct, apiVersion);
             case METADATA:
@@ -230,24 +227,12 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
                 return new DescribeDelegationTokenRequest(struct, apiVersion);
             case DELETE_GROUPS:
                 return new DeleteGroupsRequest(struct, apiVersion);
-            case ELECT_LEADERS:
-                return new ElectLeadersRequest(struct, apiVersion);
-            case INCREMENTAL_ALTER_CONFIGS:
-                return new IncrementalAlterConfigsRequest(struct, apiVersion);
-            case ALTER_PARTITION_REASSIGNMENTS:
-                return new AlterPartitionReassignmentsRequest(struct, apiVersion);
-            case LIST_PARTITION_REASSIGNMENTS:
-                return new ListPartitionReassignmentsRequest(struct, apiVersion);
-            case OFFSET_DELETE:
-                return new OffsetDeleteRequest(struct, apiVersion);
-            case DESCRIBE_CLIENT_QUOTAS:
-                return new DescribeClientQuotasRequest(struct, apiVersion);
-            case ALTER_CLIENT_QUOTAS:
-                return new AlterClientQuotasRequest(struct, apiVersion);
-            case DESCRIBE_CLIENT_CONFIGS:
-                return new DescribeClientConfigsRequest(struct, apiVersion);
-            case ALTER_CLIENT_CONFIGS:
-                return new AlterClientConfigsRequest(struct, apiVersion);
+            case ELECT_PREFERRED_LEADERS:
+                return new ElectPreferredLeadersRequest(struct, apiVersion);
+            case CONSUMER_RDMA_REGISTER:
+                return new RDMAConsumeAddressRequest(struct, apiVersion);
+            case PRODUCER_RDMA_REGISTER:
+                return new RDMAProduceAddressRequest(struct, apiVersion);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseRequest`, the " +
                         "code should be updated to do so.", apiKey));

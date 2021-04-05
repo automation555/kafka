@@ -17,7 +17,6 @@
 package org.apache.kafka.clients.producer.internals;
 
 import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
@@ -59,6 +58,8 @@ public final class ProducerBatch {
 
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
 
+    public enum BatchType { NORMAL, RDMA }
+
     final long createdMs;
     final TopicPartition topicPartition;
     final ProduceRequestResult produceFuture;
@@ -74,15 +75,26 @@ public final class ProducerBatch {
     private long lastAttemptMs;
     private long lastAppendTime;
     private long drainedMs;
-    private long retryBackoffMs = 0;
     private boolean retry;
     private boolean reopened;
 
+    public final BatchType type;
+
+    public boolean isRDMA() {
+        return type == BatchType.RDMA;
+    }
+
     public ProducerBatch(TopicPartition tp, MemoryRecordsBuilder recordsBuilder, long createdMs) {
-        this(tp, recordsBuilder, createdMs, false);
+        this(tp, recordsBuilder, createdMs, false, false);
     }
 
     public ProducerBatch(TopicPartition tp, MemoryRecordsBuilder recordsBuilder, long createdMs, boolean isSplitBatch) {
+        this(tp, recordsBuilder, createdMs, isSplitBatch, false);
+    }
+
+
+    public ProducerBatch(TopicPartition tp, MemoryRecordsBuilder recordsBuilder, long createdMs, boolean isSplitBatch, boolean withRDMA) {
+        this.type = withRDMA ? BatchType.RDMA : BatchType.NORMAL;
         this.createdMs = createdMs;
         this.lastAttemptMs = createdMs;
         this.recordsBuilder = recordsBuilder;
@@ -269,17 +281,14 @@ public final class ProducerBatch {
             // A newly created batch can always host the first message.
             if (!batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk)) {
                 batches.add(batch);
-                batch.closeForRecordAppends();
                 batch = createBatchOffAccumulatorForRecord(record, splitBatchSize);
                 batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk);
             }
         }
 
         // Close the last batch and add it to the batch list after split.
-        if (batch != null) {
+        if (batch != null)
             batches.add(batch);
-            batch.closeForRecordAppends();
-        }
 
         produceFuture.set(ProduceResponse.INVALID_OFFSET, NO_TIMESTAMP, new RecordBatchTooLargeException());
         produceFuture.done();
@@ -342,11 +351,10 @@ public final class ProducerBatch {
         return attempts.get();
     }
 
-    void reenqueued(long newRetryBackoffMs, long now) {
+    void reenqueued(long now) {
         attempts.getAndIncrement();
         lastAttemptMs = Math.max(lastAppendTime, now);
         lastAppendTime = Math.max(lastAppendTime, now);
-        retryBackoffMs = newRetryBackoffMs;
         retry = true;
     }
 
@@ -394,8 +402,6 @@ public final class ProducerBatch {
     }
 
     public void resetProducerState(ProducerIdAndEpoch producerIdAndEpoch, int baseSequence, boolean isTransactional) {
-        log.info("Resetting sequence number of batch with current sequence {} for partition {} to {}",
-                this.baseSequence(), this.topicPartition, baseSequence);
         reopened = true;
         recordsBuilder.reopenAndRewriteProducerState(producerIdAndEpoch.producerId, producerIdAndEpoch.epoch, baseSequence, isTransactional);
     }
@@ -461,10 +467,6 @@ public final class ProducerBatch {
         return recordsBuilder.baseSequence();
     }
 
-    public int lastSequence() {
-        return recordsBuilder.baseSequence() + recordsBuilder.numRecords() - 1;
-    }
-
     public boolean hasSequence() {
         return baseSequence() != RecordBatch.NO_SEQUENCE;
     }
@@ -475,9 +477,5 @@ public final class ProducerBatch {
 
     public boolean sequenceHasBeenReset() {
         return reopened;
-    }
-
-    public long retryBackoffMs() {
-        return retryBackoffMs;
     }
 }

@@ -35,7 +35,10 @@
       <property name="processJavadoc" value="true" />
     </module>
     <module name="RedundantImport"/>
-    <module name="IllegalImport" />
+    <module name="IllegalImport">
+      <property name="regexp" value="true"/>
+      <property name="illegalPkgs" value="sun\.nio\.[^c].*" />
+    </module>
     <module name="EqualsHashCode"/>
     <module name="SimplifyBooleanExpression"/>
     <module name="OneStatementPerLine"/>
@@ -103,14 +106,6 @@
       <property name="ignoreComments" value="true"/>
     </module>
 
-    <module name="Regexp">
-      <property name="id" value="dontUseSystemExit"/>
-      <property name="format" value="System\.exit"/>
-      <property name="illegalPattern" value="true"/>
-      <property name="ignoreComments" value="true"/>
-      <property name="message" value="'System.exit': Should not directly call System.exit, but Exit.exit instead."/>
-    </module>
-
     <!-- code quality -->
     <module name="MethodLength"/>
     <module name="ParameterNumber">
@@ -120,7 +115,6 @@
     <module name="ClassDataAbstractionCoupling">
       <!-- default is 7 -->
       <property name="max" value="25"/>
-      <property name="excludeClassesRegexps" value="AtomicInteger"/>
     </module>
     <module name="BooleanExpressionComplexity">
       <!-- default is 3 -->

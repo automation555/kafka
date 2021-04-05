@@ -18,21 +18,22 @@
 package kafka.server
 
 import java.nio.ByteBuffer
-import java.util.{Collections, Properties}
+import java.util.Properties
 
 import kafka.log.LogConfig
 import kafka.message.ZStdCompressionCodec
-import kafka.metrics.KafkaYammerMetrics
 import kafka.utils.TestUtils
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.message.ProduceRequestData
-import org.apache.kafka.common.protocol.Errors
+import org.apache.kafka.clients.{ClientRDMARequest, ExclusiveRdmaClient, ProduceRDMAWriteRequest}
+import org.apache.kafka.common.{Node, TopicPartition}
+import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.record._
-import org.apache.kafka.common.requests.{ProduceRequest, ProduceResponse}
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.apache.kafka.common.requests.{ProduceRequest, ProduceResponse, RDMAProduceAddressRequest, RDMAProduceAddressResponse}
+import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.apache.kafka.common.utils.LogContext
+import org.junit.Assert._
+import org.junit.Test
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 /**
   * Subclasses of `BaseProduceSendRequestTest` exercise the producer and produce request/response. This class
@@ -40,35 +41,27 @@ import scala.jdk.CollectionConverters._
   */
 class ProduceRequestTest extends BaseRequestTest {
 
-  val metricsKeySet = KafkaYammerMetrics.defaultRegistry.allMetrics.keySet.asScala
+  protected override def propertyOverrides(props: Properties): Unit = {
+    props.put("log.segment.bytes", "1073741824")
+    props.put("log.preallocate","true")
+  }
 
   @Test
-  def testSimpleProduceRequest(): Unit = {
+  def testSimpleProduceRequest() {
     val (partition, leader) = createTopicAndFindPartitionWithLeader("topic")
 
-    def sendAndCheck(memoryRecords: MemoryRecords, expectedOffset: Long): Unit = {
+    def sendAndCheck(memoryRecords: MemoryRecords, expectedOffset: Long): ProduceResponse.PartitionResponse = {
       val topicPartition = new TopicPartition("topic", partition)
+      val partitionRecords = Map(topicPartition -> memoryRecords)
       val produceResponse = sendProduceRequest(leader,
-          ProduceRequest.forCurrentMagic(new ProduceRequestData()
-            .setTopicData(new ProduceRequestData.TopicProduceDataCollection(Collections.singletonList(
-              new ProduceRequestData.TopicProduceData()
-                .setName(topicPartition.topic())
-                .setPartitionData(Collections.singletonList(new ProduceRequestData.PartitionProduceData()
-                  .setIndex(topicPartition.partition())
-                  .setRecords(memoryRecords)))).iterator))
-            .setAcks((-1).toShort)
-            .setTimeoutMs(3000)
-            .setTransactionalId(null)).build())
-      assertEquals(1, produceResponse.data.responses.size)
-      val topicProduceResponse = produceResponse.data.responses.asScala.head
-      assertEquals(1, topicProduceResponse.partitionResponses.size)   
-      val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
-      val tp = new TopicPartition(topicProduceResponse.name, partitionProduceResponse.index)
+          ProduceRequest.Builder.forCurrentMagic(-1, 3000, partitionRecords.asJava).build())
+      assertEquals(1, produceResponse.responses.size)
+      val (tp, partitionResponse) = produceResponse.responses.asScala.head
       assertEquals(topicPartition, tp)
-      assertEquals(Errors.NONE, Errors.forCode(partitionProduceResponse.errorCode))
-      assertEquals(expectedOffset, partitionProduceResponse.baseOffset)
-      assertEquals(-1, partitionProduceResponse.logAppendTimeMs)
-      assertTrue(partitionProduceResponse.recordErrors.isEmpty)
+      assertEquals(Errors.NONE, partitionResponse.error)
+      assertEquals(expectedOffset, partitionResponse.baseOffset)
+      assertEquals(-1, partitionResponse.logAppendTime)
+      partitionResponse
     }
 
     sendAndCheck(MemoryRecords.withRecords(CompressionType.NONE,
@@ -80,53 +73,96 @@ class ProduceRequestTest extends BaseRequestTest {
   }
 
   @Test
-  def testProduceWithInvalidTimestamp(): Unit = {
-    val topic = "topic"
-    val partition = 0
-    val topicConfig = new Properties
-    topicConfig.setProperty(LogConfig.MessageTimestampDifferenceMaxMsProp, "1000")
-    val partitionToLeader = TestUtils.createTopic(zkClient, topic, 1, 1, servers, topicConfig)
-    val leader = partitionToLeader(partition)
+  def testRdmaProduceRequest() {
+    val (partition, leader) = createTopicAndFindPartitionWithLeader("topic")
 
-    def createRecords(magicValue: Byte, timestamp: Long, codec: CompressionType): MemoryRecords = {
-      val buf = ByteBuffer.allocate(512)
-      val builder = MemoryRecords.builder(buf, magicValue, codec, TimestampType.CREATE_TIME, 0L)
-      builder.appendWithOffset(0, timestamp, null, "hello".getBytes)
-      builder.appendWithOffset(1, timestamp, null, "there".getBytes)
-      builder.appendWithOffset(2, timestamp, null, "beautiful".getBytes)
-      builder.build()
+    def sendAndCheck(memoryRecords: MemoryRecords, expectedOffset: Long): ProduceResponse.PartitionResponse = {
+      val topicPartition = new TopicPartition("topic", partition)
+      val partitionRecords = Map(topicPartition -> memoryRecords)
+      val produceResponse = sendProduceRequest(leader,
+        ProduceRequest.Builder.forCurrentMagic(-1, 3000, partitionRecords.asJava).build())
+      assertEquals(1, produceResponse.responses.size)
+      val (tp, partitionResponse) = produceResponse.responses.asScala.head
+      assertEquals(topicPartition, tp)
+      assertEquals(Errors.NONE, partitionResponse.error)
+      assertEquals(expectedOffset, partitionResponse.baseOffset)
+      assertEquals(-1, partitionResponse.logAppendTime)
+      partitionResponse
     }
 
-    val records = createRecords(RecordBatch.MAGIC_VALUE_V2, System.currentTimeMillis() - 1001L, CompressionType.GZIP)
-    val topicPartition = new TopicPartition("topic", partition)
-    val produceResponse = sendProduceRequest(leader, ProduceRequest.forCurrentMagic(new ProduceRequestData()
-      .setTopicData(new ProduceRequestData.TopicProduceDataCollection(Collections.singletonList(
-        new ProduceRequestData.TopicProduceData()
-          .setName(topicPartition.topic())
-          .setPartitionData(Collections.singletonList(new ProduceRequestData.PartitionProduceData()
-            .setIndex(topicPartition.partition())
-            .setRecords(records)))).iterator))
-      .setAcks((-1).toShort)
-      .setTimeoutMs(3000)
-      .setTransactionalId(null)).build())
+    sendAndCheck(MemoryRecords.withRecords(CompressionType.NONE,
+      new SimpleRecord(System.currentTimeMillis(), "key".getBytes, "value".getBytes)), 0)
 
-    assertEquals(1, produceResponse.data.responses.size)
-    val topicProduceResponse = produceResponse.data.responses.asScala.head
-    assertEquals(1, topicProduceResponse.partitionResponses.size)   
-    val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
-    val tp = new TopicPartition(topicProduceResponse.name, partitionProduceResponse.index)
-    assertEquals(topicPartition, tp)
-    assertEquals(Errors.INVALID_TIMESTAMP, Errors.forCode(partitionProduceResponse.errorCode))
-    // there are 3 records with InvalidTimestampException created from inner function createRecords
-    assertEquals(3, partitionProduceResponse.recordErrors.size)
-    val recordErrors = partitionProduceResponse.recordErrors.asScala
-    recordErrors.indices.foreach(i => assertEquals(i, recordErrors(i).batchIndex))
-    recordErrors.foreach(recordError => assertNotNull(recordError.batchIndexErrorMessage))
-    assertEquals("One or more records have been rejected due to invalid timestamp", partitionProduceResponse.errorMessage)
+    val topicPartition = new TopicPartition("topic", partition)
+    val tplist = List(topicPartition).asJava
+
+    val toUpdate: List[TopicPartition]  = List()
+
+    val request = new RDMAProduceAddressRequest.Builder(-1,tplist,toUpdate.asJava,3000).build()
+    val addressResponse = sendProduceAddressRequest(leader,request)
+
+    val clientAddress = addressResponse.responses().get(topicPartition)
+    assert(clientAddress.error == Errors.NONE)
+
+    val rdmabrokers = servers.map(
+      b => b.config.brokerId.asInstanceOf[java.lang.Integer] -> b.rdmaserver.getPort().asInstanceOf[java.lang.Integer] ).toMap.asJava
+
+
+    val rdmaclient = new ExclusiveRdmaClient("testProducer", new LogContext("[RDMA test client]"),
+      null,100,100,1,1)
+
+    val leaderRdmaPort = rdmabrokers.get(leader)
+
+    val destination = new Node( leader,"10.152.8.96",leaderRdmaPort )
+    rdmaclient.connect( destination)
+    assert(clientAddress.error == Errors.NONE)
+
+
+    val records = MemoryRecords.withRecords(CompressionType.NONE,
+      new SimpleRecord(System.currentTimeMillis(), "key".getBytes, "value".getBytes))
+
+    val length = records.sizeInBytes()
+    val buffer  = ByteBuffer.allocateDirect(length)
+
+    buffer.put(records.buffer() )
+    buffer.rewind()
+
+    val mr = rdmaclient.MemReg(buffer)
+
+    val lkey = mr.getLkey
+
+    var builder = new ProduceRDMAWriteRequest(clientAddress.address,clientAddress.rkey,
+      length,buffer,lkey,
+      clientAddress.immdata)
+    var req = new ClientRDMARequest(destination.idString(),1,builder,"testProducer",0,false,false,null)
+
+    rdmaclient.send(req,0)
+    rdmaclient.poll(0,0)
+
+    /* val addressResponse2 = sendProduceAddressRequest(leader,request)
+
+    val clientAddress2 = addressResponse2.responses().get(topicPartition)
+    assert(clientAddress2.error == Errors.NONE)
+
+    assert(clientAddress2.rkey == clientAddress.rkey )
+    //assert(clientAddress2.length == clientAddress.length - length )
+    //assert(clientAddress2.immdata == clientAddress.immdata )
+
+    */
+
+    builder = new ProduceRDMAWriteRequest(clientAddress.address+length,clientAddress.rkey,
+      length,buffer,lkey,
+      clientAddress.immdata)
+
+    req = new ClientRDMARequest(destination.idString(),1,builder,"testProducer",0,false,false,null)
+
+    rdmaclient.send(req,0)
+    rdmaclient.poll(0,0)
+
   }
 
   @Test
-  def testProduceToNonReplica(): Unit = {
+  def testProduceToNonReplica() {
     val topic = "topic"
     val partition = 0
 
@@ -140,23 +176,12 @@ class ProduceRequestTest extends BaseRequestTest {
     // Send the produce request to the non-replica
     val records = MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord("key".getBytes, "value".getBytes))
     val topicPartition = new TopicPartition("topic", partition)
-    val produceRequest = ProduceRequest.forCurrentMagic(new ProduceRequestData()
-      .setTopicData(new ProduceRequestData.TopicProduceDataCollection(Collections.singletonList(
-        new ProduceRequestData.TopicProduceData()
-          .setName(topicPartition.topic())
-          .setPartitionData(Collections.singletonList(new ProduceRequestData.PartitionProduceData()
-            .setIndex(topicPartition.partition())
-            .setRecords(records)))).iterator))
-      .setAcks((-1).toShort)
-      .setTimeoutMs(3000)
-      .setTransactionalId(null)).build()
+    val partitionRecords = Map(topicPartition -> records)
+    val produceRequest = ProduceRequest.Builder.forCurrentMagic(-1, 3000, partitionRecords.asJava).build()
 
     val produceResponse = sendProduceRequest(nonReplicaId, produceRequest)
-    assertEquals(1, produceResponse.data.responses.size)
-    val topicProduceResponse = produceResponse.data.responses.asScala.head
-    assertEquals(1, topicProduceResponse.partitionResponses.size)   
-    val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
-    assertEquals(Errors.NOT_LEADER_OR_FOLLOWER, Errors.forCode(partitionProduceResponse.errorCode))
+    assertEquals(1, produceResponse.responses.size)
+    assertEquals(Errors.NOT_LEADER_FOR_PARTITION, produceResponse.responses.asScala.head._2.error)
   }
 
   /* returns a pair of partition id and leader id */
@@ -164,11 +189,11 @@ class ProduceRequestTest extends BaseRequestTest {
     val partitionToLeader = TestUtils.createTopic(zkClient, topic, 3, 2, servers)
     partitionToLeader.collectFirst {
       case (partition, leader) if leader != -1 => (partition, leader)
-    }.getOrElse(throw new AssertionError(s"No leader elected for topic $topic"))
+    }.getOrElse(fail(s"No leader elected for topic $topic"))
   }
 
   @Test
-  def testCorruptLz4ProduceRequest(): Unit = {
+  def testCorruptLz4ProduceRequest() {
     val (partition, leader) = createTopicAndFindPartitionWithLeader("topic")
     val timestamp = 1000000
     val memoryRecords = MemoryRecords.withRecords(CompressionType.LZ4,
@@ -177,28 +202,15 @@ class ProduceRequestTest extends BaseRequestTest {
     val lz4ChecksumOffset = 6
     memoryRecords.buffer.array.update(DefaultRecordBatch.RECORD_BATCH_OVERHEAD + lz4ChecksumOffset, 0)
     val topicPartition = new TopicPartition("topic", partition)
-    val produceResponse = sendProduceRequest(leader, ProduceRequest.forCurrentMagic(new ProduceRequestData()
-      .setTopicData(new ProduceRequestData.TopicProduceDataCollection(Collections.singletonList(
-        new ProduceRequestData.TopicProduceData()
-          .setName(topicPartition.topic())
-          .setPartitionData(Collections.singletonList(new ProduceRequestData.PartitionProduceData()
-            .setIndex(topicPartition.partition())
-            .setRecords(memoryRecords)))).iterator))
-      .setAcks((-1).toShort)
-      .setTimeoutMs(3000)
-      .setTransactionalId(null)).build())
-
-    assertEquals(1, produceResponse.data.responses.size)
-    val topicProduceResponse = produceResponse.data.responses.asScala.head
-    assertEquals(1, topicProduceResponse.partitionResponses.size)   
-    val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
-    val tp = new TopicPartition(topicProduceResponse.name, partitionProduceResponse.index)
+    val partitionRecords = Map(topicPartition -> memoryRecords)
+    val produceResponse = sendProduceRequest(leader, 
+      ProduceRequest.Builder.forCurrentMagic(-1, 3000, partitionRecords.asJava).build())
+    assertEquals(1, produceResponse.responses.size)
+    val (tp, partitionResponse) = produceResponse.responses.asScala.head
     assertEquals(topicPartition, tp)
-    assertEquals(Errors.CORRUPT_MESSAGE, Errors.forCode(partitionProduceResponse.errorCode))
-    assertEquals(-1, partitionProduceResponse.baseOffset)
-    assertEquals(-1, partitionProduceResponse.logAppendTimeMs)
-    assertEquals(metricsKeySet.count(_.getMBeanName.endsWith(s"${BrokerTopicStats.InvalidMessageCrcRecordsPerSec}")), 1)
-    assertTrue(TestUtils.meterCount(s"${BrokerTopicStats.InvalidMessageCrcRecordsPerSec}") > 0)
+    assertEquals(Errors.CORRUPT_MESSAGE, partitionResponse.error)
+    assertEquals(-1, partitionResponse.baseOffset)
+    assertEquals(-1, partitionResponse.logAppendTime)
   }
 
   @Test
@@ -214,40 +226,34 @@ class ProduceRequestTest extends BaseRequestTest {
     val memoryRecords = MemoryRecords.withRecords(CompressionType.ZSTD,
       new SimpleRecord(System.currentTimeMillis(), "key".getBytes, "value".getBytes))
     val topicPartition = new TopicPartition("topic", partition)
-    val partitionRecords = new ProduceRequestData()
-      .setTopicData(new ProduceRequestData.TopicProduceDataCollection(Collections.singletonList(
-        new ProduceRequestData.TopicProduceData()
-          .setName("topic").setPartitionData(Collections.singletonList(
-            new ProduceRequestData.PartitionProduceData()
-              .setIndex(partition)
-              .setRecords(memoryRecords))))
-        .iterator))
-      .setAcks((-1).toShort)
-      .setTimeoutMs(3000)
-      .setTransactionalId(null)
+    val partitionRecords = Map(topicPartition -> memoryRecords)
 
     // produce request with v7: works fine!
-    val produceResponse1 = sendProduceRequest(leader, new ProduceRequest.Builder(7, 7, partitionRecords).build())
-
-    val topicProduceResponse1 = produceResponse1.data.responses.asScala.head
-    val partitionProduceResponse1 = topicProduceResponse1.partitionResponses.asScala.head
-    val tp1 = new TopicPartition(topicProduceResponse1.name, partitionProduceResponse1.index)
+    val res1 = sendProduceRequest(leader,
+      new ProduceRequest.Builder(7, 7, -1, 3000, partitionRecords.asJava, null).build())
+    val (tp1, partitionResponse1) = res1.responses.asScala.head
     assertEquals(topicPartition, tp1)
-    assertEquals(Errors.NONE, Errors.forCode(partitionProduceResponse1.errorCode))
-    assertEquals(0, partitionProduceResponse1.baseOffset)
-    assertEquals(-1, partitionProduceResponse1.logAppendTimeMs)
+    assertEquals(Errors.NONE, partitionResponse1.error)
+    assertEquals(0, partitionResponse1.baseOffset)
+    assertEquals(-1, partitionResponse1.logAppendTime)
 
     // produce request with v3: returns Errors.UNSUPPORTED_COMPRESSION_TYPE.
-    val produceResponse2 = sendProduceRequest(leader, new ProduceRequest.Builder(3, 3, partitionRecords).buildUnsafe(3))
-    val topicProduceResponse2 = produceResponse2.data.responses.asScala.head
-    val partitionProduceResponse2 = topicProduceResponse2.partitionResponses.asScala.head
-    val tp2 = new TopicPartition(topicProduceResponse2.name, partitionProduceResponse2.index)
+    val res2 = sendProduceRequest(leader,
+      new ProduceRequest.Builder(3, 3, -1, 3000, partitionRecords.asJava, null)
+        .buildUnsafe(3))
+    val (tp2, partitionResponse2) = res2.responses.asScala.head
     assertEquals(topicPartition, tp2)
-    assertEquals(Errors.UNSUPPORTED_COMPRESSION_TYPE, Errors.forCode(partitionProduceResponse2.errorCode))
+    assertEquals(Errors.UNSUPPORTED_COMPRESSION_TYPE, partitionResponse2.error)
   }
 
   private def sendProduceRequest(leaderId: Int, request: ProduceRequest): ProduceResponse = {
-    connectAndReceive[ProduceResponse](request, destination = brokerSocketServer(leaderId))
+    val response = connectAndSend(request, ApiKeys.PRODUCE, destination = brokerSocketServer(leaderId))
+    ProduceResponse.parse(response, request.version)
+  }
+
+  private def sendProduceAddressRequest(leaderId: Int, request: RDMAProduceAddressRequest): RDMAProduceAddressResponse = {
+    val response = connectAndSend(request, ApiKeys.PRODUCER_RDMA_REGISTER, destination = brokerSocketServer(leaderId))
+    RDMAProduceAddressResponse.parse(response, request.version)
   }
 
 }

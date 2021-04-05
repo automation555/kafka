@@ -22,7 +22,6 @@ import java.time.Duration
 import java.util
 import java.util.concurrent.atomic.AtomicLong
 import java.util.{Properties, Random}
-import kafka.utils.CommandDefaultOptions
 
 import com.typesafe.scalalogging.LazyLogging
 import kafka.utils.{CommandLineUtils, ToolsUtils}
@@ -31,7 +30,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Utils
 import org.apache.kafka.common.{Metric, MetricName, TopicPartition}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 /**
@@ -101,7 +100,7 @@ object ConsumerPerformance extends LazyLogging {
               totalMessagesRead: AtomicLong,
               totalBytesRead: AtomicLong,
               joinTime: AtomicLong,
-              testStartTime: Long): Unit = {
+              testStartTime: Long) {
     var bytesRead = 0L
     var messagesRead = 0L
     var lastBytesRead = 0L
@@ -110,11 +109,11 @@ object ConsumerPerformance extends LazyLogging {
     var joinTimeMsInSingleRound = 0L
 
     consumer.subscribe(topics.asJava, new ConsumerRebalanceListener {
-      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]) {
         joinTime.addAndGet(System.currentTimeMillis - joinStart)
         joinTimeMsInSingleRound += System.currentTimeMillis - joinStart
       }
-      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]) {
         joinStart = System.currentTimeMillis
       }})
 
@@ -124,7 +123,9 @@ object ConsumerPerformance extends LazyLogging {
     var lastConsumedTime = currentTimeMillis
 
     while (messagesRead < count && currentTimeMillis - lastConsumedTime <= timeout) {
-      val records = consumer.poll(Duration.ofMillis(100)).asScala
+
+      val records = if (config.withRdma) consumer.RDMApoll(Duration.ofMillis(100)).asScala
+                                    else consumer.poll(Duration.ofMillis(100)).asScala
       currentTimeMillis = System.currentTimeMillis
       if (records.nonEmpty)
         lastConsumedTime = currentTimeMillis
@@ -176,7 +177,7 @@ object ConsumerPerformance extends LazyLogging {
                                  startMs: Long,
                                  endMs: Long,
                                  dateFormat: SimpleDateFormat): Unit = {
-    val elapsedMs: Double = (endMs - startMs).toDouble
+    val elapsedMs: Double = endMs - startMs
     val totalMbRead = (bytesRead * 1.0) / (1024 * 1024)
     val intervalMbRead = ((bytesRead - lastBytesRead) * 1.0) / (1024 * 1024)
     val intervalMbPerSec = 1000.0 * intervalMbRead / elapsedMs
@@ -202,15 +203,10 @@ object ConsumerPerformance extends LazyLogging {
     print(", %d, %d, %.4f, %.4f".format(periodicJoinTimeInMs, fetchTimeMs, intervalMbPerSec, intervalMessagesPerSec))
   }
 
-  class ConsumerPerfConfig(args: Array[String]) extends CommandDefaultOptions(args) {
-    val brokerListOpt = parser.accepts("broker-list", "DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified.  The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
-      .withRequiredArg
-      .describedAs("broker-list")
-      .ofType(classOf[String])
-    val bootstrapServerOpt = parser.accepts("bootstrap-server", "REQUIRED unless --broker-list(deprecated) is specified. The server(s) to connect to.")
-      .requiredUnless("broker-list")
-      .withRequiredArg
-      .describedAs("server to connect to")
+  class ConsumerPerfConfig(args: Array[String]) extends PerfConfig(args) {
+    val bootstrapServersOpt = parser.accepts("broker-list", "REQUIRED: The server(s) to connect to.")
+      .withRequiredArg()
+      .describedAs("host")
       .ofType(classOf[String])
     val topicOpt = parser.accepts("topic", "REQUIRED: The topic to consume from.")
       .withRequiredArg
@@ -248,36 +244,24 @@ object ConsumerPerformance extends LazyLogging {
       .describedAs("config file")
       .ofType(classOf[String])
     val printMetricsOpt = parser.accepts("print-metrics", "Print out the metrics.")
+    val withRdmaOpt = parser.accepts("with-rdma", "use rdma fetch.")
     val showDetailedStatsOpt = parser.accepts("show-detailed-stats", "If set, stats are reported for each reporting " +
-      "interval as configured by reporting-interval.")
+      "interval as configured by reporting-interval")
     val recordFetchTimeoutOpt = parser.accepts("timeout", "The maximum allowed time in milliseconds between returned records.")
       .withOptionalArg()
       .describedAs("milliseconds")
       .ofType(classOf[Long])
       .defaultsTo(10000)
-    val numMessagesOpt = parser.accepts("messages", "REQUIRED: The number of messages to send or consume.")
-      .withRequiredArg
-      .describedAs("count")
-      .ofType(classOf[java.lang.Long])
-    val reportingIntervalOpt = parser.accepts("reporting-interval", "Interval in milliseconds at which to print progress info.")
-      .withRequiredArg
-      .describedAs("interval_ms")
-      .ofType(classOf[java.lang.Integer])
-      .defaultsTo(5000)
-    val dateFormatOpt = parser.accepts("date-format", "The date format to use for formatting the time field. " +
-      "See java.text.SimpleDateFormat for options.")
-      .withRequiredArg
-      .describedAs("date format")
-      .ofType(classOf[String])
-      .defaultsTo("yyyy-MM-dd HH:mm:ss:SSS")
-    val hideHeaderOpt = parser.accepts("hide-header", "If set, skips printing the header for the stats.")
 
     options = parser.parse(args: _*)
+
     CommandLineUtils.printHelpAndExitIfNeeded(this, "This tool helps in performance test for the full zookeeper consumer")
 
-    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, numMessagesOpt)
+    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, numMessagesOpt, bootstrapServersOpt)
 
     val printMetrics = options.has(printMetricsOpt)
+
+    val withRdma = options.has(withRdmaOpt)
 
     val props = if (options.has(consumerConfigOpt))
       Utils.loadProps(options.valueOf(consumerConfigOpt))
@@ -285,9 +269,7 @@ object ConsumerPerformance extends LazyLogging {
       new Properties
 
     import org.apache.kafka.clients.consumer.ConsumerConfig
-
-    val brokerHostsAndPorts = options.valueOf(if (options.has(bootstrapServerOpt)) bootstrapServerOpt else brokerListOpt)
-    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerHostsAndPorts)
+    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, options.valueOf(bootstrapServersOpt))
     props.put(ConsumerConfig.GROUP_ID_CONFIG, options.valueOf(groupIdOpt))
     props.put(ConsumerConfig.RECEIVE_BUFFER_CONFIG, options.valueOf(socketBufferSizeOpt).toString)
     props.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, options.valueOf(fetchSizeOpt).toString)
@@ -307,5 +289,4 @@ object ConsumerPerformance extends LazyLogging {
     val hideHeader = options.has(hideHeaderOpt)
     val recordFetchTimeoutMs = options.valueOf(recordFetchTimeoutOpt).longValue()
   }
-
 }

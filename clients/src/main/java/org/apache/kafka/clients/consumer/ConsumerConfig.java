@@ -18,25 +18,20 @@ package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.CommonClientConfigs;
-import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
-import org.apache.kafka.common.config.SecurityConfig;
-import org.apache.kafka.common.errors.InvalidConfigurationException;
 import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.requests.JoinGroupRequest;
+import org.apache.kafka.common.requests.IsolationLevel;
 import org.apache.kafka.common.serialization.Deserializer;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.kafka.common.config.ConfigDef.Range.atLeast;
 import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
@@ -55,33 +50,40 @@ public class ConsumerConfig extends AbstractConfig {
     /**
      * <code>group.id</code>
      */
-    public static final String GROUP_ID_CONFIG = CommonClientConfigs.GROUP_ID_CONFIG;
-    private static final String GROUP_ID_DOC = CommonClientConfigs.GROUP_ID_DOC;
-
-    /**
-     * <code>group.instance.id</code>
-     */
-    public static final String GROUP_INSTANCE_ID_CONFIG = CommonClientConfigs.GROUP_INSTANCE_ID_CONFIG;
-    private static final String GROUP_INSTANCE_ID_DOC = CommonClientConfigs.GROUP_INSTANCE_ID_DOC;
+    public static final String GROUP_ID_CONFIG = "group.id";
+    private static final String GROUP_ID_DOC = "A unique string that identifies the consumer group this consumer belongs to. This property is required if the consumer uses either the group management functionality by using <code>subscribe(topic)</code> or the Kafka-based offset management strategy.";
 
     /** <code>max.poll.records</code> */
     public static final String MAX_POLL_RECORDS_CONFIG = "max.poll.records";
     private static final String MAX_POLL_RECORDS_DOC = "The maximum number of records returned in a single call to poll().";
 
     /** <code>max.poll.interval.ms</code> */
-    public static final String MAX_POLL_INTERVAL_MS_CONFIG = CommonClientConfigs.MAX_POLL_INTERVAL_MS_CONFIG;
-    private static final String MAX_POLL_INTERVAL_MS_DOC = CommonClientConfigs.MAX_POLL_INTERVAL_MS_DOC;
+    public static final String MAX_POLL_INTERVAL_MS_CONFIG = "max.poll.interval.ms";
+    private static final String MAX_POLL_INTERVAL_MS_DOC = "The maximum delay between invocations of poll() when using " +
+            "consumer group management. This places an upper bound on the amount of time that the consumer can be idle " +
+            "before fetching more records. If poll() is not called before expiration of this timeout, then the consumer " +
+            "is considered failed and the group will rebalance in order to reassign the partitions to another member. ";
+
     /**
      * <code>session.timeout.ms</code>
      */
-    public static final String SESSION_TIMEOUT_MS_CONFIG = CommonClientConfigs.SESSION_TIMEOUT_MS_CONFIG;
-    private static final String SESSION_TIMEOUT_MS_DOC = CommonClientConfigs.SESSION_TIMEOUT_MS_DOC;
+    public static final String SESSION_TIMEOUT_MS_CONFIG = "session.timeout.ms";
+    private static final String SESSION_TIMEOUT_MS_DOC = "The timeout used to detect consumer failures when using " +
+            "Kafka's group management facility. The consumer sends periodic heartbeats to indicate its liveness " +
+            "to the broker. If no heartbeats are received by the broker before the expiration of this session timeout, " +
+            "then the broker will remove this consumer from the group and initiate a rebalance. Note that the value " +
+            "must be in the allowable range as configured in the broker configuration by <code>group.min.session.timeout.ms</code> " +
+            "and <code>group.max.session.timeout.ms</code>.";
 
     /**
      * <code>heartbeat.interval.ms</code>
      */
-    public static final String HEARTBEAT_INTERVAL_MS_CONFIG = CommonClientConfigs.HEARTBEAT_INTERVAL_MS_CONFIG;
-    private static final String HEARTBEAT_INTERVAL_MS_DOC = CommonClientConfigs.HEARTBEAT_INTERVAL_MS_DOC;
+    public static final String HEARTBEAT_INTERVAL_MS_CONFIG = "heartbeat.interval.ms";
+    private static final String HEARTBEAT_INTERVAL_MS_DOC = "The expected time between heartbeats to the consumer " +
+            "coordinator when using Kafka's group management facilities. Heartbeats are used to ensure that the " +
+            "consumer's session stays active and to facilitate rebalancing when new consumers join or leave the group. " +
+            "The value must be set lower than <code>session.timeout.ms</code>, but typically should be set no higher " +
+            "than 1/3 of that value. It can be adjusted even lower to control the expected time for normal rebalances.";
 
     /**
      * <code>bootstrap.servers</code>
@@ -107,18 +109,7 @@ public class ConsumerConfig extends AbstractConfig {
      * <code>partition.assignment.strategy</code>
      */
     public static final String PARTITION_ASSIGNMENT_STRATEGY_CONFIG = "partition.assignment.strategy";
-    private static final String PARTITION_ASSIGNMENT_STRATEGY_DOC = "A list of class names or class types, " +
-            "ordered by preference, of supported partition assignment " +
-            "strategies that the client will use to distribute partition " +
-            "ownership amongst consumer instances when group management is " +
-            "used.<p>In addition to the default class specified below, " +
-            "you can use the " +
-            "<code>org.apache.kafka.clients.consumer.RoundRobinAssignor</code>" +
-            "class for round robin assignments of partitions to consumers. " +
-            "</p><p>Implementing the " +
-            "<code>org.apache.kafka.clients.consumer.ConsumerPartitionAssignor" +
-            "</code> interface allows you to plug in a custom assignment" +
-            "strategy.";
+    private static final String PARTITION_ASSIGNMENT_STRATEGY_DOC = "The class name of the partition assignment strategy that the client will use to distribute partition ownership amongst consumer instances when group management is used";
 
     /**
      * <code>auto.offset.reset</code>
@@ -176,11 +167,6 @@ public class ConsumerConfig extends AbstractConfig {
     public static final String CLIENT_ID_CONFIG = CommonClientConfigs.CLIENT_ID_CONFIG;
 
     /**
-     * <code>client.rack</code>
-     */
-    public static final String CLIENT_RACK_CONFIG = CommonClientConfigs.CLIENT_RACK_CONFIG;
-
-    /**
      * <code>reconnect.backoff.ms</code>
      */
     public static final String RECONNECT_BACKOFF_MS_CONFIG = CommonClientConfigs.RECONNECT_BACKOFF_MS_CONFIG;
@@ -194,11 +180,6 @@ public class ConsumerConfig extends AbstractConfig {
      * <code>retry.backoff.ms</code>
      */
     public static final String RETRY_BACKOFF_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG;
-
-    /**
-     * <code>retry.backoff.max.ms</code>
-     */
-    public static final String RETRY_BACKOFF_MAX_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MAX_MS_CONFIG;
 
     /**
      * <code>metrics.sample.window.ms</code>
@@ -234,12 +215,6 @@ public class ConsumerConfig extends AbstractConfig {
     public static final String VALUE_DESERIALIZER_CLASS_CONFIG = "value.deserializer";
     public static final String VALUE_DESERIALIZER_CLASS_DOC = "Deserializer class for value that implements the <code>org.apache.kafka.common.serialization.Deserializer</code> interface.";
 
-    /** <code>socket.connection.setup.timeout.ms</code> */
-    public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG;
-
-    /** <code>socket.connection.setup.timeout.max.ms</code> */
-    public static final String SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG;
-
     /** <code>connections.max.idle.ms</code> */
     public static final String CONNECTIONS_MAX_IDLE_MS_CONFIG = CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG;
 
@@ -248,7 +223,8 @@ public class ConsumerConfig extends AbstractConfig {
     private static final String REQUEST_TIMEOUT_MS_DOC = CommonClientConfigs.REQUEST_TIMEOUT_MS_DOC;
 
     /** <code>default.api.timeout.ms</code> */
-    public static final String DEFAULT_API_TIMEOUT_MS_CONFIG = CommonClientConfigs.DEFAULT_API_TIMEOUT_MS_CONFIG;
+    public static final String DEFAULT_API_TIMEOUT_MS_CONFIG = "default.api.timeout.ms";
+    public static final String DEFAULT_API_TIMEOUT_MS_DOC = "Specifies the timeout (in milliseconds) for consumer APIs that could block. This configuration is used as the default timeout for all consumer operations that do not explicitly accept a <code>timeout</code> parameter.";
 
     /** <code>interceptor.classes</code> */
     public static final String INTERCEPTOR_CLASSES_CONFIG = "interceptor.classes";
@@ -259,8 +235,8 @@ public class ConsumerConfig extends AbstractConfig {
 
     /** <code>exclude.internal.topics</code> */
     public static final String EXCLUDE_INTERNAL_TOPICS_CONFIG = "exclude.internal.topics";
-    private static final String EXCLUDE_INTERNAL_TOPICS_DOC = "Whether internal topics matching a subscribed pattern should " +
-            "be excluded from the subscription. It is always possible to explicitly subscribe to an internal topic.";
+    private static final String EXCLUDE_INTERNAL_TOPICS_DOC = "Whether records from internal topics (such as offsets) should be exposed to the consumer. "
+                                                            + "If set to <code>true</code> the only way to receive records from an internal topic is subscribing to it.";
     public static final boolean DEFAULT_EXCLUDE_INTERNAL_TOPICS = true;
 
     /**
@@ -274,47 +250,70 @@ public class ConsumerConfig extends AbstractConfig {
      */
     static final String LEAVE_GROUP_ON_CLOSE_CONFIG = "internal.leave.group.on.close";
 
-    /**
-     * <code>internal.throw.on.fetch.stable.offset.unsupported</code>
-     * Whether or not the consumer should throw when the new stable offset feature is supported.
-     * If set to <code>true</code> then the client shall crash upon hitting it.
-     * The purpose of this flag is to prevent unexpected broker downgrade which makes
-     * the offset fetch protection against pending commit invalid. The safest approach
-     * is to fail fast to avoid introducing correctness issue.
-     *
-     * <p>
-     * Note: this is an internal configuration and could be changed in the future in a backward incompatible way
-     *
-     */
-    static final String THROW_ON_FETCH_STABLE_OFFSET_UNSUPPORTED = "internal.throw.on.fetch.stable.offset.unsupported";
-
     /** <code>isolation.level</code> */
     public static final String ISOLATION_LEVEL_CONFIG = "isolation.level";
-    public static final String ISOLATION_LEVEL_DOC = "Controls how to read messages written transactionally. If set to <code>read_committed</code>, consumer.poll() will only return" +
+    public static final String ISOLATION_LEVEL_DOC = "<p>Controls how to read messages written transactionally. If set to <code>read_committed</code>, consumer.poll() will only return" +
             " transactional messages which have been committed. If set to <code>read_uncommitted</code>' (the default), consumer.poll() will return all messages, even transactional messages" +
-            " which have been aborted. Non-transactional messages will be returned unconditionally in either mode. <p>Messages will always be returned in offset order. Hence, in " +
+            " which have been aborted. Non-transactional messages will be returned unconditionally in either mode.</p> <p>Messages will always be returned in offset order. Hence, in " +
             " <code>read_committed</code> mode, consumer.poll() will only return messages up to the last stable offset (LSO), which is the one less than the offset of the first open transaction." +
             " In particular any messages appearing after messages belonging to ongoing transactions will be withheld until the relevant transaction has been completed. As a result, <code>read_committed</code>" +
             " consumers will not be able to read up to the high watermark when there are in flight transactions.</p><p> Further, when in <code>read_committed</code> the seekToEnd method will" +
             " return the LSO";
 
+
+
+    /** <code> num.rdmanetwork.maxsendsize </code> */
+    public static final String RDMA_SEND_SIZE = "num.rdmanetwork.maxsendsize";
+    public static final String RDMA_SEND_SIZE_DOC = "maximum send requests per rdma connection";
+
+    /** <code> num.rdmanetwork.maxrecvsize </code> */
+    public static final String RDMA_RECV_SIZE = "num.rdmanetwork.maxrecvsize";
+    public static final String RDMA_RECV_SIZE_DOC = "maximum recv requests per rdma connection";
+
+    /** <code> num.rdmanetwork.maxrequestquota </code> */
+    public static final String RDMA_QUOTA_SIZE = "num.rdmanetwork.maxrequestquota";
+    public static final String RDMA_QUOTA_SIZE_DOC = "maximum outstanding requests per rdma connection";
+
+    /** <code> num.rdmanetwork.maxcomplqueuesize </code> */
+    public static final String RDMA_QUEUE_SIZE = "num.rdmanetwork.maxcomplqueuesize";
+    public static final String RDMA_QUEUE_SIZE_DOC = "maximum queue size per rdma connection per direction. I use separate queue for send and receive";
+
+    /** <code> num.rdmanetwork.wcbatch </code> */
+    public static final String WC_BATCH = "num.rdmanetwork.wcbatch";
+    public static final String WC_BATCH_DOC = "How many completion poll at a time";
+
+    /** <code> num.rdmanetwork.contention </code> */
+    public static final String RDMA_CONTENTION_LIMIT = "num.rdmanetwork.contention";
+    public static final String RDMA_CONTENTION_LIMIT_DOC = "After how many requests in waiting queue consider the connection contended";
+
+
+    /** <code> num.rdmafetch.cachesize </code> */
+    public static final String RDMA_CACHE_SIZE = "num.rdmafetch.cachesize";
+    public static final String RDMA_CACHE_SIZE_DOC = "the size of cache in bytes";
+
+
+    /** <code> num.rdmafetch.wraplimit </code> */
+    public static final String RDMA_CACHE_WRAP_LIMIT = "num.rdmafetch.wraplimit";
+    public static final String RDMA_CACHE_WRAP_LIMIT_DOC = "if cache has less than wraplimit bytes in cache it will wrap around the cache";
+
+
+    /** <code> num.rdmafetch.withslots </code> */
+    public static final String WITH_SLOTS = "num.rdmafetch.withslots";
+    public static final String WITH_SLOTS_DOC = "use rdma slots";
+
+
+    /** <code> num.rdmafetch.slotupdatetimeout </code> */
+    public static final String SLOT_UPDATE_TIMEOUT = "num.rdmafetch.slotupdatetimeout";
+    public static final String SLOT_UPDATE_TIMEOUT_DOC = "How often issue rdma update slot. measured in nanoseconds.";
+
+
+    /** <code> num.rdmafetch.tcptimeout </code> */
+    public static final String TCP_TIMEOUT = "num.rdmafetch.tcptimeout";
+    public static final String TCP_TIMEOUT_DOC = "Timeout for sending get address request, measured in miliseconds";
+
+
+
     public static final String DEFAULT_ISOLATION_LEVEL = IsolationLevel.READ_UNCOMMITTED.toString().toLowerCase(Locale.ROOT);
-
-    /** <code>allow.auto.create.topics</code> */
-    public static final String ALLOW_AUTO_CREATE_TOPICS_CONFIG = "allow.auto.create.topics";
-    private static final String ALLOW_AUTO_CREATE_TOPICS_DOC = "Allow automatic topic creation on the broker when" +
-            " subscribing to or assigning a topic. A topic being subscribed to will be automatically created only if the" +
-            " broker allows for it using `auto.create.topics.enable` broker configuration. This configuration must" +
-            " be set to `false` when using brokers older than 0.11.0";
-    public static final boolean DEFAULT_ALLOW_AUTO_CREATE_TOPICS = true;
-
-    /**
-     * <code>security.providers</code>
-     */
-    public static final String SECURITY_PROVIDERS_CONFIG = SecurityConfig.SECURITY_PROVIDERS_CONFIG;
-    private static final String SECURITY_PROVIDERS_DOC = SecurityConfig.SECURITY_PROVIDERS_DOC;
-
-    private static final AtomicInteger CONSUMER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
 
     static {
         CONFIG = new ConfigDef().define(BOOTSTRAP_SERVERS_CONFIG,
@@ -325,18 +324,13 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.BOOTSTRAP_SERVERS_DOC)
                                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                                         Type.STRING,
-                                        ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                                        ClientDnsLookup.DEFAULT.toString(),
                                         in(ClientDnsLookup.DEFAULT.toString(),
                                            ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
                                         Importance.MEDIUM,
                                         CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC)
                                 .define(GROUP_ID_CONFIG, Type.STRING, null, Importance.HIGH, GROUP_ID_DOC)
-                                .define(GROUP_INSTANCE_ID_CONFIG,
-                                        Type.STRING,
-                                        null,
-                                        Importance.MEDIUM,
-                                        GROUP_INSTANCE_ID_DOC)
                                 .define(SESSION_TIMEOUT_MS_CONFIG,
                                         Type.INT,
                                         10000,
@@ -375,11 +369,6 @@ public class ConsumerConfig extends AbstractConfig {
                                         "",
                                         Importance.LOW,
                                         CommonClientConfigs.CLIENT_ID_DOC)
-                                .define(CLIENT_RACK_CONFIG,
-                                        Type.STRING,
-                                        "",
-                                        Importance.LOW,
-                                        CommonClientConfigs.CLIENT_RACK_DOC)
                                 .define(MAX_PARTITION_FETCH_BYTES_CONFIG,
                                         Type.INT,
                                         DEFAULT_MAX_PARTITION_FETCH_BYTES,
@@ -430,16 +419,10 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.RECONNECT_BACKOFF_MAX_MS_DOC)
                                 .define(RETRY_BACKOFF_MS_CONFIG,
                                         Type.LONG,
-                                        CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MS,
+                                        100L,
                                         atLeast(0L),
                                         Importance.LOW,
                                         CommonClientConfigs.RETRY_BACKOFF_MS_DOC)
-                                .define(RETRY_BACKOFF_MAX_MS_CONFIG,
-                                        Type.LONG,
-                                        CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MAX_MS,
-                                        atLeast(0L),
-                                        Importance.LOW,
-                                        CommonClientConfigs.RETRY_BACKOFF_MAX_MS_DOC)
                                 .define(AUTO_OFFSET_RESET_CONFIG,
                                         Type.STRING,
                                         "latest",
@@ -494,17 +477,7 @@ public class ConsumerConfig extends AbstractConfig {
                                         60 * 1000,
                                         atLeast(0),
                                         Importance.MEDIUM,
-                                        CommonClientConfigs.DEFAULT_API_TIMEOUT_MS_DOC)
-                                .define(SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG,
-                                        Type.LONG,
-                                        CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MS,
-                                        Importance.MEDIUM,
-                                        CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_DOC)
-                                .define(SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG,
-                                        Type.LONG,
-                                        CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
-                                        Importance.MEDIUM,
-                                        CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
+                                        DEFAULT_API_TIMEOUT_MS_DOC)
                                 /* default is set to be a bit lower than the server default (10 min), to avoid both client and server closing connection at same time */
                                 .define(CONNECTIONS_MAX_IDLE_MS_CONFIG,
                                         Type.LONG,
@@ -535,30 +508,81 @@ public class ConsumerConfig extends AbstractConfig {
                                         Importance.MEDIUM,
                                         EXCLUDE_INTERNAL_TOPICS_DOC)
                                 .defineInternal(LEAVE_GROUP_ON_CLOSE_CONFIG,
+                                                Type.BOOLEAN,
+                                                true,
+                                                Importance.LOW)
+                                .define(RDMA_SEND_SIZE,
+                                        Type.INT,
+                                        80,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        RDMA_SEND_SIZE_DOC)
+                                .define(RDMA_RECV_SIZE,
+                                        Type.INT,
+                                        80,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        RDMA_RECV_SIZE_DOC)
+                                .define(RDMA_QUOTA_SIZE,
+                                        Type.INT,
+                                        78,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        RDMA_QUOTA_SIZE_DOC)
+                                .define(RDMA_QUEUE_SIZE,
+                                        Type.INT,
+                                        200,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        RDMA_QUEUE_SIZE_DOC)
+                                .define(WC_BATCH,
+                                        Type.INT,
+                                        16,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        WC_BATCH_DOC)
+                                .define(RDMA_CONTENTION_LIMIT,
+                                        Type.INT,
+                                        100,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        RDMA_CONTENTION_LIMIT_DOC)
+                                .define(RDMA_CACHE_SIZE,
+                                        Type.INT,
+                                        16 * 1024 * 1024,
+                                        atLeast(1024),
+                                        Importance.LOW,
+                                        RDMA_CACHE_SIZE_DOC)
+                                .define(RDMA_CACHE_WRAP_LIMIT,
+                                        Type.INT,
+                                        1024,
+                                        atLeast(8),
+                                        Importance.LOW,
+                                        RDMA_CACHE_WRAP_LIMIT_DOC)
+                                .define(WITH_SLOTS,
                                         Type.BOOLEAN,
                                         true,
-                                        Importance.LOW)
-                                .defineInternal(THROW_ON_FETCH_STABLE_OFFSET_UNSUPPORTED,
-                                        Type.BOOLEAN,
-                                        false,
-                                        Importance.LOW)
+                                        Importance.LOW,
+                                        WITH_SLOTS_DOC)
+                                .define(SLOT_UPDATE_TIMEOUT,
+                                        Type.LONG,
+                                        20000,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        SLOT_UPDATE_TIMEOUT_DOC)
+                                .define(TCP_TIMEOUT,
+                                        Type.LONG,
+                                        1000,
+                                        atLeast(1),
+                                        Importance.LOW,
+                                        TCP_TIMEOUT_DOC)
                                 .define(ISOLATION_LEVEL_CONFIG,
                                         Type.STRING,
                                         DEFAULT_ISOLATION_LEVEL,
                                         in(IsolationLevel.READ_COMMITTED.toString().toLowerCase(Locale.ROOT), IsolationLevel.READ_UNCOMMITTED.toString().toLowerCase(Locale.ROOT)),
                                         Importance.MEDIUM,
                                         ISOLATION_LEVEL_DOC)
-                                .define(ALLOW_AUTO_CREATE_TOPICS_CONFIG,
-                                        Type.BOOLEAN,
-                                        DEFAULT_ALLOW_AUTO_CREATE_TOPICS,
-                                        Importance.MEDIUM,
-                                        ALLOW_AUTO_CREATE_TOPICS_DOC)
                                 // security support
-                                .define(SECURITY_PROVIDERS_CONFIG,
-                                        Type.STRING,
-                                        null,
-                                        Importance.LOW,
-                                        SECURITY_PROVIDERS_DOC)
                                 .define(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG,
                                         Type.STRING,
                                         CommonClientConfigs.DEFAULT_SECURITY_PROTOCOL,
@@ -566,44 +590,17 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.SECURITY_PROTOCOL_DOC)
                                 .withClientSslSupport()
                                 .withClientSaslSupport();
+
     }
 
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
-        CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
-        CommonClientConfigs.warnInconsistentConfigs(this);
-        Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
-        maybeOverrideClientId(refinedConfigs);
-        return refinedConfigs;
+        return CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
     }
 
-    private void maybeOverrideClientId(Map<String, Object> configs) {
-        final String clientId = this.getString(CLIENT_ID_CONFIG);
-        if (clientId == null || clientId.isEmpty()) {
-            final String groupId = this.getString(GROUP_ID_CONFIG);
-            String groupInstanceId = this.getString(GROUP_INSTANCE_ID_CONFIG);
-            if (groupInstanceId != null)
-                JoinGroupRequest.validateGroupInstanceId(groupInstanceId);
-
-            String groupInstanceIdPart = groupInstanceId != null ? groupInstanceId : CONSUMER_CLIENT_ID_SEQUENCE.getAndIncrement() + "";
-            String generatedClientId = String.format("consumer-%s-%s", groupId, groupInstanceIdPart);
-            configs.put(CLIENT_ID_CONFIG, generatedClientId);
-        }
-    }
-
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Map<String, Object> addDeserializerToConfig(Map<String, Object> configs,
                                                               Deserializer<?> keyDeserializer,
                                                               Deserializer<?> valueDeserializer) {
-        return appendDeserializerToConfig(configs, keyDeserializer, valueDeserializer);
-    }
-
-    static Map<String, Object> appendDeserializerToConfig(Map<String, Object> configs,
-            Deserializer<?> keyDeserializer,
-            Deserializer<?> valueDeserializer) {
         Map<String, Object> newConfigs = new HashMap<>(configs);
         if (keyDeserializer != null)
             newConfigs.put(KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass());
@@ -612,10 +609,6 @@ public class ConsumerConfig extends AbstractConfig {
         return newConfigs;
     }
 
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Properties addDeserializerToConfig(Properties properties,
                                                      Deserializer<?> keyDeserializer,
                                                      Deserializer<?> valueDeserializer) {
@@ -626,19 +619,6 @@ public class ConsumerConfig extends AbstractConfig {
         if (valueDeserializer != null)
             newProperties.put(VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer.getClass().getName());
         return newProperties;
-    }
-
-    boolean maybeOverrideEnableAutoCommit() {
-        Optional<String> groupId = Optional.ofNullable(getString(CommonClientConfigs.GROUP_ID_CONFIG));
-        boolean enableAutoCommit = getBoolean(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG);
-        if (!groupId.isPresent()) { // overwrite in case of default group id where the config is not explicitly provided
-            if (!originals().containsKey(ENABLE_AUTO_COMMIT_CONFIG)) {
-                enableAutoCommit = false;
-            } else if (enableAutoCommit) {
-                throw new InvalidConfigurationException(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG + " cannot be set to true when default group id (null) is used.");
-            }
-        }
-        return enableAutoCommit;
     }
 
     public ConsumerConfig(Properties props) {
@@ -657,12 +637,8 @@ public class ConsumerConfig extends AbstractConfig {
         return CONFIG.names();
     }
 
-    public static ConfigDef configDef() {
-        return new ConfigDef(CONFIG);
-    }
-
     public static void main(String[] args) {
-        System.out.println(CONFIG.toHtml());
+        System.out.println(CONFIG.toHtmlTable());
     }
 
 }

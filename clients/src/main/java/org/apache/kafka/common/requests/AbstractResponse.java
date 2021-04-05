@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.FetchResponseData;
 import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -24,34 +23,22 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
-public abstract class AbstractResponse implements AbstractRequestResponse {
+public abstract class AbstractResponse extends AbstractRequestResponse {
     public static final int DEFAULT_THROTTLE_TIME = 0;
 
     protected Send toSend(String destination, ResponseHeader header, short apiVersion) {
-        return new NetworkSend(destination, RequestUtils.serialize(header.toStruct(), toStruct(apiVersion)));
+        return new NetworkSend(destination, serialize(apiVersion, header));
     }
 
     /**
      * Visible for testing, typically {@link #toSend(String, ResponseHeader, short)} should be used instead.
      */
     public ByteBuffer serialize(short version, ResponseHeader responseHeader) {
-        return RequestUtils.serialize(responseHeader.toStruct(), toStruct(version));
-    }
-
-    /**
-     * Visible for testing, typically {@link #toSend(String, ResponseHeader, short)} should be used instead.
-     */
-    public ByteBuffer serialize(ApiKeys apiKey, short version, int correlationId) {
-        ResponseHeader header =
-            new ResponseHeader(correlationId, apiKey.responseHeaderVersion(version));
-        return RequestUtils.serialize(header.toStruct(), toStruct(version));
+        return serialize(responseHeader.toStruct(), toStruct(version));
     }
 
     public abstract Map<Errors, Integer> errorCounts();
@@ -60,13 +47,9 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         return Collections.singletonMap(error, 1);
     }
 
-    protected Map<Errors, Integer> errorCounts(Stream<Errors> errors) {
-        return errors.collect(Collectors.groupingBy(e -> e, Collectors.summingInt(e -> 1)));
-    }
-
-    protected Map<Errors, Integer> errorCounts(Collection<Errors> errors) {
+    protected Map<Errors, Integer> errorCounts(Map<?, Errors> errors) {
         Map<Errors, Integer> errorCounts = new HashMap<>();
-        for (Errors error : errors)
+        for (Errors error : errors.values())
             updateErrorCounts(errorCounts, error);
         return errorCounts;
     }
@@ -79,8 +62,8 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
     }
 
     protected void updateErrorCounts(Map<Errors, Integer> errorCounts, Errors error) {
-        Integer count = errorCounts.getOrDefault(error, 0);
-        errorCounts.put(error, count + 1);
+        Integer count = errorCounts.get(error);
+        errorCounts.put(error, count == null ? 1 : count + 1);
     }
 
     protected abstract Struct toStruct(short version);
@@ -90,107 +73,95 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
             case PRODUCE:
                 return new ProduceResponse(struct);
             case FETCH:
-                return new FetchResponse<>(new FetchResponseData(struct, version));
+                return FetchResponse.parse(struct);
             case LIST_OFFSETS:
                 return new ListOffsetResponse(struct);
             case METADATA:
-                return new MetadataResponse(struct, version);
+                return new MetadataResponse(struct);
             case OFFSET_COMMIT:
-                return new OffsetCommitResponse(struct, version);
+                return new OffsetCommitResponse(struct);
             case OFFSET_FETCH:
-                return new OffsetFetchResponse(struct, version);
+                return new OffsetFetchResponse(struct);
             case FIND_COORDINATOR:
-                return new FindCoordinatorResponse(struct, version);
+                return new FindCoordinatorResponse(struct);
             case JOIN_GROUP:
-                return new JoinGroupResponse(struct, version);
+                return new JoinGroupResponse(struct);
             case HEARTBEAT:
-                return new HeartbeatResponse(struct, version);
+                return new HeartbeatResponse(struct);
             case LEAVE_GROUP:
                 return new LeaveGroupResponse(struct, version);
             case SYNC_GROUP:
-                return new SyncGroupResponse(struct, version);
+                return new SyncGroupResponse(struct);
             case STOP_REPLICA:
-                return new StopReplicaResponse(struct, version);
+                return new StopReplicaResponse(struct);
             case CONTROLLED_SHUTDOWN:
-                return new ControlledShutdownResponse(struct, version);
+                return new ControlledShutdownResponse(struct);
             case UPDATE_METADATA:
-                return new UpdateMetadataResponse(struct, version);
+                return new UpdateMetadataResponse(struct);
             case LEADER_AND_ISR:
-                return new LeaderAndIsrResponse(struct, version);
+                return new LeaderAndIsrResponse(struct);
             case DESCRIBE_GROUPS:
-                return new DescribeGroupsResponse(struct, version);
+                return new DescribeGroupsResponse(struct);
             case LIST_GROUPS:
-                return new ListGroupsResponse(struct, version);
+                return new ListGroupsResponse(struct);
             case SASL_HANDSHAKE:
-                return new SaslHandshakeResponse(struct, version);
+                return new SaslHandshakeResponse(struct);
             case API_VERSIONS:
-                return ApiVersionsResponse.fromStruct(struct, version);
+                return new ApiVersionsResponse(struct);
             case CREATE_TOPICS:
-                return new CreateTopicsResponse(struct, version);
+                return new CreateTopicsResponse(struct);
             case DELETE_TOPICS:
-                return new DeleteTopicsResponse(struct, version);
+                return new DeleteTopicsResponse(struct);
             case DELETE_RECORDS:
-                return new DeleteRecordsResponse(struct, version);
+                return new DeleteRecordsResponse(struct);
             case INIT_PRODUCER_ID:
-                return new InitProducerIdResponse(struct, version);
+                return new InitProducerIdResponse(struct);
             case OFFSET_FOR_LEADER_EPOCH:
                 return new OffsetsForLeaderEpochResponse(struct);
             case ADD_PARTITIONS_TO_TXN:
-                return new AddPartitionsToTxnResponse(struct, version);
+                return new AddPartitionsToTxnResponse(struct);
             case ADD_OFFSETS_TO_TXN:
-                return new AddOffsetsToTxnResponse(struct, version);
+                return new AddOffsetsToTxnResponse(struct);
             case END_TXN:
-                return new EndTxnResponse(struct, version);
+                return new EndTxnResponse(struct);
             case WRITE_TXN_MARKERS:
-                return new WriteTxnMarkersResponse(struct, version);
+                return new WriteTxnMarkersResponse(struct);
             case TXN_OFFSET_COMMIT:
-                return new TxnOffsetCommitResponse(struct, version);
+                return new TxnOffsetCommitResponse(struct);
             case DESCRIBE_ACLS:
-                return new DescribeAclsResponse(struct, version);
+                return new DescribeAclsResponse(struct);
             case CREATE_ACLS:
-                return new CreateAclsResponse(struct, version);
+                return new CreateAclsResponse(struct);
             case DELETE_ACLS:
-                return new DeleteAclsResponse(struct, version);
+                return new DeleteAclsResponse(struct);
             case DESCRIBE_CONFIGS:
-                return new DescribeConfigsResponse(struct, version);
+                return new DescribeConfigsResponse(struct);
             case ALTER_CONFIGS:
-                return new AlterConfigsResponse(struct, version);
+                return new AlterConfigsResponse(struct);
             case ALTER_REPLICA_LOG_DIRS:
                 return new AlterReplicaLogDirsResponse(struct);
             case DESCRIBE_LOG_DIRS:
-                return new DescribeLogDirsResponse(struct, version);
+                return new DescribeLogDirsResponse(struct);
             case SASL_AUTHENTICATE:
-                return new SaslAuthenticateResponse(struct, version);
+                return new SaslAuthenticateResponse(struct);
             case CREATE_PARTITIONS:
-                return new CreatePartitionsResponse(struct, version);
+                return new CreatePartitionsResponse(struct);
             case CREATE_DELEGATION_TOKEN:
-                return new CreateDelegationTokenResponse(struct, version);
+                return new CreateDelegationTokenResponse(struct);
             case RENEW_DELEGATION_TOKEN:
-                return new RenewDelegationTokenResponse(struct, version);
+                return new RenewDelegationTokenResponse(struct);
             case EXPIRE_DELEGATION_TOKEN:
-                return new ExpireDelegationTokenResponse(struct, version);
+                return new ExpireDelegationTokenResponse(struct);
             case DESCRIBE_DELEGATION_TOKEN:
-                return new DescribeDelegationTokenResponse(struct, version);
+                return new DescribeDelegationTokenResponse(struct);
             case DELETE_GROUPS:
-                return new DeleteGroupsResponse(struct, version);
-            case ELECT_LEADERS:
-                return new ElectLeadersResponse(struct, version);
-            case INCREMENTAL_ALTER_CONFIGS:
-                return new IncrementalAlterConfigsResponse(struct, version);
-            case ALTER_PARTITION_REASSIGNMENTS:
-                return new AlterPartitionReassignmentsResponse(struct, version);
-            case LIST_PARTITION_REASSIGNMENTS:
-                return new ListPartitionReassignmentsResponse(struct, version);
-            case OFFSET_DELETE:
-                return new OffsetDeleteResponse(struct, version);
-            case DESCRIBE_CLIENT_QUOTAS:
-                return new DescribeClientQuotasResponse(struct, version);
-            case ALTER_CLIENT_QUOTAS:
-                return new AlterClientQuotasResponse(struct, version);
-            case DESCRIBE_CLIENT_CONFIGS:
-                return new DescribeClientConfigsResponse(struct, version);
-            case ALTER_CLIENT_CONFIGS:
-                return new AlterClientConfigsResponse(struct, version);
+                return new DeleteGroupsResponse(struct);
+            case ELECT_PREFERRED_LEADERS:
+                return new ElectPreferredLeadersResponse(struct, version);
+            case CONSUMER_RDMA_REGISTER:
+                return new RDMAConsumeAddressResponse(struct);
+            case PRODUCER_RDMA_REGISTER:
+                return new RDMAProduceAddressResponse(struct);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseResponse`, the " +
                         "code should be updated to do so.", apiKey));

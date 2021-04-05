@@ -17,9 +17,9 @@
 
 package kafka.server
 
-import scala.collection.Seq
+import java.util.Properties
 
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.{After, Before, Test}
 import kafka.zk.ZooKeeperTestHarness
 import kafka.utils.TestUtils
 import TestUtils._
@@ -32,21 +32,23 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
   val topic1 = "foo"
   val topic2 = "bar"
 
-  @BeforeEach
-  override def setUp(): Unit = {
+  @Before
+  override def setUp() {
     super.setUp()
     val props = createBrokerConfigs(2, zkConnect)
+    props.foreach( _.put("log.preallocate","true"))
+    props.foreach( _.put("log.segment.bytes", "1024"))
     brokers = props.map(KafkaConfig.fromProps).map(TestUtils.createServer(_))
   }
 
-  @AfterEach
-  override def tearDown(): Unit = {
+  @After
+  override def tearDown() {
     TestUtils.shutdownServers(brokers)
     super.tearDown()
   }
 
   @Test
-  def testReplicaFetcherThread(): Unit = {
+  def testReplicaFetcherThread() {
     val partition = 0
     val testMessageList1 = List("test1", "test2", "test3", "test4")
     val testMessageList2 = List("test5", "test6", "test7", "test8")
@@ -60,18 +62,20 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
     val producer = TestUtils.createProducer(TestUtils.getBrokerListStrFromServers(brokers),
                                                keySerializer = new StringSerializer,
                                                valueSerializer = new StringSerializer)
-    val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m)) ++
-      testMessageList2.map(m => new ProducerRecord(topic2, m, m))
+    val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m))
+   /* ++
+      testMessageList2.map(m => new ProducerRecord(topic2, m, m))*/
+    records.map(producer.send).foreach(_.get)
     records.map(producer.send).foreach(_.get)
     producer.close()
 
     def logsMatch(): Boolean = {
       var result = true
-      for (topic <- List(topic1, topic2)) {
+      for (topic <- List(topic1)) { //, topic2
         val tp = new TopicPartition(topic, partition)
-        val expectedOffset = brokers.head.getLogManager.getLog(tp).get.logEndOffset
+        val expectedOffset = brokers.head.getLogManager().getLog(tp).get.logEndOffset
         result = result && expectedOffset > 0 && brokers.forall { item =>
-          expectedOffset == item.getLogManager.getLog(tp).get.logEndOffset
+          expectedOffset == item.getLogManager().getLog(tp).get.logEndOffset
         }
       }
       result

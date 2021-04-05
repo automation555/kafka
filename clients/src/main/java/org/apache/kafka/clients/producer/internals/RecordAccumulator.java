@@ -25,13 +25,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.kafka.clients.ApiVersions;
+import org.apache.kafka.clients.ProduceRDMAWriteRequest;
+//import org.apache.kafka.clients.producer.internals.RdmaSessionHandlers;
 import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
@@ -43,6 +43,8 @@ import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.metrics.Measurable;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.metrics.Sensor;
+import org.apache.kafka.common.metrics.stats.Meter;
 import org.apache.kafka.common.record.AbstractRecords;
 import org.apache.kafka.common.record.CompressionRatioEstimator;
 import org.apache.kafka.common.record.CompressionType;
@@ -51,10 +53,14 @@ import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.record.TimestampType;
+import org.apache.kafka.common.requests.RDMAProduceAddressResponse;
 import org.apache.kafka.common.utils.CopyOnWriteMap;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
+
+// import java.util.concurrent.ConcurrentLinkedDeque;
 
 /**
  * This class acts as a queue that accumulates records into {@link MemoryRecords}
@@ -77,13 +83,24 @@ public final class RecordAccumulator {
     private final BufferPool free;
     private final Time time;
     private final ApiVersions apiVersions;
+
     private final ConcurrentMap<TopicPartition, Deque<ProducerBatch>> batches;
+
+
     private final IncompleteBatches incomplete;
     // The following variables are only accessed by the sender thread, so we don't need to protect them.
-    private final Set<TopicPartition> muted;
+    private final Map<TopicPartition, Long> muted;
     private int drainIndex;
+    private int rdmaDrainIndex;
     private final TransactionManager transactionManager;
     private long nextBatchExpiryTimeMs = Long.MAX_VALUE; // the earliest time (absolute) a batch will expire.
+
+    private final AtomicInteger rdmaAppendsInProgress;
+    private final ConcurrentMap<TopicPartition, Deque<ProducerBatch>> rdmabatches;
+
+
+    private final RdmaBufferPool freerdma;
+    private final RdmaSessionHandlers rdmaSessionHandlers;
 
     /**
      * Create a new record accumulator
@@ -114,23 +131,56 @@ public final class RecordAccumulator {
                              ApiVersions apiVersions,
                              TransactionManager transactionManager,
                              BufferPool bufferPool) {
+        this(logContext, batchSize, compression, lingerMs, retryBackoffMs, deliveryTimeoutMs,
+                metrics, metricGrpName, time, apiVersions, transactionManager, bufferPool, null);
+    }
+
+    public RecordAccumulator(LogContext logContext,
+                             int batchSize,
+                             CompressionType compression,
+                             int lingerMs,
+                             long retryBackoffMs,
+                             int deliveryTimeoutMs,
+                             Metrics metrics,
+                             String metricGrpName,
+                             Time time,
+                             ApiVersions apiVersions,
+                             TransactionManager transactionManager,
+                             BufferPool bufferPool,
+                             RdmaBufferPool rdmaBufferPool) {
         this.log = logContext.logger(RecordAccumulator.class);
         this.drainIndex = 0;
+        this.rdmaDrainIndex = 0;
+
         this.closed = false;
         this.flushesInProgress = new AtomicInteger(0);
+
         this.appendsInProgress = new AtomicInteger(0);
+
         this.batchSize = batchSize;
         this.compression = compression;
         this.lingerMs = lingerMs;
         this.retryBackoffMs = retryBackoffMs;
         this.deliveryTimeoutMs = deliveryTimeoutMs;
         this.batches = new CopyOnWriteMap<>();
+
+
+        this.rdmaAppendsInProgress = new AtomicInteger(0);
+        this.rdmabatches = new CopyOnWriteMap<>();
+
+
+        this.freerdma = rdmaBufferPool;
+
         this.free = bufferPool;
         this.incomplete = new IncompleteBatches();
-        this.muted = new HashSet<>();
+        this.muted = new HashMap<>();
         this.time = time;
         this.apiVersions = apiVersions;
         this.transactionManager = transactionManager;
+        if (this.freerdma != null)
+            this.rdmaSessionHandlers = new RdmaSessionHandlers(freerdma, rdmaBufferPool.tcpTimeout); // small hack. I did not want to introduce anotehr constructor
+        else
+            this.rdmaSessionHandlers = null;
         registerMetrics(metrics, metricGrpName);
     }
 
@@ -158,6 +208,11 @@ public final class RecordAccumulator {
             }
         };
         metrics.addMetric(metricName, availableBytes);
+
+        Sensor bufferExhaustedRecordSensor = metrics.sensor("buffer-exhausted-records");
+        MetricName rateMetricName = metrics.metricName("buffer-exhausted-rate", metricGrpName, "The average per-second number of record sends that are dropped due to buffer exhaustion");
+        MetricName totalMetricName = metrics.metricName("buffer-exhausted-total", metricGrpName, "The total number of record sends that are dropped due to buffer exhaustion");
+        bufferExhaustedRecordSensor.add(new Meter(rateMetricName, totalMetricName));
     }
 
     /**
@@ -173,9 +228,6 @@ public final class RecordAccumulator {
      * @param headers the Headers for the record
      * @param callback The user-supplied callback to execute when the request is complete
      * @param maxTimeToBlock The maximum time in milliseconds to block for buffer memory to be available
-     * @param abortOnNewBatch A boolean that indicates returning before a new batch is created and
-     *                        running the partitioner's onNewBatch method before trying to append again
-     * @param nowMs The current time, in milliseconds
      */
     public RecordAppendResult append(TopicPartition tp,
                                      long timestamp,
@@ -183,9 +235,7 @@ public final class RecordAccumulator {
                                      byte[] value,
                                      Header[] headers,
                                      Callback callback,
-                                     long maxTimeToBlock,
-                                     boolean abortOnNewBatch,
-                                     long nowMs) throws InterruptedException {
+                                     long maxTimeToBlock) throws InterruptedException {
         // We keep track of the number of appending thread to make sure we do not miss batches in
         // abortIncompleteBatches().
         appendsInProgress.incrementAndGet();
@@ -197,46 +247,37 @@ public final class RecordAccumulator {
             synchronized (dq) {
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
                 if (appendResult != null)
                     return appendResult;
             }
 
             // we don't have an in-progress record batch try to allocate a new batch
-            if (abortOnNewBatch) {
-                // Return a result that will cause another call to append.
-                return new RecordAppendResult(null, false, false, true);
-            }
-
             byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
             int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
             buffer = free.allocate(size, maxTimeToBlock);
-
-            // Update the current time in case the buffer allocation blocked above.
-            nowMs = time.milliseconds();
             synchronized (dq) {
                 // Need to check if producer is closed again after grabbing the dequeue lock.
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
 
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     return appendResult;
                 }
 
                 MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
-                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, nowMs);
-                FutureRecordMetadata future = Objects.requireNonNull(batch.tryAppend(timestamp, key, value, headers,
-                        callback, nowMs));
+                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, time.milliseconds());
+                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, headers, callback, time.milliseconds()));
 
                 dq.addLast(batch);
                 incomplete.add(batch);
 
                 // Don't deallocate this buffer in the finally block as it's being used in the record batch
                 buffer = null;
-                return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true, false);
+                return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true);
             }
         } finally {
             if (buffer != null)
@@ -262,27 +303,30 @@ public final class RecordAccumulator {
      *  if it is expired, or when the producer is closed.
      */
     private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
-                                         Callback callback, Deque<ProducerBatch> deque, long nowMs) {
+                                         Callback callback, Deque<ProducerBatch> deque) {
         ProducerBatch last = deque.peekLast();
         if (last != null) {
-            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, nowMs);
+            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, time.milliseconds());
             if (future == null)
                 last.closeForRecordAppends();
             else
-                return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false, false);
+                return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false);
         }
         return null;
     }
 
-    private boolean isMuted(TopicPartition tp) {
-        return muted.contains(tp);
+    private boolean isMuted(TopicPartition tp, long now) {
+        boolean result = muted.containsKey(tp) && muted.get(tp) > now;
+        if (!result)
+            muted.remove(tp);
+        return result;
     }
 
-    void resetNextBatchExpiryTime() {
+    public void resetNextBatchExpiryTime() {
         nextBatchExpiryTimeMs = Long.MAX_VALUE;
     }
 
-    void maybeUpdateNextBatchExpiryTime(ProducerBatch batch) {
+    public void maybeUpdateNextBatchExpiryTime(ProducerBatch batch) {
         if (batch.createdMs + deliveryTimeoutMs  > 0) {
             // the non-negative check is to guard us against potential overflow due to setting
             // a large value for deliveryTimeoutMs
@@ -315,8 +359,30 @@ public final class RecordAccumulator {
                 }
             }
         }
+
+        for (Map.Entry<TopicPartition, Deque<ProducerBatch>> entry : this.rdmabatches.entrySet()) {
+            // expire the batches in the order of sending
+            Deque<ProducerBatch> deque = entry.getValue();
+            synchronized (deque) {
+                while (!deque.isEmpty()) {
+                    ProducerBatch batch = deque.getFirst();
+                    if (batch.hasReachedDeliveryTimeout(deliveryTimeoutMs, now)) {
+                        deque.poll();
+                        batch.abortRecordAppends();
+                        expiredBatches.add(batch);
+                    } else {
+                        maybeUpdateNextBatchExpiryTime(batch);
+                        break;
+                    }
+                }
+            }
+        }
+
         return expiredBatches;
     }
+
+
+
 
     public long getDeliveryTimeoutMs() {
         return deliveryTimeoutMs;
@@ -447,19 +513,52 @@ public final class RecordAccumulator {
 
         boolean exhausted = this.free.queued() > 0;
         for (Map.Entry<TopicPartition, Deque<ProducerBatch>> entry : this.batches.entrySet()) {
+            TopicPartition part = entry.getKey();
             Deque<ProducerBatch> deque = entry.getValue();
+
+            Node leader = cluster.leaderFor(part);
             synchronized (deque) {
-                // When producing to a large number of partitions, this path is hot and deques are often empty.
-                // We check whether a batch exists first to avoid the more expensive checks whenever possible.
-                ProducerBatch batch = deque.peekFirst();
-                if (batch != null) {
-                    TopicPartition partition = entry.getKey();
-                    Node leader = cluster.leaderFor(partition);
-                    if (leader == null) {
-                        // This is a partition for which leader is not known, but messages are available to send.
-                        // Note that entries are currently not removed from batches when deque is empty.
-                        unknownLeaderTopics.add(partition.topic());
-                    } else if (!readyNodes.contains(leader) && !isMuted(partition)) {
+                if (leader == null && !deque.isEmpty()) {
+                    // This is a partition for which leader is not known, but messages are available to send.
+                    // Note that entries are currently not removed from batches when deque is empty.
+                    unknownLeaderTopics.add(part.topic());
+                } else if (!readyNodes.contains(leader) && !isMuted(part, nowMs)) {
+                    ProducerBatch batch = deque.peekFirst();
+                    if (batch != null) {
+                        long waitedTimeMs = batch.waitedTimeMs(nowMs);
+                        boolean backingOff = batch.attempts() > 0 && waitedTimeMs < retryBackoffMs;
+                        long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
+                        boolean full = deque.size() > 1 || batch.isFull();
+                        boolean expired = waitedTimeMs >= timeToWaitMs;
+                        boolean sendable = full || expired || exhausted || closed || flushInProgress();
+                        if (sendable && !backingOff) {
+                            readyNodes.add(leader);
+                        } else {
+                            long timeLeftMs = Math.max(timeToWaitMs - waitedTimeMs, 0);
+                            // Note that this results in a conservative estimate since an un-sendable partition may have
+                            // a leader that will later be found to have sendable data. However, this is good enough
+                            // since we'll just wake up and then sleep again for the remaining time.
+                            nextReadyCheckDelayMs = Math.min(timeLeftMs, nextReadyCheckDelayMs);
+                        }
+                    }
+                }
+            }
+        }
+
+        exhausted = this.freerdma.queued() > 0;
+        for (Map.Entry<TopicPartition, Deque<ProducerBatch>> entry : this.rdmabatches.entrySet()) {
+            TopicPartition part = entry.getKey();
+            Deque<ProducerBatch> deque = entry.getValue();
+
+            Node leader = cluster.leaderFor(part);
+            synchronized (deque) {
+                if (leader == null && !deque.isEmpty()) {
+                    // This is a partition for which leader is not known, but messages are available to send.
+                    // Note that entries are currently not removed from batches when deque is empty.
+                    unknownLeaderTopics.add(part.topic());
+                } else if (!readyNodes.contains(leader) && !isMuted(part, nowMs)) {
+                    ProducerBatch batch = deque.peekFirst();
+                    if (batch != null) {
                         long waitedTimeMs = batch.waitedTimeMs(nowMs);
                         boolean backingOff = batch.attempts() > 0 && waitedTimeMs < retryBackoffMs;
                         long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
@@ -482,6 +581,9 @@ public final class RecordAccumulator {
         return new ReadyCheckResult(readyNodes, nextReadyCheckDelayMs, unknownLeaderTopics);
     }
 
+
+
+
     /**
      * Check whether there are any batches which haven't been drained
      */
@@ -493,8 +595,16 @@ public final class RecordAccumulator {
                     return true;
             }
         }
+        for (Map.Entry<TopicPartition, Deque<ProducerBatch>> entry : this.rdmabatches.entrySet()) {
+            Deque<ProducerBatch> deque = entry.getValue();
+            synchronized (deque) {
+                if (!deque.isEmpty())
+                    return true;
+            }
+        }
         return false;
     }
+
 
     private boolean shouldStopDrainBatchesForPartition(ProducerBatch first, TopicPartition tp) {
         ProducerIdAndEpoch producerIdAndEpoch = null;
@@ -507,24 +617,11 @@ public final class RecordAccumulator {
                 // we cannot send the batch until we have refreshed the producer id
                 return true;
 
-            if (!first.hasSequence()) {
-                if (transactionManager.hasInflightBatches(tp)) {
-                    // Don't drain any new batches while the partition has in-flight batches with a different epoch
-                    // and/or producer ID. Otherwise, a batch with a new epoch and sequence number
-                    // 0 could be written before earlier batches complete, which would cause out of sequence errors
-                    ProducerBatch firstInFlightBatch = transactionManager.nextBatchBySequence(tp);
-
-                    if (firstInFlightBatch != null && transactionManager.producerIdOrEpochNotMatch(firstInFlightBatch)) {
-                        return true;
-                    }
-                }
-
-                if (transactionManager.hasUnresolvedSequence(first.topicPartition))
-                    // Don't drain any new batches while the state of previous sequence numbers
-                    // is unknown. The previous batches would be unknown if they were aborted
-                    // on the client after being sent to the broker at least once.
-                    return true;
-            }
+            if (!first.hasSequence() && transactionManager.hasUnresolvedSequence(first.topicPartition))
+                // Don't drain any new batches while the state of previous sequence numbers
+                // is unknown. The previous batches would be unknown if they were aborted
+                // on the client after being sent to the broker at least once.
+                return true;
 
             int firstInFlightSequence = transactionManager.firstInFlightSequence(first.topicPartition);
             if (firstInFlightSequence != RecordBatch.NO_SEQUENCE && first.hasSequence()
@@ -550,7 +647,7 @@ public final class RecordAccumulator {
             this.drainIndex = (this.drainIndex + 1) % parts.size();
 
             // Only proceed if the partition has no in-flight batches.
-            if (isMuted(tp))
+            if (isMuted(tp, now))
                 continue;
 
             Deque<ProducerBatch> deque = getDeque(tp);
@@ -577,7 +674,7 @@ public final class RecordAccumulator {
                     if (shouldStopDrainBatchesForPartition(first, tp))
                         break;
 
-                    boolean isTransactional = transactionManager != null && transactionManager.isTransactional();
+                    boolean isTransactional = transactionManager != null ? transactionManager.isTransactional() : false;
                     ProducerIdAndEpoch producerIdAndEpoch =
                         transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
                     ProducerBatch batch = deque.pollFirst();
@@ -634,7 +731,7 @@ public final class RecordAccumulator {
     /**
      * The earliest absolute time a batch will expire (in milliseconds)
      */
-    public long nextExpiryTimeMs() {
+    public Long nextExpiryTimeMs() {
         return this.nextBatchExpiryTimeMs;
     }
 
@@ -665,8 +762,14 @@ public final class RecordAccumulator {
         // Only deallocate the batch if it is not a split batch because split batch are allocated outside the
         // buffer pool.
         if (!batch.isSplitBatch())
-            free.deallocate(batch.buffer(), batch.initialCapacity());
+            if (batch.isRDMA()) {
+                assert batch.buffer().capacity() == batch.initialCapacity();
+                freerdma.deallocate(batch.buffer());
+            } else {
+                free.deallocate(batch.buffer(), batch.initialCapacity());
+            }
     }
+
 
     /**
      * Package private for unit test. Get the buffer pool remaining size in bytes.
@@ -700,7 +803,7 @@ public final class RecordAccumulator {
      * Are there any threads currently appending messages?
      */
     private boolean appendsInProgress() {
-        return appendsInProgress.get() > 0;
+        return appendsInProgress.get() > 0 && rdmaAppendsInProgress.get() > 0;
     }
 
     /**
@@ -739,7 +842,11 @@ public final class RecordAccumulator {
         // batch appended by the last appending thread.
         abortBatches();
         this.batches.clear();
+        this.rdmabatches.clear();
     }
+
+
+
 
     /**
      * Go through incomplete batches and abort them.
@@ -753,7 +860,7 @@ public final class RecordAccumulator {
      */
     void abortBatches(final RuntimeException reason) {
         for (ProducerBatch batch : incomplete.copyAll()) {
-            Deque<ProducerBatch> dq = getDeque(batch.topicPartition);
+            Deque<ProducerBatch> dq = batch.isRDMA() ? getRdmaDeque(batch.topicPartition) : getDeque(batch.topicPartition);
             synchronized (dq) {
                 batch.abortRecordAppends();
                 dq.remove(batch);
@@ -768,7 +875,7 @@ public final class RecordAccumulator {
      */
     void abortUndrainedBatches(RuntimeException reason) {
         for (ProducerBatch batch : incomplete.copyAll()) {
-            Deque<ProducerBatch> dq = getDeque(batch.topicPartition);
+            Deque<ProducerBatch> dq = batch.isRDMA() ? getRdmaDeque(batch.topicPartition) : getDeque(batch.topicPartition);
             boolean aborted = false;
             synchronized (dq) {
                 if ((transactionManager != null && !batch.hasSequence()) || (transactionManager == null && !batch.isClosed())) {
@@ -785,11 +892,11 @@ public final class RecordAccumulator {
     }
 
     public void mutePartition(TopicPartition tp) {
-        muted.add(tp);
+        muted.put(tp, Long.MAX_VALUE);
     }
 
-    public void unmutePartition(TopicPartition tp) {
-        muted.remove(tp);
+    public void unmutePartition(TopicPartition tp, long throttleUntilTimeMs) {
+        muted.put(tp, throttleUntilTimeMs);
     }
 
     /**
@@ -797,7 +904,6 @@ public final class RecordAccumulator {
      */
     public void close() {
         this.closed = true;
-        this.free.close();
     }
 
     /*
@@ -807,13 +913,11 @@ public final class RecordAccumulator {
         public final FutureRecordMetadata future;
         public final boolean batchIsFull;
         public final boolean newBatchCreated;
-        public final boolean abortForNewBatch;
 
-        public RecordAppendResult(FutureRecordMetadata future, boolean batchIsFull, boolean newBatchCreated, boolean abortForNewBatch) {
+        public RecordAppendResult(FutureRecordMetadata future, boolean batchIsFull, boolean newBatchCreated) {
             this.future = future;
             this.batchIsFull = batchIsFull;
             this.newBatchCreated = newBatchCreated;
-            this.abortForNewBatch = abortForNewBatch;
         }
     }
 
@@ -831,4 +935,206 @@ public final class RecordAccumulator {
             this.unknownLeaderTopics = unknownLeaderTopics;
         }
     }
+
+
+    public final static class GetAddressRequestInfo {
+        public final List<TopicPartition> unknownRdmaTopicPartitions;
+        public final List<TopicPartition> newFileRequired;
+
+        public GetAddressRequestInfo(List<TopicPartition> unknownRdmaTopicPartitions,
+                                    List<TopicPartition> newFileRequired) {
+            this.unknownRdmaTopicPartitions = unknownRdmaTopicPartitions;
+            this.newFileRequired = newFileRequired;
+        }
+    }
+
+
+    // rdma patch
+    public RecordAppendResult RDMAappend(TopicPartition tp,
+                                         long timestamp,
+                                         byte[] key,
+                                         byte[] value,
+                                         Header[] headers,
+                                         Callback callback,
+                                         long maxTimeToBlock) throws InterruptedException {
+        // We keep track of the number of appending thread to make sure we do not miss batches in
+        // abortIncompleteBatches().
+        rdmaAppendsInProgress.incrementAndGet();
+        ByteBuffer buffer = null;
+        if (headers == null) headers = Record.EMPTY_HEADERS;
+        try {
+            // check if we have an in-progress batch
+            Deque<ProducerBatch> dq = getOrCreateRdmaDeque(tp);
+            synchronized (dq) {
+                if (closed)
+                    throw new KafkaException("Producer closed while send in progress");
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
+                if (appendResult != null)
+                    return appendResult;
+            }
+
+            // we don't have an in-progress record batch try to allocate a new batch
+            byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
+            int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
+            log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
+
+
+            buffer = freerdma.allocate(size, maxTimeToBlock);
+            synchronized (dq) {
+                // Need to check if producer is closed again after grabbing the dequeue lock.
+                if (closed)
+                    throw new KafkaException("Producer closed while send in progress");
+
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
+                if (appendResult != null) {
+                    // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
+                    return appendResult;
+                }
+
+                MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
+                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, time.milliseconds(), false, true);
+                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, headers, callback, time.milliseconds()));
+
+                dq.addLast(batch);
+                incomplete.add(batch);
+
+                // Don't deallocate this buffer in the finally block as it's being used in the record batch
+                buffer = null;
+                return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true);
+            }
+        } finally {
+            if (buffer != null)
+                freerdma.deallocate(buffer);
+            rdmaAppendsInProgress.decrementAndGet();
+        }
+    }
+
+
+    // rdma patch
+    private Deque<ProducerBatch> getOrCreateRdmaDeque(TopicPartition tp) {
+        Deque<ProducerBatch> d = this.rdmabatches.get(tp);
+        if (d != null)
+            return d;
+        d = new ArrayDeque<>();
+        Deque<ProducerBatch> previous = this.rdmabatches.putIfAbsent(tp, d);
+        if (previous == null)
+            return d;
+        else
+            return previous;
+    }
+
+
+    // rdma patch
+    private Deque<ProducerBatch> getRdmaDeque(TopicPartition tp) {
+        return rdmabatches.get(tp);
+    }
+
+
+    public void updateAddresses(Map<TopicPartition, RDMAProduceAddressResponse.PartitionResponse> data) {
+
+        rdmaSessionHandlers.updateAddresses(data);
+    }
+
+
+
+    public  Map<Integer, List<ProduceRDMAWriteRequest>> drainRdma(Cluster cluster, Set<Node> nodes, int maxSize, long now,  Map<Node, RecordAccumulator.GetAddressRequestInfo> getAddressRequestInfoMap) {
+
+
+        Map<Integer, List<ProduceRDMAWriteRequest>> batches = new HashMap<>();
+        if (nodes.isEmpty())
+            return Collections.emptyMap();
+
+        for (Node node : nodes) {
+            List<ProduceRDMAWriteRequest> ready = drainRdmaBatchesForOneNode(cluster, node, maxSize, now, getAddressRequestInfoMap);
+            batches.put(node.id(), ready);
+        }
+        return batches;
+
+    }
+
+
+    private List<ProduceRDMAWriteRequest> drainRdmaBatchesForOneNode(Cluster cluster, Node node, int maxSize, long now, Map<Node, RecordAccumulator.GetAddressRequestInfo> getAddressRequestInfoMap) {
+        int size = 0;
+        List<PartitionInfo> parts = cluster.partitionsForNode(node.id());
+
+        List<ProduceRDMAWriteRequest> ready = new ArrayList<>();
+        /* to make starvation less likely this loop doesn't start at 0 */
+        int start = rdmaDrainIndex = rdmaDrainIndex % parts.size();
+        /* to make starvation less likely this loop doesn't start at 0 */
+        boolean stop = false;
+        do {
+            PartitionInfo part = parts.get(rdmaDrainIndex);
+            TopicPartition tp = new TopicPartition(part.topic(), part.partition());
+            this.rdmaDrainIndex = (this.rdmaDrainIndex + 1) % parts.size();
+
+            // Only proceed if the partition has no in-flight batches.
+            if (!isMuted(tp, now)) {
+                Deque<ProducerBatch> deque = getRdmaDeque(tp);
+                if (deque != null) {
+                    if (rdmaSessionHandlers.requiresAddressUpdate(tp, now)) {
+                        GetAddressRequestInfo addrInfo =
+                                getAddressRequestInfoMap.computeIfAbsent(node, n -> new GetAddressRequestInfo(new ArrayList<>(), new ArrayList<>()));
+                        addrInfo.unknownRdmaTopicPartitions.add(tp);
+                    } else if (rdmaSessionHandlers.isReady(tp)) {
+                        synchronized (deque) {
+                            // invariant: !isMuted(tp,now) && deque != null
+                            ProducerBatch first = deque.peekFirst();
+                            if (first != null) {
+                                if (!rdmaSessionHandlers.fitsBatch(tp, first)) {
+                                    if (rdmaSessionHandlers.canSendNewFileRequest(tp, now)) {
+                                        GetAddressRequestInfo addrInfo =
+                                                getAddressRequestInfoMap.computeIfAbsent(node, n -> new GetAddressRequestInfo(new ArrayList<>(), new ArrayList<>()));
+                                        addrInfo.newFileRequired.add(tp);
+                                    }
+                                } else {
+
+                                    // first != null
+                                    boolean backoff = first.attempts() > 0 && first.waitedTimeMs(now) < retryBackoffMs;
+
+                                    // Only drain the batch if it is not during backoff period.
+                                    if (!backoff) {
+                                        if (size + first.estimatedSizeInBytes() > maxSize && !ready.isEmpty()) {
+                                            stop = true;
+                                        } else if (shouldStopDrainBatchesForPartition(first, tp)) {
+                                            stop = true;
+                                        } else {
+                                            size = drainBatch(now, size, ready, tp, deque);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } while (start != rdmaDrainIndex && !stop);
+
+        return ready;
+    }
+
+    private int drainBatch(long now, int size, List<ProduceRDMAWriteRequest> ready, TopicPartition tp, Deque<ProducerBatch> deque) {
+        boolean isTransactional = transactionManager != null && transactionManager.isTransactional();
+        ProducerIdAndEpoch producerIdAndEpoch =
+                transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
+        ProducerBatch batch = deque.pollFirst();
+        if (producerIdAndEpoch != null && !batch.hasSequence()) {
+            batch.setProducerState(producerIdAndEpoch, transactionManager.sequenceNumber(batch.topicPartition), isTransactional);
+            transactionManager.incrementSequenceNumber(batch.topicPartition, batch.recordCount);
+            log.debug("Assigned producerId {} and producerEpoch {} to batch with base sequence " +
+                            "{} being sent to partition {}", producerIdAndEpoch.producerId,
+                    producerIdAndEpoch.epoch, batch.baseSequence(), tp);
+
+            transactionManager.addInFlightBatch(batch);
+        }
+        batch.close();
+        size += batch.records().sizeInBytes();
+
+        ProduceRDMAWriteRequest req = rdmaSessionHandlers.createRequest(tp, batch);
+
+        ready.add(req);
+        batch.drained(now);
+        return size;
+    }
+
+
 }

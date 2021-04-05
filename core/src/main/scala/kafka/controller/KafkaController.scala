@@ -26,6 +26,7 @@ import kafka.metrics.{KafkaMetricsGroup, KafkaTimer}
 import kafka.server._
 import kafka.utils._
 import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
+import kafka.zk.KafkaZkClient.BrokerEpochAndZkVersion
 import kafka.zk._
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler, ZNodeChildChangeHandler}
 import org.apache.kafka.common.ElectionType
@@ -63,7 +64,7 @@ class KafkaController(val config: KafkaConfig,
                       time: Time,
                       metrics: Metrics,
                       initialBrokerInfo: BrokerInfo,
-                      initialBrokerEpoch: Long,
+                      initialBrokerEpochAndVersion: BrokerEpochAndZkVersion,
                       tokenManager: DelegationTokenManager,
                       threadNamePrefix: Option[String] = None)
   extends ControllerEventProcessor with Logging with KafkaMetricsGroup {
@@ -71,7 +72,7 @@ class KafkaController(val config: KafkaConfig,
   this.logIdent = s"[Controller id=${config.brokerId}] "
 
   @volatile private var brokerInfo = initialBrokerInfo
-  @volatile private var _brokerEpoch = initialBrokerEpoch
+  @volatile private var _brokerEpochVersion = initialBrokerEpochAndVersion
 
   private val stateChangeLogger = new StateChangeLogger(config.brokerId, inControllerContext = true, None)
   val controllerContext = new ControllerContext
@@ -135,7 +136,9 @@ class KafkaController(val config: KafkaConfig,
    */
   def isActive: Boolean = activeControllerId == config.brokerId
 
-  def brokerEpoch: Long = _brokerEpoch
+  def brokerEpoch: Long = _brokerEpochVersion.epoch
+
+  def brokerZkVersion: Int = _brokerEpochVersion.zkVersion
 
   def epoch: Int = controllerContext.epoch
 
@@ -169,6 +172,11 @@ class KafkaController(val config: KafkaConfig,
    */
   def shutdown() = {
     eventManager.close()
+    if (isActive)
+      zkClient.unregisterBrokerAndController(brokerInfo, brokerZkVersion, controllerContext.epochZkVersion)
+    else
+      zkClient.unregisterBroker(brokerInfo, brokerZkVersion)
+
     onControllerResignation()
   }
 
@@ -479,7 +487,7 @@ class KafkaController(val config: KafkaConfig,
     partitionStateMachine.handleStateChanges(
       newPartitions.toSeq,
       OnlinePartition,
-      Some(OfflinePartitionLeaderElectionStrategy(forceUncleanElection = false))
+      Some(OfflinePartitionLeaderElectionStrategy(false))
     )
     replicaStateMachine.handleStateChanges(controllerContext.replicasForPartition(newPartitions).toSeq, OnlineReplica)
   }
@@ -693,7 +701,7 @@ class KafkaController(val config: KafkaConfig,
           /* Let's be conservative and only trigger unclean election if the election type is unclean and it was
            * triggered by the admin client
            */
-          OfflinePartitionLeaderElectionStrategy(forceUncleanElection = electionTrigger == AdminClientTriggered)
+          OfflinePartitionLeaderElectionStrategy(allowUnclean = electionTrigger == AdminClientTriggered)
       }
 
       val results = partitionStateMachine.handleStateChanges(
@@ -1569,15 +1577,13 @@ class KafkaController(val config: KafkaConfig,
       val partitionsToReassign = mutable.Map.empty[TopicPartition, ReplicaAssignment]
 
       reassignments.foreach { case (tp, targetReplicas) =>
-        val maybeApiError = targetReplicas.flatMap(validateReplicas(tp, _))
-        maybeApiError match {
-          case None =>
-            maybeBuildReassignment(tp, targetReplicas) match {
-              case Some(context) => partitionsToReassign.put(tp, context)
-              case None => reassignmentResults.put(tp, new ApiError(Errors.NO_REASSIGNMENT_IN_PROGRESS))
-            }
-          case Some(err) =>
-            reassignmentResults.put(tp, err)
+        if (replicasAreValid(tp, targetReplicas)) {
+          maybeBuildReassignment(tp, targetReplicas) match {
+            case Some(context) => partitionsToReassign.put(tp, context)
+            case None => reassignmentResults.put(tp, new ApiError(Errors.NO_REASSIGNMENT_IN_PROGRESS))
+          }
+        } else {
+          reassignmentResults.put(tp, new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT))
         }
       }
 
@@ -1590,27 +1596,22 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
-  private def validateReplicas(topicPartition: TopicPartition, replicas: Seq[Int]): Option[ApiError] = {
-    val replicaSet = replicas.toSet
-    if (replicas.isEmpty)
-      Some(new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT,
-          s"Empty replica list specified in partition reassignment."))
-    else if (replicas.size != replicaSet.size) {
-      Some(new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT,
-          s"Duplicate replica ids in partition reassignment replica list: $replicas"))
-    } else if (replicas.exists(_ < 0))
-      Some(new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT,
-          s"Invalid broker id in replica list: $replicas"))
-    else {
-      // Ensure that any new replicas are among the live brokers
-      val currentAssignment = controllerContext.partitionFullReplicaAssignment(topicPartition)
-      val newAssignment = currentAssignment.reassignTo(replicas)
-      val areNewReplicasAlive = newAssignment.addingReplicas.toSet.subsetOf(controllerContext.liveBrokerIds)
-      if (!areNewReplicasAlive)
-        Some(new ApiError(Errors.INVALID_REPLICA_ASSIGNMENT,
-          s"Replica assignment has brokers that are not alive. Replica list: " +
-            s"${newAssignment.addingReplicas}, live broker list: ${controllerContext.liveBrokerIds}"))
-      else None
+  private def replicasAreValid(topicPartition: TopicPartition, replicasOpt: Option[Seq[Int]]): Boolean = {
+    replicasOpt match {
+      case Some(replicas) =>
+        val replicaSet = replicas.toSet
+        if (replicas.isEmpty || replicas.size != replicaSet.size)
+          false
+        else if (replicas.exists(_ < 0))
+          false
+        else {
+          // Ensure that any new replicas are among the live brokers
+          val currentAssignment = controllerContext.partitionFullReplicaAssignment(topicPartition)
+          val newAssignment = currentAssignment.reassignTo(replicas)
+          newAssignment.addingReplicas.toSet.subsetOf(controllerContext.liveBrokerIds)
+        }
+
+      case None => true
     }
   }
 
@@ -1796,7 +1797,7 @@ class KafkaController(val config: KafkaConfig,
   }
 
   private def processRegisterBrokerAndReelect(): Unit = {
-    _brokerEpoch = zkClient.registerBroker(brokerInfo)
+    _brokerEpochVersion = zkClient.registerBroker(brokerInfo)
     processReelect()
   }
 

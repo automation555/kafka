@@ -46,6 +46,7 @@ spotless {
   scala {
     target 'streams/**/*.scala'
     scalafmt("$versions.scalafmt").configFile('checkstyle/.scalafmt.conf')
+    licenseHeaderFile 'checkstyle/java.header', 'package'
   }
 }
 
@@ -420,7 +421,7 @@ subprojects {
       exceptionFormat = testExceptionFormat
     }
     logTestStdout.rehydrate(delegate, owner, this)()
-    
+
     // The suites are for running sets of tests in IDEs.
     // Gradle will run each test class, so we exclude the suites to avoid redundantly running the tests twice.
     exclude '**/*Suite.class'
@@ -753,7 +754,7 @@ tasks.create(name: "testConnect", dependsOn: connectPkgs.collect { it + ":test" 
 
 project(':core') {
   apply plugin: 'scala'
-  
+
   // scaladoc generation is configured at the sub-module level with an artifacts
   // block (cf. see streams-scala). If scaladoc generation is invoked explicitly
   // for the `core` module, this ensures the generated jar doesn't include scaladoc
@@ -770,6 +771,8 @@ project(':core') {
     // even though the `core` module doesn't expose any public API
     api project(':clients')
     api libs.scalaLibrary
+
+    implementation group: 'net.ripe.ipresource', name: 'ipresource', version: '1.47'
 
     implementation project(':metadata')
     implementation project(':raft')
@@ -1299,7 +1302,7 @@ project(':raft') {
       }
     }
   }
-  
+
   compileJava.dependsOn 'processMessages'
 
   jar {
@@ -1424,8 +1427,18 @@ project(':streams') {
   dependencies {
     api project(':clients')
 
+    // use `api` dependency for `connect-json` for compatibility (e.g. users who use `JsonSerializer`/`JsonDeserializer`
+    // at compile-time without an explicit dependency on `connect-json`)
+    // this dependency should be removed after we unify data API
+    api(project(':connect:json')) {
+      // this transitive dependency is not used in Streams, and it breaks SBT builds
+      exclude module: 'javax.ws.rs-api'
+    }
+
+    // `org.rocksdb.Options` is part of Kafka Streams public api via `RocksDBConfigSetter`
+    api libs.rocksDBJni
+
     implementation libs.slf4jApi
-    implementation libs.rocksDBJni
     implementation libs.jacksonAnnotations
     implementation libs.jacksonDatabind
 
@@ -1630,14 +1643,8 @@ project(':streams:examples') {
   archivesBaseName = "kafka-streams-examples"
 
   dependencies {
-    // this dependency should be removed after we unify data API
-    implementation(project(':connect:json')) {
-      // this transitive dependency is not used in Streams, and it breaks SBT builds
-      exclude module: 'javax.ws.rs-api'
-    }
-
     implementation project(':streams')
-
+    implementation project(':connect:json')  // this dependency should be removed after we unify data API
     implementation libs.slf4jlog4j
 
     testImplementation project(':streams:test-utils')

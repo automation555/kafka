@@ -33,7 +33,6 @@ import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.FencedInstanceIdException;
 import org.apache.kafka.common.errors.GroupAuthorizationException;
 import org.apache.kafka.common.errors.InterruptException;
@@ -466,11 +465,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * @return true iff the operation succeeded
      */
     public boolean poll(Timer timer, boolean waitForJoinGroup) {
+//        System.err.print("cc poll");
         maybeUpdateSubscriptionMetadata();
 
         invokeCompletedOffsetCommitCallbacks();
 
         if (subscriptions.hasAutoAssignedPartitions()) {
+//            System.err.println("!!! hasAutoAssignedPartitions");
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
@@ -479,6 +480,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
             pollHeartbeat(timer.currentTimeMs());
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
+                System.err.println("f1:");
                 return false;
             }
 
@@ -499,9 +501,10 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     }
 
                     if (!client.ensureFreshMetadata(timer)) {
+                        System.err.println("f2:");
                         return false;
                     }
-
+               
                     maybeUpdateSubscriptionMetadata();
                 }
 
@@ -510,7 +513,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call
                     timer.update(time.milliseconds());
-
+                    System.err.println("f3:");
                     return false;
                 }
             }
@@ -770,6 +773,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // we need to rejoin if we performed the assignment and metadata has changed;
         // also for those owned-but-no-longer-existed partitions we should drop them as lost
         if (assignmentSnapshot != null && !assignmentSnapshot.matches(metadataSnapshot)) {
+            System.err.println("assignment metadata has changed:" + assignmentSnapshot + metadataSnapshot);
             log.info("Requesting to re-join the group and trigger rebalance since the assignment metadata has changed from {} to {}",
                     assignmentSnapshot, metadataSnapshot);
 
@@ -779,6 +783,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         // we need to join if our subscription has changed since the last join
         if (joinedSubscription != null && !joinedSubscription.equals(subscriptions.subscription())) {
+            System.err.println("subscription has changed from:" + joinedSubscription + subscriptions.subscription());
             log.info("Requesting to re-join the group and trigger rebalance since the subscription has changed from {} to {}",
                 joinedSubscription, subscriptions.subscription());
 
@@ -902,7 +907,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     void invokeCompletedOffsetCommitCallbacks() {
         if (asyncCommitFenced.get()) {
             throw new FencedInstanceIdException("Get fenced exception for group.instance.id "
@@ -1085,10 +1090,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * which returns a request future that can be polled in the case of a synchronous commit or ignored in the
      * asynchronous case.
      *
+     * NOTE: This is visible only for testing
+     *
      * @param offsets The list of offsets per partition that should be committed.
      * @return A request future whose value indicates whether the commit was successful or not
      */
-    @VisibleForTesting
     RequestFuture<Void> sendOffsetCommitRequest(final Map<TopicPartition, OffsetAndMetadata> offsets) {
         if (offsets.isEmpty())
             return RequestFuture.voidSuccess();
@@ -1208,7 +1214,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                         } else if (error == Errors.COORDINATOR_NOT_AVAILABLE
                                 || error == Errors.NOT_COORDINATOR
                                 || error == Errors.REQUEST_TIMED_OUT) {
-                            markCoordinatorUnknown();
+                            markCoordinatorUnknown(error);
                             future.raise(error);
                             return;
                         } else if (error == Errors.FENCED_INSTANCE_ID) {
@@ -1311,7 +1317,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     future.raise(error);
                 } else if (error == Errors.NOT_COORDINATOR) {
                     // re-discover the coordinator and retry
-                    markCoordinatorUnknown();
+                    markCoordinatorUnknown(error);
                     future.raise(error);
                 } else if (error == Errors.GROUP_AUTHORIZATION_FAILED) {
                     future.raise(GroupAuthorizationException.forGroupId(rebalanceConfig.groupId));

@@ -1,6 +1,6 @@
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements. See the NOTICE file distributed with
+ * contributor license agreements. See the NOTICE file distributed with!!!
  * this work for additional information regarding copyright ownership.
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
@@ -19,11 +19,12 @@ package kafka.api
 import java.time.Duration
 import java.util
 import java.util.Properties
+
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.producer.{ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.TopicPartition
-import kafka.utils.{Logging, ShutdownableThread, TestUtils}
+import kafka.utils.{ShutdownableThread, TestUtils}
 import kafka.server.{BaseRequestTest, KafkaConfig}
 import org.junit.Assert._
 import org.junit.Before
@@ -35,16 +36,10 @@ import org.apache.kafka.common.errors.WakeupException
 
 import scala.collection.mutable
 
-object AbstractConsumerTest extends Logging {
-
-}
-
 /**
  * Extension point for consumer integration tests.
  */
 abstract class AbstractConsumerTest extends BaseRequestTest {
-
-  import AbstractConsumerTest._
 
   val epsilon = 0.1
   override def brokerCount: Int = 3
@@ -155,8 +150,32 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
                                      numRecords: Int,
                                      maxPollRecords: Int = Int.MaxValue): ArrayBuffer[ConsumerRecord[K, V]] = {
     val records = new ArrayBuffer[ConsumerRecord[K, V]]
+//    val topics = Seq("topic1", "topic2", "topic3")
+
+//    val partitions = topics.flatMap { topic =>
+//      (0 until 30).map(new TopicPartition(topic, _))
+//    }
+
     def pollAction(polledRecords: ConsumerRecords[K, V]): Boolean = {
       assertTrue(polledRecords.asScala.size <= maxPollRecords)
+      if (polledRecords.count() > 0) {
+//        System.err.println("!!! r.cou:" + polledRecords.count())
+
+//        partitions.foreach(partition => {
+//          try {
+//            val pos = consumer.position(partition)
+//            if (pos > 0) {
+//              System.err.print(" p:" + partition)
+//            }
+//          } catch {
+//            case e: Throwable =>
+//          }
+//        })
+
+//        polledRecords.records("topic1").forEach(r => println("!!! t1:" + r.partition()))
+//        polledRecords.records("topic2").forEach(r => println("!!! t2:" + r.partition()))
+//        polledRecords.records("topic3").forEach(r => println("!!! t3:" + r.partition()))
+      }
       records ++= polledRecords.asScala
       records.size >= numRecords
     }
@@ -229,7 +248,7 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
 
   /**
     * Create 'numOfConsumersToAdd' consumers add then to the consumer group 'consumerGroup', and create corresponding
-    * pollers for these consumers.
+    * pollers for these consumers..
     *
     *
     * @param numOfConsumersToAdd number of consumers to create and add to the consumer group

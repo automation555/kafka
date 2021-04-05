@@ -39,7 +39,6 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.errors.InvalidGroupIdException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -566,7 +565,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private static final String JMX_PREFIX = "kafka.consumer";
     static final long DEFAULT_CLOSE_TIMEOUT_MS = 30 * 1000;
 
-    @VisibleForTesting
+    // Visible for testing
     final Metrics metrics;
     final KafkaConsumerMetrics kafkaConsumerMetrics;
 
@@ -825,7 +824,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     KafkaConsumer(LogContext logContext,
                   String clientId,
                   ConsumerCoordinator coordinator,
@@ -1275,6 +1274,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
         // if data is available already, return it immediately
         final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
+//        if (records.keySet().size() > 0) {
+//            System.err.println("!!! r:" + records.keySet());
+//        }
         if (!records.isEmpty()) {
             return records;
         }
@@ -1740,6 +1742,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             Timer timer = time.timer(timeout);
             do {
                 SubscriptionState.FetchPosition position = this.subscriptions.validPosition(partition);
+//                System.err.println("!!! " + partition + ":" + position.offset);
                 if (position != null)
                     return position.offset;
 
@@ -2472,12 +2475,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             offsetAndMetadata.leaderEpoch().ifPresent(epoch -> metadata.updateLastSeenEpochIfNewer(topicPartition, epoch));
     }
 
-    @VisibleForTesting
+    // Functions below are for testing only
     String getClientId() {
         return clientId;
     }
 
-    @VisibleForTesting
     boolean updateAssignmentMetadataIfNeeded(final Timer timer) {
         return updateAssignmentMetadataIfNeeded(timer, true);
     }

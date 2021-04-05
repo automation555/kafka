@@ -21,7 +21,7 @@ import java.util.regex.{Pattern, PatternSyntaxException}
 
 import org.apache.kafka.common.internals.Topic
 
-sealed abstract class TopicFilter(rawRegex: String) {
+sealed abstract class TopicFilter(rawRegex: String) extends Logging {
 
   val regex = rawRegex
           .trim
@@ -43,13 +43,7 @@ sealed abstract class TopicFilter(rawRegex: String) {
   def isTopicAllowed(topic: String, excludeInternalTopics: Boolean): Boolean
 }
 
-object IncludeList extends Logging {
-
-}
-
 case class IncludeList(rawRegex: String) extends TopicFilter(rawRegex) {
-  import IncludeList._
-
   override def isTopicAllowed(topic: String, excludeInternalTopics: Boolean) = {
     val allowed = topic.matches(regex) && !(Topic.isInternal(topic) && excludeInternalTopics)
 

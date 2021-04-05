@@ -32,7 +32,7 @@ import org.apache.kafka.clients.admin.CreatePartitionsOptions
 import org.apache.kafka.clients.admin.CreateTopicsOptions
 import org.apache.kafka.clients.admin.DeleteTopicsOptions
 import org.apache.kafka.clients.admin.{Admin, ConfigEntry, ListTopicsOptions, NewPartitions, NewTopic, PartitionReassignment, Config => JConfig}
-import org.apache.kafka.common.{Node, TopicPartition, TopicPartitionInfo, Uuid}
+import org.apache.kafka.common.{Node, TopicPartition, TopicPartitionInfo}
 import org.apache.kafka.common.config.ConfigResource.Type
 import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
 import org.apache.kafka.common.errors.{ClusterAuthorizationException, InvalidTopicException, TopicExistsException, UnsupportedVersionException}
@@ -45,6 +45,7 @@ import scala.jdk.CollectionConverters._
 import scala.collection._
 import scala.compat.java8.OptionConverters._
 import scala.concurrent.ExecutionException
+import scala.io.StdIn
 
 object TopicCommand extends Logging {
 
@@ -91,13 +92,13 @@ object TopicCommand extends Logging {
   }
 
   class CommandTopicPartition(opts: TopicCommandOptions) {
-    val name = opts.topic.get
-    val partitions = opts.partitions
-    val replicationFactor = opts.replicationFactor
-    val replicaAssignment = opts.replicaAssignment
-    val configsToAdd = parseTopicConfigsToBeAdded(opts)
-    val configsToDelete = parseTopicConfigsToBeDeleted(opts)
-    val rackAwareMode = opts.rackAwareMode
+    val name: String = opts.topic.get
+    val partitions: Option[Integer] = opts.partitions
+    val replicationFactor: Option[Integer] = opts.replicationFactor
+    val replicaAssignment: Option[Map[Int, List[Int]]] = opts.replicaAssignment
+    val configsToAdd: Properties = parseTopicConfigsToBeAdded(opts)
+    val configsToDelete: Seq[String] = parseTopicConfigsToBeDeleted(opts)
+    val rackAwareMode: RackAwareMode = opts.rackAwareMode
 
     def hasReplicaAssignment: Boolean = replicaAssignment.isDefined
     def hasPartitions: Boolean = partitions.isDefined
@@ -105,7 +106,6 @@ object TopicCommand extends Logging {
   }
 
   case class TopicDescription(topic: String,
-                              topicId: Uuid,
                               numPartitions: Int,
                               replicationFactor: Int,
                               config: JConfig,
@@ -114,7 +114,6 @@ object TopicCommand extends Logging {
     def printDescription(): Unit = {
       val configsAsString = config.entries.asScala.filter(!_.isDefault).map { ce => s"${ce.name}=${ce.value}" }.mkString(",")
       print(s"Topic: $topic")
-      if(topicId != Uuid.ZERO_UUID) print(s"\tTopicId: $topicId")
       print(s"\tPartitionCount: $numPartitions")
       print(s"\tReplicationFactor: $replicationFactor")
       print(s"\tConfigs: $configsAsString")
@@ -170,12 +169,12 @@ object TopicCommand extends Logging {
   }
 
   class DescribeOptions(opts: TopicCommandOptions, liveBrokers: Set[Int]) {
-    val describeConfigs =
+    val describeConfigs: Boolean =
       !opts.reportUnavailablePartitions &&
       !opts.reportUnderReplicatedPartitions &&
       !opts.reportUnderMinIsrPartitions &&
       !opts.reportAtMinIsrPartitions
-    val describePartitions = !opts.reportOverriddenConfigs
+    val describePartitions: Boolean = !opts.reportOverriddenConfigs
 
     private def shouldPrintUnderReplicatedPartitions(partitionDescription: PartitionDescription): Boolean = {
       opts.reportUnderReplicatedPartitions && partitionDescription.isUnderReplicated
@@ -217,8 +216,7 @@ object TopicCommand extends Logging {
     def alterTopic(opts: TopicCommandOptions): Unit
     def describeTopic(opts: TopicCommandOptions): Unit
     def deleteTopic(opts: TopicCommandOptions): Unit
-    def getTopics(topicIncludeList: Option[String], excludeInternalTopics: Boolean = false): Seq[String]
-    def getTopicIds(topicIdIncludeList: Option[Uuid], excludeInternalTopics: Boolean = false): Seq[Uuid]
+    def getTopics(topicIncludelist: Option[String], excludeInternalTopics: Boolean = false): Seq[String]
   }
 
   object AdminClientTopicService {
@@ -314,60 +312,41 @@ object TopicCommand extends Logging {
     }
 
     override def describeTopic(opts: TopicCommandOptions): Unit = {
-      // If topicId is provided and not zero, will use topicId regardless of topic name
-      val inputTopicId = opts.topicId.map(Uuid.fromString).filter(uuid => uuid != Uuid.ZERO_UUID)
-      val useTopicId = inputTopicId.nonEmpty
+      val topics = getTopics(opts.topic, opts.excludeInternalTopics)
+      ensureTopicExists(topics, opts.topic, !opts.ifExists)
 
-      val (topicIds, topics) = if (useTopicId)
-        (getTopicIds(inputTopicId, opts.excludeInternalTopics), Seq())
-      else
-        (Seq(), getTopics(opts.topic, opts.excludeInternalTopics))
+      if (topics.nonEmpty) {
+        val allConfigs = adminClient.describeConfigs(topics.map(new ConfigResource(Type.TOPIC, _)).asJavaCollection).values()
+        val liveBrokers = adminClient.describeCluster().nodes().get().asScala.map(_.id())
+        val topicDescriptions = adminClient.describeTopics(topics.asJavaCollection).all().get().values().asScala
+        val describeOptions = new DescribeOptions(opts, liveBrokers.toSet)
+        val topicPartitions = topicDescriptions
+          .flatMap(td => td.partitions.iterator().asScala.map(p => new TopicPartition(td.name(), p.partition())))
+          .toSet.asJava
+        val reassignments = listAllReassignments(topicPartitions)
 
-      // Only check topic name when topicId is not provided
-      if (useTopicId)
-        ensureTopicIdExists(topicIds, inputTopicId, !opts.ifExists)
-      else
-        ensureTopicExists(topics, opts.topic, !opts.ifExists)
+        for (td <- topicDescriptions) {
+          val topicName = td.name
+          val config = allConfigs.get(new ConfigResource(Type.TOPIC, topicName)).get()
+          val sortedPartitions = td.partitions.asScala.sortBy(_.partition)
 
-      val topicDescriptions = if (topicIds.nonEmpty) {
-        adminClient.describeTopicsWithIds(topicIds.toSeq.asJavaCollection).all().get().values().asScala
-      } else if (topics.nonEmpty) {
-        adminClient.describeTopics(topics.asJavaCollection).all().get().values().asScala
-      } else {
-        Seq()
-      }
-
-      val topicNames = topicDescriptions.map(_.name())
-      val allConfigs = adminClient.describeConfigs(topicNames.map(new ConfigResource(Type.TOPIC, _)).asJavaCollection).values()
-      val liveBrokers = adminClient.describeCluster().nodes().get().asScala.map(_.id())
-      val describeOptions = new DescribeOptions(opts, liveBrokers.toSet)
-      val topicPartitions = topicDescriptions
-        .flatMap(td => td.partitions.iterator().asScala.map(p => new TopicPartition(td.name(), p.partition())))
-        .toSet.asJava
-      val reassignments = listAllReassignments(topicPartitions)
-
-      for (td <- topicDescriptions) {
-        val topicName = td.name
-        val topicId = td.topicId()
-        val config = allConfigs.get(new ConfigResource(Type.TOPIC, topicName)).get()
-        val sortedPartitions = td.partitions.asScala.sortBy(_.partition)
-
-        if (describeOptions.describeConfigs) {
-          val hasNonDefault = config.entries().asScala.exists(!_.isDefault)
-          if (!opts.reportOverriddenConfigs || hasNonDefault) {
-            val numPartitions = td.partitions().size
-            val firstPartition = td.partitions.iterator.next()
-            val reassignment = reassignments.get(new TopicPartition(td.name, firstPartition.partition))
-            val topicDesc = TopicDescription(topicName, topicId, numPartitions, getReplicationFactor(firstPartition, reassignment), config, markedForDeletion = false)
-            topicDesc.printDescription()
+          if (describeOptions.describeConfigs) {
+            val hasNonDefault = config.entries().asScala.exists(!_.isDefault)
+            if (!opts.reportOverriddenConfigs || hasNonDefault) {
+              val numPartitions = td.partitions().size
+              val firstPartition = td.partitions.iterator.next()
+              val reassignment = reassignments.get(new TopicPartition(td.name, firstPartition.partition))
+              val topicDesc = TopicDescription(topicName, numPartitions, getReplicationFactor(firstPartition, reassignment), config, markedForDeletion = false)
+              topicDesc.printDescription()
+            }
           }
-        }
 
-        if (describeOptions.describePartitions) {
-          for (partition <- sortedPartitions) {
-            val reassignment = reassignments.get(new TopicPartition(td.name, partition.partition))
-            val partitionDesc = PartitionDescription(topicName, partition, Some(config), markedForDeletion = false, reassignment)
-            describeOptions.maybePrintPartitionDescription(partitionDesc)
+          if (describeOptions.describePartitions) {
+            for (partition <- sortedPartitions) {
+              val reassignment = reassignments.get(new TopicPartition(td.name, partition.partition))
+              val partitionDesc = PartitionDescription(topicName, partition, Some(config), markedForDeletion = false, reassignment)
+              describeOptions.maybePrintPartitionDescription(partitionDesc)
+            }
           }
         }
       }
@@ -380,23 +359,13 @@ object TopicCommand extends Logging {
         .all().get()
     }
 
-    override def getTopics(topicIncludeList: Option[String], excludeInternalTopics: Boolean = false): Seq[String] = {
+    override def getTopics(topicIncludelist: Option[String], excludeInternalTopics: Boolean = false): Seq[String] = {
       val allTopics = if (excludeInternalTopics) {
         adminClient.listTopics()
       } else {
         adminClient.listTopics(new ListTopicsOptions().listInternal(true))
       }
-      doGetTopics(allTopics.names().get().asScala.toSeq.sorted, topicIncludeList, excludeInternalTopics)
-    }
-
-    override def getTopicIds(topicIdIncludeList: Option[Uuid], excludeInternalTopics: Boolean = false): Seq[Uuid] = {
-      val allTopics = if (excludeInternalTopics) {
-        adminClient.listTopics()
-      } else {
-        adminClient.listTopics(new ListTopicsOptions().listInternal(true))
-      }
-      val allTopicIds = allTopics.listings().get().asScala.map(_.topicId()).toSeq.sorted
-      topicIdIncludeList.filter(allTopicIds.contains).toSeq
+      doGetTopics(allTopics.names().get().asScala.toSeq.sorted, topicIncludelist, excludeInternalTopics)
     }
 
     override def close(): Unit = adminClient.close()
@@ -480,24 +449,23 @@ object TopicCommand extends Logging {
       val adminZkClient = new AdminZkClient(zkClient)
 
       for (topic <- topics) {
-        zkClient.getReplicaAssignmentAndTopicIdForTopics(immutable.Set(topic)).headOption match {
-          case Some(replicaAssignmentAndTopicId) =>
+        zkClient.getPartitionAssignmentForTopics(immutable.Set(topic)).get(topic) match {
+          case Some(topicPartitionAssignment) =>
             val markedForDeletion = zkClient.isTopicMarkedForDeletion(topic)
             if (describeOptions.describeConfigs) {
               val configs = adminZkClient.fetchEntityConfig(ConfigType.Topic, topic).asScala
               if (!opts.reportOverriddenConfigs || configs.nonEmpty) {
-                val numPartitions = replicaAssignmentAndTopicId.assignment.size
-                val replicationFactor = replicaAssignmentAndTopicId.assignment.head._2.replicas.size
+                val numPartitions = topicPartitionAssignment.size
+                val replicationFactor = topicPartitionAssignment.head._2.replicas.size
                 val config = new JConfig(configs.map{ case (k, v) => new ConfigEntry(k, v) }.asJavaCollection)
-
-                val topicDesc = TopicDescription(topic,
-                  replicaAssignmentAndTopicId.topicId.getOrElse(Uuid.ZERO_UUID), numPartitions, replicationFactor, config, markedForDeletion)
+                val topicDesc = TopicDescription(topic, numPartitions, replicationFactor, config, markedForDeletion)
                 topicDesc.printDescription()
               }
             }
             if (describeOptions.describePartitions) {
-              for ((tp, replicaAssignment) <- replicaAssignmentAndTopicId.assignment.toSeq.sortBy(_._1.partition())) {
+              for ((partitionId, replicaAssignment) <- topicPartitionAssignment.toSeq.sortBy(_._1)) {
                 val assignedReplicas = replicaAssignment.replicas
+                val tp = new TopicPartition(topic, partitionId)
                 val (leaderOpt, isr) =  zkClient.getTopicPartitionState(tp).map(_.leaderAndIsr) match {
                   case Some(leaderAndIsr) => (leaderAndIsr.leaderOpt, leaderAndIsr.isr)
                   case None => (None, Seq.empty[Int])
@@ -510,7 +478,7 @@ object TopicCommand extends Logging {
                   }
                 }
 
-                val info = new TopicPartitionInfo(tp.partition(), leaderOpt.map(asNode).orNull,
+                val info = new TopicPartitionInfo(partitionId, leaderOpt.map(asNode).orNull,
                   assignedReplicas.map(asNode).toList.asJava,
                   isr.map(asNode).toList.asJava)
 
@@ -547,15 +515,9 @@ object TopicCommand extends Logging {
       }
     }
 
-    override def getTopics(topicIncludeList: Option[String], excludeInternalTopics: Boolean = false): Seq[String] = {
+    override def getTopics(topicIncludelist: Option[String], excludeInternalTopics: Boolean = false): Seq[String] = {
       val allTopics = zkClient.getAllTopicsInCluster().toSeq.sorted
-      doGetTopics(allTopics, topicIncludeList, excludeInternalTopics)
-    }
-
-    override def getTopicIds(topicIdIncludeList: Option[Uuid], excludeInternalTopics: Boolean = false): Seq[Uuid] = {
-      val allTopics = zkClient.getAllTopicsInCluster()
-      val allTopicIds = zkClient.getTopicIdsForTopics(allTopics).values.toSet
-      topicIdIncludeList.filter(topicId => allTopicIds.contains(topicId)).toSeq
+      doGetTopics(allTopics, topicIncludelist, excludeInternalTopics)
     }
 
     override def close(): Unit = zkClient.close()
@@ -575,23 +537,6 @@ object TopicCommand extends Logging {
     if (requestedTopic.isDefined && requireTopicExists && foundTopics.isEmpty) {
       // If given topic doesn't exist then throw exception
       throw new IllegalArgumentException(s"Topic '${requestedTopic.get}' does not exist as expected")
-    }
-  }
-
-  /**
-   * ensures topic existence and throws exception if topic doesn't exist
-   *
-   * @param foundTopicIds Topics that were found to match the requested topic id.
-   * @param requestedTopicId Id of the topic that was requested.
-   * @param requireTopicIdExists Indicates if the topic needs to exist for the operation to be successful.
-   *                             If set to true, the command will throw an exception if the topic with the
-   *                             requested id does not exist.
-   */
-  private def ensureTopicIdExists(foundTopicIds: Seq[Uuid], requestedTopicId: Option[Uuid], requireTopicIdExists: Boolean): Unit = {
-    // If no topic id was mentioned, do not need to throw exception.
-    if (requestedTopicId.isDefined && requireTopicIdExists && foundTopicIds.isEmpty) {
-      // If given topicId doesn't exist then throw exception
-      throw new IllegalArgumentException(s"TopicId '${requestedTopicId.get}' does not exist as expected")
     }
   }
 
@@ -687,11 +632,6 @@ object TopicCommand extends Logging {
                          .withRequiredArg
                          .describedAs("topic")
                          .ofType(classOf[String])
-    private val topicIdOpt = parser.accepts("topic-id", "The topic-id to describe." +
-      "This is used only with --bootstrap-server option for describing topics.")
-      .withRequiredArg
-      .describedAs("topic-id")
-      .ofType(classOf[String])
     private val nl = System.getProperty("line.separator")
     private val kafkaConfigsCanAlterTopicConfigsViaBootstrapServer =
       " (the kafka-configs CLI supports altering topic configs with a --bootstrap-server option)"
@@ -749,7 +689,7 @@ object TopicCommand extends Logging {
 
     private val allTopicLevelOpts = immutable.Set[OptionSpec[_]](alterOpt, createOpt, describeOpt, listOpt, deleteOpt)
 
-    private val allReplicationReportOpts = Set(reportUnderReplicatedPartitionsOpt, reportUnderMinIsrPartitionsOpt, reportAtMinIsrPartitionsOpt, reportUnavailablePartitionsOpt)
+    private val allReplicationReportOpts: Set[OptionSpec[_]] = Set(reportUnderReplicatedPartitionsOpt, reportUnderMinIsrPartitionsOpt, reportAtMinIsrPartitionsOpt, reportUnavailablePartitionsOpt)
 
     def has(builder: OptionSpec[_]): Boolean = options.has(builder)
     def valueAsOption[A](option: OptionSpec[A], defaultValue: Option[A] = None): Option[A] = if (has(option)) Some(options.valueOf(option)) else defaultValue
@@ -765,7 +705,6 @@ object TopicCommand extends Logging {
     def bootstrapServer: Option[String] = valueAsOption(bootstrapServerOpt)
     def commandConfig: Properties = if (has(commandConfigOpt)) Utils.loadProps(options.valueOf(commandConfigOpt)) else new Properties()
     def topic: Option[String] = valueAsOption(topicOpt)
-    def topicId: Option[String] = valueAsOption(topicIdOpt)
     def partitions: Option[Integer] = valueAsOption(partitionsOpt)
     def replicationFactor: Option[Integer] = valueAsOption(replicationFactorOpt)
     def replicaAssignment: Option[Map[Int, List[Int]]] =
@@ -800,16 +739,10 @@ object TopicCommand extends Logging {
       if (has(bootstrapServerOpt) == has(zkConnectOpt))
         throw new IllegalArgumentException("Only one of --bootstrap-server or --zookeeper must be specified")
 
-      if (has(topicIdOpt) && has(zkConnectOpt)) {
-        throw new IllegalArgumentException("--topic-id can used only with --bootstrap-server")
-      }
-
       if (!has(bootstrapServerOpt))
         CommandLineUtils.checkRequiredArgs(parser, options, zkConnectOpt)
-      if(has(describeOpt) && has(ifExistsOpt)) {
-        if (has(topicOpt) == has(topicIdOpt))
-          println("Only topic id will be used when both --topic and --topic-id are specified and topicId is not UUID.ZERO_UUID")
-      }
+      if(has(describeOpt) && has(ifExistsOpt))
+        CommandLineUtils.checkRequiredArgs(parser, options, topicOpt)
       if (!has(listOpt) && !has(describeOpt))
         CommandLineUtils.checkRequiredArgs(parser, options, topicOpt)
       if (has(createOpt) && !has(replicaAssignmentOpt) && has(zkConnectOpt))
@@ -843,5 +776,14 @@ object TopicCommand extends Logging {
       CommandLineUtils.checkInvalidArgs(parser, options, excludeInternalTopicOpt, allTopicLevelOpts -- Set(listOpt, describeOpt))
     }
   }
+
+  def askToProceed(): Unit = {
+    println("Are you sure you want to continue? [y/n]")
+    if (!StdIn.readLine().equalsIgnoreCase("y")) {
+      println("Ending your session")
+      Exit.exit(0)
+    }
+  }
+
 }
 

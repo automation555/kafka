@@ -16,13 +16,11 @@
  */
 package org.apache.kafka.connect.runtime;
 
-import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.connect.json.JsonConverter;
@@ -37,7 +35,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 import static org.apache.kafka.common.config.ConfigDef.Range.atLeast;
 import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
@@ -47,8 +44,6 @@ import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
  */
 public class WorkerConfig extends AbstractConfig {
     private static final Logger log = LoggerFactory.getLogger(WorkerConfig.class);
-
-    private static final Pattern COMMA_WITH_WHITESPACE = Pattern.compile("\\s*,\\s*");
 
     public static final String BOOTSTRAP_SERVERS_CONFIG = "bootstrap.servers";
     public static final String BOOTSTRAP_SERVERS_DOC
@@ -61,9 +56,6 @@ public class WorkerConfig extends AbstractConfig {
             + "dynamically), this list need not contain the full set of servers (you may want more "
             + "than one, though, in case a server is down).";
     public static final String BOOTSTRAP_SERVERS_DEFAULT = "localhost:9092";
-
-    public static final String CLIENT_DNS_LOOKUP_CONFIG = CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG;
-    public static final String CLIENT_DNS_LOOKUP_DOC = CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC;
 
     public static final String KEY_CONVERTER_CLASS_CONFIG = "key.converter";
     public static final String KEY_CONVERTER_CLASS_DOC =
@@ -137,6 +129,13 @@ public class WorkerConfig extends AbstractConfig {
             + "data to be committed in a future attempt.";
     public static final long OFFSET_COMMIT_TIMEOUT_MS_DEFAULT = 5000L;
 
+    public static final String ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_CONFIG = "error.rest.response.message.detail.enabled";
+    private static final String ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_DOC
+            = "Whether detailed responses will be included by the REST exception mapper. It is possible to use this in" +
+            "PCI-DSS environments to assist with complying with security policies.";
+    public static final Boolean ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_DEFAULT = true;
+
+
     /**
      * @deprecated As of 1.1.0.
      */
@@ -187,14 +186,6 @@ public class WorkerConfig extends AbstractConfig {
         + "The default value of the Access-Control-Allow-Methods header allows cross origin requests for GET, POST and HEAD.";
     protected static final String ACCESS_CONTROL_ALLOW_METHODS_DEFAULT = "";
 
-    public static final String ADMIN_LISTENERS_CONFIG = "admin.listeners";
-    protected static final String ADMIN_LISTENERS_DOC = "List of comma-separated URIs the Admin REST API will listen on." +
-            " The supported protocols are HTTP and HTTPS." +
-            " An empty or blank string will disable this feature." +
-            " The default behavior is to use the regular listener (specified by the 'listeners' property).";
-    protected static final List<String> ADMIN_LISTENERS_DEFAULT = null;
-    public static final String ADMIN_LISTENERS_HTTPS_CONFIGS_PREFIX = "admin.listeners.https.";
-
     public static final String PLUGIN_PATH_CONFIG = "plugin.path";
     protected static final String PLUGIN_PATH_DOC = "List of paths separated by commas (,) that "
             + "contain plugins (connectors, converters, transformations). The list should consist"
@@ -221,28 +212,10 @@ public class WorkerConfig extends AbstractConfig {
             + "<code>ConnectRestExtension</code> allows you to inject into Connect's REST API user defined resources like filters. "
             + "Typically used to add custom capability like logging, security, etc. ";
 
-    public static final String CONNECTOR_CLIENT_POLICY_CLASS_CONFIG = "connector.client.config.override.policy";
-    public static final String CONNECTOR_CLIENT_POLICY_CLASS_DOC =
-        "Class name or alias of implementation of <code>ConnectorClientConfigOverridePolicy</code>. Defines what client configurations can be "
-        + "overriden by the connector. The default implementation is `None`. The other possible policies in the framework include `All` "
-        + "and `Principal`. ";
-    public static final String CONNECTOR_CLIENT_POLICY_CLASS_DEFAULT = "None";
-
-
     public static final String METRICS_SAMPLE_WINDOW_MS_CONFIG = CommonClientConfigs.METRICS_SAMPLE_WINDOW_MS_CONFIG;
     public static final String METRICS_NUM_SAMPLES_CONFIG = CommonClientConfigs.METRICS_NUM_SAMPLES_CONFIG;
     public static final String METRICS_RECORDING_LEVEL_CONFIG = CommonClientConfigs.METRICS_RECORDING_LEVEL_CONFIG;
     public static final String METRIC_REPORTER_CLASSES_CONFIG = CommonClientConfigs.METRIC_REPORTER_CLASSES_CONFIG;
-
-    public static final String TOPIC_TRACKING_ENABLE_CONFIG = "topic.tracking.enable";
-    protected static final String TOPIC_TRACKING_ENABLE_DOC = "Enable tracking the set of active "
-            + "topics per connector during runtime.";
-    protected static final boolean TOPIC_TRACKING_ENABLE_DEFAULT = true;
-
-    public static final String TOPIC_TRACKING_ALLOW_RESET_CONFIG = "topic.tracking.allow.reset";
-    protected static final String TOPIC_TRACKING_ALLOW_RESET_DOC = "If set to true, it allows "
-            + "user requests to reset the set of active topics per connector.";
-    protected static final boolean TOPIC_TRACKING_ALLOW_RESET_DEFAULT = true;
 
     /**
      * Get a basic ConfigDef for a WorkerConfig. This includes all the common settings. Subclasses can use this to
@@ -253,14 +226,6 @@ public class WorkerConfig extends AbstractConfig {
         return new ConfigDef()
                 .define(BOOTSTRAP_SERVERS_CONFIG, Type.LIST, BOOTSTRAP_SERVERS_DEFAULT,
                         Importance.HIGH, BOOTSTRAP_SERVERS_DOC)
-                .define(CLIENT_DNS_LOOKUP_CONFIG,
-                        Type.STRING,
-                        ClientDnsLookup.DEFAULT.toString(),
-                        in(ClientDnsLookup.DEFAULT.toString(),
-                           ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
-                           ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
-                        Importance.MEDIUM,
-                        CLIENT_DNS_LOOKUP_DOC)
                 .define(KEY_CONVERTER_CLASS_CONFIG, Type.CLASS,
                         Importance.HIGH, KEY_CONVERTER_CLASS_DOC)
                 .define(VALUE_CONVERTER_CLASS_CONFIG, Type.CLASS,
@@ -317,14 +282,8 @@ public class WorkerConfig extends AbstractConfig {
                         Importance.LOW, CONFIG_PROVIDERS_DOC)
                 .define(REST_EXTENSION_CLASSES_CONFIG, Type.LIST, "",
                         Importance.LOW, REST_EXTENSION_CLASSES_DOC)
-                .define(ADMIN_LISTENERS_CONFIG, Type.LIST, null,
-                        new AdminListenersValidator(), Importance.LOW, ADMIN_LISTENERS_DOC)
-                .define(CONNECTOR_CLIENT_POLICY_CLASS_CONFIG, Type.STRING, CONNECTOR_CLIENT_POLICY_CLASS_DEFAULT,
-                        Importance.MEDIUM, CONNECTOR_CLIENT_POLICY_CLASS_DOC)
-                .define(TOPIC_TRACKING_ENABLE_CONFIG, Type.BOOLEAN, TOPIC_TRACKING_ENABLE_DEFAULT,
-                        Importance.LOW, TOPIC_TRACKING_ENABLE_DOC)
-                .define(TOPIC_TRACKING_ALLOW_RESET_CONFIG, Type.BOOLEAN, TOPIC_TRACKING_ALLOW_RESET_DEFAULT,
-                        Importance.LOW, TOPIC_TRACKING_ALLOW_RESET_DOC);
+                .define(ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_CONFIG, Type.BOOLEAN, ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_DEFAULT,
+                        Importance.LOW, ERROR_REST_RESPONSE_MESSAGE_DETAIL_ENABLED_DOC);
     }
 
     private void logInternalConverterDeprecationWarnings(Map<String, String> props) {
@@ -356,7 +315,7 @@ public class WorkerConfig extends AbstractConfig {
         if (defaultValue != null && defaultValue.equalsIgnoreCase(propValue)) {
             log.info(
                 "Worker configuration property '{}'{} is deprecated and may be removed in an upcoming release. "
-                    + "The specified value '{}' matches the default, so this property can be safely removed from the worker configuration.",
+                    + "The specified value matches the default, so this property can be safely removed from the worker configuration.",
                 propName,
                 prefixNotice,
                 propValue
@@ -392,39 +351,12 @@ public class WorkerConfig extends AbstractConfig {
         String locationList = props.get(WorkerConfig.PLUGIN_PATH_CONFIG);
         return locationList == null
                          ? new ArrayList<String>()
-                         : Arrays.asList(COMMA_WITH_WHITESPACE.split(locationList.trim(), -1));
+                         : Arrays.asList(locationList.trim().split("\\s*,\\s*", -1));
     }
 
     public WorkerConfig(ConfigDef definition, Map<String, String> props) {
         super(definition, props);
         logInternalConverterDeprecationWarnings(props);
-    }
-
-    private static class AdminListenersValidator implements ConfigDef.Validator {
-        @Override
-        public void ensureValid(String name, Object value) {
-            if (value == null) {
-                return;
-            }
-
-            if (!(value instanceof List)) {
-                throw new ConfigException("Invalid value type (list expected).");
-            }
-
-            List<?> items = (List<?>) value;
-            if (items.isEmpty()) {
-                return;
-            }
-
-            for (Object item: items) {
-                if (!(item instanceof String)) {
-                    throw new ConfigException("Invalid type for admin listener (expected String).");
-                }
-                if (((String) item).trim().isEmpty()) {
-                    throw new ConfigException("Empty listener found when parsing list.");
-                }
-            }
-        }
     }
 
 }

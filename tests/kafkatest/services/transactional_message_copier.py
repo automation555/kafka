@@ -47,7 +47,8 @@ class TransactionalMessageCopier(KafkaPathResolverMixin, BackgroundThreadService
 
     def __init__(self, context, num_nodes, kafka, transactional_id, consumer_group,
                  input_topic, input_partition, output_topic, max_messages=-1,
-                 transaction_size=1000, transaction_timeout=None, enable_random_aborts=True, use_group_metadata=False, group_mode=False):
+                 transaction_size=1000, transaction_timeout=None, enable_random_aborts=True,
+                 use_group_metadata=False, group_mode=False):
         super(TransactionalMessageCopier, self).__init__(context, num_nodes)
         self.kafka = kafka
         self.transactional_id = transactional_id
@@ -74,7 +75,7 @@ class TransactionalMessageCopier(KafkaPathResolverMixin, BackgroundThreadService
         node.account.ssh("mkdir -p %s" % TransactionalMessageCopier.PERSISTENT_ROOT,
                          allow_fail=False)
         # Create and upload log properties
-        log_config = self.render('tools_log4j.properties',
+        log_config = self.render('tools_log4j2.properties',
                                  log_file=TransactionalMessageCopier.LOG_FILE)
         node.account.create_file(TransactionalMessageCopier.LOG4J_CONFIG, log_config)
         # Configure security
@@ -113,9 +114,9 @@ class TransactionalMessageCopier(KafkaPathResolverMixin, BackgroundThreadService
     def start_cmd(self, node, idx):
         cmd  = "export LOG_DIR=%s;" % TransactionalMessageCopier.LOG_DIR
         cmd += " export KAFKA_OPTS=%s;" % self.security_config.kafka_opts
-        cmd += " export KAFKA_LOG4J_OPTS=\"-Dlog4j.configuration=file:%s\"; " % TransactionalMessageCopier.LOG4J_CONFIG
+        cmd += " export KAFKA_LOG4J_OPTS=\"-Dlog4j.configurationFile=file:%s\"; " % TransactionalMessageCopier.LOG4J_CONFIG
         cmd += self.path.script("kafka-run-class.sh", node) + " org.apache.kafka.tools." + "TransactionalMessageCopier"
-        cmd += " --bootstrap-server %s" % self.kafka.bootstrap_servers(self.security_config.security_protocol)
+        cmd += " --broker-list %s" % self.kafka.bootstrap_servers(self.security_config.security_protocol)
         cmd += " --transactional-id %s" % self.transactional_id
         cmd += " --consumer-group %s" % self.consumer_group
         cmd += " --input-topic %s" % self.input_topic

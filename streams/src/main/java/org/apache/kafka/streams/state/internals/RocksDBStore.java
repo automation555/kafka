@@ -17,7 +17,6 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
-import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.KeyValue;
@@ -105,7 +104,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
     private final RocksDBMetricsRecorder metricsRecorder;
 
     // visible for testing
-    volatile BatchingStateRestoreCallback batchingStateRestoreCallback = null;
+    private volatile BatchingStateRestoreCallback batchingStateRestoreCallback = null;
 
     protected volatile boolean open = false;
 
@@ -310,21 +309,6 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
     }
 
     @Override
-    public <PS extends Serializer<P>, P> KeyValueIterator<Bytes, byte[]> prefixScan(final P prefix,
-                                                                                    final PS prefixKeySerializer) {
-        Objects.requireNonNull(prefix, "prefix cannot be null");
-        Objects.requireNonNull(prefixKeySerializer, "prefixKeySerializer cannot be null");
-
-        validateStoreOpen();
-        final Bytes prefixBytes = Bytes.wrap(prefixKeySerializer.serialize(null, prefix));
-
-        final KeyValueIterator<Bytes, byte[]> rocksDbPrefixSeekIterator = dbAccessor.prefixScan(prefixBytes);
-        openIterators.add(rocksDbPrefixSeekIterator);
-
-        return rocksDbPrefixSeekIterator;
-    }
-
-    @Override
     public synchronized byte[] get(final Bytes key) {
         validateStoreOpen();
         try {
@@ -352,19 +336,18 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                                               final Bytes to) {
-        return range(from, to, true, false);
+        return range(from, to, true);
     }
 
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> reverseRange(final Bytes from,
                                                                      final Bytes to) {
-        return range(from, to, false, false);
+        return range(from, to, false);
     }
 
     KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                           final Bytes to,
-                                          final boolean forward,
-                                          final boolean prefixRange) {
+                                          final boolean forward) {
         Objects.requireNonNull(from, "from cannot be null");
         Objects.requireNonNull(to, "to cannot be null");
 
@@ -378,13 +361,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
 
         validateStoreOpen();
 
-        final KeyValueIterator<Bytes, byte[]> rocksDBRangeIterator;
-        if (prefixRange) {
-            rocksDBRangeIterator = dbAccessor.prefixRange(from, to, forward);
-        } else {
-            rocksDBRangeIterator = dbAccessor.range(from, to, forward);
-        }
-
+        final KeyValueIterator<Bytes, byte[]> rocksDBRangeIterator = dbAccessor.range(from, to, forward);
         openIterators.add(rocksDBRangeIterator);
 
         return rocksDBRangeIterator;
@@ -531,13 +508,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
                                               final Bytes to,
                                               final boolean forward);
 
-        KeyValueIterator<Bytes, byte[]> prefixRange(final Bytes from,
-                                              final Bytes to,
-                                              final boolean forward);
-
         KeyValueIterator<Bytes, byte[]> all(final boolean forward);
-
-        KeyValueIterator<Bytes, byte[]> prefixScan(final Bytes prefix);
 
         long approximateNumEntries() throws RocksDBException;
 
@@ -609,24 +580,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
                 openIterators,
                 from,
                 to,
-                forward,
-                true
-            );
-        }
-
-        @Override
-        public KeyValueIterator<Bytes, byte[]> prefixRange(final Bytes from,
-                                                     final Bytes to,
-                                                     final boolean forward) {
-            return new RocksDBPrefixRangeIterator(
-                name,
-                db.newIterator(columnFamily),
-                openIterators,
-                from,
-                to,
-                forward,
-                true
-            );
+                forward);
         }
 
         @Override
@@ -638,20 +592,6 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
                 innerIterWithTimestamp.seekToLast();
             }
             return new RocksDbIterator(name, innerIterWithTimestamp, openIterators, forward);
-        }
-
-        @Override
-        public KeyValueIterator<Bytes, byte[]> prefixScan(final Bytes prefix) {
-            final Bytes to = Bytes.increment(prefix);
-            return new RocksDBRangeIterator(
-                name,
-                db.newIterator(columnFamily),
-                openIterators,
-                prefix,
-                to,
-                true,
-                false
-            );
         }
 
         @Override

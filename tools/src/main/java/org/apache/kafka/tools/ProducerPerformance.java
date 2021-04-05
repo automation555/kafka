@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Random;
 import java.util.Arrays;
-import java.util.Enumeration;
 
 import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
 import org.apache.kafka.clients.producer.Callback;
@@ -36,8 +35,6 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.header.internals.RecordHeader;
 
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
@@ -53,6 +50,7 @@ public class ProducerPerformance {
 
         try {
             Namespace res = parser.parseArgs(args);
+
             /* parse args */
             String topicName = res.getString("topic");
             long numRecords = res.getLong("numRecords");
@@ -61,7 +59,6 @@ public class ProducerPerformance {
             List<String> producerProps = res.getList("producerConfig");
             String producerConfig = res.getString("producerConfigFile");
             String payloadFilePath = res.getString("payloadFile");
-            String headersPath = res.getString("headersFile");
             String transactionalId = res.getString("transactionalId");
             boolean shouldPrintMetrics = res.getBoolean("printMetrics");
             long transactionDurationMs = res.getLong("transactionDurationMs");
@@ -89,10 +86,6 @@ public class ProducerPerformance {
                 for (String payload : payloadList) {
                     payloadByteList.add(payload.getBytes(StandardCharsets.UTF_8));
                 }
-            }      
-            Properties headerProps = new Properties();
-            if (headersPath != null) {
-                headerProps.putAll(Utils.loadProps(headersPath));
             }
 
             Properties props = new Properties();
@@ -130,27 +123,24 @@ public class ProducerPerformance {
             long startMs = System.currentTimeMillis();
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
-            Enumeration e = headerProps.propertyNames();
-            List<Header> headers = new ArrayList<>();
-            while (e.hasMoreElements()) {
-                String key = (String) e.nextElement();
-                System.out.println(key + " -- " + headerProps.getProperty(key));
-                Header header = new RecordHeader(key, headerProps.getProperty(key).getBytes("UTF-8"));
-                headers.add(header);
-            } 
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
+            int currentIndex = 0;
+            int totalPayloadSize = payloadByteList.size();
             for (long i = 0; i < numRecords; i++) {
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
 
+
                 if (payloadFilePath != null) {
-                    payload = payloadByteList.get(random.nextInt(payloadByteList.size()));
+                    payload = payloadByteList.get(currentIndex++);
+                    currentIndex = currentIndex == totalPayloadSize ? 0 : currentIndex;
                 }
-                record = new ProducerRecord<>(topicName, null, null, null, payload, headers);
+                record = new ProducerRecord<>(topicName, payload);
+
                 long sendStartMs = System.currentTimeMillis();
                 Callback cb = stats.nextCompletion(sendStartMs, payload.length, stats);
                 producer.send(record, cb);
@@ -196,6 +186,7 @@ public class ProducerPerformance {
                 Exit.exit(1);
             }
         }
+
     }
 
     /** Get the command-line argument parser. */
@@ -240,16 +231,8 @@ public class ProducerPerformance {
                 .metavar("PAYLOAD-FILE")
                 .dest("payloadFile")
                 .help("file to read the message payloads from. This works only for UTF-8 encoded text files. " +
-                        "Payloads will be read from this file and a payload will be randomly selected when sending messages. " +
+                        "Payloads will be read from this file and be sequentially and circularly selected when sending messages. " +
                         "Note that you must provide exactly one of --record-size or --payload-file.");
-
-        parser.addArgument("--headers-file")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("HEADERS-FILE")
-                .dest("headersFile")
-                .help("properties file for associating each record with headers");
 
         parser.addArgument("--payload-delimiter")
                 .action(store())

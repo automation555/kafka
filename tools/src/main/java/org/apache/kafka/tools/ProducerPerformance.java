@@ -126,8 +126,6 @@ public class ProducerPerformance {
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
-            int currentIndex = 0;
-            int totalPayloadSize = payloadByteList.size();
             for (long i = 0; i < numRecords; i++) {
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
@@ -136,8 +134,7 @@ public class ProducerPerformance {
 
 
                 if (payloadFilePath != null) {
-                    payload = payloadByteList.get(currentIndex++);
-                    currentIndex = currentIndex == totalPayloadSize ? 0 : currentIndex;
+                    payload = payloadByteList.get(random.nextInt(payloadByteList.size()));
                 }
                 record = new ProducerRecord<>(topicName, payload);
 
@@ -231,7 +228,7 @@ public class ProducerPerformance {
                 .metavar("PAYLOAD-FILE")
                 .dest("payloadFile")
                 .help("file to read the message payloads from. This works only for UTF-8 encoded text files. " +
-                        "Payloads will be read from this file and be sequentially and circularly selected when sending messages. " +
+                        "Payloads will be read from this file and a payload will be randomly selected when sending messages. " +
                         "Note that you must provide exactly one of --record-size or --payload-file.");
 
         parser.addArgument("--payload-delimiter")
@@ -294,6 +291,7 @@ public class ProducerPerformance {
                .setDefault(0L)
                .help("The max age of each transaction. The commitTransaction will be called after this time has elapsed. Transactions are only enabled if this value is positive.");
 
+       ToolsUtils.addOptionVersion(parser);
 
         return parser;
     }
@@ -359,9 +357,9 @@ public class ProducerPerformance {
         }
 
         public void printWindow() {
-            long ellapsed = System.currentTimeMillis() - windowStart;
-            double recsPerSec = 1000.0 * windowCount / (double) ellapsed;
-            double mbPerSec = 1000.0 * this.windowBytes / (double) ellapsed / (1024.0 * 1024.0);
+            long elapsed = System.currentTimeMillis() - windowStart;
+            double recsPerSec = 1000.0 * windowCount / (double) elapsed;
+            double mbPerSec = 1000.0 * this.windowBytes / (double) elapsed / (1024.0 * 1024.0);
             System.out.printf("%d records sent, %.1f records/sec (%.2f MB/sec), %.1f ms avg latency, %.1f ms max latency.%n",
                               windowCount,
                               recsPerSec,

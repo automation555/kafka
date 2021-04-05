@@ -149,6 +149,8 @@ public class VerifiableLog4jAppender {
             .dest("kerb5ConfPath")
             .help("Path of Kerb5 config file.");
 
+        ToolsUtils.addOptionVersion(parser);
+
         return parser;
     }
 
@@ -236,7 +238,7 @@ public class VerifiableLog4jAppender {
         PropertyConfigurator.configure(props);
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
 
         final VerifiableLog4jAppender appender = createFromArgs(args);
         boolean infinite = appender.maxMessages < 0;

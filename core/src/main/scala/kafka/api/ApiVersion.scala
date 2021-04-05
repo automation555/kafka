@@ -149,6 +149,21 @@ object ApiVersion {
   def apiVersionsResponse(
     throttleTimeMs: Int,
     minRecordVersion: RecordVersion,
+    controllerApiVersions: Option[NodeApiVersions],
+    listenerType: ListenerType
+  ): ApiVersionsResponse = {
+    apiVersionsResponse(
+      throttleTimeMs,
+      minRecordVersion,
+      Features.emptySupportedFeatures,
+      controllerApiVersions,
+      listenerType
+    )
+  }
+
+  def apiVersionsResponse(
+    throttleTimeMs: Int,
+    minRecordVersion: RecordVersion,
     latestSupportedFeatures: Features[SupportedVersionRange],
     controllerApiVersions: Option[NodeApiVersions],
     listenerType: ListenerType

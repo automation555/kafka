@@ -850,7 +850,7 @@ private[kafka] class Processor(val id: Int,
       credentialProvider.tokenCache,
       time,
       logContext,
-      () => apiVersionManager.apiVersionResponse(throttleTimeMs = 0)
+      requestVersion => apiVersionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion)
     )
   )
 
@@ -860,19 +860,19 @@ private[kafka] class Processor(val id: Int,
       case reconfigurable: Reconfigurable => config.addReconfigurable(reconfigurable)
       case _ =>
     }
-    new KSelector.Builder().withMaxReceiveSize(maxRequestSize)
-            .withConnectionMaxIdleMs(connectionsMaxIdleMs)
-            .withFailedAuthenticationDelayMs(failedAuthenticationDelayMs)
-            .withMetrics(metrics)
-            .withTime(time)
-            .withMetricGrpPrefix("socket-server")
-            .withMetricTags(metricTags)
-            .withMetricsPerConnection(false)
-            .withRecordTimePerConnection(true)
-            .withChannelBuilder(channelBuilder)
-            .withMemoryPool(memoryPool)
-            .withLogContext(new LogContext())
-            .build()
+    new KSelector(
+      maxRequestSize,
+      connectionsMaxIdleMs,
+      failedAuthenticationDelayMs,
+      metrics,
+      time,
+      "socket-server",
+      metricTags,
+      false,
+      true,
+      channelBuilder,
+      memoryPool,
+      logContext)
   }
 
   // Connection ids have the format `localAddr:localPort-remoteAddr:remotePort-index`. The index is a

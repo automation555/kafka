@@ -18,8 +18,10 @@ package kafka.server
 
 import kafka.api.ApiVersion
 import org.apache.kafka.clients.NodeApiVersions
+import org.apache.kafka.common.feature.{Features, SupportedVersionRange}
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.protocol.ApiKeys
+import org.apache.kafka.common.requests.ApiVersionsResponse
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.params.ParameterizedTest
@@ -67,7 +69,7 @@ class ApiVersionManagerTest {
       featureCache = featureCache
     )
 
-    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)
+    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion = 0)
     val alterConfigVersion = apiVersionsResponse.data.apiKeys.find(ApiKeys.CREATE_TOPICS.id)
     assertNotNull(alterConfigVersion)
     assertEquals(controllerMinVersion, alterConfigVersion.minVersion)
@@ -89,7 +91,7 @@ class ApiVersionManagerTest {
     assertTrue(versionManager.isApiEnabled(ApiKeys.ENVELOPE))
     assertTrue(versionManager.enabledApis.contains(ApiKeys.ENVELOPE))
 
-    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)
+    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion = 0)
     val envelopeVersion = apiVersionsResponse.data.apiKeys.find(ApiKeys.ENVELOPE.id)
     assertNotNull(envelopeVersion)
     assertEquals(ApiKeys.ENVELOPE.oldestVersion, envelopeVersion.minVersion)
@@ -108,8 +110,33 @@ class ApiVersionManagerTest {
     assertFalse(versionManager.isApiEnabled(ApiKeys.ENVELOPE))
     assertFalse(versionManager.enabledApis.contains(ApiKeys.ENVELOPE))
 
-    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)
+    val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion = 0)
     assertNull(apiVersionsResponse.data.apiKeys.find(ApiKeys.ENVELOPE.id))
   }
 
+  @Test
+  def testFeaturesInfoAvailableInApiVersionsResponseSinceV3(): Unit = {
+    val supportedFeatures: Features[SupportedVersionRange] = Features.supportedFeatures(Map("Sample" -> new SupportedVersionRange(1, 3)).asJava)
+    val brokerFeatures = BrokerFeatures.createDefault()
+    brokerFeatures.setSupportedFeatures(supportedFeatures)
+    val featureCache = new FinalizedFeatureCache(brokerFeatures)
+    val versionManager = new DefaultApiVersionManager(
+      listenerType = ListenerType.ZK_BROKER,
+      interBrokerProtocolVersion = ApiVersion.latestVersion,
+      forwardingManager = None,
+      features = brokerFeatures,
+      featureCache = featureCache
+    )
+
+    val requestVersionsEarlierThanV3: Seq[Short] = (0 to 2).map(_.toShort)
+    requestVersionsEarlierThanV3 foreach { case requestVersion =>
+      val apiVersionsResponse = versionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion = requestVersion)
+      assertEquals(apiVersionsResponse.data().finalizedFeatures().size(), 0)
+      assertEquals(apiVersionsResponse.data().finalizedFeaturesEpoch(), ApiVersionsResponse.UNKNOWN_FINALIZED_FEATURES_EPOCH)
+      assertEquals(apiVersionsResponse.data().supportedFeatures().size(), 0)
+    }
+
+    val apiVersionsResponseV3 = versionManager.apiVersionResponse(throttleTimeMs = 0)(requestVersion = 3)
+    assertEquals(apiVersionsResponseV3.data().supportedFeatures().size(), supportedFeatures.features().size)
+  }
 }

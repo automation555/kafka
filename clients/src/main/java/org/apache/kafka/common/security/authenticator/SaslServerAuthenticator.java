@@ -85,7 +85,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Supplier;
+import java.util.function.Function;
 
 public class SaslServerAuthenticator implements Authenticator {
     // GSSAPI limits requests to 64K, but we allow a bit extra for custom SASL mechanisms
@@ -128,7 +128,7 @@ public class SaslServerAuthenticator implements Authenticator {
     private final Time time;
     private final ReauthInfo reauthInfo;
     private final ChannelMetadataRegistry metadataRegistry;
-    private final Supplier<ApiVersionsResponse> apiVersionSupplier;
+    private final Function<Short, ApiVersionsResponse> apiVersionSupplier;
 
     // Current SASL state
     private SaslState saslState = SaslState.INITIAL_REQUEST;
@@ -157,7 +157,7 @@ public class SaslServerAuthenticator implements Authenticator {
                                    Map<String, Long> connectionsMaxReauthMsByMechanism,
                                    ChannelMetadataRegistry metadataRegistry,
                                    Time time,
-                                   Supplier<ApiVersionsResponse> apiVersionSupplier) {
+                                   Function<Short, ApiVersionsResponse> apiVersionSupplier) {
         this.callbackHandlers = callbackHandlers;
         this.connectionId = connectionId;
         this.subjects = subjects;
@@ -188,7 +188,7 @@ public class SaslServerAuthenticator implements Authenticator {
 
         // Note that the old principal builder does not support SASL, so we do not need to pass the
         // authenticator or the transport layer
-        this.principalBuilder = ChannelBuilders.createPrincipalBuilder(configs, kerberosNameParser, null);
+        this.principalBuilder = ChannelBuilders.createPrincipalBuilder(configs, null, null, kerberosNameParser, null);
     }
 
     private void createSaslServer(String mechanism) throws IOException {
@@ -582,7 +582,7 @@ public class SaslServerAuthenticator implements Authenticator {
         else {
             metadataRegistry.registerClientInformation(new ClientInformation(apiVersionsRequest.data().clientSoftwareName(),
                 apiVersionsRequest.data().clientSoftwareVersion()));
-            sendKafkaResponse(context, apiVersionSupplier.get());
+            sendKafkaResponse(context, apiVersionSupplier.apply(context.apiVersion()));
             setSaslState(SaslState.HANDSHAKE_REQUEST);
         }
     }

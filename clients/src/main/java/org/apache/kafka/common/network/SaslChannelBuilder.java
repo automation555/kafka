@@ -70,6 +70,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 public class SaslChannelBuilder implements ChannelBuilder, ListenerReconfigurable {
@@ -86,7 +87,7 @@ public class SaslChannelBuilder implements ChannelBuilder, ListenerReconfigurabl
     private final DelegationTokenCache tokenCache;
     private final Map<String, LoginManager> loginManagers;
     private final Map<String, Subject> subjects;
-    private final Supplier<ApiVersionsResponse> apiVersionSupplier;
+    private final Function<Short, ApiVersionsResponse> apiVersionSupplier;
 
     private SslFactory sslFactory;
     private Map<String, ?> configs;
@@ -111,7 +112,7 @@ public class SaslChannelBuilder implements ChannelBuilder, ListenerReconfigurabl
                               String sslClientAuthOverride,
                               Time time,
                               LogContext logContext,
-                              Supplier<ApiVersionsResponse> apiVersionSupplier) {
+                              Function<Short, ApiVersionsResponse> apiVersionSupplier) {
         this.mode = mode;
         this.jaasContexts = jaasContexts;
         this.loginManagers = new HashMap<>(jaasContexts.size());

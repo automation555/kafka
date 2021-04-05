@@ -108,31 +108,23 @@ public class ConsumerConfig extends AbstractConfig {
      */
     public static final String PARTITION_ASSIGNMENT_STRATEGY_CONFIG = "partition.assignment.strategy";
     private static final String PARTITION_ASSIGNMENT_STRATEGY_DOC = "A list of class names or class types, " +
-        "ordered by preference, of supported partition assignment strategies that the client will use to distribute " +
-        "partition ownership amongst consumer instances when group management is used. Available options are:" +
-        "<ul>" +
-        "<li><code>org.apache.kafka.clients.consumer.RangeAssignor</code>: The default assignor, which works on a per-topic basis.</li>" +
-        "<li><code>org.apache.kafka.clients.consumer.RoundRobinAssignor</code>: Assigns partitions to consumers in a round-robin fashion.</li>" +
-        "<li><code>org.apache.kafka.clients.consumer.StickyAssignor</code>: Guarantees an assignment that is " +
-        "maximally balanced while preserving as many existing partition assignments as possible.</li>" +
-        "<li><code>org.apache.kafka.clients.consumer.CooperativeStickyAssignor</code>: Follows the same StickyAssignor " +
-        "logic, but allows for cooperative rebalancing.</li>" +
-        "</ul>" +
-        "<p>Implementing the <code>org.apache.kafka.clients.consumer.ConsumerPartitionAssignor</code> " +
-        "interface allows you to plug in a custom assignment strategy.";
+            "ordered by preference, of supported partition assignment " +
+            "strategies that the client will use to distribute partition " +
+            "ownership amongst consumer instances when group management is " +
+            "used.<p>In addition to the default class specified below, " +
+            "you can use the " +
+            "<code>org.apache.kafka.clients.consumer.RoundRobinAssignor</code>" +
+            "class for round robin assignments of partitions to consumers. " +
+            "</p><p>Implementing the " +
+            "<code>org.apache.kafka.clients.consumer.ConsumerPartitionAssignor" +
+            "</code> interface allows you to plug in a custom assignment" +
+            "strategy.";
 
     /**
      * <code>auto.offset.reset</code>
      */
     public static final String AUTO_OFFSET_RESET_CONFIG = "auto.offset.reset";
-    public static final String AUTO_OFFSET_RESET_DOC = "What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server " +
-            "(e.g. because that data has been deleted): " +
-            "<ul><li>earliest: automatically reset the offset to the earliest offset" +
-            "<li>latest: automatically reset the offset to the latest offset</li>" +
-            "<li>none: throw exception to the consumer if no previous offset is found for the consumer's group</li>" +
-            "<li>anything else: throw exception to the consumer.</li></ul>" +
-            "<p>Note that altering partition numbers while setting this config to latest may cause message delivery loss since " +
-            "producers could start to send messages to newly added partitions (i.e. no initial offsets exist yet) before consumers reset their offsets.";
+    public static final String AUTO_OFFSET_RESET_DOC = "What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that data has been deleted): <ul><li>earliest: automatically reset the offset to the earliest offset<li>latest: automatically reset the offset to the latest offset</li><li>none: throw exception to the consumer if no previous offset is found for the consumer's group</li><li>anything else: throw exception to the consumer.</li></ul>";
 
     /**
      * <code>fetch.min.bytes</code>
@@ -294,7 +286,7 @@ public class ConsumerConfig extends AbstractConfig {
     /** <code>isolation.level</code> */
     public static final String ISOLATION_LEVEL_CONFIG = "isolation.level";
     public static final String ISOLATION_LEVEL_DOC = "Controls how to read messages written transactionally. If set to <code>read_committed</code>, consumer.poll() will only return" +
-            " transactional messages which have been committed. If set to <code>read_uncommitted</code> (the default), consumer.poll() will return all messages, even transactional messages" +
+            " transactional messages which have been committed. If set to <code>read_uncommitted</code>' (the default), consumer.poll() will return all messages, even transactional messages" +
             " which have been aborted. Non-transactional messages will be returned unconditionally in either mode. <p>Messages will always be returned in offset order. Hence, in " +
             " <code>read_committed</code> mode, consumer.poll() will only return messages up to the last stable offset (LSO), which is the one less than the offset of the first open transaction." +
             " In particular any messages appearing after messages belonging to ongoing transactions will be withheld until the relevant transaction has been completed. As a result, <code>read_committed</code>" +
@@ -440,7 +432,7 @@ public class ConsumerConfig extends AbstractConfig {
                                 .define(AUTO_OFFSET_RESET_CONFIG,
                                         Type.STRING,
                                         "latest",
-                                        in("latest", "earliest", "none"),
+                                        ConfigDef.CaseInsensitiveValidString.in("latest", "earliest", "none"),
                                         Importance.MEDIUM,
                                         AUTO_OFFSET_RESET_DOC)
                                 .define(CHECK_CRCS_CONFIG,

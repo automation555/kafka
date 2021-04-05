@@ -20,15 +20,18 @@ import org.apache.kafka.common.errors.InvalidConfigurationException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.function.Function;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.fail;
 
 public class ConsumerConfigTest {
 
@@ -68,6 +71,34 @@ public class ConsumerConfigTest {
         }
     }
 
+    @SuppressWarnings("deprecation")
+    @Test
+    public void testDeserializerToPropertyConfig() {
+        Properties properties = new Properties();
+        properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClassName);
+        properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClassName);
+        Properties newProperties = ConsumerConfig.addDeserializerToConfig(properties, null, null);
+        assertEquals(newProperties.get(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG), keyDeserializerClassName);
+        assertEquals(newProperties.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG), valueDeserializerClassName);
+
+        properties.clear();
+        properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClassName);
+        newProperties = ConsumerConfig.addDeserializerToConfig(properties, keyDeserializer, null);
+        assertEquals(newProperties.get(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG), keyDeserializerClassName);
+        assertEquals(newProperties.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG), valueDeserializerClassName);
+
+        properties.clear();
+        properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClassName);
+        newProperties = ConsumerConfig.addDeserializerToConfig(properties, null, valueDeserializer);
+        assertEquals(newProperties.get(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG), keyDeserializerClassName);
+        assertEquals(newProperties.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG), valueDeserializerClassName);
+
+        properties.clear();
+        newProperties = ConsumerConfig.addDeserializerToConfig(properties, keyDeserializer, valueDeserializer);
+        assertEquals(newProperties.get(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG), keyDeserializerClassName);
+        assertEquals(newProperties.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG), valueDeserializerClassName);
+    }
+
     @Test
     public void testAppendDeserializerToConfig() {
         Map<String, Object> configs = new HashMap<>();
@@ -101,5 +132,27 @@ public class ConsumerConfigTest {
         properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClassName);
         properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClassName);
         assertFalse(new ConsumerConfig(properties).getBoolean(ConsumerConfig.THROW_ON_FETCH_STABLE_OFFSET_UNSUPPORTED));
+    }
+
+    @Test
+    public void testOffsetResetStrategy() {
+        assertThrows(NullPointerException.class, () -> OffsetResetStrategy.forName(null));
+
+        assertEquals("earliest", OffsetResetStrategy.EARLIEST.toString());
+        assertEquals("latest", OffsetResetStrategy.LATEST.toString());
+        assertEquals("none", OffsetResetStrategy.NONE.toString());
+
+        final Function<String, OffsetResetStrategy> config = (value) -> {
+            final Properties properties = new Properties();
+            properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializerClassName);
+            properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializerClassName);
+            properties.setProperty(AUTO_OFFSET_RESET_CONFIG, value);
+            return OffsetResetStrategy.forName(
+                new ConsumerConfig(properties).getString(AUTO_OFFSET_RESET_CONFIG)
+            );
+        };
+        assertEquals(OffsetResetStrategy.EARLIEST, config.apply("earliest"));
+        assertEquals(OffsetResetStrategy.LATEST, config.apply("LATEST"));
+        assertEquals(OffsetResetStrategy.NONE, config.apply("NoNe"));
     }
 }

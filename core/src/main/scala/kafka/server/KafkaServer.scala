@@ -53,7 +53,7 @@ import org.apache.zookeeper.client.ZKClientConfig
 import scala.collection.{Map, Seq, mutable}
 import scala.jdk.CollectionConverters._
 
-object KafkaServer extends Logging {
+object KafkaServer {
   // Copy the subset of properties that are relevant to Logs
   // I'm listing out individual properties here since the names are slightly different in each Config class...
   private[kafka] def copyKafkaConfigToLog(kafkaConfig: KafkaConfig): java.util.Map[String, Object] = {
@@ -115,8 +115,6 @@ object KafkaServer extends Logging {
     }
 
   val MIN_INCREMENTAL_FETCH_SESSION_EVICTION_MS: Long = 120000
-
-  private def serverLogger() = logger.underlying
 }
 
 /**
@@ -124,9 +122,7 @@ object KafkaServer extends Logging {
  * to start up and shutdown a single Kafka node.
  */
 class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNamePrefix: Option[String] = None,
-                  kafkaMetricsReporters: Seq[KafkaMetricsReporter] = List()) extends KafkaMetricsGroup {
-  import KafkaServer._
-  private implicit var logIdent : Option[LogIdent] = None
+                  kafkaMetricsReporters: Seq[KafkaMetricsReporter] = List()) extends Logging with KafkaMetricsGroup {
   private val startupComplete = new AtomicBoolean(false)
   private val isShuttingDown = new AtomicBoolean(false)
   private val isStartingUp = new AtomicBoolean(false)
@@ -210,7 +206,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
   newGauge("ClusterId", () => clusterId)
   newGauge("yammer-metrics-count", () =>  KafkaYammerMetrics.defaultRegistry.allMetrics.size)
 
-  val linuxIoMetricsCollector = new LinuxIoMetricsCollector("/proc", time, serverLogger())
+  val linuxIoMetricsCollector = new LinuxIoMetricsCollector("/proc", time, logger.underlying)
 
   if (linuxIoMetricsCollector.usable()) {
     newGauge("linux-disk-read-bytes", () => linuxIoMetricsCollector.readBytes())
@@ -260,7 +256,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         /* generate brokerId */
         config.brokerId = getOrGenerateBrokerId(preloadedBrokerMetadataCheckpoint)
         logContext = new LogContext(s"[KafkaServer id=${config.brokerId}] ")
-        logIdent = Some(LogIdent(logContext.logPrefix))
+        this.logIdent = logContext.logPrefix
 
         // initialize dynamic broker configs from ZooKeeper. Any updates made after this will be
         // applied after DynamicConfigManager starts.
@@ -538,7 +534,10 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
    */
   private def controlledShutdown(): Unit = {
 
-    def node(broker: Broker): Node = broker.node(config.interBrokerListenerName)
+    val brokerToControllerListenerName = config.controlPlaneListenerName.getOrElse(config.interBrokerListenerName)
+    val brokerToControllerSecurityProtocol = config.controlPlaneSecurityProtocol.getOrElse(config.interBrokerSecurityProtocol)
+
+    def node(broker: Broker): Node = broker.node(brokerToControllerListenerName)
 
     val socketTimeoutMs = config.controllerSocketTimeoutMs
 
@@ -546,10 +545,10 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
       val metadataUpdater = new ManualMetadataUpdater()
       val networkClient = {
         val channelBuilder = ChannelBuilders.clientChannelBuilder(
-          config.interBrokerSecurityProtocol,
+          brokerToControllerSecurityProtocol,
           JaasContext.Type.SERVER,
           config,
-          config.interBrokerListenerName,
+          brokerToControllerListenerName,
           config.saslMechanismInterBrokerProtocol,
           time,
           config.saslInterBrokerHandshakeRequestEnable,
@@ -706,72 +705,72 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
       // last in the `if` block. If the order is reversed, we could shutdown twice or leave `isShuttingDown` set to
       // `true` at the end of this method.
       if (shutdownLatch.getCount > 0 && isShuttingDown.compareAndSet(false, true)) {
-        CoreUtils.swallow(controlledShutdown(), KafkaServer)
+        CoreUtils.swallow(controlledShutdown(), this)
         brokerState.newState(BrokerShuttingDown)
 
         if (dynamicConfigManager != null)
-          CoreUtils.swallow(dynamicConfigManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(dynamicConfigManager.shutdown(), this)
 
         // Stop socket server to stop accepting any more connections and requests.
         // Socket server will be shutdown towards the end of the sequence.
         if (socketServer != null)
-          CoreUtils.swallow(socketServer.stopProcessingRequests(), KafkaServer)
+          CoreUtils.swallow(socketServer.stopProcessingRequests(), this)
         if (dataPlaneRequestHandlerPool != null)
-          CoreUtils.swallow(dataPlaneRequestHandlerPool.shutdown(), KafkaServer)
+          CoreUtils.swallow(dataPlaneRequestHandlerPool.shutdown(), this)
         if (controlPlaneRequestHandlerPool != null)
-          CoreUtils.swallow(controlPlaneRequestHandlerPool.shutdown(), KafkaServer)
+          CoreUtils.swallow(controlPlaneRequestHandlerPool.shutdown(), this)
         if (kafkaScheduler != null)
-          CoreUtils.swallow(kafkaScheduler.shutdown(), KafkaServer)
+          CoreUtils.swallow(kafkaScheduler.shutdown(), this)
 
         if (dataPlaneRequestProcessor != null)
-          CoreUtils.swallow(dataPlaneRequestProcessor.close(), KafkaServer)
+          CoreUtils.swallow(dataPlaneRequestProcessor.close(), this)
         if (controlPlaneRequestProcessor != null)
-          CoreUtils.swallow(controlPlaneRequestProcessor.close(), KafkaServer)
-        CoreUtils.swallow(authorizer.foreach(_.close()), KafkaServer)
+          CoreUtils.swallow(controlPlaneRequestProcessor.close(), this)
+        CoreUtils.swallow(authorizer.foreach(_.close()), this)
         if (adminManager != null)
-          CoreUtils.swallow(adminManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(adminManager.shutdown(), this)
 
         if (transactionCoordinator != null)
-          CoreUtils.swallow(transactionCoordinator.shutdown(), KafkaServer)
+          CoreUtils.swallow(transactionCoordinator.shutdown(), this)
         if (groupCoordinator != null)
-          CoreUtils.swallow(groupCoordinator.shutdown(), KafkaServer)
+          CoreUtils.swallow(groupCoordinator.shutdown(), this)
 
         if (tokenManager != null)
-          CoreUtils.swallow(tokenManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(tokenManager.shutdown(), this)
 
         if (replicaManager != null)
-          CoreUtils.swallow(replicaManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(replicaManager.shutdown(), this)
 
         if (alterIsrManager != null)
-          CoreUtils.swallow(alterIsrManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(alterIsrManager.shutdown(), this)
 
         if (forwardingManager != null)
-          CoreUtils.swallow(forwardingManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(forwardingManager.shutdown(), this)
 
         if (logManager != null)
-          CoreUtils.swallow(logManager.shutdown(), KafkaServer)
+          CoreUtils.swallow(logManager.shutdown(), this)
 
         if (kafkaController != null)
-          CoreUtils.swallow(kafkaController.shutdown(), KafkaServer)
+          CoreUtils.swallow(kafkaController.shutdown(), this)
 
         if (featureChangeListener != null)
-          CoreUtils.swallow(featureChangeListener.close(), KafkaServer)
+          CoreUtils.swallow(featureChangeListener.close(), this)
 
         if (zkClient != null)
-          CoreUtils.swallow(zkClient.close(), KafkaServer)
+          CoreUtils.swallow(zkClient.close(), this)
 
         if (quotaManagers != null)
-          CoreUtils.swallow(quotaManagers.shutdown(), KafkaServer)
+          CoreUtils.swallow(quotaManagers.shutdown(), this)
 
         // Even though socket server is stopped much earlier, controller can generate
         // response for controlled shutdown request. Shutdown server at the end to
         // avoid any failures (e.g. when metrics are recorded)
         if (socketServer != null)
-          CoreUtils.swallow(socketServer.shutdown(), KafkaServer)
+          CoreUtils.swallow(socketServer.shutdown(), this)
         if (metrics != null)
-          CoreUtils.swallow(metrics.close(), KafkaServer)
+          CoreUtils.swallow(metrics.close(), this)
         if (brokerTopicStats != null)
-          CoreUtils.swallow(brokerTopicStats.close(), KafkaServer)
+          CoreUtils.swallow(brokerTopicStats.close(), this)
 
         // Clear all reconfigurable instances stored in DynamicBrokerConfig
         config.dynamicConfig.clear()
@@ -780,7 +779,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
 
         startupComplete.set(false)
         isShuttingDown.set(false)
-        CoreUtils.swallow(AppInfoParser.unregisterAppInfo(metricsPrefix, config.brokerId.toString, metrics), KafkaServer)
+        CoreUtils.swallow(AppInfoParser.unregisterAppInfo(metricsPrefix, config.brokerId.toString, metrics), this)
         shutdownLatch.countDown()
         info("shut down completed")
       }

@@ -28,8 +28,12 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * The Kafka message generator.
@@ -60,8 +64,6 @@ public final class MessageGenerator {
     static final String LIST_CLASS = "java.util.List";
 
     static final String ARRAYLIST_CLASS = "java.util.ArrayList";
-
-    static final String OPTIONAL_CLASS = "java.util.Optional";
 
     static final String IMPLICIT_LINKED_HASH_COLLECTION_CLASS =
         "org.apache.kafka.common.utils.ImplicitLinkedHashCollection";
@@ -114,30 +116,6 @@ public final class MessageGenerator {
 
     static final String MAP_ENTRY_CLASS = "java.util.Map.Entry";
 
-    static final String JSON_NODE_CLASS = "com.fasterxml.jackson.databind.JsonNode";
-
-    static final String OBJECT_NODE_CLASS = "com.fasterxml.jackson.databind.node.ObjectNode";
-
-    static final String JSON_NODE_FACTORY_CLASS = "com.fasterxml.jackson.databind.node.JsonNodeFactory";
-
-    static final String BOOLEAN_NODE_CLASS = "com.fasterxml.jackson.databind.node.BooleanNode";
-
-    static final String SHORT_NODE_CLASS = "com.fasterxml.jackson.databind.node.ShortNode";
-
-    static final String INT_NODE_CLASS = "com.fasterxml.jackson.databind.node.IntNode";
-
-    static final String LONG_NODE_CLASS = "com.fasterxml.jackson.databind.node.LongNode";
-
-    static final String TEXT_NODE_CLASS = "com.fasterxml.jackson.databind.node.TextNode";
-
-    static final String BINARY_NODE_CLASS = "com.fasterxml.jackson.databind.node.BinaryNode";
-
-    static final String NULL_NODE_CLASS = "com.fasterxml.jackson.databind.node.NullNode";
-
-    static final String ARRAY_NODE_CLASS = "com.fasterxml.jackson.databind.node.ArrayNode";
-
-    static final String DOUBLE_NODE_CLASS = "com.fasterxml.jackson.databind.node.DoubleNode";
-
     /**
      * The Jackson serializer we use for JSON objects.
      */
@@ -151,56 +129,68 @@ public final class MessageGenerator {
         JSON_SERDE.setSerializationInclusion(JsonInclude.Include.NON_EMPTY);
     }
 
-    private static TypeClassGenerator createTypeClassGenerator(String packageName,
-                                                               String type) {
-        switch (type) {
-            case "none":
-                return null;
-            case "ApiMessageTypeGenerator":
-                return new ApiMessageTypeGenerator(packageName);
-            default:
-                throw new RuntimeException("Unknown type class generator type '" + type + "'");
-        }
-    }
-
-    public static void processDirectories(String packageName,
-                                          String outputDir,
-                                          String inputDir,
-                                          String typeClassGeneratorType) throws Exception {
+    public static void processDirectories(String packageName, String outputDir, String inputDir) throws Exception {
         Files.createDirectories(Paths.get(outputDir));
         int numProcessed = 0;
-        TypeClassGenerator typeClassGenerator =
-            createTypeClassGenerator(packageName, typeClassGeneratorType);
+        ApiMessageTypeGenerator messageTypeGenerator = new ApiMessageTypeGenerator(packageName);
         HashSet<String> outputFileNames = new HashSet<>();
         try (DirectoryStream<Path> directoryStream = Files
                 .newDirectoryStream(Paths.get(inputDir), JSON_GLOB)) {
+            Map<String, CodesSpec> codesRegistry = new HashMap<>();
+            List<MessageSpec> messageSpecs = new ArrayList<>();
             for (Path inputPath : directoryStream) {
                 try {
-                    MessageSpec spec = JSON_SERDE.
-                        readValue(inputPath.toFile(), MessageSpec.class);
-                    String javaName = spec.generatedClassName() + JAVA_SUFFIX;
-                    outputFileNames.add(javaName);
-                    Path outputPath = Paths.get(outputDir, javaName);
-                    try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
-                        MessageDataGenerator generator = new MessageDataGenerator(packageName);
-                        generator.generate(spec);
-                        generator.write(writer);
-                    }
-                    numProcessed++;
-                    if (typeClassGenerator != null) {
-                        typeClassGenerator.registerMessageType(spec);
+                    DeclarationSpec declSpec = JSON_SERDE.
+                            readValue(inputPath.toFile(), DeclarationSpec.class);
+                    if (declSpec instanceof MessageSpec) {
+                        MessageSpec spec = (MessageSpec) declSpec;
+                        messageSpecs.add(spec);
+                    } else if (declSpec instanceof CodesSpec) {
+                        CodesSpec spec = (CodesSpec) declSpec;
+                        codesRegistry.put(spec.name(), spec);
+                    } else {
+                        throw new RuntimeException();
                     }
                 } catch (Exception e) {
                     throw new RuntimeException("Exception while processing " + inputPath.toString(), e);
                 }
             }
-        }
-        if (typeClassGenerator != null) {
-            outputFileNames.add(typeClassGenerator.outputName());
-            Path factoryOutputPath = Paths.get(outputDir, typeClassGenerator.outputName());
-            try (BufferedWriter writer = Files.newBufferedWriter(factoryOutputPath)) {
-                typeClassGenerator.generateAndWrite(writer);
+            for (CodesSpec spec : codesRegistry.values()) {
+                String javaName = spec.generatedClassName() + JAVA_SUFFIX;
+                outputFileNames.add(javaName);
+                Path outputPath = Paths.get(outputDir, javaName);
+                try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
+                    CodesDataGenerator generator = new CodesDataGenerator(packageName);
+                    generator.generate(spec);
+                    generator.write(writer);
+                }
+                numProcessed++;
             }
+            for (MessageSpec spec : messageSpecs) {
+                try {
+                    String javaName = spec.generatedClassName() + JAVA_SUFFIX;
+                    outputFileNames.add(javaName);
+                    Path outputPath = Paths.get(outputDir, javaName);
+                    try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
+                        MessageDataGenerator generator = new MessageDataGenerator(packageName, codesRegistry);
+                        generator.generate(spec);
+                        generator.write(writer);
+                    }
+                    numProcessed++;
+                    messageTypeGenerator.registerMessageType(spec);
+                } catch (Exception e) {
+                    throw new RuntimeException("Exception while processing message spec " + spec.name(), e);
+                }
+            }
+        }
+        if (messageTypeGenerator.hasRegisteredTypes()) {
+            Path factoryOutputPath = Paths.get(outputDir, API_MESSAGE_TYPE_JAVA);
+            outputFileNames.add(API_MESSAGE_TYPE_JAVA);
+            try (BufferedWriter writer = Files.newBufferedWriter(factoryOutputPath)) {
+                messageTypeGenerator.generate();
+                messageTypeGenerator.write(writer);
+            }
+            numProcessed++;
         }
         try (DirectoryStream<Path> directoryStream = Files.
                 newDirectoryStream(Paths.get(outputDir))) {
@@ -285,10 +275,10 @@ public final class MessageGenerator {
         if (args.length == 0) {
             System.out.println(USAGE);
             System.exit(0);
-        } else if (args.length != 4) {
+        } else if (args.length != 3) {
             System.out.println(USAGE);
             System.exit(1);
         }
-        processDirectories(args[0], args[1], args[2], args[3]);
+        processDirectories(args[0], args[1], args[2]);
     }
 }

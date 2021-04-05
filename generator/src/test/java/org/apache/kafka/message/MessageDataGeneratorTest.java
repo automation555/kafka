@@ -17,17 +17,20 @@
 
 package org.apache.kafka.message;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.util.Arrays;
+import java.util.Collections;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-@Timeout(120)
 public class MessageDataGeneratorTest {
+    @Rule
+    final public Timeout globalTimeout = Timeout.millis(120000);
 
     @Test
     public void testNullDefaults() throws Exception {
@@ -46,12 +49,12 @@ public class MessageDataGeneratorTest {
                 "      \"nullableVersions\": \"2+\", \"default\": \"null\" }",
                 "  ]",
                 "}")), MessageSpec.class);
-        new MessageDataGenerator("org.apache.kafka.common.message").generate(testMessageSpec);
+        new MessageDataGenerator("org.apache.kafka.common.message", Collections.emptyMap()).generate(testMessageSpec);
     }
 
     private void assertStringContains(String substring, String value) {
-        assertTrue(value.contains(substring),
-                   "Expected string to contain '" + substring + "', but it was " + value);
+        assertTrue("Expected string to contain '" + substring + "', but it was " + value,
+            value.contains(substring));
     }
 
     @Test
@@ -67,7 +70,7 @@ public class MessageDataGeneratorTest {
             "}")), MessageSpec.class);
         assertStringContains("Invalid default for int32",
             assertThrows(RuntimeException.class, () -> {
-                new MessageDataGenerator("org.apache.kafka.common.message").generate(testMessageSpec);
+                new MessageDataGenerator("org.apache.kafka.common.message", Collections.emptyMap()).generate(testMessageSpec);
             }).getMessage());
     }
 
@@ -86,7 +89,7 @@ public class MessageDataGeneratorTest {
 
         assertStringContains("not all versions of this field are nullable",
             assertThrows(RuntimeException.class, () -> {
-                new MessageDataGenerator("org.apache.kafka.common.message").generate(testMessageSpec);
+                new MessageDataGenerator("org.apache.kafka.common.message", Collections.emptyMap()).generate(testMessageSpec);
             }).getMessage());
     }
 

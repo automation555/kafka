@@ -46,8 +46,6 @@ public final class FieldSpec {
 
     private final boolean ignorable;
 
-    private final boolean optional;
-
     private final EntityType entityType;
 
     private final String about;
@@ -57,6 +55,7 @@ public final class FieldSpec {
     private final Optional<Versions> flexibleVersions;
 
     private final Optional<Integer> tag;
+    private final DomainSpec domain;
 
     private boolean zeroCopy;
 
@@ -69,13 +68,13 @@ public final class FieldSpec {
                      @JsonProperty("nullableVersions") String nullableVersions,
                      @JsonProperty("default") String fieldDefault,
                      @JsonProperty("ignorable") boolean ignorable,
-                     @JsonProperty("optional") boolean optional,
                      @JsonProperty("entityType") EntityType entityType,
                      @JsonProperty("about") String about,
                      @JsonProperty("taggedVersions") String taggedVersions,
                      @JsonProperty("flexibleVersions") String flexibleVersions,
                      @JsonProperty("tag") Integer tag,
-                     @JsonProperty("zeroCopy") boolean zeroCopy) {
+                     @JsonProperty("zeroCopy") boolean zeroCopy,
+                     @JsonProperty("domain") DomainSpec domain) {
         this.name = Objects.requireNonNull(name);
         if (!VALID_FIELD_NAMES.matcher(this.name).matches()) {
             throw new RuntimeException("Invalid field name " + this.name);
@@ -100,18 +99,15 @@ public final class FieldSpec {
         }
         this.fieldDefault = fieldDefault == null ? "" : fieldDefault;
         this.ignorable = ignorable;
-        this.optional = optional;
-
         this.entityType = (entityType == null) ? EntityType.UNKNOWN : entityType;
         this.entityType.verifyTypeMatches(name, this.type);
 
         this.about = about == null ? "" : about;
         if (!this.fields().isEmpty()) {
-            if (!this.type.isArray() && !this.type.isStruct()) {
-                throw new RuntimeException("Non-array or Struct field " + name + " cannot have fields");
+            if (!this.type.isArray()) {
+                throw new RuntimeException("Non-array field " + name + " cannot have fields");
             }
         }
-
         if (flexibleVersions == null || flexibleVersions.isEmpty()) {
             this.flexibleVersions = Optional.empty();
         } else {
@@ -126,9 +122,6 @@ public final class FieldSpec {
             }
         }
         this.tag = Optional.ofNullable(tag);
-        if (this.tag.isPresent() && mapKey) {
-            throw new RuntimeException("Tagged fields cannot be used as keys.");
-        }
         checkTagInvariants();
 
         this.zeroCopy = zeroCopy;
@@ -136,6 +129,8 @@ public final class FieldSpec {
             throw new RuntimeException("Invalid zeroCopy value for " + name +
                 ". Only fields of type bytes can use zeroCopy flag.");
         }
+
+        this.domain = domain;
     }
 
     private void checkTagInvariants() {
@@ -236,16 +231,6 @@ public final class FieldSpec {
         return ignorable;
     }
 
-    @JsonProperty("optional")
-    public boolean optional() {
-        return optional;
-    }
-
-    @JsonProperty("entityType")
-    public EntityType entityType() {
-        return entityType;
-    }
-
     @JsonProperty("about")
     public String about() {
         return about;
@@ -281,5 +266,10 @@ public final class FieldSpec {
     @JsonProperty("zeroCopy")
     public boolean zeroCopy() {
         return zeroCopy;
+    }
+
+    @JsonProperty("domain")
+    public DomainSpec domain() {
+        return domain;
     }
 }

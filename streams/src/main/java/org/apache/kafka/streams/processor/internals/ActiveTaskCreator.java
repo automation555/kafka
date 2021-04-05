@@ -53,6 +53,7 @@ class ActiveTaskCreator {
     private final StreamsConfig config;
     private final StreamsMetricsImpl streamsMetrics;
     private final StateDirectory stateDirectory;
+    private final ChangelogReader storeChangelogReader;
     private final ThreadCache cache;
     private final Time time;
     private final KafkaClientSupplier clientSupplier;
@@ -67,6 +68,7 @@ class ActiveTaskCreator {
                       final StreamsConfig config,
                       final StreamsMetricsImpl streamsMetrics,
                       final StateDirectory stateDirectory,
+                      final ChangelogReader storeChangelogReader,
                       final ThreadCache cache,
                       final Time time,
                       final KafkaClientSupplier clientSupplier,
@@ -77,6 +79,7 @@ class ActiveTaskCreator {
         this.config = config;
         this.streamsMetrics = streamsMetrics;
         this.stateDirectory = stateDirectory;
+        this.storeChangelogReader = storeChangelogReader;
         this.cache = cache;
         this.time = time;
         this.clientSupplier = clientSupplier;
@@ -146,6 +149,7 @@ class ActiveTaskCreator {
                 StreamThread.eosEnabled(config),
                 logContext,
                 stateDirectory,
+                storeChangelogReader,
                 topology.storeToChangelogTopic(),
                 partitions
             );
@@ -180,8 +184,8 @@ class ActiveTaskCreator {
         final ProcessorStateManager stateManager = standbyTask.stateMgr;
         final LogContext logContext = getLogContext(standbyTask.id);
 
-        standbyTask.closeCleanAndRecycleState();
-        stateManager.prepareNewTaskType(TaskType.ACTIVE, logContext);
+        standbyTask.closeAndRecycleState();
+        stateManager.transitionTaskType(TaskType.ACTIVE, logContext);
 
         return createActiveTask(
             standbyTask.id,
@@ -226,17 +230,17 @@ class ActiveTaskCreator {
 
         final StreamTask task = new StreamTask(
             taskId,
-            partitions,
             topology,
-            consumer,
-            config,
-            streamsMetrics,
             stateDirectory,
-            cache,
-            time,
             stateManager,
-            recordCollector,
-            context
+            partitions,
+            config,
+            context,
+            cache,
+            streamsMetrics,
+            time,
+            consumer,
+            recordCollector
         );
 
         log.trace("Created task {} with assigned partitions {}", taskId, partitions);

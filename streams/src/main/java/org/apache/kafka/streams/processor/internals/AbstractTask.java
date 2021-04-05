@@ -17,16 +17,11 @@
 package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.StreamsException;
-import org.apache.kafka.streams.errors.TaskMigratedException;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.slf4j.Logger;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,70 +30,34 @@ import static org.apache.kafka.streams.processor.internals.Task.State.CLOSED;
 import static org.apache.kafka.streams.processor.internals.Task.State.CREATED;
 
 public abstract class AbstractTask implements Task {
-    private final static long NO_DEADLINE = -1L;
-
     private Task.State state = CREATED;
-    private long deadlineMs = NO_DEADLINE;
-    protected Set<TopicPartition> inputPartitions;
-
-    /**
-     * If the checkpoint has not been loaded from the file yet (null), then we should not overwrite the checkpoint;
-     * If the checkpoint has been loaded from the file and has never been re-written (empty map), then we should re-write the checkpoint;
-     * If the checkpoint has been loaded from the file but has not been updated since, then we do not need to checkpoint;
-     * If the checkpoint has been loaded from the file and has been updated since, then we could overwrite the checkpoint;
-     */
-    protected Map<TopicPartition, Long> offsetSnapshotSinceLastFlush = null;
 
     protected final TaskId id;
     protected final ProcessorTopology topology;
     protected final StateDirectory stateDirectory;
     protected final ProcessorStateManager stateMgr;
-    private final long taskTimeoutMs;
 
-    public AbstractTask(final TaskId id,
-                        final ProcessorTopology topology,
-                        final StateDirectory stateDirectory,
-                        final ProcessorStateManager stateMgr,
-                        final Set<TopicPartition> inputPartitions,
-                        final long taskTimeoutMs) {
+    protected Set<TopicPartition> inputPartitions;
+
+    AbstractTask(final TaskId id,
+                 final ProcessorTopology topology,
+                 final StateDirectory stateDirectory,
+                 final ProcessorStateManager stateMgr,
+                 final Set<TopicPartition> inputPartitions) {
         this.id = id;
-        this.stateMgr = stateMgr;
         this.topology = topology;
-        this.inputPartitions = inputPartitions;
+        this.stateMgr = stateMgr;
         this.stateDirectory = stateDirectory;
-        this.taskTimeoutMs = taskTimeoutMs;
+        this.inputPartitions = inputPartitions;
     }
 
-    /**
-     * The following exceptions maybe thrown from the state manager flushing call
-     *
-     * @throws TaskMigratedException recoverable error sending changelog records that would cause the task to be removed
-     * @throws StreamsException fatal error when flushing the state store, for example sending changelog records failed
-     *                          or flushing state store get IO errors; such error should cause the thread to die
-     */
-    protected void maybeWriteCheckpoint(final boolean enforceCheckpoint) {
-        final Map<TopicPartition, Long> offsetSnapshot = stateMgr.changelogOffsets();
-        if (StateManagerUtil.checkpointNeeded(enforceCheckpoint, offsetSnapshotSinceLastFlush, offsetSnapshot)) {
-            // the state's current offset would be used to checkpoint
-            stateMgr.flush();
-            stateMgr.checkpoint();
-            offsetSnapshotSinceLastFlush = new HashMap<>(offsetSnapshot);
+    @Override
+    public void revive() {
+        if (state == CLOSED) {
+            transitionTo(CREATED);
+        } else {
+            throw new IllegalStateException("Illegal state " + state() + " while reviving task " + id);
         }
-    }
-
-    @Override
-    public TaskId id() {
-        return id;
-    }
-
-    @Override
-    public Set<TopicPartition> inputPartitions() {
-        return inputPartitions;
-    }
-
-    @Override
-    public Collection<TopicPartition> changelogPartitions() {
-        return stateMgr.changelogPartitions();
     }
 
     @Override
@@ -107,18 +66,8 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
-    public StateStore getStore(final String name) {
-        return stateMgr.getStore(name);
-    }
-
-    @Override
-    public ProcessorStateManager stateManager() {
-        return stateMgr;
-    }
-
-    @Override
-    public boolean isClosed() {
-        return state() == State.CLOSED;
+    public final TaskId id() {
+        return id;
     }
 
     @Override
@@ -127,18 +76,28 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
-    public void revive() {
-        if (state == CLOSED) {
-            // clear all the stores since they should be re-registered
-            stateMgr.clear();
-
-            transitionTo(CREATED);
-        } else {
-            throw new IllegalStateException("Illegal state " + state() + " while reviving task " + id);
-        }
+    public void updateInputPartitions(final Set<TopicPartition> topicPartitions,
+                                      final Map<String, List<String>> nodeToSourceTopics) {
+        this.inputPartitions = topicPartitions;
+        topology.updateSourceTopics(nodeToSourceTopics);
     }
 
-    public final void transitionTo(final Task.State newState) {
+    @Override
+    public Set<TopicPartition> inputPartitions() {
+        return inputPartitions;
+    }
+
+    @Override
+    public StateStore getStore(final String name) {
+        return stateMgr.getStore(name);
+    }
+
+    @Override
+    public Collection<TopicPartition> changelogPartitions() {
+        return stateMgr.changelogPartitions();
+    }
+
+    final void transitionTo(final Task.State newState) {
         final State oldState = state();
 
         if (oldState.isValidTransition(newState)) {
@@ -148,51 +107,18 @@ public abstract class AbstractTask implements Task {
         }
     }
 
-    @Override
-    public void update(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> nodeToSourceTopics) {
-        this.inputPartitions = topicPartitions;
-        topology.updateSourceTopics(nodeToSourceTopics);
-    }
-
-    void maybeInitTaskTimeoutOrThrow(final long currentWallClockMs,
-                                     final TimeoutException timeoutException,
-                                     final Logger log) throws StreamsException {
-        if (deadlineMs == NO_DEADLINE) {
-            deadlineMs = currentWallClockMs + taskTimeoutMs;
-        } else if (currentWallClockMs > deadlineMs) {
-            final String errorMessage = String.format(
-                "Task %s did not make progress within %d ms. Adjust `%s` if needed.",
-                id,
-                currentWallClockMs - deadlineMs + taskTimeoutMs,
-                StreamsConfig.TASK_TIMEOUT_MS_CONFIG
-            );
-
-            if (timeoutException != null) {
-                throw new TimeoutException(errorMessage, timeoutException);
+    static void executeAndMaybeSwallow(final boolean clean,
+                                       final Runnable runnable,
+                                       final String name,
+                                       final Logger log) {
+        try {
+            runnable.run();
+        } catch (final RuntimeException e) {
+            if (clean) {
+                throw e;
             } else {
-                throw new TimeoutException(errorMessage);
+                log.debug("Ignoring error in unclean {}", name);
             }
-        }
-
-        if (timeoutException != null) {
-            log.debug(
-                "Timeout exception. Remaining time to deadline {}; retrying.",
-                deadlineMs - currentWallClockMs,
-                timeoutException
-            );
-        } else {
-            log.debug(
-                "Task did not make progress. Remaining time to deadline {}; retrying.",
-                deadlineMs - currentWallClockMs
-            );
-        }
-
-    }
-
-    void clearTaskTimeout(final Logger log) {
-        if (deadlineMs != NO_DEADLINE) {
-            log.debug("Clearing task timeout.");
-            deadlineMs = NO_DEADLINE;
         }
     }
 }

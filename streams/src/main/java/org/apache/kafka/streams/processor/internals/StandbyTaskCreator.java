@@ -38,6 +38,7 @@ class StandbyTaskCreator {
     private final StreamsConfig config;
     private final StreamsMetricsImpl streamsMetrics;
     private final StateDirectory stateDirectory;
+    private final ChangelogReader storeChangelogReader;
     private final ThreadCache dummyCache;
     private final Logger log;
     private final Sensor createTaskSensor;
@@ -46,12 +47,14 @@ class StandbyTaskCreator {
                        final StreamsConfig config,
                        final StreamsMetricsImpl streamsMetrics,
                        final StateDirectory stateDirectory,
+                       final ChangelogReader storeChangelogReader,
                        final String threadId,
                        final Logger log) {
         this.builder = builder;
         this.config = config;
         this.streamsMetrics = streamsMetrics;
         this.stateDirectory = stateDirectory;
+        this.storeChangelogReader = storeChangelogReader;
         this.log = log;
 
         createTaskSensor = ThreadMetrics.createTaskSensor(threadId, streamsMetrics);
@@ -78,6 +81,7 @@ class StandbyTaskCreator {
                     StreamThread.eosEnabled(config),
                     getLogContext(taskId),
                     stateDirectory,
+                    storeChangelogReader,
                     topology.storeToChangelogTopic(),
                     partitions
                 );
@@ -90,7 +94,7 @@ class StandbyTaskCreator {
                     dummyCache
                 );
 
-                createdTasks.add(createStandbyTask(taskId, partitions, topology, stateManager, context));
+                createdTasks.add(createStandbyTask(taskId, topology, stateManager, partitions, context));
             } else {
                 log.trace(
                     "Skipped standby task {} with assigned partitions {} " +
@@ -108,33 +112,33 @@ class StandbyTaskCreator {
         final InternalProcessorContext context = streamTask.processorContext();
         final ProcessorStateManager stateManager = streamTask.stateMgr;
 
-        streamTask.closeCleanAndRecycleState();
-        stateManager.prepareNewTaskType(TaskType.STANDBY, getLogContext(streamTask.id()));
+        streamTask.closeAndRecycleState();
+        stateManager.transitionTaskType(TaskType.STANDBY, getLogContext(streamTask.id()));
 
         return createStandbyTask(
             streamTask.id(),
-            partitions,
             builder.buildSubtopology(streamTask.id.topicGroupId),
             stateManager,
+            partitions,
             context
         );
     }
 
     StandbyTask createStandbyTask(final TaskId taskId,
-                                  final Set<TopicPartition> partitions,
                                   final ProcessorTopology topology,
                                   final ProcessorStateManager stateManager,
+                                  final Set<TopicPartition> partitions,
                                   final InternalProcessorContext context) {
         final StandbyTask task = new StandbyTask(
             taskId,
-            partitions,
             topology,
-            config,
-            streamsMetrics,
-            stateManager,
             stateDirectory,
+            stateManager,
+            partitions,
+            config,
+            context,
             dummyCache,
-            context
+            streamsMetrics
         );
 
         log.trace("Created task {} with assigned partitions {}", taskId, partitions);

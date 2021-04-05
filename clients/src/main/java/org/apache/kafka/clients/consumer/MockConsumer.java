@@ -37,15 +37,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-
-import static java.util.Collections.singleton;
 
 
 /**
@@ -149,6 +146,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         ensureNotClosed();
         committed.clear();
         this.subscriptions.assignFromUser(new HashSet<>(partitions));
+        this.paused.retainAll(partitions);
     }
 
     @Override
@@ -306,7 +304,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     @Deprecated
     @Override
     public synchronized OffsetAndMetadata committed(final TopicPartition partition) {
-        return committed(singleton(partition)).get(partition);
+        return committed(Collections.singleton(partition)).get(partition);
     }
 
     @Deprecated
@@ -542,16 +540,6 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     @Override
     public Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions, Duration timeout) {
         return endOffsets(partitions);
-    }
-
-    @Override
-    public OptionalLong currentLag(TopicPartition topicPartition) {
-        if (endOffsets.containsKey(topicPartition)) {
-            return OptionalLong.of(endOffsets.get(topicPartition) - position(topicPartition));
-        } else {
-            // if the test doesn't bother to set an end offset, we assume it wants to model being caught up.
-            return OptionalLong.of(0L);
-        }
     }
 
     @Override

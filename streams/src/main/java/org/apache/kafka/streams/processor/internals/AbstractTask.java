@@ -18,7 +18,6 @@ package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.errors.TaskMigratedException;
@@ -40,11 +39,7 @@ public abstract class AbstractTask implements Task {
 
     private Task.State state = CREATED;
     private long deadlineMs = NO_DEADLINE;
-
     protected Set<TopicPartition> inputPartitions;
-    protected final Logger log;
-    protected final LogContext logContext;
-    protected final String logPrefix;
 
     /**
      * If the checkpoint has not been loaded from the file yet (null), then we should not overwrite the checkpoint;
@@ -60,25 +55,18 @@ public abstract class AbstractTask implements Task {
     protected final ProcessorStateManager stateMgr;
     private final long taskTimeoutMs;
 
-    AbstractTask(final TaskId id,
-                 final ProcessorTopology topology,
-                 final StateDirectory stateDirectory,
-                 final ProcessorStateManager stateMgr,
-                 final Set<TopicPartition> inputPartitions,
-                 final long taskTimeoutMs,
-                 final String taskType,
-                 final Class<? extends AbstractTask> clazz) {
+    public AbstractTask(final TaskId id,
+                        final ProcessorTopology topology,
+                        final StateDirectory stateDirectory,
+                        final ProcessorStateManager stateMgr,
+                        final Set<TopicPartition> inputPartitions,
+                        final long taskTimeoutMs) {
         this.id = id;
         this.stateMgr = stateMgr;
         this.topology = topology;
         this.inputPartitions = inputPartitions;
         this.stateDirectory = stateDirectory;
         this.taskTimeoutMs = taskTimeoutMs;
-
-        final String threadIdPrefix = String.format("stream-thread [%s] ", Thread.currentThread().getName());
-        logPrefix = threadIdPrefix + String.format("%s [%s] ", taskType, id);
-        logContext = new LogContext(logPrefix);
-        log = logContext.logger(clazz);
     }
 
     /**
@@ -97,7 +85,6 @@ public abstract class AbstractTask implements Task {
             offsetSnapshotSinceLastFlush = new HashMap<>(offsetSnapshot);
         }
     }
-
 
     @Override
     public TaskId id() {
@@ -125,6 +112,16 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
+    public ProcessorStateManager stateManager() {
+        return stateMgr;
+    }
+
+    @Override
+    public boolean isClosed() {
+        return state() == State.CLOSED;
+    }
+
+    @Override
     public final Task.State state() {
         return state;
     }
@@ -132,14 +129,16 @@ public abstract class AbstractTask implements Task {
     @Override
     public void revive() {
         if (state == CLOSED) {
-            clearTaskTimeout();
+            // clear all the stores since they should be re-registered
+            stateMgr.clear();
+
             transitionTo(CREATED);
         } else {
             throw new IllegalStateException("Illegal state " + state() + " while reviving task " + id);
         }
     }
 
-    final void transitionTo(final Task.State newState) {
+    public final void transitionTo(final Task.State newState) {
         final State oldState = state();
 
         if (oldState.isValidTransition(newState)) {
@@ -150,14 +149,14 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
-    public void updateInputPartitions(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> allTopologyNodesToSourceTopics) {
+    public void update(final Set<TopicPartition> topicPartitions, final Map<String, List<String>> nodeToSourceTopics) {
         this.inputPartitions = topicPartitions;
-        topology.updateSourceTopics(allTopologyNodesToSourceTopics);
+        topology.updateSourceTopics(nodeToSourceTopics);
     }
 
-    @Override
-    public void maybeInitTaskTimeoutOrThrow(final long currentWallClockMs,
-                                            final Exception cause) {
+    void maybeInitTaskTimeoutOrThrow(final long currentWallClockMs,
+                                     final TimeoutException timeoutException,
+                                     final Logger log) throws StreamsException {
         if (deadlineMs == NO_DEADLINE) {
             deadlineMs = currentWallClockMs + taskTimeoutMs;
         } else if (currentWallClockMs > deadlineMs) {
@@ -168,20 +167,18 @@ public abstract class AbstractTask implements Task {
                 StreamsConfig.TASK_TIMEOUT_MS_CONFIG
             );
 
-            if (cause != null) {
-                throw new TimeoutException(errorMessage, cause);
+            if (timeoutException != null) {
+                throw new TimeoutException(errorMessage, timeoutException);
             } else {
                 throw new TimeoutException(errorMessage);
             }
         }
 
-        if (cause != null) {
+        if (timeoutException != null) {
             log.debug(
-                String.format(
-                    "Task did not make progress. Remaining time to deadline %d; retrying.",
-                    deadlineMs - currentWallClockMs
-                ),
-                cause
+                "Timeout exception. Remaining time to deadline {}; retrying.",
+                deadlineMs - currentWallClockMs,
+                timeoutException
             );
         } else {
             log.debug(
@@ -192,8 +189,7 @@ public abstract class AbstractTask implements Task {
 
     }
 
-    @Override
-    public void clearTaskTimeout() {
+    void clearTaskTimeout(final Logger log) {
         if (deadlineMs != NO_DEADLINE) {
             log.debug("Clearing task timeout.");
             deadlineMs = NO_DEADLINE;

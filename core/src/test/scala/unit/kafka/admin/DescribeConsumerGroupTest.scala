@@ -18,12 +18,13 @@ package kafka.admin
 
 import java.util.Properties
 
-import kafka.utils.{Exit, TestUtils}
+import joptsimple.OptionException
+import kafka.utils.TestUtils
 import org.apache.kafka.clients.consumer.{ConsumerConfig, RoundRobinAssignor}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.TimeoutException
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.junit.Assert._
+import org.junit.Test
 
 import scala.concurrent.ExecutionException
 import scala.util.Random
@@ -46,51 +47,16 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
       val service = getConsumerGroupService(cgcArgs)
 
       val output = TestUtils.grabConsoleOutput(service.describeGroups())
-      assertTrue(output.contains(s"Consumer group '$missingGroup' does not exist."),
-        s"Expected error was not detected for describe option '${describeType.mkString(" ")}'")
+      assertTrue(s"Expected error was not detected for describe option '${describeType.mkString(" ")}'",
+          output.contains(s"Consumer group '$missingGroup' does not exist."))
     }
   }
 
-  @Test
+  @Test(expected = classOf[OptionException])
   def testDescribeWithMultipleSubActions(): Unit = {
-    var exitStatus: Option[Int] = None
-    var exitMessage: Option[String] = None
-    Exit.setExitProcedure { (status, err) =>
-      exitStatus = Some(status)
-      exitMessage = err
-      throw new RuntimeException
-    }
+    TestUtils.createOffsetsTopic(zkClient, servers)
     val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--group", group, "--members", "--state")
-    try {
-      ConsumerGroupCommand.main(cgcArgs)
-    } catch {
-      case e: RuntimeException => //expected
-    } finally {
-      Exit.resetExitProcedure()
-    }
-    assertEquals(Some(1), exitStatus)
-    assertTrue(exitMessage.get.contains("Option [describe] takes at most one of these options"))
-  }
-
-  @Test
-  def testDescribeWithStateValue(): Unit = {
-    var exitStatus: Option[Int] = None
-    var exitMessage: Option[String] = None
-    Exit.setExitProcedure { (status, err) =>
-      exitStatus = Some(status)
-      exitMessage = err
-      throw new RuntimeException
-    }
-    val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--all-groups", "--state", "Stable")
-    try {
-      ConsumerGroupCommand.main(cgcArgs)
-    } catch {
-      case e: RuntimeException => //expected
-    } finally {
-      Exit.resetExitProcedure()
-    }
-    assertEquals(Some(1), exitStatus)
-    assertTrue(exitMessage.get.contains("Option [describe] does not take a value for [state]"))
+    getConsumerGroupService(cgcArgs)
   }
 
   @Test
@@ -105,8 +71,8 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val service = getConsumerGroupService(cgcArgs)
 
     val (state, assignments) = service.collectGroupOffsets(group)
-    assertTrue(state.contains("Dead") && assignments.contains(List()),
-      s"Expected the state to be 'Dead', with no members in the group '$group'.")
+    assertTrue(s"Expected the state to be 'Dead', with no members in the group '$group'.",
+        state.contains("Dead") && assignments.contains(List()))
   }
 
   @Test
@@ -121,12 +87,12 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val service = getConsumerGroupService(cgcArgs)
 
     val (state, assignments) = service.collectGroupMembers(group, false)
-    assertTrue(state.contains("Dead") && assignments.contains(List()),
-      s"Expected the state to be 'Dead', with no members in the group '$group'.")
+    assertTrue(s"Expected the state to be 'Dead', with no members in the group '$group'.",
+        state.contains("Dead") && assignments.contains(List()))
 
     val (state2, assignments2) = service.collectGroupMembers(group, true)
-    assertTrue(state2.contains("Dead") && assignments2.contains(List()),
-      s"Expected the state to be 'Dead', with no members in the group '$group' (verbose option).")
+    assertTrue(s"Expected the state to be 'Dead', with no members in the group '$group' (verbose option).",
+        state2.contains("Dead") && assignments2.contains(List()))
   }
 
   @Test
@@ -141,9 +107,9 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val service = getConsumerGroupService(cgcArgs)
 
     val state = service.collectGroupState(group)
-    assertTrue(state.state == "Dead" && state.numMembers == 0 &&
-      state.coordinator != null && servers.map(_.config.brokerId).toList.contains(state.coordinator.id),
-      s"Expected the state to be 'Dead', with no members in the group '$group'."
+    assertTrue(s"Expected the state to be 'Dead', with no members in the group '$group'.",
+        state.state == "Dead" && state.numMembers == 0 &&
+        state.coordinator != null && servers.map(_.config.brokerId).toList.contains(state.coordinator.id)
     )
   }
 
@@ -199,17 +165,23 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
       val group = this.group + describeType.mkString("")
       addConsumerGroupExecutor(numConsumers = 1, group = group)
     }
-
     val expectedNumLines = describeTypes.length * 2
+    val expectedNumLinesState = describeTypes.length + 1
+
+    def provideExpectedNumLines(describeType:Array[String]):Int = {
+      if(Array(describeType).sameElements(describeTypeState))
+        expectedNumLinesState
+      else
+        expectedNumLines
+    }
 
     for (describeType <- describeTypes) {
       val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--all-groups") ++ describeType
       val service = getConsumerGroupService(cgcArgs)
-
       TestUtils.waitUntilTrue(() => {
         val (output, error) = TestUtils.grabConsoleOutputAndError(service.describeGroups())
         val numLines = output.trim.split("\n").filterNot(line => line.isEmpty).length
-        (numLines == expectedNumLines) && error.isEmpty
+        (numLines == provideExpectedNumLines(describeType)) && error.isEmpty
       }, s"Expected a data row and no error in describe results with describe type ${describeType.mkString(" ")}.")
     }
   }
@@ -263,8 +235,9 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
       case None =>
         fail(s"Expected partition assignments for members of group $group")
       case Some(memberAssignments) =>
-        assertTrue(memberAssignments.size == 1 && memberAssignments.head.assignment.size == 1,
-          s"Expected a topic partition assigned to the single group member for group $group")
+        assertTrue(s"Expected a topic partition assigned to the single group member for group $group",
+          memberAssignments.size == 1 &&
+          memberAssignments.head.assignment.size == 1)
     }
   }
 
@@ -359,7 +332,8 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
           assignment.host.exists(_.trim == ConsumerGroupCommand.MISSING_COLUMN_VALUE)
     }
     val (state, assignments) = result
-    assertTrue(succeeded, s"Expected no active member in describe group results, state: $state, assignments: $assignments")
+    assertTrue(s"Expected no active member in describe group results, state: $state, assignments: $assignments",
+      succeeded)
   }
 
   @Test
@@ -472,8 +446,8 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     }, "Expected rows for consumers with no assigned partitions in describe group results")
 
     val (state, assignments) = service.collectGroupMembers(group, true)
-    assertTrue(state.contains("Stable") && assignments.get.count(_.assignment.nonEmpty) > 0,
-      "Expected additional columns in verbose version of describe members")
+    assertTrue("Expected additional columns in verbose version of describe members",
+        state.contains("Stable") && assignments.get.count(_.assignment.nonEmpty) > 0)
   }
 
   @Test
@@ -557,8 +531,8 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     }, "Expected two rows (one row per consumer) in describe group members results.")
 
     val (state, assignments) = service.collectGroupMembers(group, true)
-    assertTrue(state.contains("Stable") && assignments.get.count(_.assignment.isEmpty) == 0,
-      "Expected additional columns in verbose version of describe members")
+    assertTrue("Expected additional columns in verbose version of describe members",
+        state.contains("Stable") && assignments.get.count(_.assignment.isEmpty) == 0)
   }
 
   @Test
@@ -610,8 +584,12 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--timeout", "1", "--group", group) ++ describeType
     val service = getConsumerGroupService(cgcArgs)
 
-    val e = assertThrows(classOf[ExecutionException], () => TestUtils.grabConsoleOutputAndError(service.describeGroups()))
-    assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    try {
+      TestUtils.grabConsoleOutputAndError(service.describeGroups())
+      fail(s"The consumer group command should have failed due to low initialization timeout (describe type: ${describeType.mkString(" ")})")
+    } catch {
+      case e: ExecutionException => assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    }
   }
 
   @Test
@@ -626,8 +604,12 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--group", group, "--timeout", "1")
     val service = getConsumerGroupService(cgcArgs)
 
-    val e = assertThrows(classOf[ExecutionException], () => service.collectGroupOffsets(group))
-    assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    try {
+      service.collectGroupOffsets(group)
+      fail("The consumer group command should fail due to low initialization timeout")
+    } catch {
+      case e: ExecutionException => assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    }
   }
 
   @Test
@@ -642,10 +624,18 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--group", group, "--timeout", "1")
     val service = getConsumerGroupService(cgcArgs)
 
-    var e = assertThrows(classOf[ExecutionException], () => service.collectGroupMembers(group, false))
-    assertEquals(classOf[TimeoutException], e.getCause.getClass)
-    e = assertThrows(classOf[ExecutionException], () => service.collectGroupMembers(group, true))
-    assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    try {
+      service.collectGroupMembers(group, false)
+      fail("The consumer group command should fail due to low initialization timeout")
+    } catch {
+      case e: ExecutionException => assertEquals(classOf[TimeoutException], e.getCause.getClass)
+        try {
+          service.collectGroupMembers(group, true)
+          fail("The consumer group command should fail due to low initialization timeout (verbose)")
+        } catch {
+          case e: ExecutionException => assertEquals(classOf[TimeoutException], e.getCause.getClass)
+        }
+    }
   }
 
   @Test
@@ -660,14 +650,19 @@ class DescribeConsumerGroupTest extends ConsumerGroupCommandTest {
     val cgcArgs = Array("--bootstrap-server", brokerList, "--describe", "--group", group, "--timeout", "1")
     val service = getConsumerGroupService(cgcArgs)
 
-    val e = assertThrows(classOf[ExecutionException], () => service.collectGroupState(group))
-    assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    try {
+      service.collectGroupState(group)
+      fail("The consumer group command should fail due to low initialization timeout")
+    } catch {
+      case e: ExecutionException => assertEquals(classOf[TimeoutException], e.getCause.getClass)
+    }
   }
 
-  @Test
+  @Test(expected = classOf[joptsimple.OptionException])
   def testDescribeWithUnrecognizedNewConsumerOption(): Unit = {
     val cgcArgs = Array("--new-consumer", "--bootstrap-server", brokerList, "--describe", "--group", group)
-    assertThrows(classOf[joptsimple.OptionException], () => getConsumerGroupService(cgcArgs))
+    getConsumerGroupService(cgcArgs)
+    fail("Expected an error due to presence of unrecognized --new-consumer option")
   }
 
   @Test

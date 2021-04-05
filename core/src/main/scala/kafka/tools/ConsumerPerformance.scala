@@ -63,21 +63,20 @@ object ConsumerPerformance extends LazyLogging {
     consumer.close()
     val elapsedSecs = (endMs - startMs) / 1000.0
     val fetchTimeInMs = (endMs - startMs) - joinGroupTimeInMs.get
-    if (!config.showDetailedStats) {
-      val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
-      println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
-        config.dateFormat.format(startMs),
-        config.dateFormat.format(endMs),
-        totalMBRead,
-        totalMBRead / elapsedSecs,
-        totalMessagesRead.get,
-        totalMessagesRead.get / elapsedSecs,
-        joinGroupTimeInMs.get,
-        fetchTimeInMs,
-        totalMBRead / (fetchTimeInMs / 1000.0),
-        totalMessagesRead.get / (fetchTimeInMs / 1000.0)
-      ))
-    }
+    
+    val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
+    println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
+      config.dateFormat.format(startMs),
+      config.dateFormat.format(endMs),
+      totalMBRead,
+      totalMBRead / elapsedSecs,
+      totalMessagesRead.get,
+      totalMessagesRead.get / elapsedSecs,
+      joinGroupTimeInMs.get,
+      fetchTimeInMs,
+      totalMBRead / (fetchTimeInMs / 1000.0),
+      totalMessagesRead.get / (fetchTimeInMs / 1000.0)
+    ))
 
     if (metrics != null) {
       ToolsUtils.printMetrics(metrics)
@@ -106,7 +105,7 @@ object ConsumerPerformance extends LazyLogging {
     var messagesRead = 0L
     var lastBytesRead = 0L
     var lastMessagesRead = 0L
-    var joinStart = System.currentTimeMillis
+    var joinStart = 0L
     var joinTimeMsInSingleRound = 0L
 
     consumer.subscribe(topics.asJava, new ConsumerRebalanceListener {

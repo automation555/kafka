@@ -17,7 +17,6 @@
 package org.apache.kafka.common.utils;
 
 import java.nio.BufferUnderflowException;
-import java.nio.file.StandardOpenOption;
 import java.util.AbstractMap;
 import java.util.EnumSet;
 import java.util.SortedSet;
@@ -73,8 +72,6 @@ import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -782,21 +779,7 @@ public final class Utils {
      * @param properties A map of properties to add
      * @return The properties object
      */
-    public static Properties mkProperties(final Map<String, String> properties) {
-        final Properties result = new Properties();
-        for (final Map.Entry<String, String> entry : properties.entrySet()) {
-            result.setProperty(entry.getKey(), entry.getValue());
-        }
-        return result;
-    }
-
-    /**
-     * Creates a {@link Properties} from a map
-     *
-     * @param properties A map of properties to add
-     * @return The properties object
-     */
-    public static Properties mkObjectProperties(final Map<String, Object> properties) {
+    public static Properties mkProperties(final Map<String, Object> properties) {
         final Properties result = new Properties();
         for (final Map.Entry<String, Object> entry : properties.entrySet()) {
             result.put(entry.getKey(), entry.getValue());
@@ -862,15 +845,6 @@ public final class Utils {
         });
     }
 
-    /**
-     * Returns an empty collection if this list is null
-     * @param other
-     * @return
-     */
-    public static <T> List<T> safe(List<T> other) {
-        return other == null ? Collections.emptyList() : other;
-    }
-
    /**
     * Get the ClassLoader which loaded Kafka.
     */
@@ -894,23 +868,10 @@ public final class Utils {
 
     /**
      * Attempts to move source to target atomically and falls back to a non-atomic move if it fails.
-     * This function also flushes the parent directory to guarantee crash consistency.
      *
      * @throws IOException if both atomic and non-atomic moves fail
      */
     public static void atomicMoveWithFallback(Path source, Path target) throws IOException {
-        atomicMoveWithFallback(source, target, true);
-    }
-
-    /**
-     * Attempts to move source to target atomically and falls back to a non-atomic move if it fails.
-     * This function allows callers to decide whether to flush the parent directory. This is needed
-     * when a sequence of atomicMoveWithFallback is called for the same directory and we don't want
-     * to repeatedly flush the same parent directory.
-     *
-     * @throws IOException if both atomic and non-atomic moves fail
-     */
-    public static void atomicMoveWithFallback(Path source, Path target, boolean needFlushParentDir) throws IOException {
         try {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException outer) {
@@ -922,29 +883,6 @@ public final class Utils {
                 inner.addSuppressed(outer);
                 throw inner;
             }
-        } finally {
-            if (needFlushParentDir) {
-                flushParentDir(target);
-            }
-        }
-    }
-
-    /**
-     * Flushes the parent directory to guarantee crash consistency.
-     *
-     * @throws IOException if flushing the parent directory fails.
-     */
-    public static void flushParentDir(Path path) throws IOException {
-        FileChannel dir = null;
-        try {
-            Path parent = path.toAbsolutePath().getParent();
-            if (parent != null) {
-                dir = FileChannel.open(parent, StandardOpenOption.READ);
-                dir.force(true);
-            }
-        } finally {
-            if (dir != null)
-                dir.close();
         }
     }
 
@@ -969,18 +907,6 @@ public final class Utils {
         }
         if (exception != null)
             throw exception;
-    }
-
-    /**
-     * An {@link AutoCloseable} interface without a throws clause in the signature
-     *
-     * This is used with lambda expressions in try-with-resources clauses
-     * to avoid casting un-checked exceptions to checked exceptions unnecessarily.
-     */
-    @FunctionalInterface
-    public interface UncheckedCloseable extends AutoCloseable {
-        @Override
-        void close();
     }
 
     /**
@@ -1188,15 +1114,6 @@ public final class Utils {
         return res;
     }
 
-    public static <T> List<T> concatListsUnmodifiable(List<T> left, List<T> right) {
-        return concatLists(left, right, Collections::unmodifiableList);
-    }
-
-    public static <T> List<T> concatLists(List<T> left, List<T> right, Function<List<T>, List<T>> finisher) {
-        return Stream.concat(left.stream(), right.stream())
-                .collect(Collectors.collectingAndThen(Collectors.toList(), finisher));
-    }
-
     public static int to32BitField(final Set<Byte> bytes) {
         int value = 0;
         for (final byte b : bytes)
@@ -1220,18 +1137,6 @@ public final class Utils {
             count++;
         }
         return result;
-    }
-
-    public static <K1, V1, K2, V2> Map<K2, V2> transformMap(
-            Map<? extends K1, ? extends V1> map,
-            Function<K1, K2> keyMapper,
-            Function<V1, V2> valueMapper) {
-        return map.entrySet().stream().collect(
-            Collectors.toMap(
-                entry -> keyMapper.apply(entry.getKey()),
-                entry -> valueMapper.apply(entry.getValue())
-            )
-        );
     }
 
     /**
@@ -1380,11 +1285,4 @@ public final class Utils {
     public static boolean isBlank(String str) {
         return str == null || str.trim().isEmpty();
     }
-
-    public static <K, V> Map<K, V> initializeMap(Collection<K> keys, Supplier<V> valueSupplier) {
-        Map<K, V> res = new HashMap<>(keys.size());
-        keys.forEach(key -> res.put(key, valueSupplier.get()));
-        return res;
-    }
-
 }

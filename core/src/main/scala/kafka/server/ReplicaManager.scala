@@ -57,6 +57,7 @@ import org.apache.kafka.common.replica.PartitionView.DefaultPartitionView
 import org.apache.kafka.common.replica.ReplicaView.DefaultReplicaView
 import org.apache.kafka.common.replica.{ClientMetadata, _}
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
+import org.apache.kafka.common.requests.FetchResponse.AbortedTransaction
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.utils.Time
@@ -149,7 +150,7 @@ case class FetchPartitionData(error: Errors = Errors.NONE,
                               records: Records,
                               divergingEpoch: Option[FetchResponseData.EpochEndOffset],
                               lastStableOffset: Option[Long],
-                              abortedTransactions: Option[List[FetchResponseData.AbortedTransaction]],
+                              abortedTransactions: Option[List[AbortedTransaction]],
                               preferredReadReplica: Option[Int],
                               isReassignmentFetch: Boolean)
 
@@ -214,8 +215,7 @@ class ReplicaManager(val config: KafkaConfig,
                      val delayedElectLeaderPurgatory: DelayedOperationPurgatory[DelayedElectLeader],
                      threadNamePrefix: Option[String],
                      configRepository: ConfigRepository,
-                     val alterIsrManager: AlterIsrManager,
-                     logDirEventManager: LogDirEventManager) extends Logging with KafkaMetricsGroup {
+                     val alterIsrManager: AlterIsrManager) extends Logging with KafkaMetricsGroup {
 
   def this(config: KafkaConfig,
            metrics: Metrics,
@@ -230,8 +230,7 @@ class ReplicaManager(val config: KafkaConfig,
            logDirFailureChannel: LogDirFailureChannel,
            alterIsrManager: AlterIsrManager,
            configRepository: ConfigRepository,
-           threadNamePrefix: Option[String] = None,
-           logDirEventManager: LogDirEventManager) = {
+           threadNamePrefix: Option[String] = None) = {
     this(config, metrics, time, zkClient, scheduler, logManager, isShuttingDown,
       quotaManagers, brokerTopicStats, metadataCache, logDirFailureChannel,
       DelayedOperationPurgatory[DelayedProduce](
@@ -245,7 +244,7 @@ class ReplicaManager(val config: KafkaConfig,
         purgeInterval = config.deleteRecordsPurgatoryPurgeIntervalRequests),
       DelayedOperationPurgatory[DelayedElectLeader](
         purgatoryName = "ElectLeader", brokerId = config.brokerId),
-      threadNamePrefix, configRepository, alterIsrManager, logDirEventManager)
+      threadNamePrefix, configRepository, alterIsrManager)
   }
 
   /* epoch of the controller that last changed the leader */
@@ -323,9 +322,6 @@ class ReplicaManager(val config: KafkaConfig,
     // start ISR expiration thread
     // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
     scheduler.schedule("isr-expiration", maybeShrinkIsr _, period = config.replicaLagTimeMaxMs / 2, unit = TimeUnit.MILLISECONDS)
-    if (config.interBrokerProtocolVersion >= KAFKA_2_8_IV2) {
-      logDirEventManager.start()
-    }
     scheduler.schedule("shutdown-idle-replica-alter-log-dirs-thread", shutdownIdleReplicaAlterLogDirsThread _, period = 10000L, unit = TimeUnit.MILLISECONDS)
 
     // If inter-broker protocol (IBP) < 1.0, the controller will send LeaderAndIsrRequest V0 which does not include isNew field.
@@ -355,7 +351,8 @@ class ReplicaManager(val config: KafkaConfig,
                    controllerId: Int,
                    controllerEpoch: Int,
                    brokerEpoch: Long,
-                   partitionStates: Map[TopicPartition, StopReplicaPartitionState]
+                   partitionStates: Map[TopicPartition, StopReplicaPartitionState],
+                   onStopReplica: (Errors, Map[TopicPartition, Errors]) => Unit = (_, _) => {}
                   ): (mutable.Map[TopicPartition, Errors], Errors) = {
     replicaStateChangeLock synchronized {
       stateChangeLogger.info(s"Handling StopReplica request correlationId $correlationId from controller " +
@@ -368,7 +365,7 @@ class ReplicaManager(val config: KafkaConfig,
         }
 
       val responseMap = new collection.mutable.HashMap[TopicPartition, Errors]
-      if (controllerEpoch < this.controllerEpoch) {
+      val result = if (controllerEpoch < this.controllerEpoch) {
         stateChangeLogger.warn(s"Ignoring StopReplica request from " +
           s"controller $controllerId with correlation id $correlationId " +
           s"since its controller epoch $controllerEpoch is old. " +
@@ -445,6 +442,8 @@ class ReplicaManager(val config: KafkaConfig,
         }
         (responseMap, Errors.NONE)
       }
+      onStopReplica(result._2, result._1)
+      result
     }
   }
 
@@ -1445,29 +1444,38 @@ class ReplicaManager(val config: KafkaConfig,
           replicaFetcherManager.shutdownIdleFetcherThreads()
           replicaAlterLogDirsManager.shutdownIdleFetcherThreads()
           onLeadershipChange(partitionsBecomeLeader, partitionsBecomeFollower)
-
-          val data = new LeaderAndIsrResponseData().setErrorCode(Errors.NONE.code)
-          if (leaderAndIsrRequest.version < 5) {
-            responseMap.forKeyValue { (tp, error) =>
-              data.partitionErrors.add(new LeaderAndIsrPartitionError()
+          if (leaderAndIsrRequest.version() < 5) {
+            val responsePartitions = responseMap.iterator.map { case (tp, error) =>
+              new LeaderAndIsrPartitionError()
                 .setTopicName(tp.topic)
                 .setPartitionIndex(tp.partition)
-                .setErrorCode(error.code))
-            }
+                .setErrorCode(error.code)
+            }.toBuffer
+            new LeaderAndIsrResponse(new LeaderAndIsrResponseData()
+              .setErrorCode(Errors.NONE.code)
+              .setPartitionErrors(responsePartitions.asJava), leaderAndIsrRequest.version())
           } else {
-            responseMap.forKeyValue { (tp, error) =>
-              val topicId = topicIds.get(tp.topic)
-              var topic = data.topics.find(topicId)
-              if (topic == null) {
-                topic = new LeaderAndIsrTopicError().setTopicId(topicId)
-                data.topics.add(topic)
+            val topics = new mutable.HashMap[String, List[LeaderAndIsrPartitionError]]
+            responseMap.asJava.forEach { case (tp, error) =>
+              if (!topics.contains(tp.topic)) {
+                topics.put(tp.topic, List(new LeaderAndIsrPartitionError()
+                                                                .setPartitionIndex(tp.partition)
+                                                                .setErrorCode(error.code)))
+              } else {
+                topics.put(tp.topic, new LeaderAndIsrPartitionError()
+                  .setPartitionIndex(tp.partition)
+                  .setErrorCode(error.code)::topics(tp.topic))
               }
-              topic.partitionErrors.add(new LeaderAndIsrPartitionError()
-                .setPartitionIndex(tp.partition)
-                .setErrorCode(error.code))
             }
+            val topicErrors = topics.iterator.map { case (topic, partitionError) =>
+              new LeaderAndIsrTopicError()
+                .setTopicId(topicIds.get(topic))
+                .setPartitionErrors(partitionError.asJava)
+            }.toBuffer
+            new LeaderAndIsrResponse(new LeaderAndIsrResponseData()
+              .setErrorCode(Errors.NONE.code)
+              .setTopics(topicErrors.asJava), leaderAndIsrRequest.version())
           }
-          new LeaderAndIsrResponse(data, leaderAndIsrRequest.version)
         }
       }
       val endMs = time.milliseconds()
@@ -1852,12 +1860,9 @@ class ReplicaManager(val config: KafkaConfig,
       warn(s"Broker $localBrokerId stopped fetcher for partitions ${newOfflinePartitions.mkString(",")} and stopped moving logs " +
            s"for partitions ${partitionsWithOfflineFutureReplica.mkString(",")} because they are in the failed log directory $dir.")
     }
-    val topicPartitionsInFailDir = logManager.logsByDir.getOrElse(dir, Map.empty).keySet
     logManager.handleLogDirFailure(dir)
 
-    if (config.interBrokerProtocolVersion >= KAFKA_2_8_IV2)
-      sentLogDirEvent(dir, topicPartitionsInFailDir.toSeq, kafka.controller.OfflineReplica.state, "these partitions are in failed log directory")
-    else if (sendZkNotification)
+    if (sendZkNotification)
       if (zkClient.isEmpty) {
         warn("Unable to propagate log dir failure via Zookeeper in KIP-500 mode") // will be handled via KIP-589
       } else {
@@ -1873,7 +1878,6 @@ class ReplicaManager(val config: KafkaConfig,
     removeMetric("UnderReplicatedPartitions")
     removeMetric("UnderMinIsrPartitionCount")
     removeMetric("AtMinIsrPartitionCount")
-    removeMetric("ReassigningPartitions")
   }
 
   // High watermark do not need to be checkpointed only when under unit tests
@@ -2008,30 +2012,4 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
-  def sentLogDirEvent(dir: String, topicPartitionsInDir:Seq[TopicPartition], newState: Byte, reason: String): Unit = {
-    if (topicPartitionsInDir.nonEmpty) {
-      val logDirEventItem = AlterReplicaStateItem(topicPartitionsInDir.asJava, newState, reason, handleAlterReplicaStateResponse)
-
-      logDirEventManager.handleAlterReplicaStateChanges(logDirEventItem)
-    } else {
-      info(s"Log dir: $dir contains none partitions, ignore log dir event")
-    }
-  }
-
-  /**
-   * Visible for testing
-   * @return true if we need not to retry, which means the response contains no error or only UNKNOWN_TOPIC_OR_PARTITION error
-   */
-  def handleAlterReplicaStateResponse(result: Either[Errors, TopicPartition]): Unit = {
-    result match {
-      case Left(error: Errors) => error match {
-        case Errors.UNKNOWN_TOPIC_OR_PARTITION =>
-          debug(s"Controller failed to update replica state since it doesn't know about this topic or partition, retry")
-        case _ =>
-          warn(s"Failed AlterReplicaState request due to unknown error: $error, retry")
-      }
-      case Right(_) =>
-        info(s"Successfully altered replica state")
-    }
-  }
 }

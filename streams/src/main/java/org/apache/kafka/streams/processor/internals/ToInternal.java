@@ -23,10 +23,6 @@ public class ToInternal extends To {
         super(To.all());
     }
 
-    public ToInternal(final To to) {
-        super(to);
-    }
-
     public void update(final To to) {
         super.update(to);
     }
@@ -42,4 +38,9 @@ public class ToInternal extends To {
     public String child() {
         return childName;
     }
+
+    public boolean isChildExcluded(final String child) {
+        return childExclusions.contains(child);
+    }
+
 }

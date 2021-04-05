@@ -16,29 +16,29 @@
  */
 package org.apache.kafka.streams.processor.internals;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.internals.ApiUtils;
 import org.apache.kafka.streams.processor.Cancellable;
 import org.apache.kafka.streams.processor.PunctuationType;
 import org.apache.kafka.streams.processor.Punctuator;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.To;
-import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.processor.internals.Task.TaskType;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.internals.ThreadCache;
-import org.apache.kafka.streams.state.internals.ThreadCache.DirtyEntryFlushListener;
 
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import org.apache.kafka.streams.state.internals.ThreadCache.DirtyEntryFlushListener;
 
 import static org.apache.kafka.streams.internals.ApiUtils.prepareMillisCheckFailMsgPrefix;
-import static org.apache.kafka.streams.internals.ApiUtils.validateMillisecondDuration;
 import static org.apache.kafka.streams.processor.internals.AbstractReadOnlyDecorator.getReadOnlyStore;
 import static org.apache.kafka.streams.processor.internals.AbstractReadWriteDecorator.getReadWriteStore;
 
@@ -46,6 +46,9 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
     // the below are null for standby tasks
     private StreamTask streamTask;
     private RecordCollector collector;
+
+    private final ToInternal toInternal = new ToInternal();
+    private final static To SEND_TO_ALL = To.all();
 
     private final ProcessorStateManager stateManager;
 
@@ -132,9 +135,8 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
      * @throws StreamsException if an attempt is made to access this state store from an unknown node
      * @throws UnsupportedOperationException if the current streamTask type is standby
      */
-    @SuppressWarnings("unchecked")
     @Override
-    public <S extends StateStore> S  getStateStore(final String name) {
+    public StateStore getStateStore(final String name) {
         throwUnsupportedOperationExceptionIfStandby("getStateStore");
         if (currentNode() == null) {
             throw new StreamsException("Accessing from an unknown node");
@@ -142,7 +144,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
 
         final StateStore globalStore = stateManager.getGlobalStore(name);
         if (globalStore != null) {
-            return (S) getReadOnlyStore(globalStore);
+            return getReadOnlyStore(globalStore);
         }
 
         if (!currentNode().stateStores.contains(name)) {
@@ -157,103 +159,86 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
         }
 
         final StateStore store = stateManager.getStore(name);
-        return (S) getReadWriteStore(store);
+        return getReadWriteStore(store);
     }
 
     @Override
     public <K, V> void forward(final K key,
                                final V value) {
-        final Record<K, V> toForward = new Record<>(
-            key,
-            value,
-            timestamp(),
-            headers()
-        );
-        forward(toForward);
+        throwUnsupportedOperationExceptionIfStandby("forward");
+        forward(key, value, SEND_TO_ALL);
     }
 
     @Override
+    @Deprecated
     public <K, V> void forward(final K key,
                                final V value,
-                               final To to) {
-        final ToInternal toInternal = new ToInternal(to);
-        final Record<K, V> toForward = new Record<>(
+                               final int childIndex) {
+        throwUnsupportedOperationExceptionIfStandby("forward");
+        forward(
             key,
             value,
-            toInternal.hasTimestamp() ? toInternal.timestamp() : timestamp(),
-            headers()
-        );
-        forward(toForward, toInternal.child());
+            To.child((currentNode().children()).get(childIndex).name()));
     }
 
     @Override
-    public <K, V> void forward(final Record<K, V> record) {
-        forward(record, null);
+    @Deprecated
+    public <K, V> void forward(final K key,
+                               final V value,
+                               final String childName) {
+        throwUnsupportedOperationExceptionIfStandby("forward");
+        forward(key, value, To.child(childName));
     }
 
     @SuppressWarnings("unchecked")
     @Override
-    public <K, V> void forward(final Record<K, V> record, final String childName) {
+    public <K, V> void forward(final K key,
+                               final V value,
+                               final To to) {
         throwUnsupportedOperationExceptionIfStandby("forward");
-
-        final ProcessorNode<?, ?, ?, ?> previousNode = currentNode();
-        if (previousNode == null) {
-            throw new StreamsException("Current node is unknown. This can happen if 'forward()' is called " +
-                    "in an illegal scope. The root cause could be that a 'Processor' or 'Transformer' instance" +
-                    " is shared. To avoid this error, make sure that your suppliers return new instances " +
-                    "each time 'get()' of Supplier is called and do not return the same object reference " +
-                    "multiple times.");
-        }
-
+        final ProcessorNode<?, ?> previousNode = currentNode();
         final ProcessorRecordContext previousContext = recordContext;
 
         try {
-            // we don't want to set the recordContext if it's null, since that means that
-            // the context itself is undefined. this isn't perfect, since downstream
-            // old API processors wouldn't see the timestamps or headers of upstream
-            // new API processors. But then again, from the perspective of those old-API
-            // processors, even consulting the timestamp or headers when the record context
-            // is undefined is itself not well defined. Plus, I don't think we need to worry
-            // too much about heterogeneous applications, in which the upstream processor is
-            // implementing the new API and the downstream one is implementing the old API.
-            // So, this seems like a fine compromise for now.
-            if (recordContext != null && (record.timestamp() != timestamp() || record.headers() != headers())) {
+            toInternal.update(to);
+            if (toInternal.hasTimestamp()) {
                 recordContext = new ProcessorRecordContext(
-                    record.timestamp(),
+                    toInternal.timestamp(),
                     recordContext.offset(),
                     recordContext.partition(),
                     recordContext.topic(),
-                    record.headers());
+                    recordContext.headers());
             }
 
-            if (childName == null) {
-                final List<? extends ProcessorNode<?, ?, ?, ?>> children = currentNode().children();
-                for (final ProcessorNode<?, ?, ?, ?> child : children) {
-                    forwardInternal((ProcessorNode<K, V, ?, ?>) child, record);
+            final String sendTo = toInternal.child();
+            if (sendTo == null) {
+                final List<ProcessorNode<?, ?>> children = currentNode().children();
+                for (final ProcessorNode<?, ?> child : children) {
+                    if (!toInternal.isChildExcluded(child.name())) {
+                        forward((ProcessorNode<K, V>) child, key, value);
+                    }
                 }
             } else {
-                final ProcessorNode<?, ?, ?, ?> child = currentNode().getChild(childName);
+                final ProcessorNode<K, V> child = currentNode().getChild(sendTo);
                 if (child == null) {
-                    throw new StreamsException("Unknown downstream node: " + childName
-                                                   + " either does not exist or is not connected to this processor.");
+                    throw new StreamsException("Unknown downstream node: " + sendTo
+                        + " either does not exist or is not connected to this processor.");
                 }
-                forwardInternal((ProcessorNode<K, V, ?, ?>) child, record);
+                forward(child, key, value);
             }
-
         } finally {
             recordContext = previousContext;
             setCurrentNode(previousNode);
         }
     }
 
-    private <K, V> void forwardInternal(final ProcessorNode<K, V, ?, ?> child,
-                                        final Record<K, V> record) {
+    private <K, V> void forward(final ProcessorNode<K, V> child,
+                                final K key,
+                                final V value) {
         setCurrentNode(child);
-
-        child.process(record);
-
+        child.process(key, value);
         if (child.isTerminalNode()) {
-            streamTask.maybeRecordE2ELatency(record.timestamp(), currentSystemTimeMs(), child.name());
+            streamTask.maybeRecordE2ELatency(timestamp(), currentSystemTimeMs(), child.name());
         }
     }
 
@@ -282,7 +267,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
                                 final Punctuator callback) throws IllegalArgumentException {
         throwUnsupportedOperationExceptionIfStandby("schedule");
         final String msgPrefix = prepareMillisCheckFailMsgPrefix(interval, "interval");
-        return schedule(validateMillisecondDuration(interval, msgPrefix), type, callback);
+        return schedule(ApiUtils.validateMillisecondDuration(interval, msgPrefix), type, callback);
     }
 
     @Override
@@ -310,12 +295,7 @@ public class ProcessorContextImpl extends AbstractProcessorContext implements Re
     }
 
     @Override
-    public long currentStreamTimeMs() {
-        return streamTask.streamTime();
-    }
-
-    @Override
-    public ProcessorNode<?, ?, ?, ?> currentNode() {
+    public ProcessorNode<?, ?> currentNode() {
         throwUnsupportedOperationExceptionIfStandby("currentNode");
         return super.currentNode();
     }

@@ -20,7 +20,7 @@ package kafka.tools
 import java.io.{ByteArrayOutputStream, Closeable, PrintStream}
 import java.nio.charset.StandardCharsets
 import java.util
-
+import kafka.tools.DefaultMessageFormatter
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.Header
 import org.apache.kafka.common.header.internals.{RecordHeader, RecordHeaders}

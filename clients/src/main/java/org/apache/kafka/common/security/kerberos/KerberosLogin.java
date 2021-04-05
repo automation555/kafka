@@ -39,8 +39,8 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * This class is responsible for refreshing Kerberos credentials for
@@ -48,8 +48,6 @@ import java.util.Set;
  */
 public class KerberosLogin extends AbstractLogin {
     private static final Logger log = LoggerFactory.getLogger(KerberosLogin.class);
-
-    private static final Random RNG = new Random();
 
     private final Time time = Time.SYSTEM;
     private Thread t;
@@ -213,7 +211,6 @@ public class KerberosLogin extends AbstractLogin {
                             break;
                         } catch (Exception e) {
                             if (retry > 0) {
-                                log.warn("[Principal={}]: Error when trying to renew with TicketCache, but will retry ", principal, e);
                                 --retry;
                                 // sleep for 10 seconds
                                 try {
@@ -238,7 +235,6 @@ public class KerberosLogin extends AbstractLogin {
                             break;
                         } catch (LoginException le) {
                             if (retry > 0) {
-                                log.warn("[Principal={}]: Error when trying to re-Login, but will retry ", principal, le);
                                 --retry;
                                 // sleep for 10 seconds.
                                 try {
@@ -309,8 +305,8 @@ public class KerberosLogin extends AbstractLogin {
         long expires = tgt.getEndTime().getTime();
         log.info("[Principal={}]: TGT valid starting at: {}", principal, tgt.getStartTime());
         log.info("[Principal={}]: TGT expires: {}", principal, tgt.getEndTime());
-        long proposedRefresh = start + (long) ((expires - start) *
-                (ticketRenewWindowFactor + (ticketRenewJitter * RNG.nextDouble())));
+        long proposedRefresh = start + (long) ((expires - start) * (ticketRenewWindowFactor
+                + (ticketRenewJitter * ThreadLocalRandom.current().nextDouble())));
 
         if (proposedRefresh > expires)
             // proposedRefresh is too far in the future: it's after ticket expires: simply return now.
@@ -346,7 +342,7 @@ public class KerberosLogin extends AbstractLogin {
      * Re-login a principal. This method assumes that {@link #login()} has happened already.
      * @throws javax.security.auth.login.LoginException on a failure
      */
-    protected void reLogin() throws LoginException {
+    private void reLogin() throws LoginException {
         if (!isKrbTicket) {
             return;
         }
@@ -363,18 +359,13 @@ public class KerberosLogin extends AbstractLogin {
             //clear up the kerberos state. But the tokens are not cleared! As per
             //the Java kerberos login module code, only the kerberos credentials
             //are cleared
-            logout();
+            loginContext.logout();
             //login and also update the subject field of this instance to
             //have the new credentials (pass it to the LoginContext constructor)
             loginContext = new LoginContext(contextName(), subject, null, configuration());
             log.info("Initiating re-login for {}", principal);
             loginContext.login();
         }
-    }
-
-    // Visibility to override for testing
-    protected void logout() throws LoginException {
-        loginContext.logout();
     }
 
     private long currentElapsedTime() {

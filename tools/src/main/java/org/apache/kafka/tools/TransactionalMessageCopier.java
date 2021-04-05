@@ -45,7 +45,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -167,8 +167,6 @@ public class TransactionalMessageCopier {
                 .metavar("USE-GROUP-METADATA")
                 .dest("useGroupMetadata")
                 .help("Whether to use the new transactional commit API with group metadata");
-
-        ToolsUtils.addOptionVersion(parser);
 
         return parser;
     }
@@ -337,7 +335,6 @@ public class TransactionalMessageCopier {
 
         final boolean useGroupMetadata = parsedArgs.getBoolean("useGroupMetadata");
         try {
-            Random random = new Random();
             while (remainingMessages.get() > 0) {
                 System.out.println(statusAsJson(totalMessageProcessed.get(),
                     numMessagesProcessedSinceLastRebalance.get(), remainingMessages.get(), transactionalId, "ProcessLoop"));
@@ -361,7 +358,7 @@ public class TransactionalMessageCopier {
                             producer.sendOffsetsToTransaction(consumerPositions(consumer), consumerGroup);
                         }
 
-                        if (enableRandomAborts && random.nextInt() % 3 == 0) {
+                        if (enableRandomAborts && ThreadLocalRandom.current().nextInt(3) == 0) {
                             throw new KafkaException("Aborting transaction");
                         } else {
                             producer.commitTransaction();
@@ -384,6 +381,6 @@ public class TransactionalMessageCopier {
                 consumer.close();
             }
         }
-        Exit.exit(0);
+        System.exit(0);
     }
 }

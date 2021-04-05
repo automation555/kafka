@@ -46,8 +46,8 @@ public class ProducerMetadataTest {
     private static final long METADATA_IDLE_MS = 60 * 1000;
     private long refreshBackoffMs = 100;
     private long metadataExpireMs = 1000;
-    private ProducerMetadata metadata = new ProducerMetadata(refreshBackoffMs, refreshBackoffMs, metadataExpireMs, METADATA_IDLE_MS,
-            new LogContext(), new ClusterResourceListeners(), Time.SYSTEM);
+    private ProducerMetadata metadata = new ProducerMetadata(refreshBackoffMs, metadataExpireMs, METADATA_IDLE_MS,
+            true, new LogContext(), new ClusterResourceListeners(), Time.SYSTEM);
     private AtomicReference<Exception> backgroundError = new AtomicReference<>();
 
     @After

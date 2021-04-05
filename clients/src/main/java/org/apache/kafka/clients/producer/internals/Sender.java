@@ -23,7 +23,6 @@ import org.apache.kafka.clients.KafkaClient;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NetworkClientUtils;
 import org.apache.kafka.clients.RequestCompletionHandler;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
@@ -86,6 +85,9 @@ public class Sender implements Runnable {
     /* the maximum request size to attempt to send to the server */
     private final int maxRequestSize;
 
+    /* the number of acknowledgements to request from the server */
+    private final short acks;
+
     /* the number of times to retry a failed request before giving up */
     private final int retries;
 
@@ -116,22 +118,20 @@ public class Sender implements Runnable {
     // A per-partition queue of batches ordered by creation time for tracking the in-flight batches
     private final Map<TopicPartition, List<ProducerBatch>> inFlightBatches;
 
-    private DynamicProducerConfig dynamicConfig;
-
     public Sender(LogContext logContext,
                   KafkaClient client,
                   ProducerMetadata metadata,
                   RecordAccumulator accumulator,
                   boolean guaranteeMessageOrder,
                   int maxRequestSize,
+                  short acks,
                   int retries,
                   SenderMetricsRegistry metricsRegistry,
                   Time time,
                   int requestTimeoutMs,
                   long retryBackoffMs,
                   TransactionManager transactionManager,
-                  ApiVersions apiVersions,
-                  ProducerConfig config) {
+                  ApiVersions apiVersions) {
         this.log = logContext.logger(Sender.class);
         this.client = client;
         this.accumulator = accumulator;
@@ -139,6 +139,7 @@ public class Sender implements Runnable {
         this.guaranteeMessageOrder = guaranteeMessageOrder;
         this.maxRequestSize = maxRequestSize;
         this.running = true;
+        this.acks = acks;
         this.retries = retries;
         this.time = time;
         this.sensors = new SenderMetrics(metricsRegistry, metadata, client, time);
@@ -147,7 +148,6 @@ public class Sender implements Runnable {
         this.apiVersions = apiVersions;
         this.transactionManager = transactionManager;
         this.inFlightBatches = new HashMap<>();
-        this.dynamicConfig = new DynamicProducerConfig(client, config, time, logContext, requestTimeoutMs);
     }
 
     public List<ProducerBatch> inFlightBatches(TopicPartition tp) {
@@ -208,11 +208,8 @@ public class Sender implements Runnable {
 
     private void addToInflightBatches(List<ProducerBatch> batches) {
         for (ProducerBatch batch : batches) {
-            List<ProducerBatch> inflightBatchList = inFlightBatches.get(batch.topicPartition);
-            if (inflightBatchList == null) {
-                inflightBatchList = new ArrayList<>();
-                inFlightBatches.put(batch.topicPartition, inflightBatchList);
-            }
+            List<ProducerBatch> inflightBatchList = inFlightBatches.computeIfAbsent(
+                batch.topicPartition, k -> new ArrayList<>());
             inflightBatchList.add(batch);
         }
     }
@@ -321,13 +318,11 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
-        dynamicConfig.maybeFetchConfigs(currentTimeMs);
-        currentTimeMs = time.milliseconds();
-        long pollTimeout = sendProducerData(currentTimeMs, dynamicConfig.getAcks());
+        long pollTimeout = sendProducerData(currentTimeMs);
         client.poll(pollTimeout, currentTimeMs);
     }
 
-    private long sendProducerData(long now, short acks) {
+    private long sendProducerData(long now) {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
@@ -404,7 +399,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
-        sendProduceRequests(batches, now, acks);
+        sendProduceRequests(batches, now);
         return pollTimeout;
     }
 
@@ -437,8 +432,9 @@ public class Sender implements Runnable {
         }
 
         TransactionManager.TxnRequestHandler nextRequestHandler = transactionManager.nextRequest(accumulator.hasIncomplete());
-        if (nextRequestHandler == null)
+        if (nextRequestHandler == null) {
             return false;
+        }
 
         AbstractRequest.Builder<?> requestBuilder = nextRequestHandler.requestBuilder();
         Node targetNode = null;
@@ -573,7 +569,9 @@ public class Sender implements Runnable {
      * @param correlationId The correlation id for the request
      * @param now The current POSIX timestamp in milliseconds
      */
-    private void completeBatch(ProducerBatch batch, ProduceResponse.PartitionResponse response, long correlationId,
+    private void completeBatch(ProducerBatch batch,
+                               ProduceResponse.PartitionResponse response,
+                               long correlationId,
                                long now) {
         Errors error = response.error;
 
@@ -697,7 +695,7 @@ public class Sender implements Runnable {
     /**
      * Transfer the record batches into a list of produce requests on a per-node basis
      */
-    private void sendProduceRequests(Map<Integer, List<ProducerBatch>> collated, long now, short acks) {
+    private void sendProduceRequests(Map<Integer, List<ProducerBatch>> collated, long now) {
         for (Map.Entry<Integer, List<ProducerBatch>> entry : collated.entrySet())
             sendProduceRequest(now, entry.getKey(), acks, requestTimeoutMs, entry.getValue());
     }
@@ -742,7 +740,9 @@ public class Sender implements Runnable {
         }
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
                 produceRecordsByPartition, transactionalId);
-        RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
+
+        RequestCompletionHandler callback =
+            response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,

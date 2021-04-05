@@ -19,7 +19,6 @@ package org.apache.kafka.clients.producer.internals;
 import org.apache.kafka.clients.ApiVersion;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.ClientResponse;
-import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.NodeApiVersions;
 import org.apache.kafka.clients.RequestCompletionHandler;
 import org.apache.kafka.clients.consumer.CommitFailedException;
@@ -29,7 +28,6 @@ import org.apache.kafka.common.errors.InvalidPidMappingException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.UnknownProducerIdException;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
@@ -99,8 +97,6 @@ public class TransactionManager {
     private final int transactionTimeoutMs;
     private final ApiVersions apiVersions;
     private final boolean autoDowngradeTxnCommit;
-    final static double RETRY_BACKOFF_JITTER = CommonClientConfigs.RETRY_BACKOFF_JITTER;
-    final static int RETRY_BACKOFF_EXP_BASE = CommonClientConfigs.RETRY_BACKOFF_EXP_BASE;
 
     private static class TopicPartitionBookkeeper {
 
@@ -218,7 +214,7 @@ public class TransactionManager {
     // This is used by the TxnRequestHandlers to control how long to back off before a given request is retried.
     // For instance, this value is lowered by the AddPartitionsToTxnHandler when it receives a CONCURRENT_TRANSACTIONS
     // error for the first AddPartitionsRequest in a transaction.
-    private final ExponentialBackoff retryBackoff;
+    private final long retryBackoffMs;
 
     // The retryBackoff is overridden to the following value if the first AddPartitions receives a
     // CONCURRENT_TRANSACTIONS error.
@@ -293,7 +289,6 @@ public class TransactionManager {
                               final String transactionalId,
                               final int transactionTimeoutMs,
                               final long retryBackoffMs,
-                              long retryBackoffMaxMs,
                               final ApiVersions apiVersions,
                               final boolean autoDowngradeTxnCommit) {
         this.producerIdAndEpoch = ProducerIdAndEpoch.NONE;
@@ -309,8 +304,7 @@ public class TransactionManager {
         this.pendingTxnOffsetCommits = new HashMap<>();
         this.partitionsWithUnresolvedSequences = new HashMap<>();
         this.partitionsToRewriteSequences = new HashSet<>();
-        this.retryBackoff = new ExponentialBackoff(
-                retryBackoffMs, RETRY_BACKOFF_EXP_BASE, retryBackoffMaxMs, RETRY_BACKOFF_JITTER);
+        this.retryBackoffMs = retryBackoffMs;
         this.topicPartitionBookkeeper = new TopicPartitionBookkeeper();
         this.apiVersions = apiVersions;
         this.autoDowngradeTxnCommit = autoDowngradeTxnCommit;
@@ -385,7 +379,7 @@ public class TransactionManager {
 
             EndTxnHandler handler = new EndTxnHandler(builder);
             enqueueRequest(handler);
-            if (!epochBumpRequired) {
+            if (!shouldBumpEpoch()) {
                 return handler.result;
             }
         }
@@ -484,12 +478,10 @@ public class TransactionManager {
             return;
         }
 
-        log.info("Transiting to abortable error state due to {}", exception.toString());
         transitionTo(State.ABORTABLE_ERROR, exception);
     }
 
     synchronized void transitionToFatalError(RuntimeException exception) {
-        log.info("Transiting to fatal error state due to {}", exception.toString());
         transitionTo(State.FATAL_ERROR, exception);
 
         if (pendingResult != null) {
@@ -559,6 +551,10 @@ public class TransactionManager {
         this.partitionsToRewriteSequences.add(tp);
     }
 
+    private boolean shouldBumpEpoch() {
+        return epochBumpRequired;
+    }
+
     private void bumpIdempotentProducerEpoch() {
         if (this.producerIdAndEpoch.epoch == Short.MAX_VALUE) {
             resetIdempotentProducerId();
@@ -579,7 +575,7 @@ public class TransactionManager {
 
     synchronized void bumpIdempotentEpochAndResetIdIfNeeded() {
         if (!isTransactional()) {
-            if (epochBumpRequired) {
+            if (shouldBumpEpoch()) {
                 bumpIdempotentProducerEpoch();
             }
             if (currentState != State.INITIALIZING && !hasProducerId()) {
@@ -868,12 +864,15 @@ public class TransactionManager {
             enqueueRequest(addPartitionsToTransactionHandler());
 
         TxnRequestHandler nextRequestHandler = pendingRequests.peek();
-        if (nextRequestHandler == null)
+
+        if (nextRequestHandler == null) {
             return null;
+        }
 
         // Do not send the EndTxn until all batches have been flushed
-        if (nextRequestHandler.isEndTxn() && hasIncompleteBatches)
+        if (nextRequestHandler.isEndTxn() && hasIncompleteBatches) {
             return null;
+        }
 
         pendingRequests.poll();
         if (maybeTerminateRequestWithError(nextRequestHandler)) {
@@ -1016,14 +1015,10 @@ public class TransactionManager {
 
             if (!isTransactional()) {
                 // For the idempotent producer, always retry UNKNOWN_PRODUCER_ID errors. If the batch has the current
-                // producer ID and epoch, request a bump of the epoch. Otherwise just retry the produce.
+                // producer ID and epoch, request a bump of the epoch. Otherwise just retry, as the
                 requestEpochBumpForPartition(batch.topicPartition);
                 return true;
             }
-        } else if (error == Errors.INVALID_PRODUCER_EPOCH) {
-            // Retry the initProducerId to bump the epoch and continue.
-            requestEpochBumpForPartition(batch.topicPartition);
-            return true;
         } else if (error == Errors.OUT_OF_ORDER_SEQUENCE_NUMBER) {
             if (!hasUnresolvedSequence(batch.topicPartition) &&
                     (batch.sequenceHasBeenReset() || !isNextSequence(batch.topicPartition, batch.baseSequence()))) {
@@ -1120,7 +1115,6 @@ public class TransactionManager {
         return false;
     }
 
-    // Visible for testing
     void enqueueRequest(TxnRequestHandler requestHandler) {
         log.debug("Enqueuing transactional request {}", requestHandler.requestBuilder());
         pendingRequests.add(requestHandler);
@@ -1222,8 +1216,6 @@ public class TransactionManager {
     abstract class TxnRequestHandler implements RequestCompletionHandler {
         protected final TransactionalRequestResult result;
         private boolean isRetry = false;
-        private int attempts = 0;
-        private long retryBackoffMs = retryBackoff.baseBackoff();
 
         TxnRequestHandler(TransactionalRequestResult result) {
             this.result = result;
@@ -1259,7 +1251,6 @@ public class TransactionManager {
         void reenqueue() {
             synchronized (TransactionManager.this) {
                 this.isRetry = true;
-                this.retryBackoffMs = retryBackoff.backoff(this.attempts++);
                 enqueueRequest(this);
             }
         }
@@ -1311,10 +1302,6 @@ public class TransactionManager {
 
         boolean isRetry() {
             return isRetry;
-        }
-
-        int attempts() {
-            return attempts;
         }
 
         boolean isEndTxn() {
@@ -1380,10 +1367,6 @@ public class TransactionManager {
             } else if (error == Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED ||
                     error == Errors.CLUSTER_AUTHORIZATION_FAILED) {
                 fatalError(error.exception());
-            } else if (error == Errors.INVALID_PRODUCER_EPOCH || error == Errors.PRODUCER_FENCED) {
-                // We could still receive INVALID_PRODUCER_EPOCH from old versioned transaction coordinator,
-                // just treat it the same as PRODUCE_FENCED.
-                fatalError(Errors.PRODUCER_FENCED.exception());
             } else {
                 fatalError(new KafkaException("Unexpected error in InitProducerIdResponse; " + error.message()));
             }
@@ -1397,7 +1380,7 @@ public class TransactionManager {
         private AddPartitionsToTxnHandler(AddPartitionsToTxnRequest.Builder builder) {
             super("AddPartitionsToTxn");
             this.builder = builder;
-            this.retryBackoffMs = TransactionManager.this.retryBackoff.baseBackoff();
+            this.retryBackoffMs = TransactionManager.this.retryBackoffMs;
         }
 
         @Override
@@ -1416,7 +1399,7 @@ public class TransactionManager {
             Map<TopicPartition, Errors> errors = addPartitionsToTxnResponse.errors();
             boolean hasPartitionErrors = false;
             Set<String> unauthorizedTopics = new HashSet<>();
-            retryBackoffMs = TransactionManager.this.retryBackoff.backoff(this.attempts());
+            retryBackoffMs = TransactionManager.this.retryBackoffMs;
 
             for (Map.Entry<TopicPartition, Errors> topicPartitionErrorEntry : errors.entrySet()) {
                 TopicPartition topicPartition = topicPartitionErrorEntry.getKey();
@@ -1435,10 +1418,8 @@ public class TransactionManager {
                 } else if (error == Errors.COORDINATOR_LOAD_IN_PROGRESS || error == Errors.UNKNOWN_TOPIC_OR_PARTITION) {
                     reenqueue();
                     return;
-                } else if (error == Errors.INVALID_PRODUCER_EPOCH || error == Errors.PRODUCER_FENCED) {
-                    // We could still receive INVALID_PRODUCER_EPOCH from old versioned transaction coordinator,
-                    // just treat it the same as PRODUCE_FENCED.
-                    fatalError(Errors.PRODUCER_FENCED.exception());
+                } else if (error == Errors.INVALID_PRODUCER_EPOCH) {
+                    fatalError(error.exception());
                     return;
                 } else if (error == Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED) {
                     fatalError(error.exception());
@@ -1484,7 +1465,7 @@ public class TransactionManager {
 
         @Override
         public long retryBackoffMs() {
-            return this.retryBackoffMs;
+            return Math.min(TransactionManager.this.retryBackoffMs, this.retryBackoffMs);
         }
 
         private void maybeOverrideRetryBackoffMs() {
@@ -1595,10 +1576,8 @@ public class TransactionManager {
                 reenqueue();
             } else if (error == Errors.COORDINATOR_LOAD_IN_PROGRESS || error == Errors.CONCURRENT_TRANSACTIONS) {
                 reenqueue();
-            } else if (error == Errors.INVALID_PRODUCER_EPOCH || error == Errors.PRODUCER_FENCED) {
-                // We could still receive INVALID_PRODUCER_EPOCH from old versioned transaction coordinator,
-                // just treat it the same as PRODUCE_FENCED.
-                fatalError(Errors.PRODUCER_FENCED.exception());
+            } else if (error == Errors.INVALID_PRODUCER_EPOCH) {
+                fatalError(error.exception());
             } else if (error == Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED) {
                 fatalError(error.exception());
             } else if (error == Errors.INVALID_TXN_STATE) {
@@ -1654,10 +1633,8 @@ public class TransactionManager {
                 reenqueue();
             } else if (error == Errors.UNKNOWN_PRODUCER_ID || error == Errors.INVALID_PRODUCER_ID_MAPPING) {
                 abortableErrorIfPossible(error.exception());
-            } else if (error == Errors.INVALID_PRODUCER_EPOCH || error == Errors.PRODUCER_FENCED) {
-                // We could still receive INVALID_PRODUCER_EPOCH from old versioned transaction coordinator,
-                // just treat it the same as PRODUCE_FENCED.
-                fatalError(Errors.PRODUCER_FENCED.exception());
+            } else if (error == Errors.INVALID_PRODUCER_EPOCH) {
+                fatalError(error.exception());
             } else if (error == Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED) {
                 fatalError(error.exception());
             } else if (error == Errors.GROUP_AUTHORIZATION_FAILED) {

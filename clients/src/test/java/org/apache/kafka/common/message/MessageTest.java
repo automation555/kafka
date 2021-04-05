@@ -18,7 +18,6 @@
 package org.apache.kafka.common.message;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import java.util.Optional;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopic;
 import org.apache.kafka.common.message.AddPartitionsToTxnRequestData.AddPartitionsToTxnTopicCollection;
@@ -709,26 +708,6 @@ public final class MessageTest {
         testAllMessageRoundTripsFromVersion((short) 2, message);
     }
 
-    @Test
-    public void testSimpleMessageOptional() throws Exception {
-        final SimpleExampleMessageData message = new SimpleExampleMessageData();
-
-        message.setMyOptionalNullableString(Optional.of("non empty"));
-        message.setMyOptionalInt16(Optional.of((short) 1));
-        message.setMyOptionalFloat64(Optional.of(2.2));
-        message.setMyOptionalString(Optional.of("non empty"));
-        message.setMyOptionalNullableIntArray(Optional.of(Arrays.asList(1, 2, 3)));
-        message.setMyOptionalIntArray(Optional.of(Arrays.asList(1, 2, 3)));
-
-        message.setMyOptionalNullableTaggedString(Optional.of("non empty"));
-        message.setMyOptionalTaggedInt16(Optional.of((short) 1));
-        message.setMyOptionalTaggedFloat64(Optional.of(2.2));
-        message.setMyOptionalTaggedString(Optional.of("non empty"));
-        message.setMyOptionalTaggedIntArray(Optional.of(Arrays.asList(1, 2, 3)));
-
-        testAllMessageRoundTripsFromVersion((short) 2, message);
-    }
-
     private void testAllMessageRoundTrips(Message message) throws Exception {
         testDuplication(message);
         testAllMessageRoundTripsFromVersion(message.lowestSupportedVersion(), message);
@@ -993,6 +972,29 @@ public final class MessageTest {
                 .setGroupId("groupId")
                 .setGenerationId(15)
                 .setMemberId(memberId));
+    }
+
+    @Test
+    public void testFindAndGetOrCreate() throws Exception {
+        ApiVersionsResponseData responseData = new ApiVersionsResponseData();
+        responseData.apiKeys().add(new ApiVersionsResponseData.ApiVersionsResponseKey().
+            setApiKey((short) 0).setMinVersion((short) 0).setMaxVersion((short) 3));
+        responseData.apiKeys().add(new ApiVersionsResponseData.ApiVersionsResponseKey().
+            setApiKey((short) 1).setMinVersion((short) 0).setMaxVersion((short) 10));
+        responseData.apiKeys().add(new ApiVersionsResponseData.ApiVersionsResponseKey().
+            setApiKey((short) 2).setMinVersion((short) 0).setMaxVersion((short) 0));
+        ApiVersionsResponseData.ApiVersionsResponseKey key0 =
+            responseData.apiKeys().find((short) 0);
+        assertEquals((short) 0, key0.apiKey());
+        assertEquals((short) 0, key0.minVersion());
+        assertEquals((short) 3, key0.maxVersion());
+        ApiVersionsResponseData.ApiVersionsResponseKey key3 =
+            responseData.apiKeys().getOrCreate((short) 3);
+        assertEquals((short) 3, key3.apiKey());
+        key3.setMaxVersion((short) 123);
+        ApiVersionsResponseData.ApiVersionsResponseKey secondKey3 =
+            responseData.apiKeys().getOrCreate((short) 3);
+        assertEquals((short) 123, secondKey3.maxVersion());
     }
 
     @Test

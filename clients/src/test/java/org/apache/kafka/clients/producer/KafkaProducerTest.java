@@ -68,12 +68,12 @@ import org.apache.kafka.test.MockPartitioner;
 import org.apache.kafka.test.MockProducerInterceptor;
 import org.apache.kafka.test.MockSerializer;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Assert;
+import org.junit.Test;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -98,15 +98,14 @@ import java.util.stream.Stream;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.singletonMap;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -182,7 +181,7 @@ public class KafkaProducerTest {
 
         MockMetricsReporter mockMetricsReporter = (MockMetricsReporter) producer.metrics.reporters().get(0);
 
-        assertEquals(producer.getClientId(), mockMetricsReporter.clientId);
+        Assert.assertEquals(producer.getClientId(), mockMetricsReporter.clientId);
         producer.close();
     }
 
@@ -193,11 +192,11 @@ public class KafkaProducerTest {
         new KafkaProducer<>(producerProps, new ByteArraySerializer(), new ByteArraySerializer()).close();
     }
 
-    @Test
+    @Test(expected = ConfigException.class)
     public void testNoSerializerProvided() {
         Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9000");
-        assertThrows(ConfigException.class, () -> new KafkaProducer(producerProps));
+        new KafkaProducer(producerProps);
     }
 
     @Test
@@ -226,7 +225,7 @@ public class KafkaProducerTest {
         try (KafkaProducer<?, ?> ff = new KafkaProducer<>(props, new StringSerializer(), new StringSerializer())) {
             fail("Constructor should throw exception");
         } catch (ConfigException e) {
-            assertTrue(e.getMessage().contains("not string key"), "Unexpected exception message: " + e.getMessage());
+            assertTrue("Unexpected exception message: " + e.getMessage(), e.getMessage().contains("not string key"));
         }
     }
 
@@ -265,7 +264,7 @@ public class KafkaProducerTest {
             assertEquals(0, MockProducerInterceptor.CLOSE_COUNT.get());
 
             // Cluster metadata will only be updated on calling onSend.
-            assertNull(MockProducerInterceptor.CLUSTER_META.get());
+            Assert.assertNull(MockProducerInterceptor.CLUSTER_META.get());
 
             producer.close();
             assertEquals(1, MockProducerInterceptor.INIT_COUNT.get());
@@ -336,12 +335,13 @@ public class KafkaProducerTest {
             // Ensure send has started
             client.waitForRequests(1, 1000);
 
-            assertTrue(future.cancel(true), "Close terminated prematurely");
+            assertTrue("Close terminated prematurely", future.cancel(true));
 
             TestUtils.waitForCondition(() -> closeException.get() != null,
                     "InterruptException did not occur within timeout.");
 
-            assertTrue(closeException.get() instanceof InterruptException, "Expected exception not thrown " + closeException);
+            assertTrue("Expected exception not thrown " + closeException,
+                    closeException.get() instanceof InterruptException);
         } finally {
             executor.shutdownNow();
         }
@@ -357,20 +357,20 @@ public class KafkaProducerTest {
         new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer()).close();
     }
 
-    @Test
+    @Test(expected = KafkaException.class)
     public void testInvalidSocketSendBufferSize() {
         Map<String, Object> config = new HashMap<>();
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
         config.put(ProducerConfig.SEND_BUFFER_CONFIG, -2);
-        assertThrows(KafkaException.class, () -> new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer()));
+        new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer());
     }
 
-    @Test
+    @Test(expected = KafkaException.class)
     public void testInvalidSocketReceiveBufferSize() {
         Map<String, Object> config = new HashMap<>();
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
         config.put(ProducerConfig.RECEIVE_BUFFER_CONFIG, -2);
-        assertThrows(KafkaException.class, () -> new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer()));
+        new KafkaProducer<>(config, new ByteArraySerializer(), new ByteArraySerializer());
     }
 
     private static KafkaProducer<String, String> producerWithOverrideNewSender(Map<String, Object> configs,
@@ -390,6 +390,44 @@ public class KafkaProducerTest {
                 return super.newSender(logContext, kafkaClient, newMetadata(0, 100_000));
             }
         };
+    }
+
+    @Test(timeout = 10000)
+    public void testFlushInCallbackNotCauseDeadlock() {
+        Cluster oneLeaderCluster = new Cluster(
+                "dummy",
+                nodes,
+                Collections.singletonList(new PartitionInfo(topic, 0, host1, null, null)),
+                Collections.emptySet(),
+                Collections.emptySet());
+
+        Map<String, Object> configs = new HashMap<>();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
+        ProducerMetadata metadata = mock(ProducerMetadata.class);
+
+        when(metadata.fetch()).thenReturn(emptyCluster, oneLeaderCluster);
+
+        Time time = new MockTime();
+        MockClient mockClient = new MockClient(time, metadata);
+        mockClient.prepareResponse(null);
+
+        AtomicReference<Exception> exceptionThrow = new AtomicReference<>();
+        try (KafkaProducer<String, String> producer = kafkaProducer(configs,
+                new StringSerializer(), new StringSerializer(), metadata, mockClient, null, time)) {
+
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic, "value");
+            producer.send(record, (metadata1, exception) -> {
+                try {
+                    producer.flush();
+                } catch (Exception e) {
+                    exceptionThrow.set(e);
+                }
+            });
+        }
+
+        Assert.assertNotNull(exceptionThrow.get());
+        Assert.assertEquals(IllegalStateException.class, exceptionThrow.get().getClass());
+
     }
 
     @Test
@@ -806,19 +844,15 @@ public class KafkaProducerTest {
         try (Producer<String, String> producer = kafkaProducer(configs, new StringSerializer(),
                 new StringSerializer(), metadata, client, null, time)) {
             client.prepareResponse(
-                request -> {
-                    assertTrue(request instanceof FindCoordinatorRequest);
-                    assertEquals(FindCoordinatorRequest.CoordinatorType.TRANSACTION.id(), ((FindCoordinatorRequest) request).data().keyType());
-                },
+                request -> request instanceof FindCoordinatorRequest &&
+                    ((FindCoordinatorRequest) request).data().keyType() == FindCoordinatorRequest.CoordinatorType.TRANSACTION.id(),
                 FindCoordinatorResponse.prepareResponse(Errors.NONE, host1));
 
             assertThrows(TimeoutException.class, producer::initTransactions);
 
             client.prepareResponse(
-                request -> {
-                    assertTrue(request instanceof FindCoordinatorRequest);
-                    assertEquals(FindCoordinatorRequest.CoordinatorType.TRANSACTION.id(), ((FindCoordinatorRequest) request).data().keyType());
-                },
+                request -> request instanceof FindCoordinatorRequest &&
+                               ((FindCoordinatorRequest) request).data().keyType() == FindCoordinatorRequest.CoordinatorType.TRANSACTION.id(),
                 FindCoordinatorResponse.prepareResponse(Errors.NONE, host1));
 
             client.prepareResponse(initProducerIdResponse(1L, (short) 5, Errors.NONE));
@@ -901,7 +935,8 @@ public class KafkaProducerTest {
         client.prepareResponse(addOffsetsToTxnResponse(Errors.NONE));
         client.prepareResponse(FindCoordinatorResponse.prepareResponse(Errors.NONE, host1));
         String groupId = "group";
-        client.prepareResponse(request -> assertEquals(groupId, ((TxnOffsetCommitRequest) request).data().groupId()),
+        client.prepareResponse(request ->
+            ((TxnOffsetCommitRequest) request).data.groupId().equals(groupId),
             txnOffsetsCommitResponse(Collections.singletonMap(
                 new TopicPartition("topic", 0), Errors.NONE)));
         client.prepareResponse(endTxnResponse(Errors.NONE));
@@ -952,16 +987,17 @@ public class KafkaProducerTest {
         int generationId = 5;
         String groupInstanceId = "instance";
         client.prepareResponse(request -> {
-            TxnOffsetCommitRequestData data = ((TxnOffsetCommitRequest) request).data();
-            assertEquals(groupId, data.groupId());
+            TxnOffsetCommitRequestData data = ((TxnOffsetCommitRequest) request).data;
             if (maxVersion < 3) {
-                assertEquals(JoinGroupRequest.UNKNOWN_MEMBER_ID, data.memberId());
-                assertEquals(JoinGroupRequest.UNKNOWN_GENERATION_ID, data.generationId());
-                assertNull(data.groupInstanceId());
+                return data.groupId().equals(groupId) &&
+                           data.memberId().equals(JoinGroupRequest.UNKNOWN_MEMBER_ID) &&
+                           data.generationId() == JoinGroupRequest.UNKNOWN_GENERATION_ID &&
+                           data.groupInstanceId() == null;
             } else {
-                assertEquals(memberId, data.memberId());
-                assertEquals(generationId, data.generationId());
-                assertEquals(groupInstanceId, data.groupInstanceId());
+                return data.groupId().equals(groupId) &&
+                           data.memberId().equals(memberId) &&
+                           data.generationId() == generationId &&
+                           data.groupInstanceId().equals(groupInstanceId);
             }
         }, txnOffsetsCommitResponse(Collections.singletonMap(
             new TopicPartition("topic", 0), Errors.NONE)));
@@ -1098,8 +1134,8 @@ public class KafkaProducerTest {
 
         Future<RecordMetadata> future = producer.send(record);
 
-        assertEquals(Collections.singleton(invalidTopicName),
-                metadata.fetch().invalidTopics(), "Cluster has incorrect invalid topic list.");
+        assertEquals("Cluster has incorrect invalid topic list.", Collections.singleton(invalidTopicName),
+                metadata.fetch().invalidTopics());
         TestUtils.assertFutureError(future, InvalidTopicException.class);
 
         producer.close(Duration.ofMillis(0));
@@ -1269,7 +1305,7 @@ public class KafkaProducerTest {
         MetricName testMetricName = producer.metrics.metricName("test-metric",
                 "grp1", "test metric");
         producer.metrics.addMetric(testMetricName, new Avg());
-        assertNotNull(server.getObjectInstance(new ObjectName("kafka.producer:type=grp1,client-id=client-1")));
+        Assert.assertNotNull(server.getObjectInstance(new ObjectName("kafka.producer:type=grp1,client-id=client-1")));
         producer.close();
     }
 
@@ -1309,13 +1345,6 @@ public class KafkaProducerTest {
                 null, null, null, Time.SYSTEM)) {
             assertTrue(config.unused().contains(SslConfigs.SSL_PROTOCOL_CONFIG));
         }
-    }
-
-    @Test
-    public void testNullTopicName() {
-        // send a record with null topic should fail
-        assertThrows(IllegalArgumentException.class, () -> new ProducerRecord<>(null, 1,
-            "key".getBytes(StandardCharsets.UTF_8), "value".getBytes(StandardCharsets.UTF_8)));
     }
 
     private static final List<String> CLIENT_IDS = new ArrayList<>();

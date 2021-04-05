@@ -17,6 +17,7 @@
 package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Metrics;
@@ -31,6 +32,7 @@ import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.LogAndContinueExceptionHandler;
+import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.TimestampExtractor;
 import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
 import org.apache.kafka.test.InternalMockProcessorContext;
@@ -40,9 +42,7 @@ import org.hamcrest.Matchers;
 import org.junit.Test;
 
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.OptionalLong;
 import java.util.UUID;
 
 import static org.apache.kafka.common.utils.Utils.mkEntry;
@@ -62,9 +62,10 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class PartitionGroupTest {
+    private final TaskId id = new TaskId(0, 0);
 
     private final long maxTaskIdleMs = StreamsConfig.MAX_TASK_IDLE_MS_DISABLED;
-    private final LogContext logContext = new LogContext("[test] ");
+    private final LogContext logContext = new LogContext();
     private final Time time = new MockTime();
     private final Serializer<Integer> intSerializer = new IntegerSerializer();
     private final Deserializer<Integer> intDeserializer = new IntegerDeserializer();
@@ -101,23 +102,23 @@ public class PartitionGroupTest {
 
     private RecordQueue createQueue1() {
         return new RecordQueue(
-                partition1,
-                new MockSourceNode<>(intDeserializer, intDeserializer),
-                timestampExtractor,
-                new LogAndContinueExceptionHandler(),
-                new InternalMockProcessorContext(),
-                logContext
+            partition1,
+            new MockSourceNode<>(intDeserializer, intDeserializer),
+            timestampExtractor,
+            new LogAndContinueExceptionHandler(),
+            new InternalMockProcessorContext(),
+            logContext
         );
     }
 
     private RecordQueue createQueue2() {
         return new RecordQueue(
-                partition2,
-                new MockSourceNode<>(intDeserializer, intDeserializer),
-                timestampExtractor,
-                new LogAndContinueExceptionHandler(),
-                new InternalMockProcessorContext(),
-                logContext
+            partition2,
+            new MockSourceNode<>(intDeserializer, intDeserializer),
+            timestampExtractor,
+            new LogAndContinueExceptionHandler(),
+            new InternalMockProcessorContext(),
+            logContext
         );
     }
 
@@ -136,17 +137,17 @@ public class PartitionGroupTest {
 
         // add three 3 records with timestamp 1, 3, 5 to partition-1
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
 
         group.addRawRecords(partition1, list1);
 
         // add three 3 records with timestamp 2, 4, 6 to partition-2
         final List<ConsumerRecord<byte[], byte[]>> list2 = Arrays.asList(
-                new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
 
         group.addRawRecords(partition2, list2);
         // 1:[1, 3, 5]
@@ -195,8 +196,8 @@ public class PartitionGroupTest {
 
         // add 2 more records with timestamp 2, 4 to partition-1
         final List<ConsumerRecord<byte[], byte[]>> list3 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 2L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 4L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 2L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 4L, recordKey, recordValue));
 
         group.addRawRecords(partition1, list3);
         // 1:[3, 5, 2, 4]
@@ -303,9 +304,9 @@ public class PartitionGroupTest {
 
         // add three 3 records with timestamp 1, 5, 3 to partition-1
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue));
 
         group.addRawRecords(partition1, list1);
 
@@ -324,9 +325,9 @@ public class PartitionGroupTest {
 
         // add three 3 records with timestamp 2, 4, 6 to partition-2
         final List<ConsumerRecord<byte[], byte[]>> list2 = Arrays.asList(
-                new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
 
         group.addRawRecords(partition2, list2);
         // 1:[3]
@@ -345,18 +346,12 @@ public class PartitionGroupTest {
         assertEquals(record.timestamp, 3L);
     }
 
-    private void verifyTimes(final StampedRecord record,
-                             final long recordTime,
-                             final long streamTime,
-                             final PartitionGroup group) {
+    private void verifyTimes(final StampedRecord record, final long recordTime, final long streamTime, final PartitionGroup group) {
         assertThat(record.timestamp, is(recordTime));
         assertThat(group.streamTime(), is(streamTime));
     }
 
-    private void verifyBuffered(final int totalBuffered,
-                                final int partitionOneBuffered,
-                                final int partitionTwoBuffered,
-                                final PartitionGroup group) {
+    private void verifyBuffered(final int totalBuffered, final int partitionOneBuffered, final int partitionTwoBuffered, final PartitionGroup group) {
         assertEquals(totalBuffered, group.numBuffered());
         assertEquals(partitionOneBuffered, group.numBuffered(partition1));
         assertEquals(partitionTwoBuffered, group.numBuffered(partition2));
@@ -429,9 +424,9 @@ public class PartitionGroupTest {
         final PartitionGroup group = getBasicGroup();
 
         final List<ConsumerRecord<byte[], byte[]>> list = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 3L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list);
         group.nextRecord(new PartitionGroup.RecordInfo(), time.milliseconds());
         group.nextRecord(new PartitionGroup.RecordInfo(), time.milliseconds());
@@ -451,13 +446,13 @@ public class PartitionGroupTest {
         final PartitionGroup group = getBasicGroup();
 
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list1);
         final List<ConsumerRecord<byte[], byte[]>> list2 = Arrays.asList(
-                new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 2, 2L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 4L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 2, 6L, recordKey, recordValue));
         group.addRawRecords(partition2, list2);
         assertEquals(list1.size() + list2.size(), group.numBuffered());
         assertTrue(group.allPartitionsBufferedLocally());
@@ -480,16 +475,16 @@ public class PartitionGroupTest {
     @Test
     public void shouldUpdatePartitionQueuesExpand() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(mkEntry(partition1, queue1)),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
-            maxTaskIdleMs
+            maxTaskIdleMs,
+            0L
         );
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list1);
 
         assertEquals(list1.size(), group.numBuffered());
@@ -513,16 +508,16 @@ public class PartitionGroupTest {
     @Test
     public void shouldUpdatePartitionQueuesShrinkAndExpand() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(mkEntry(partition1, queue1)),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
-            maxTaskIdleMs
+            maxTaskIdleMs,
+            0L
         );
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
-                new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
-                new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list1);
         assertEquals(list1.size(), group.numBuffered());
         assertTrue(group.allPartitionsBufferedLocally());
@@ -545,15 +540,15 @@ public class PartitionGroupTest {
     @Test
     public void shouldNeverWaitIfIdlingIsDisabled() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
-            StreamsConfig.MAX_TASK_IDLE_MS_DISABLED
+            StreamsConfig.MAX_TASK_IDLE_MS_DISABLED,
+            0L
         );
 
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
@@ -570,7 +565,7 @@ public class PartitionGroupTest {
                 hasItem(Matchers.allOf(
                     Matchers.hasProperty("level", equalTo("TRACE")),
                     Matchers.hasProperty("message", equalTo(
-                        "[test] Ready for processing because max.task.idle.ms is disabled.\n" +
+                        "[0_0] Ready for processing because max.task.idle.ms is disabled.\n" +
                             "\tThere may be out-of-order processing for this task as a result.\n" +
                             "\tBuffered partitions: [topic-1]\n" +
                             "\tNon-buffered partitions: [topic-2]"
@@ -583,14 +578,14 @@ public class PartitionGroupTest {
     @Test
     public void shouldBeReadyIfAllPartitionsAreBuffered() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
+            0L,
             0L
         );
 
@@ -611,8 +606,8 @@ public class PartitionGroupTest {
             assertThat(
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
-                    Matchers.hasProperty("level", equalTo("TRACE")),
-                    Matchers.hasProperty("message", equalTo("[test] All partitions were buffered locally, so this task is ready for processing."))
+                    Matchers.hasProperty("level", equalTo("DEBUG")),
+                    Matchers.hasProperty("message", equalTo("[0_0] All partitions were buffered locally, so this task is ready for processing."))
                 ))
             );
         }
@@ -620,16 +615,15 @@ public class PartitionGroupTest {
 
     @Test
     public void shouldWaitForFetchesWhenMetadataIsIncomplete() {
-        final HashMap<TopicPartition, OptionalLong> lags = new HashMap<>();
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> lags.getOrDefault(tp, OptionalLong.empty()),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
+            0L,
             0L
         );
 
@@ -646,26 +640,62 @@ public class PartitionGroupTest {
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
                     Matchers.hasProperty("level", equalTo("TRACE")),
-                    Matchers.hasProperty("message", equalTo("[test] Waiting to fetch data for topic-2"))
+                    Matchers.hasProperty("message", equalTo("[0_0] Waiting to fetch data for topic-2"))
                 ))
             );
         }
-        lags.put(partition2, OptionalLong.of(0L));
+        group.addFetchedMetadata(partition2, new ConsumerRecords.Metadata(0L, 0L, 0L, 0L));
         assertThat(group.readyToProcess(0L), is(true));
     }
 
     @Test
-    public void shouldWaitForPollWhenLagIsNonzero() {
-        final HashMap<TopicPartition, OptionalLong> lags = new HashMap<>();
+    public void shouldWaitForFetchesWhenMetadataIsStale() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> lags.getOrDefault(tp, OptionalLong.empty()),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
+            0L,
+            100_000L
+        );
+
+        final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
+            new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
+            new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
+        group.addRawRecords(partition1, list1);
+        group.addFetchedMetadata(partition2, new ConsumerRecords.Metadata(0L, 0L, 0L, 0L));
+
+        assertThat(group.allPartitionsBufferedLocally(), is(false));
+        assertThat(group.readyToProcess(100_000L), is(true));
+        try (final LogCaptureAppender appender = LogCaptureAppender.createAndRegister(PartitionGroup.class)) {
+            LogCaptureAppender.setClassLoggerToTrace(PartitionGroup.class);
+            assertThat(group.readyToProcess(100_001L), is(false));
+            assertThat(
+                appender.getEvents(),
+                hasItem(Matchers.allOf(
+                    Matchers.hasProperty("level", equalTo("TRACE")),
+                    Matchers.hasProperty("message", equalTo("[0_0] Waiting to fetch data for topic-2"))
+                ))
+            );
+        }
+        group.addFetchedMetadata(partition2, new ConsumerRecords.Metadata(100_002L, 0L, 0L, 0L));
+        assertThat(group.readyToProcess(100_002L), is(true));
+    }
+
+    @Test
+    public void shouldWaitForPollWhenLagIsNonzero() {
+        final PartitionGroup group = new PartitionGroup(
+            id,
+            mkMap(
+                mkEntry(partition1, queue1),
+                mkEntry(partition2, queue2)
+            ),
+            getValueSensor(metrics, lastLatenessValue),
+            enforcedProcessingSensor,
+            0L,
             0L
         );
 
@@ -673,8 +703,7 @@ public class PartitionGroupTest {
             new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list1);
-
-        lags.put(partition2, OptionalLong.of(1L));
+        group.addFetchedMetadata(partition2, new ConsumerRecords.Metadata(0L, 0L, 0L, 1L));
 
         assertThat(group.allPartitionsBufferedLocally(), is(false));
 
@@ -684,8 +713,8 @@ public class PartitionGroupTest {
             assertThat(
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
-                    Matchers.hasProperty("level", equalTo("TRACE")),
-                    Matchers.hasProperty("message", equalTo("[test] Lag for topic-2 is currently 1, but no data is buffered locally. Waiting to buffer some records."))
+                    Matchers.hasProperty("level", equalTo("DEBUG")),
+                    Matchers.hasProperty("message", equalTo("[0_0] Lag for topic-2 is currently 1, but no data is buffered locally. Waiting to buffer some records."))
                 ))
             );
         }
@@ -694,21 +723,22 @@ public class PartitionGroupTest {
     @Test
     public void shouldIdleAsSpecifiedWhenLagIsZero() {
         final PartitionGroup group = new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
-            1L
+            1L,
+            10L
         );
 
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
             new ConsumerRecord<>("topic", 1, 1L, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 5L, recordKey, recordValue));
         group.addRawRecords(partition1, list1);
+        group.addFetchedMetadata(partition2, new ConsumerRecords.Metadata(0L, 0L, 0L, 0L));
 
         assertThat(group.allPartitionsBufferedLocally(), is(false));
 
@@ -718,8 +748,8 @@ public class PartitionGroupTest {
             assertThat(
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
-                    Matchers.hasProperty("level", equalTo("TRACE")),
-                    Matchers.hasProperty("message", equalTo("[test] Lag for topic-2 is currently 0 and current time is 0. Waiting for new data to be produced for configured idle time 1 (deadline is 1)."))
+                    Matchers.hasProperty("level", equalTo("DEBUG")),
+                    Matchers.hasProperty("message", equalTo("[0_0] Lag for topic-2 is currently 0 and current time is 0. Waiting for new data to be produced for configured idle time 1 (deadline is 1)."))
                 ))
             );
         }
@@ -730,9 +760,9 @@ public class PartitionGroupTest {
             assertThat(
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
-                    Matchers.hasProperty("level", equalTo("TRACE")),
+                    Matchers.hasProperty("level", equalTo("INFO")),
                     Matchers.hasProperty("message", equalTo(
-                        "[test] Continuing to process although some partitions are empty on the broker.\n" +
+                        "[0_0] Continuing to process although some partition timestamps were not buffered locally.\n" +
                             "\tThere may be out-of-order processing for this task as a result.\n" +
                             "\tPartitions with local data: [topic-1].\n" +
                             "\tPartitions we gave up waiting for, with their corresponding deadlines: {topic-2=1}.\n" +
@@ -749,9 +779,9 @@ public class PartitionGroupTest {
             assertThat(
                 appender.getEvents(),
                 hasItem(Matchers.allOf(
-                    Matchers.hasProperty("level", equalTo("TRACE")),
+                    Matchers.hasProperty("level", equalTo("INFO")),
                     Matchers.hasProperty("message", equalTo(
-                        "[test] Continuing to process although some partitions are empty on the broker.\n" +
+                        "[0_0] Continuing to process although some partition timestamps were not buffered locally.\n" +
                             "\tThere may be out-of-order processing for this task as a result.\n" +
                             "\tPartitions with local data: [topic-1].\n" +
                             "\tPartitions we gave up waiting for, with their corresponding deadlines: {topic-2=1}.\n" +
@@ -765,15 +795,15 @@ public class PartitionGroupTest {
 
     private PartitionGroup getBasicGroup() {
         return new PartitionGroup(
-            logContext,
+            id,
             mkMap(
                 mkEntry(partition1, queue1),
                 mkEntry(partition2, queue2)
             ),
-            tp -> OptionalLong.of(0L),
             getValueSensor(metrics, lastLatenessValue),
             enforcedProcessingSensor,
-            maxTaskIdleMs
+            maxTaskIdleMs,
+            0L
         );
     }
 }

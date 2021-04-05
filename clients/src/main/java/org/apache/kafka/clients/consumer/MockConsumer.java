@@ -37,15 +37,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-
-import static java.util.Collections.singleton;
 
 
 /**
@@ -221,7 +218,22 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         }
 
         toClear.forEach(p -> this.records.remove(p));
-        return new ConsumerRecords<>(results);
+
+        final Map<TopicPartition, ConsumerRecords.Metadata> metadata = new HashMap<>();
+        for (final TopicPartition partition : subscriptions.assignedPartitions()) {
+            if (subscriptions.hasValidPosition(partition) && beginningOffsets.containsKey(partition) && endOffsets.containsKey(partition)) {
+                final SubscriptionState.FetchPosition position = subscriptions.position(partition);
+                final long offset = position.offset;
+                final long startOffset = beginningOffsets.get(partition);
+                final long endOffset = endOffsets.get(partition);
+                metadata.put(
+                    partition,
+                    new ConsumerRecords.Metadata(System.currentTimeMillis(), offset, startOffset, endOffset)
+                );
+            }
+        }
+
+        return new ConsumerRecords<>(results, metadata);
     }
 
     public synchronized void addRecord(ConsumerRecord<K, V> record) {
@@ -232,6 +244,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
             throw new IllegalStateException("Cannot add records for a partition that is not assigned to the consumer");
         List<ConsumerRecord<K, V>> recs = this.records.computeIfAbsent(tp, k -> new ArrayList<>());
         recs.add(record);
+        this.endOffsets.compute(tp, (ignore, offset) -> offset == null ? record.offset() : Math.max(offset, record.offset()));
     }
 
     /**
@@ -306,7 +319,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     @Deprecated
     @Override
     public synchronized OffsetAndMetadata committed(final TopicPartition partition) {
-        return committed(singleton(partition)).get(partition);
+        return committed(Collections.singleton(partition)).get(partition);
     }
 
     @Deprecated
@@ -545,18 +558,8 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public OptionalLong currentLag(TopicPartition topicPartition) {
-        if (endOffsets.containsKey(topicPartition)) {
-            return OptionalLong.of(endOffsets.get(topicPartition) - position(topicPartition));
-        } else {
-            // if the test doesn't bother to set an end offset, we assume it wants to model being caught up.
-            return OptionalLong.of(0L);
-        }
-    }
-
-    @Override
     public ConsumerGroupMetadata groupMetadata() {
-        return new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty(), false);
+        return new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty());
     }
 
     @Override

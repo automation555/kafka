@@ -28,6 +28,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -69,7 +70,7 @@ public class MockConsumerInterceptor implements ClusterResourceListener, Consume
             for (ConsumerRecord<String, String> record: records.records(tp)) {
                 lst.add(new ConsumerRecord<>(record.topic(), record.partition(), record.offset(),
                                              record.timestamp(), record.timestampType(),
-                                             record.serializedKeySize(),
+                                             record.checksum(), record.serializedKeySize(),
                                              record.serializedValueSize(),
                                              record.key(), record.value().toUpperCase(Locale.ROOT)));
             }

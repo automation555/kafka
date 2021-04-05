@@ -21,7 +21,7 @@ import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
 import joptsimple.OptionSpecBuilder;
-import kafka.utils.CommandLineUtils;
+//import kafka.utils.CommandLineUtils;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.DeleteTopicsResult;
 import org.apache.kafka.clients.admin.DescribeConsumerGroupsOptions;
@@ -35,7 +35,6 @@ import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.annotation.InterfaceStability;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
@@ -259,17 +258,17 @@ public class StreamsResetter {
         try {
             options = optionParser.parse(args);
             if (args.length == 0 || options.has(helpOption)) {
-                CommandLineUtils.printUsageAndDie(optionParser, USAGE);
+//                CommandLineUtils.printUsageAndDie(optionParser, USAGE);
             }
             if (options.has(versionOption)) {
-                CommandLineUtils.printVersionAndDie();
+//                CommandLineUtils.printVersionAndDie();
             }
         } catch (final OptionException e) {
-            CommandLineUtils.printUsageAndDie(optionParser, e.getMessage());
+//            CommandLineUtils.printUsageAndDie(optionParser, e.getMessage());
         }
 
         if (options.has(executeOption) && options.has(dryRunOption)) {
-            CommandLineUtils.printUsageAndDie(optionParser, "Only one of --dry-run and --execute can be specified");
+//            CommandLineUtils.printUsageAndDie(optionParser, "Only one of --dry-run and --execute can be specified");
         }
 
         final Set<OptionSpec<?>> allScenarioOptions = new HashSet<>();
@@ -296,11 +295,11 @@ public class StreamsResetter {
                                       final OptionSpec<T> option) {
         final Set<OptionSpec<?>> invalidOptions = new HashSet<>(allOptions);
         invalidOptions.remove(option);
-        CommandLineUtils.checkInvalidArgs(
-            optionParser,
-            options,
-            option,
-            JavaConverters.asScalaSetConverter(invalidOptions).asScala());
+//        CommandLineUtils.checkInvalidArgs(
+//            optionParser,
+//            options,
+//            option,
+//            JavaConverters.asScalaSetConverter(invalidOptions).asScala());
     }
 
     private int maybeResetInputAndSeekToEndIntermediateTopicOffsets(final Map<Object, Object> consumerConfig,
@@ -413,7 +412,7 @@ public class StreamsResetter {
         return topicNotFound;
     }
 
-    @VisibleForTesting
+    // visible for testing
     public void maybeSeekToEnd(final String groupId,
                                final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> intermediateTopicPartitions) {
@@ -465,7 +464,7 @@ public class StreamsResetter {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     public void resetOffsetsFromResetPlan(final Consumer<byte[], byte[]> client,
                                           final Set<TopicPartition> inputTopicPartitions,
                                           final Map<TopicPartition, Long> topicPartitionsAndOffset) {
@@ -508,7 +507,7 @@ public class StreamsResetter {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     public void shiftOffsetsBy(final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> inputTopicPartitions,
                                final long shiftBy) {
@@ -530,7 +529,7 @@ public class StreamsResetter {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     public void resetOffsetsTo(final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> inputTopicPartitions,
                                final Long offset) {
@@ -623,7 +622,7 @@ public class StreamsResetter {
         System.out.println("Done.");
     }
 
-    @VisibleForTesting
+    // visible for testing
     public void doDelete(final List<String> topicsToDelete,
                          final Admin adminClient) {
         boolean hasDeleteErrors = false;
@@ -653,7 +652,7 @@ public class StreamsResetter {
                && matchesInternalTopicFormat(topicName);
     }
 
-    @VisibleForTesting
+    // visible for testing
     public boolean matchesInternalTopicFormat(final String topicName) {
         return topicName.endsWith("-changelog") || topicName.endsWith("-repartition")
                || topicName.endsWith("-subscription-registration-topic")

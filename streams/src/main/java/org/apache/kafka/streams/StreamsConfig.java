@@ -45,7 +45,6 @@ import org.apache.kafka.streams.processor.internals.StreamsPartitionAssignor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
@@ -135,16 +134,17 @@ import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
 @SuppressWarnings("deprecation")
 public class StreamsConfig extends AbstractConfig {
 
-    private static final Logger log = LoggerFactory.getLogger(StreamsConfig.class);
+    public static final long MAX_TASK_IDLE_MS_DISABLED = -1;
+
+    private final static Logger log = LoggerFactory.getLogger(StreamsConfig.class);
 
     private static final ConfigDef CONFIG;
 
     private final boolean eosEnabled;
-    private static final long DEFAULT_COMMIT_INTERVAL_MS = 30000L;
-    private static final long EOS_DEFAULT_COMMIT_INTERVAL_MS = 100L;
+    private final static long DEFAULT_COMMIT_INTERVAL_MS = 30000L;
+    private final static long EOS_DEFAULT_COMMIT_INTERVAL_MS = 100L;
 
-    public static final int DUMMY_THREAD_INDEX = 1;
-    public static final long MAX_TASK_IDLE_MS_DISABLED = -1;
+    public final static int DUMMY_THREAD_INDEX = 1;
 
     /**
      * Prefix used to provide default topic configs to be applied when creating internal topics.
@@ -412,8 +412,7 @@ public class StreamsConfig extends AbstractConfig {
     /** {@code max.task.idle.ms} */
     public static final String MAX_TASK_IDLE_MS_CONFIG = "max.task.idle.ms";
     private static final String MAX_TASK_IDLE_MS_DOC = "Maximum amount of time in milliseconds a stream task will stay idle when not all of its partition buffers contain records," +
-        " to avoid potential out-of-order record processing across multiple input streams The value must be lower than <code>max.poll.interval.ms</code> to avoid rebalancing" +
-        " of unresponsive tasks.";
+        " to avoid potential out-of-order record processing across multiple input streams.";
 
     /** {@code max.warmup.replicas} */
     public static final String MAX_WARMUP_REPLICAS_CONFIG = "max.warmup.replicas";
@@ -487,8 +486,7 @@ public class StreamsConfig extends AbstractConfig {
     /** {@code replication.factor} */
     @SuppressWarnings("WeakerAccess")
     public static final String REPLICATION_FACTOR_CONFIG = "replication.factor";
-    private static final String REPLICATION_FACTOR_DOC = "The replication factor for change log topics and repartition topics created by the stream processing application." +
-        " If your broker cluster is on version 2.4 or newer, you can set -1 to use the broker default replication factor.";
+    private static final String REPLICATION_FACTOR_DOC = "The replication factor for change log topics and repartition topics created by the stream processing application.";
 
     /** {@code request.timeout.ms} */
     @SuppressWarnings("WeakerAccess")
@@ -541,10 +539,6 @@ public class StreamsConfig extends AbstractConfig {
     /** {@code topology.optimization} */
     public static final String TOPOLOGY_OPTIMIZATION_CONFIG = "topology.optimization";
     private static final String TOPOLOGY_OPTIMIZATION_DOC = "A configuration telling Kafka Streams if it should optimize the topology, disabled by default";
-
-    /** {@code window.size.ms} */
-    public static final String WINDOW_SIZE_MS_CONFIG = "window.size.ms";
-    private static final String WINDOW_SIZE_MS_DOC = "Sets window size for the deserializer in order to calculate window end times.";
 
     /** {@code upgrade.from} */
     @SuppressWarnings("WeakerAccess")
@@ -610,7 +604,7 @@ public class StreamsConfig extends AbstractConfig {
                     REPLICATION_FACTOR_DOC)
             .define(STATE_DIR_CONFIG,
                     Type.STRING,
-                    System.getProperty("java.io.tmpdir") + File.separator + "kafka-streams",
+                    "/tmp/kafka-streams",
                     Importance.HIGH,
                     STATE_DIR_DOC)
 
@@ -670,7 +664,7 @@ public class StreamsConfig extends AbstractConfig {
                     DEFAULT_WINDOWED_VALUE_SERDE_INNER_CLASS_DOC)
             .define(MAX_TASK_IDLE_MS_CONFIG,
                     Type.LONG,
-                    0L,
+                    MAX_TASK_IDLE_MS_DISABLED,
                     Importance.MEDIUM,
                     MAX_TASK_IDLE_MS_DOC)
             .define(MAX_WARMUP_REPLICAS_CONFIG,
@@ -862,12 +856,7 @@ public class StreamsConfig extends AbstractConfig {
                     Type.LONG,
                     24 * 60 * 60 * 1000L,
                     Importance.LOW,
-                    WINDOW_STORE_CHANGE_LOG_ADDITIONAL_RETENTION_MS_DOC)
-            .define(WINDOW_SIZE_MS_CONFIG,
-                    Type.LONG,
-                    null,
-                    Importance.LOW,
-                    WINDOW_SIZE_MS_DOC);
+                    WINDOW_STORE_CHANGE_LOG_ADDITIONAL_RETENTION_MS_DOC);
     }
 
     // this is the list of configs for underlying clients

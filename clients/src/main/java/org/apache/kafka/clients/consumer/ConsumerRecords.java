@@ -16,10 +16,13 @@
  */
 package org.apache.kafka.clients.consumer;
 
+import org.apache.kafka.clients.consumer.internals.FetchedRecords;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.utils.FlattenedIterator;
+import org.apache.kafka.common.utils.AbstractIterator;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -31,14 +34,81 @@ import java.util.Set;
  * partition returned by a {@link Consumer#poll(java.time.Duration)} operation.
  */
 public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
-
-    @SuppressWarnings("unchecked")
-    public static final ConsumerRecords<Object, Object> EMPTY = new ConsumerRecords<>(Collections.EMPTY_MAP);
+    public static final ConsumerRecords<Object, Object> EMPTY = new ConsumerRecords<>(
+        Collections.emptyMap(),
+        Collections.emptyMap()
+    );
 
     private final Map<TopicPartition, List<ConsumerRecord<K, V>>> records;
+    private final Map<TopicPartition, Metadata> metadata;
 
-    public ConsumerRecords(Map<TopicPartition, List<ConsumerRecord<K, V>>> records) {
+    public static final class Metadata {
+
+        private final long receivedTimestamp;
+        private final long position;
+        private final long beginningOffset;
+        private final long endOffset;
+
+        public Metadata(final long receivedTimestamp,
+                        final long position,
+                        final long beginningOffset,
+                        final long endOffset) {
+            this.receivedTimestamp = receivedTimestamp;
+            this.position = position;
+            this.beginningOffset = beginningOffset;
+            this.endOffset = endOffset;
+        }
+
+        public long receivedTimestamp() {
+            return receivedTimestamp;
+        }
+
+        public long position() {
+            return position;
+        }
+
+        public long lag() {
+            return endOffset - position;
+        }
+
+        public long beginningOffset() {
+            return beginningOffset;
+        }
+
+        public long endOffset() {
+            return endOffset;
+        }
+    }
+
+    private static <K, V> Map<TopicPartition, Metadata> extractMetadata(final FetchedRecords<K, V> fetchedRecords) {
+        final Map<TopicPartition, Metadata> metadata = new HashMap<>();
+        for (final Map.Entry<TopicPartition, FetchedRecords.FetchMetadata> entry : fetchedRecords.metadata().entrySet()) {
+            metadata.put(
+                entry.getKey(),
+                new Metadata(
+                    entry.getValue().receivedTimestamp(),
+                    entry.getValue().position().offset,
+                    entry.getValue().beginningOffset(),
+                    entry.getValue().endOffset()
+                )
+            );
+        }
+        return metadata;
+    }
+
+    public ConsumerRecords(final Map<TopicPartition, List<ConsumerRecord<K, V>>> records) {
         this.records = records;
+        this.metadata = new HashMap<>();
+    }
+
+    public ConsumerRecords(final Map<TopicPartition, List<ConsumerRecord<K, V>>> records,
+                           final Map<TopicPartition, Metadata> metadata) {
+        this.records = records;
+        this.metadata = metadata;
+    }
+
+    public ConsumerRecords(final FetchedRecords<K, V> fetchedRecords) {
+        this(fetchedRecords.records(), extractMetadata(fetchedRecords));
     }
 
     /**
@@ -55,14 +125,26 @@ public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
     }
 
     /**
+     * Get the updated metadata returned by the brokers along with this record set.
+     * May be empty or partial depending on the responses from the broker during this particular poll.
+     * May also include metadata for additional partitions than the ones for which there are records in this object.
+     */
+    public Map<TopicPartition, Metadata> metadata() {
+        return Collections.unmodifiableMap(metadata);
+    }
+
+    /**
      * Get just the records for the given topic
      */
     public Iterable<ConsumerRecord<K, V>> records(String topic) {
         if (topic == null)
             throw new IllegalArgumentException("Topic must be non-null.");
-        return () -> new FlattenedIterator<>(records.entrySet().iterator(),
-            entry -> entry.getKey().topic().equals(topic),
-            s -> s.getValue().iterator());
+        List<List<ConsumerRecord<K, V>>> recs = new ArrayList<>();
+        for (Map.Entry<TopicPartition, List<ConsumerRecord<K, V>>> entry : records.entrySet()) {
+            if (entry.getKey().topic().equals(topic))
+                recs.add(entry.getValue());
+        }
+        return new ConcatenatedIterable<>(recs);
     }
 
     /**
@@ -75,7 +157,7 @@ public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
 
     @Override
     public Iterator<ConsumerRecord<K, V>> iterator() {
-        return new FlattenedIterator<>(records.values().iterator(), Iterable::iterator);
+        return new ConcatenatedIterable<>(records.values()).iterator();
     }
 
     /**
@@ -86,6 +168,33 @@ public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
         for (List<ConsumerRecord<K, V>> recs: this.records.values())
             count += recs.size();
         return count;
+    }
+
+    private static class ConcatenatedIterable<K, V> implements Iterable<ConsumerRecord<K, V>> {
+
+        private final Iterable<? extends Iterable<ConsumerRecord<K, V>>> iterables;
+
+        public ConcatenatedIterable(Iterable<? extends Iterable<ConsumerRecord<K, V>>> iterables) {
+            this.iterables = iterables;
+        }
+
+        @Override
+        public Iterator<ConsumerRecord<K, V>> iterator() {
+            return new AbstractIterator<ConsumerRecord<K, V>>() {
+                Iterator<? extends Iterable<ConsumerRecord<K, V>>> iters = iterables.iterator();
+                Iterator<ConsumerRecord<K, V>> current;
+
+                public ConsumerRecord<K, V> makeNext() {
+                    while (current == null || !current.hasNext()) {
+                        if (iters.hasNext())
+                            current = iters.next().iterator();
+                        else
+                            return allDone();
+                    }
+                    return current.next();
+                }
+            };
+        }
     }
 
     public boolean isEmpty() {

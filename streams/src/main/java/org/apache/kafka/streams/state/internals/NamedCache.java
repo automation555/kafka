@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import java.util.Collections;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -106,19 +107,11 @@ class NamedCache {
     }
 
     synchronized void flush() {
-        flush(null);
-    }
-
-    private void flush(final LRUNode evicted) {
         numFlushes++;
 
         if (log.isTraceEnabled()) {
             log.trace("Named cache {} stats on flush: #hits={}, #misses={}, #overwrites={}, #flushes={}",
                 name, hits(), misses(), overwrites(), flushes());
-        }
-
-        if (listener == null) {
-            throw new IllegalArgumentException("No listener for namespace " + name + " registered with cache");
         }
 
         if (dirtyKeys.isEmpty()) {
@@ -127,13 +120,6 @@ class NamedCache {
 
         final List<ThreadCache.DirtyEntry> entries = new ArrayList<>();
         final List<Bytes> deleted = new ArrayList<>();
-
-        // evicted already been removed from the cache so add it to the list of
-        // flushed entries and remove from dirtyKeys.
-        if (evicted != null) {
-            entries.add(new ThreadCache.DirtyEntry(evicted.key, evicted.entry.value(), evicted.entry));
-            dirtyKeys.remove(evicted.key);
-        }
 
         for (final Bytes key : dirtyKeys) {
             final LRUNode node = getInternal(key);
@@ -146,12 +132,21 @@ class NamedCache {
                 deleted.add(node.key);
             }
         }
-        // clear dirtyKeys before the listener is applied as it may be re-entrant.
+
         dirtyKeys.clear();
-        listener.apply(entries);
+        applyFlushListener(entries);
         for (final Bytes key : deleted) {
             delete(key);
         }
+    }
+
+    // Entries should be removed from dirtyKeys before the listener is applied as it may be re-entrant
+    private void applyFlushListener(final List<ThreadCache.DirtyEntry> entries) {
+        if (listener == null) {
+            throw new IllegalArgumentException("No listener for namespace " + name + " registered with cache");
+        }
+
+        listener.apply(entries);
     }
 
     synchronized void put(final Bytes key, final LRUCacheEntry value) {
@@ -241,7 +236,9 @@ class NamedCache {
         remove(eldest);
         cache.remove(eldest.key);
         if (eldest.entry.isDirty()) {
-            flush(eldest);
+            dirtyKeys.remove(eldest.key);
+            applyFlushListener(Collections.singletonList(
+                new ThreadCache.DirtyEntry(eldest.key, eldest.entry.value(), eldest.entry)));
         }
     }
 
@@ -280,28 +277,16 @@ class NamedCache {
         return cache.isEmpty();
     }
 
-    synchronized Iterator<Bytes> keyRange(final Bytes from, final Bytes to, final boolean toInclusive) {
-        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, toInclusive), true);
+    synchronized Iterator<Bytes> keyRange(final Bytes from, final Bytes to) {
+        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, true));
     }
 
-    synchronized Iterator<Bytes> reverseKeyRange(final Bytes from, final Bytes to) {
-        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, true), false);
-    }
-
-    private Iterator<Bytes> keySetIterator(final Set<Bytes> keySet, final boolean forward) {
-        if (forward) {
-            return new TreeSet<>(keySet).iterator();
-        } else {
-            return new TreeSet<>(keySet).descendingIterator();
-        }
+    private Iterator<Bytes> keySetIterator(final Set<Bytes> keySet) {
+        return new TreeSet<>(keySet).iterator();
     }
 
     synchronized Iterator<Bytes> allKeys() {
-        return keySetIterator(cache.navigableKeySet(), true);
-    }
-
-    synchronized Iterator<Bytes> reverseAllKeys() {
-        return keySetIterator(cache.navigableKeySet(), false);
+        return keySetIterator(cache.navigableKeySet());
     }
 
     synchronized LRUCacheEntry first() {

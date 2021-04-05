@@ -20,16 +20,20 @@ package org.apache.kafka.controller;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.errors.StaleBrokerEpochException;
 import org.apache.kafka.common.message.AlterIsrRequestData;
 import org.apache.kafka.common.message.AlterIsrResponseData;
 import org.apache.kafka.common.message.BrokerHeartbeatRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableReplicaAssignment;
+import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableReplicaAssignmentCollection;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopicCollection;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult;
+import org.apache.kafka.common.metadata.ConfigRecord;
+import org.apache.kafka.common.metadata.PartitionChangeRecord;
 import org.apache.kafka.common.metadata.RegisterBrokerRecord;
 import org.apache.kafka.common.metadata.TopicRecord;
 import org.apache.kafka.common.protocol.Errors;
@@ -56,6 +60,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.apache.kafka.common.config.ConfigResource.Type.TOPIC;
+import static org.apache.kafka.common.config.TopicConfig.UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG;
 import static org.apache.kafka.common.protocol.Errors.INVALID_TOPIC_EXCEPTION;
 import static org.apache.kafka.common.protocol.Errors.NONE;
 import static org.apache.kafka.common.protocol.Errors.UNKNOWN_TOPIC_ID;
@@ -81,7 +87,7 @@ public class ReplicationControlManagerTest {
             logContext, time, snapshotRegistry, 1000,
             new SimpleReplicaPlacementPolicy(random));
         final ConfigurationControlManager configurationControl = new ConfigurationControlManager(
-            new LogContext(), snapshotRegistry, Collections.emptyMap());
+            new LogContext(), 0, snapshotRegistry, Collections.emptyMap());
         final ReplicationControlManager replicationControl = new ReplicationControlManager(snapshotRegistry,
             new LogContext(),
             (short) 3,
@@ -416,7 +422,7 @@ public class ReplicationControlManagerTest {
         CreateTopicsRequestData.CreateableTopicConfigCollection requestConfigs
     ) {
         Map<String, String> configs = ctx.configurationControl.getConfigs(
-            new ConfigResource(ConfigResource.Type.TOPIC, topic));
+            new ConfigResource(TOPIC, topic));
         assertEquals(requestConfigs.size(), configs.size());
         for (CreateTopicsRequestData.CreateableTopicConfig requestConfig : requestConfigs) {
             String value = configs.get(requestConfig.name());
@@ -429,7 +435,7 @@ public class ReplicationControlManagerTest {
         String topic
     ) {
         Map<String, String> configs = ctx.configurationControl.getConfigs(
-            new ConfigResource(ConfigResource.Type.TOPIC, topic));
+            new ConfigResource(TOPIC, topic));
         assertEquals(Collections.emptyMap(), configs);
     }
 
@@ -506,5 +512,83 @@ public class ReplicationControlManagerTest {
             new ApiError(UNKNOWN_TOPIC_OR_PARTITION))), replicationControl.findTopicIds(
                 Long.MAX_VALUE, Collections.singleton("foo")));
         assertEmptyTopicConfigs(ctx, "foo");
+    }
+
+    @Test
+    public void testHandleNodeDeactivationAndReActivation() throws Exception {
+        // Create a two-node cluster with two topics.  One will have unclean leader
+        // election enabled, and the other will not.
+        ReplicationControlTestContext ctx = new ReplicationControlTestContext();
+        ctx.configurationControl.replay(new ConfigRecord().setResourceName("foo").
+            setResourceType(TOPIC.id()).
+            setName(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG).
+            setValue("true"));
+        registerBroker(0, ctx);
+        unfenceBroker(0, ctx);
+        registerBroker(1, ctx);
+        unfenceBroker(1, ctx);
+        CreateTopicsRequestData createTopicsRequest = new CreateTopicsRequestData();
+        createTopicsRequest.topics().add(new CreatableTopic().setName("foo").
+            setNumPartitions(-1).
+            setReplicationFactor((short) -1).
+            setAssignments(new CreatableReplicaAssignmentCollection(Arrays.asList(
+                new CreatableReplicaAssignment().setBrokerIds(Arrays.asList(0, 1))).
+                iterator())));
+        createTopicsRequest.topics().add(new CreatableTopic().setName("bar").
+            setNumPartitions(-1).
+            setReplicationFactor((short) -1).
+            setAssignments(new CreatableReplicaAssignmentCollection(Arrays.asList(
+                new CreatableReplicaAssignment().setBrokerIds(Arrays.asList(0, 1))).
+                iterator())));
+        ControllerResult<CreateTopicsResponseData> createTopicsResult =
+            ctx.replicationControl.createTopics(createTopicsRequest);
+        assertEquals((short) 0,
+            createTopicsResult.response().topics().find("foo").errorCode());
+        assertEquals((short) 0,
+            createTopicsResult.response().topics().find("bar").errorCode());
+        ControllerTestUtils.replayAll(ctx.replicationControl, createTopicsResult.records());
+        Uuid fooId = createTopicsResult.response().topics().find("foo").topicId();
+        Uuid barId = createTopicsResult.response().topics().find("bar").topicId();
+        // Deactivate node 0.  This will remove it from the ISR and from the leadership
+        // of both topics.
+        List<ApiMessageAndVersion> deactivationRecords = new ArrayList<>();
+        ctx.replicationControl.handleNodeDeactivated(0, deactivationRecords);
+        assertEquals(new HashSet<>(Arrays.asList(
+            new ApiMessageAndVersion(new PartitionChangeRecord().
+                setPartitionId(0).
+                setTopicId(fooId).
+                setIsr(Arrays.asList(1)).
+                setLeader(1), (short) 0),
+            new ApiMessageAndVersion(new PartitionChangeRecord().
+                setPartitionId(0).
+                setTopicId(barId).
+                setIsr(Arrays.asList(1)).
+                setLeader(1), (short) 0))), new HashSet<>(deactivationRecords));
+        ControllerTestUtils.replayAll(ctx.replicationControl, deactivationRecords);
+        List<ApiMessageAndVersion> deactivationRecords2 = new ArrayList<>();
+        // Deactivate node 1.  This time, the ISR will not be changed (we never let the
+        // ISR become empty).  However, the topic will now be leaderless (leader = -1).
+        ctx.replicationControl.handleNodeDeactivated(1, deactivationRecords2);
+        assertEquals(new HashSet<>(Arrays.asList(
+            new ApiMessageAndVersion(new PartitionChangeRecord().
+                setPartitionId(0).
+                setTopicId(fooId).
+                setLeader(-1), (short) 0),
+            new ApiMessageAndVersion(new PartitionChangeRecord().
+                setPartitionId(0).
+                setTopicId(barId).
+                setLeader(-1), (short) 0))), new HashSet<>(deactivationRecords2));
+        ControllerTestUtils.replayAll(ctx.replicationControl, deactivationRecords2);
+        // Activate node 0.  It is not in the ISR.  Topic foo will make it the leader
+        // anyway, since unclean leader election is enabled for that topic.  Topic bar
+        // will be unaffected.
+        List<ApiMessageAndVersion> activationRecords = new ArrayList<>();
+        ctx.replicationControl.handleNodeActivated(0, activationRecords);
+        assertEquals(new HashSet<>(Arrays.asList(
+            new ApiMessageAndVersion(new PartitionChangeRecord().
+                setPartitionId(0).
+                setTopicId(fooId).
+                setIsr(Arrays.asList(1, 0)).
+                setLeader(0), (short) 0))), new HashSet<>(activationRecords));
     }
 }

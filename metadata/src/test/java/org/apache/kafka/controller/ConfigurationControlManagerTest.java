@@ -19,6 +19,7 @@ package org.apache.kafka.controller;
 
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.metadata.ConfigRecord;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.ApiError;
@@ -43,6 +44,7 @@ import static org.apache.kafka.common.config.ConfigResource.Type.BROKER;
 import static org.apache.kafka.common.config.ConfigResource.Type.BROKER_LOGGER;
 import static org.apache.kafka.common.config.ConfigResource.Type.TOPIC;
 import static org.apache.kafka.common.config.ConfigResource.Type.UNKNOWN;
+import static org.apache.kafka.common.config.TopicConfig.UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -84,7 +86,7 @@ public class ConfigurationControlManagerTest {
     public void testReplay() {
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
         ConfigurationControlManager manager =
-            new ConfigurationControlManager(new LogContext(), snapshotRegistry, CONFIGS);
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
         assertEquals(Collections.emptyMap(), manager.getConfigs(BROKER0));
         manager.replay(new ConfigRecord().
             setResourceType(BROKER.id()).setResourceName("0").
@@ -134,7 +136,7 @@ public class ConfigurationControlManagerTest {
     public void testIncrementalAlterConfigs() {
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
         ConfigurationControlManager manager =
-            new ConfigurationControlManager(new LogContext(), snapshotRegistry, CONFIGS);
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
         assertEquals(
             ControllerResult.atomicOf(
                 Collections.singletonList(
@@ -177,7 +179,7 @@ public class ConfigurationControlManagerTest {
     public void testIsSplittable() {
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
         ConfigurationControlManager manager =
-            new ConfigurationControlManager(new LogContext(), snapshotRegistry, CONFIGS);
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
         assertTrue(manager.isSplittable(BROKER, "foo.bar"));
         assertFalse(manager.isSplittable(BROKER, "baz"));
         assertFalse(manager.isSplittable(BROKER, "foo.baz.quux"));
@@ -189,7 +191,7 @@ public class ConfigurationControlManagerTest {
     public void testGetConfigValueDefault() {
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
         ConfigurationControlManager manager =
-            new ConfigurationControlManager(new LogContext(), snapshotRegistry, CONFIGS);
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
         assertEquals("1", manager.getConfigValueDefault(BROKER, "foo.bar"));
         assertEquals(null, manager.getConfigValueDefault(BROKER, "foo.baz.quux"));
         assertEquals(null, manager.getConfigValueDefault(TOPIC, "abc"));
@@ -200,7 +202,7 @@ public class ConfigurationControlManagerTest {
     public void testLegacyAlterConfigs() {
         SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
         ConfigurationControlManager manager =
-            new ConfigurationControlManager(new LogContext(), snapshotRegistry, CONFIGS);
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
         List<ApiMessageAndVersion> expectedRecords1 = Arrays.asList(
             new ApiMessageAndVersion(new ConfigRecord().
                 setResourceType(TOPIC.id()).setResourceName("mytopic").
@@ -236,5 +238,33 @@ public class ConfigurationControlManagerTest {
             ),
             manager.legacyAlterConfigs(toMap(entry(MYTOPIC, toMap(entry("def", "901")))))
         );
+    }
+
+    @Test
+    public void testShouldUseUncleanLeaderElection() throws Exception {
+        SnapshotRegistry snapshotRegistry = new SnapshotRegistry(new LogContext());
+        ConfigurationControlManager manager =
+            new ConfigurationControlManager(new LogContext(), 0, snapshotRegistry, CONFIGS);
+        ControllerResult<Map<ConfigResource, ApiError>> result = manager.incrementalAlterConfigs(
+            toMap(entry(BROKER0, toMap(
+                    entry(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG, entry(SET, "true")))),
+                entry(MYTOPIC, toMap(
+                    entry(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG, entry(SET, "false"))))));
+        Map<ConfigResource, ApiError> expectedResponse = new HashMap<>();
+        expectedResponse.put(BROKER0, ApiError.NONE);
+        expectedResponse.put(MYTOPIC, ApiError.NONE);
+        assertEquals(expectedResponse, result.response());
+        ControllerTestUtils.replayAll(manager, result.records());
+        assertTrue(manager.shouldUseUncleanLeaderElection(MYTOPIC.name()));
+        assertTrue(manager.shouldUseUncleanLeaderElection("quux"));
+        ControllerResult<Map<ConfigResource, ApiError>> result2 = manager.incrementalAlterConfigs(
+            toMap(entry(BROKER0, toMap(
+                entry(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG, entry(DELETE, null)))),
+                entry(MYTOPIC, toMap(
+                    entry(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG, entry(SET, "true"))))));
+        ControllerTestUtils.replayAll(manager, result2.records());
+        assertEquals(expectedResponse, result2.response());
+        assertTrue(manager.shouldUseUncleanLeaderElection(MYTOPIC.name()));
+        assertFalse(manager.shouldUseUncleanLeaderElection("quux"));
     }
 }

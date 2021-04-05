@@ -39,9 +39,8 @@ public final class TransactionalRequestResult {
         this.operation = operation;
     }
 
-    public void fail(RuntimeException error) {
+    public void setError(RuntimeException error) {
         this.error = error;
-        this.latch.countDown();
     }
 
     public void done() {
@@ -50,18 +49,25 @@ public final class TransactionalRequestResult {
 
     public void await() {
         boolean completed = false;
+        boolean interrupted = false;
 
         while (!completed) {
             try {
                 latch.await();
                 completed = true;
             } catch (InterruptedException e) {
+                interrupted = true;
                 // Keep waiting until done, we have no other option for these transactional requests.
             }
         }
 
-        if (!isSuccessful())
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+
+        if (!isSuccessful()) {
             throw error();
+        }
     }
 
     public void await(long timeout, TimeUnit unit) {
@@ -71,7 +77,7 @@ public final class TransactionalRequestResult {
                 throw error();
             }
             if (!success) {
-                throw new TimeoutException("Timeout expired after " + timeout + " " + unit.name().toLowerCase(Locale.ROOT) + " while awaiting " + operation);
+                throw new TimeoutException("Timeout expired after " + timeout + unit.name().toLowerCase(Locale.ROOT) + " while awaiting " + operation);
             }
         } catch (InterruptedException e) {
             throw new InterruptException("Received interrupt while awaiting " + operation, e);

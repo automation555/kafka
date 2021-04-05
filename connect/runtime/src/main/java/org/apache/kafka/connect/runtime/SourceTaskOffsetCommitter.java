@@ -19,7 +19,6 @@ package org.apache.kafka.connect.runtime;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.LoggingContext;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,8 +60,7 @@ class SourceTaskOffsetCommitter {
     }
 
     public SourceTaskOffsetCommitter(WorkerConfig config) {
-        this(config, Executors.newSingleThreadScheduledExecutor(ThreadUtils.createThreadFactory(
-                SourceTaskOffsetCommitter.class.getSimpleName() + "-%d", false)),
+        this(config, Executors.newSingleThreadScheduledExecutor(),
                 new ConcurrentHashMap<ConnectorTaskId, ScheduledFuture<?>>());
     }
 
@@ -74,6 +72,7 @@ class SourceTaskOffsetCommitter {
             }
         } catch (InterruptedException e) {
             // ignore and allow to exit immediately
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -82,11 +81,8 @@ class SourceTaskOffsetCommitter {
         ScheduledFuture<?> commitFuture = commitExecutorService.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
-                LoggingContext loggingContext = LoggingContext.forOffsets(id);
-                try {
+                try (LoggingContext loggingContext = LoggingContext.forOffsets(id)) {
                     commit(workerTask);
-                } finally {
-                    loggingContext.close();
                 }
             }
         }, commitIntervalMs, commitIntervalMs, TimeUnit.MILLISECONDS);
@@ -97,8 +93,8 @@ class SourceTaskOffsetCommitter {
         final ScheduledFuture<?> task = committers.remove(id);
         if (task == null)
             return;
-        LoggingContext loggingContext = LoggingContext.forTask(id);
-        try {
+
+        try (LoggingContext loggingContext = LoggingContext.forTask(id)) {
             task.cancel(false);
             if (!task.isDone())
                 task.get();
@@ -107,8 +103,6 @@ class SourceTaskOffsetCommitter {
             log.trace("Offset commit thread was cancelled by another thread while removing connector task with id: {}", id);
         } catch (ExecutionException | InterruptedException e) {
             throw new ConnectException("Unexpected interruption in SourceTaskOffsetCommitter while removing task with id: " + id, e);
-        } finally {
-            loggingContext.close();
         }
     }
 

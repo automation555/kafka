@@ -623,7 +623,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             if (!startAndStopExecutor.awaitTermination(START_AND_STOP_SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS))
                 startAndStopExecutor.shutdownNow();
         } catch (InterruptedException e) {
-            // ignore
+            Thread.currentThread().interrupt();
         }
 
         log.info("Herder stopped");
@@ -1095,7 +1095,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         try {
             startAndStopExecutor.invokeAll(callables);
         } catch (InterruptedException e) {
-            // ignore
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -1245,10 +1245,8 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                             }, new Callback<Void>() {
                                 @Override
                                 public void onCompletion(Throwable error, Void result) {
-                                    if (error != null) {
-                                        log.error("Unexpected error during connector task reconfiguration: ", error);
-                                        log.error("Task reconfiguration for {} failed unexpectedly, this connector will not be properly reconfigured unless manually triggered.", connName);
-                                    }
+                                    log.error("Unexpected error during connector task reconfiguration: ", error);
+                                    log.error("Task reconfiguration for {} failed unexpectedly, this connector will not be properly reconfigured unless manually triggered.", connName);
                                 }
                             }
                     );
@@ -1303,11 +1301,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             }
             if (changed) {
                 List<Map<String, String>> rawTaskProps = reverseTransform(connName, configState, taskProps);
-                // If configBackingStore task is not running on leader node,A POST request could not be send to notify
-                // the leader of the configuration update.However,dedicated mm2 cluster does not have the HTTP server
-                // turned on,so the request will fail to be sent,causing the update operation to be lost.
-                // TODO: This assessment of NOTUSED logic will be delete when the REST API is added back.
-                if (isLeader() || (leaderUrl() != null && leaderUrl().startsWith("NOTUSED"))) {
+                if (isLeader()) {
                     configBackingStore.putTaskConfigs(connName, rawTaskProps);
                     cb.onCompletion(null, null);
                 } else {

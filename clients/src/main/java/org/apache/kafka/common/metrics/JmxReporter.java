@@ -19,7 +19,6 @@ package org.apache.kafka.common.metrics;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.utils.ConfigUtils;
 import org.apache.kafka.common.utils.Sanitizer;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
@@ -52,20 +51,14 @@ public class JmxReporter implements MetricsReporter {
 
     public static final String METRICS_CONFIG_PREFIX = "metrics.jmx.";
 
-    public static final String EXCLUDE_CONFIG = METRICS_CONFIG_PREFIX + "exclude";
-    public static final String EXCLUDE_CONFIG_ALIAS = METRICS_CONFIG_PREFIX + "blacklist";
+    public static final String BLACKLIST_CONFIG = METRICS_CONFIG_PREFIX + "blacklist";
+    public static final String WHITELIST_CONFIG = METRICS_CONFIG_PREFIX + "whitelist";
 
-    public static final String INCLUDE_CONFIG = METRICS_CONFIG_PREFIX + "include";
-    public static final String INCLUDE_CONFIG_ALIAS = METRICS_CONFIG_PREFIX + "whitelist";
+    public static final Set<String> RECONFIGURABLE_CONFIGS = Utils.mkSet(WHITELIST_CONFIG,
+                                                                          BLACKLIST_CONFIG);
 
-
-    public static final Set<String> RECONFIGURABLE_CONFIGS = Utils.mkSet(INCLUDE_CONFIG,
-                                                                         INCLUDE_CONFIG_ALIAS,
-                                                                         EXCLUDE_CONFIG,
-                                                                         EXCLUDE_CONFIG_ALIAS);
-
-    public static final String DEFAULT_INCLUDE = ".*";
-    public static final String DEFAULT_EXCLUDE = "";
+    public static final String DEFAULT_WHITELIST = ".*";
+    public static final String DEFAULT_BLACKLIST = "";
 
     private static final Logger log = LoggerFactory.getLogger(JmxReporter.class);
     private static final Object LOCK = new Object();
@@ -279,8 +272,16 @@ public class JmxReporter implements MetricsReporter {
             for (Map.Entry<String, KafkaMetric> entry : this.metrics.entrySet()) {
                 String attribute = entry.getKey();
                 KafkaMetric metric = entry.getValue();
+                String metricType = double.class.getName();
+
+                try {
+                    metricType = metric.metricValue().getClass().getName();
+                } catch (NullPointerException e) {
+                    log.debug("Could not determine metric value type for attribute {}, falling back to double", attribute);
+                }
+
                 attrs[i] = new MBeanAttributeInfo(attribute,
-                                                  double.class.getName(),
+                                                  metricType,
                                                   metric.metricName().description(),
                                                   true,
                                                   false,
@@ -307,30 +308,27 @@ public class JmxReporter implements MetricsReporter {
 
     }
 
-    public static Predicate<String> compilePredicate(Map<String, ?> originalConfig) {
-        Map<String, ?> configs = ConfigUtils.translateDeprecatedConfigs(
-            originalConfig, new String[][]{{INCLUDE_CONFIG, INCLUDE_CONFIG_ALIAS},
-                                           {EXCLUDE_CONFIG, EXCLUDE_CONFIG_ALIAS}});
-        String include = (String) configs.get(INCLUDE_CONFIG);
-        String exclude = (String) configs.get(EXCLUDE_CONFIG);
+    public static Predicate<String> compilePredicate(Map<String, ?> configs) {
+        String whitelist = (String) configs.get(WHITELIST_CONFIG);
+        String blacklist = (String) configs.get(BLACKLIST_CONFIG);
 
-        if (include == null) {
-            include = DEFAULT_INCLUDE;
+        if (whitelist == null) {
+            whitelist = DEFAULT_WHITELIST;
         }
 
-        if (exclude == null) {
-            exclude = DEFAULT_EXCLUDE;
+        if (blacklist == null) {
+            blacklist = DEFAULT_BLACKLIST;
         }
 
         try {
-            Pattern includePattern = Pattern.compile(include);
-            Pattern excludePattern = Pattern.compile(exclude);
+            Pattern whitelistPattern = Pattern.compile(whitelist);
+            Pattern blacklistPattern = Pattern.compile(blacklist);
 
-            return s -> includePattern.matcher(s).matches()
-                        && !excludePattern.matcher(s).matches();
+            return s -> whitelistPattern.matcher(s).matches()
+                        && !blacklistPattern.matcher(s).matches();
         } catch (PatternSyntaxException e) {
             throw new ConfigException("JMX filter for configuration" + METRICS_CONFIG_PREFIX
-                                      + ".(include/exclude) is not a valid regular expression");
+                                      + ".(whitelist/blacklist) is not a valid regular expression");
         }
     }
 

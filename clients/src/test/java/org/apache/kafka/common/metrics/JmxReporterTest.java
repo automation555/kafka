@@ -20,19 +20,23 @@ import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.stats.Avg;
 import org.apache.kafka.common.metrics.stats.CumulativeSum;
 import org.apache.kafka.common.utils.Time;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
+import javax.management.MBeanAttributeInfo;
+import javax.management.MBeanFeatureInfo;
+import javax.management.MBeanInfo;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class JmxReporterTest {
 
@@ -124,7 +128,7 @@ public class JmxReporterTest {
 
         Map<String, String> configs = new HashMap<>();
 
-        configs.put(JmxReporter.EXCLUDE_CONFIG,
+        configs.put(JmxReporter.BLACKLIST_CONFIG,
                     JmxReporter.getMBeanName("", metrics.metricName("pack.bean2.total", "grp2")));
 
         try {
@@ -143,7 +147,7 @@ public class JmxReporterTest {
 
             sensor.record();
 
-            configs.put(JmxReporter.EXCLUDE_CONFIG,
+            configs.put(JmxReporter.BLACKLIST_CONFIG,
                         JmxReporter.getMBeanName("", metrics.metricName("pack.bean2.avg", "grp1")));
 
             reporter.reconfigure(configs);
@@ -190,6 +194,31 @@ public class JmxReporterTest {
             Sensor sensor = metrics.sensor("my-sensor");
             sensor.add(metrics.metricName("pack.bean1.avg", "grp1"), new Avg());
             assertEquals("my-prefix", server.getObjectInstance(new ObjectName("my-prefix:type=grp1")).getObjectName().getDomain());
+        } finally {
+            metrics.close();
+        }
+    }
+
+    @Test
+    public void testJmxRegistrationWithDifferentAttributeValueTypes() throws Exception {
+        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+        MetricConfig metricConfig = new MetricConfig();
+        JmxReporter reporter = new JmxReporter();
+        Metrics metrics = new Metrics(metricConfig, Time.SYSTEM);
+        metrics.addReporter(reporter);
+        try {
+            Gauge<String> testString = (config, now) -> "testvalue";
+            Gauge<String> nullString = (config, now) -> null;
+            metrics.addMetric(metrics.metricName("test1", "grp1"), testString);
+            metrics.addMetric(metrics.metricName("test2", "grp1"), new Avg());
+            metrics.addMetric(metrics.metricName("test3", "grp1"), nullString);
+            MBeanInfo info = server.getMBeanInfo(new ObjectName(":type=grp1"));
+            MBeanAttributeInfo[] attributes = info.getAttributes();
+            Arrays.sort(attributes, Comparator.comparing(MBeanFeatureInfo::getName));
+            assertEquals(attributes.length, 3);
+            assertEquals(String.class.getName(), attributes[0].getType());
+            assertEquals(Double.class.getName(), attributes[1].getType());
+            assertEquals(double.class.getName(), attributes[2].getType());
         } finally {
             metrics.close();
         }

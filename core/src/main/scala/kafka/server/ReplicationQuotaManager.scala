@@ -80,6 +80,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
   private val sensorAccess = new SensorAccess(lock, metrics)
   private val rateMetricName = metrics.metricName("byte-rate", replicationType.toString,
     s"Tracking byte-rate for ${replicationType}")
+  private var isBrokerThrottled = false
 
   /**
     * Update the quota
@@ -88,13 +89,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     */
   def updateQuota(quota: Quota): Unit = {
     inWriteLock(lock) {
-      if (this.quota == null)
-        debug(s"Quota gets initialized for ${rateMetricName}, value ${quota.bound()}")
-      else
-        debug(s"Quota gets updated for ${rateMetricName}, old value ${this.quota.bound()}, new value ${quota.bound()}")
-
       this.quota = quota
-
       //The metric could be expired by another thread, so use a local variable and null check.
       val metric = metrics.metrics.get(rateMetricName)
       if (metric != null) {
@@ -113,14 +108,14 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
       sensor().checkQuotas()
     } catch {
       case qve: QuotaViolationException =>
-        trace(s"$replicationType: Quota violated for sensor (${sensor().name}), metric: (${qve.metric.metricName}), " +
-          s"metric-value: (${qve.value}), bound: (${qve.bound})")
+        trace("%s: Quota violated for sensor (%s), metric: (%s), metric-value: (%f), bound: (%f)".format(replicationType, sensor().name(), qve.metricName, qve.value, qve.bound))
         return true
     }
     false
   }
 
   /**
+    * Is the broker throttled by this ReplicationQuotaManager or
     * Is the passed partition throttled by this ReplicationQuotaManager
     *
     * @param topicPartition the partition to check
@@ -128,7 +123,9 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     */
   override def isThrottled(topicPartition: TopicPartition): Boolean = {
     val partitions = throttledPartitions.get(topicPartition.topic)
-    if (partitions != null)
+    if (isBrokerThrottled)
+      true
+    else if (partitions != null)
       (partitions eq AllReplicas) || partitions.contains(topicPartition.partition)
     else false
   }
@@ -140,7 +137,20 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param value
     */
   def record(value: Long): Unit = {
-    sensor().record(value.toDouble, time.milliseconds(), false)
+    try {
+      sensor().record(value)
+    } catch {
+      case qve: QuotaViolationException =>
+        trace(s"Record: Quota violated, but ignored, for sensor (${sensor.name}), metric: (${qve.metricName}), value : (${qve.value}), bound: (${qve.bound}), recordedValue ($value)")
+    }
+  }
+
+  def markBrokerThrottled() : Unit = {
+    isBrokerThrottled = true
+  }
+
+  def removeBrokerThrottle() : Unit = {
+    isBrokerThrottled = false
   }
 
   /**

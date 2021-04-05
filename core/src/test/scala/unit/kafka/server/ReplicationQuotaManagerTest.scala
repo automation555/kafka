@@ -22,18 +22,27 @@ import kafka.server.QuotaType._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.{MetricConfig, Metrics, Quota}
 import org.apache.kafka.common.utils.MockTime
-import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertTrue}
-import org.junit.jupiter.api.{AfterEach, Test}
+import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
+import org.junit.{After, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 class ReplicationQuotaManagerTest {
   private val time = new MockTime
   private val metrics = new Metrics(new MetricConfig(), Collections.emptyList(), time)
 
-  @AfterEach
+  @After
   def tearDown(): Unit = {
     metrics.close()
+  }
+
+  @Test
+  def shouldBrokerLevelThrottleAffectAllTopicPartition(): Unit = {
+    val quota = new ReplicationQuotaManager(ReplicationQuotaManagerConfig(), metrics, QuotaType.Fetch, time)
+    quota.markBrokerThrottled()
+    assertTrue(quota.isThrottled(tp1(1)))
+    assertTrue(quota.isThrottled(tp1(2)))
+    assertTrue(quota.isThrottled(tp1(3)))
   }
 
   @Test

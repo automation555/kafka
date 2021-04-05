@@ -19,11 +19,23 @@ package kafka.server
 
 import java.util.Properties
 
+import DynamicConfig.Broker._
+import kafka.api.ApiVersion
+import kafka.controller.KafkaController
+import kafka.log.{LogConfig, LogManager}
+import kafka.security.CredentialProvider
+import kafka.server.Constants._
+import kafka.server.QuotaFactory.QuotaManagers
+import kafka.utils.Logging
 import org.apache.kafka.common.config.ConfigDef.Validator
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.metrics.Quota
 import org.apache.kafka.common.metrics.Quota._
 import org.apache.kafka.common.utils.Sanitizer
+
+import scala.collection.JavaConverters._
+import scala.collection.Seq
+import scala.util.Try
 
 /**
   * The ConfigHandler is used to process config change notifications received by the DynamicConfigManager
@@ -116,13 +128,13 @@ class QuotaConfigHandler(private val quotaManagers: QuotaManagers) {
     val clientId = sanitizedClientId.map(Sanitizer.desanitize)
     val producerQuota =
       if (config.containsKey(DynamicConfig.Client.ProducerByteRateOverrideProp))
-        Some(new Quota(config.getProperty(DynamicConfig.Client.ProducerByteRateOverrideProp).toLong.toDouble, true))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.ProducerByteRateOverrideProp).toLong, true))
       else
         None
     quotaManagers.produce.updateQuota(sanitizedUser, clientId, sanitizedClientId, producerQuota)
     val consumerQuota =
       if (config.containsKey(DynamicConfig.Client.ConsumerByteRateOverrideProp))
-        Some(new Quota(config.getProperty(DynamicConfig.Client.ConsumerByteRateOverrideProp).toLong.toDouble, true))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.ConsumerByteRateOverrideProp).toLong, true))
       else
         None
     quotaManagers.fetch.updateQuota(sanitizedUser, clientId, sanitizedClientId, consumerQuota)
@@ -176,31 +188,31 @@ class BrokerConfigHandler(private val brokerConfig: KafkaConfig,
 
   def processConfigChanges(brokerId: String, properties: Properties): Unit = {
     def getOrDefault(prop: String): Long = {
-      brokerConfig.dynamicConfig.currentDynamicBrokerConfigs get prop match {
-        case Some(value) => value.toLong
-        case None => {
-          brokerConfig.dynamicConfig.currentDynamicDefaultConfigs get prop match {
-            case Some(defaultV) => defaultV.toLong
-            case None => DefaultReplicationThrottledRate
-          }
-        }
+      if (properties.containsKey(prop))
+        properties.getProperty(prop).toLong
+      else
+        DefaultReplicationThrottledRate
+    }
+    if (brokerId == ConfigEntityName.Default)
+      brokerConfig.dynamicConfig.updateDefaultConfig(properties)
+    else if (brokerConfig.brokerId == brokerId.trim.toInt) {
+      brokerConfig.dynamicConfig.updateBrokerConfig(brokerConfig.brokerId, properties)
+      quotaManagers.leader.updateQuota(upperBound(getOrDefault(LeaderReplicationThrottledRateProp)))
+      quotaManagers.follower.updateQuota(upperBound(getOrDefault(FollowerReplicationThrottledRateProp)))
+      quotaManagers.alterLogDirs.updateQuota(upperBound(getOrDefault(ReplicaAlterLogDirsIoMaxBytesPerSecondProp)))
+    }
+
+    def updateBrokerThrottle(prop: String, quotaManager: ReplicationQuotaManager): Unit = {
+      if (properties.containsKey(prop) && properties.getProperty(prop).equals("true")) {
+        debug(s"Removing $prop on broker ${brokerConfig.brokerId}")
+        quotaManager.markBrokerThrottled()
+      } else {
+        quotaManager.removeBrokerThrottle()
+        debug(s"Removing $prop on broker ${brokerConfig.brokerId}")
       }
     }
-
-    val mayChanged =
-      if (brokerId == ConfigEntityName.Default) {
-        brokerConfig.dynamicConfig.updateDefaultConfig(properties)
-        true
-      } else if (brokerConfig.brokerId == brokerId.trim.toInt) {
-        brokerConfig.dynamicConfig.updateBrokerConfig(brokerConfig.brokerId, properties)
-        true
-      } else false
-
-    if(mayChanged){
-      quotaManagers.leader.updateQuota(upperBound(getOrDefault(LeaderReplicationThrottledRateProp).toDouble))
-      quotaManagers.follower.updateQuota(upperBound(getOrDefault(FollowerReplicationThrottledRateProp).toDouble))
-      quotaManagers.alterLogDirs.updateQuota(upperBound(getOrDefault(ReplicaAlterLogDirsIoMaxBytesPerSecondProp).toDouble))
-    }
+    updateBrokerThrottle(DynamicConfig.Broker.LeaderReplicationThrottledProp, quotaManagers.leader)
+    updateBrokerThrottle(DynamicConfig.Broker.FollowerReplicationThrottledProp, quotaManagers.follower)
   }
 }
 

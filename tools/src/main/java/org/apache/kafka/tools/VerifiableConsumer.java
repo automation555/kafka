@@ -43,6 +43,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.FencedInstanceIdException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -520,7 +521,7 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .type(String.class)
                 .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
                 .dest("brokerList")
-                .help("DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified.  Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
+                .help("DEPRECATED, use --bootstrap-server instead; Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
         parser.addArgument("--topic")
                 .action(store())
@@ -599,8 +600,6 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
                 .metavar("CONFIG_FILE")
                 .help("Consumer config properties file (config options shared with command line parameters will be overridden).");
 
-        ToolsUtils.addOptionVersion(parser);
-
         return parser;
     }
 
@@ -634,8 +633,7 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
             brokerHostandPort = res.getString("brokerList");
         } else {
             parser.printHelp();
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(0);
+            Exit.exit(0);
         }
         consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerHostandPort);
 
@@ -665,19 +663,16 @@ public class VerifiableConsumer implements Closeable, OffsetCommitCallback, Cons
         ArgumentParser parser = argParser();
         if (args.length == 0) {
             parser.printHelp();
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(0);
+            Exit.exit(0);
         }
         try {
             final VerifiableConsumer consumer = createFromArgs(parser, args);
-            // Can't use `Exit.addShutdownHook` here because it didn't exist until 2.5.0.
-            Runtime.getRuntime().addShutdownHook(new Thread(consumer::close, "verifiable-consumer-shutdown-hook"));
+            Exit.addShutdownHook("verifiable-consumer-shutdown-hook", () -> consumer.close());
 
             consumer.run();
         } catch (ArgumentParserException e) {
             parser.handleError(e);
-            // Can't use `Exit.exit` here because it didn't exist until 0.11.0.0.
-            System.exit(1);
+            Exit.exit(1);
         }
     }
 

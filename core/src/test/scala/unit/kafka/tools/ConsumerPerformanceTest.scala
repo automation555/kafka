@@ -20,9 +20,9 @@ package kafka.tools
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 
-import kafka.utils.Exit
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
-import org.junit.jupiter.api.Test
+import joptsimple.OptionException
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class ConsumerPerformanceTest {
 
@@ -65,8 +65,7 @@ class ConsumerPerformanceTest {
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
       "--topic", "test",
-      "--messages", "10",
-      "--print-metrics"
+      "--messages", "10"
     )
 
     //When
@@ -79,8 +78,9 @@ class ConsumerPerformanceTest {
   }
 
   @Test
-  def testBrokerListOverride(): Unit = {
+  def testBootstrapServerOverridesBrokerList(): Unit = {
     //Given
+    // broker-list is deprecated in favor of bootstrap-server
     val args: Array[String] = Array(
       "--broker-list", "localhost:9094",
       "--bootstrap-server", "localhost:9092",
@@ -97,18 +97,18 @@ class ConsumerPerformanceTest {
     assertEquals(10, config.numMessages)
   }
 
-  @Test
+  @Test(expected = classOf[OptionException])
   def testConfigWithUnrecognizedOption(): Unit = {
-    Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
     val args: Array[String] = Array(
-      "--broker-list", "localhost:9092",
+      "--bootstrap-server", "localhost:9092",
       "--topic", "test",
       "--messages", "10",
       "--new-consumer"
     )
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsumerPerformance.ConsumerPerfConfig(args))
-    finally Exit.resetExitProcedure()
+
+    //When
+    new ConsumerPerformance.ConsumerPerfConfig(args)
   }
 
   private def testHeaderMatchContent(detailed: Boolean, expectedOutputLineCount: Int, fun: () => Unit): Unit = {

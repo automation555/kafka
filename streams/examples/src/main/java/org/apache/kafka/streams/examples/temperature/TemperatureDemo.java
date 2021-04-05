@@ -56,7 +56,7 @@ import java.util.concurrent.CountDownLatch;
  * On the other side, a console producer can be used for sending temperature values (which needs to be integers)
  * to "iot-temperature" typing them on the console :
  *
- * bin/kafka-console-producer.sh --broker-list localhost:9092 --topic iot-temperature
+ * bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic iot-temperature
  * > 10
  * > 15
  * > 22
@@ -99,7 +99,7 @@ public class TemperatureDemo {
             .toStream()
             .filter((key, value) -> Integer.parseInt(value) > TEMPERATURE_THRESHOLD);
 
-        final Serde<Windowed<String>> windowedSerde = WindowedSerdes.timeWindowedSerdeFrom(String.class, TEMPERATURE_WINDOW_SIZE);
+        final Serde<Windowed<String>> windowedSerde = WindowedSerdes.timeWindowedSerdeFrom(String.class);
 
         // need to override key serde to Windowed<String> type
         max.to("iot-temperature-max", Produced.with(windowedSerde, Serdes.String()));

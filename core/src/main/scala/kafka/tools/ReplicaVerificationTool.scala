@@ -17,22 +17,6 @@
 
 package kafka.tools
 
-import joptsimple.OptionParser
-import kafka.api._
-import kafka.utils.{IncludeList, _}
-import org.apache.kafka.clients._
-import org.apache.kafka.clients.admin.{Admin, ListTopicsOptions, TopicDescription}
-import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
-import org.apache.kafka.common.message.FetchResponseData
-import org.apache.kafka.common.metrics.Metrics
-import org.apache.kafka.common.network.{NetworkReceive, Selectable, Selector}
-import org.apache.kafka.common.protocol.{ApiKeys, Errors}
-import org.apache.kafka.common.requests.AbstractRequest.Builder
-import org.apache.kafka.common.requests.{AbstractRequest, FetchResponse, ListOffsetsRequest, FetchRequest => JFetchRequest}
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.common.{Node, TopicPartition}
-
 import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util
@@ -40,8 +24,26 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import java.util.regex.{Pattern, PatternSyntaxException}
 import java.util.{Date, Optional, Properties}
+
+import joptsimple.OptionParser
+import kafka.api._
+import kafka.utils.Whitelist
+import kafka.utils._
+import org.apache.kafka.clients._
+import org.apache.kafka.clients.admin.{Admin, ListTopicsOptions, TopicDescription}
+import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
+import org.apache.kafka.common.metrics.Metrics
+import org.apache.kafka.common.network.{NetworkReceive, Selectable, Selector}
+import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.record.MemoryRecords
+import org.apache.kafka.common.requests.AbstractRequest.Builder
+import org.apache.kafka.common.requests.{AbstractRequest, FetchResponse, ListOffsetRequest, FetchRequest => JFetchRequest}
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.kafka.common.utils.{LogContext, Time}
+import org.apache.kafka.common.{Node, TopicPartition}
+
+import scala.collection.JavaConverters._
 import scala.collection.Seq
-import scala.jdk.CollectionConverters._
 
 /**
  * For verifying the consistency among replicas.
@@ -68,74 +70,85 @@ object ReplicaVerificationTool extends Logging {
   val clientId = "replicaVerificationTool"
   val dateFormatString = "yyyy-MM-dd HH:mm:ss,SSS"
   val dateFormat = new SimpleDateFormat(dateFormatString)
+  val helpText = "This tool helps verify the consistency among replicas - it validates that all replicas for a set of topics have the same data"
 
-  def getCurrentTimeString() = {
-    ReplicaVerificationTool.dateFormat.format(new Date(Time.SYSTEM.milliseconds))
+  class ReplicaVerificationToolOptions(args: Array[String]) extends CommandDefaultOptions(args)  {
+    val brokerListOpt = parser.accepts("broker-list", "DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified. The list of hostname and port of the server to connect to.")
+      .withRequiredArg
+      .describedAs("hostname:port,...,hostname:port")
+      .ofType(classOf[String])
+    val bootstrapServerOpt = parser.accepts("bootstrap-server", "REQUIRED. The server(s) to connect to.")
+      .requiredUnless("broker-list")
+      .withRequiredArg
+      .describedAs("Server(s) to use for bootstrapping in the form HOST1:PORT1,HOST2:PORT2.")
+      .ofType(classOf[String])
+    val fetchSizeOpt = parser.accepts("fetch-size", "The fetch size of each request.")
+      .withRequiredArg
+      .describedAs("bytes")
+      .ofType(classOf[java.lang.Integer])
+      .defaultsTo(ConsumerConfig.DEFAULT_MAX_PARTITION_FETCH_BYTES)
+    val maxWaitMsOpt = parser.accepts("max-wait-ms", "The max amount of time each fetch request waits.")
+      .withRequiredArg
+      .describedAs("ms")
+      .ofType(classOf[java.lang.Integer])
+      .defaultsTo(1000)
+    val topicWhiteListOpt = parser.accepts("topic-white-list", "White list of topics to verify replica consistency. Defaults to all topics.")
+      .withRequiredArg
+      .describedAs("Java regex (String)")
+      .ofType(classOf[String])
+      .defaultsTo(".*")
+    val initialOffsetTimeOpt = parser.accepts("time", "Timestamp for getting the initial offsets.")
+      .withRequiredArg
+      .describedAs("timestamp/-1(latest)/-2(earliest)")
+      .ofType(classOf[java.lang.Long])
+      .defaultsTo(-1L)
+    val reportIntervalOpt = parser.accepts("report-interval-ms", "The reporting interval.")
+      .withRequiredArg
+      .describedAs("ms")
+      .ofType(classOf[java.lang.Long])
+      .defaultsTo(30 * 1000L)
+
+    options = parser.parse(args: _*)
+
+    def bootstrapServers: String =
+      if (options.has(bootstrapServerOpt)) {
+        options.valueOf(bootstrapServerOpt)
+      } else {
+        options.valueOf(brokerListOpt)
+      }
+  }
+
+  def validateAndParseArgs(args: Array[String]): ReplicaVerificationToolOptions = {
+    val options = new ReplicaVerificationToolOptions(args)
+
+    CommandLineUtils.printHelpAndExitIfNeeded(options, helpText)
+    CommandLineUtils.checkRequiredArgs(options.parser, options.options)
+
+    val topicWhitelistRegex = options.options.valueOf(options.topicWhiteListOpt)
+    try Pattern.compile(topicWhitelistRegex)
+    catch {
+      case _: PatternSyntaxException =>
+        CommandLineUtils.printUsageAndDie(options.parser, s"Topic whitelist $topicWhitelistRegex is not a valid regex.")
+    }
+
+    ToolsUtils.validatePortOrDie(options.parser, options.bootstrapServers)
+
+    options
   }
 
   def main(args: Array[String]): Unit = {
-    val parser = new OptionParser(false)
-    val brokerListOpt = parser.accepts("broker-list", "REQUIRED: The list of hostname and port of the server to connect to.")
-                         .withRequiredArg
-                         .describedAs("hostname:port,...,hostname:port")
-                         .ofType(classOf[String])
-    val fetchSizeOpt = parser.accepts("fetch-size", "The fetch size of each request.")
-                         .withRequiredArg
-                         .describedAs("bytes")
-                         .ofType(classOf[java.lang.Integer])
-                         .defaultsTo(ConsumerConfig.DEFAULT_MAX_PARTITION_FETCH_BYTES)
-    val maxWaitMsOpt = parser.accepts("max-wait-ms", "The max amount of time each fetch request waits.")
-                         .withRequiredArg
-                         .describedAs("ms")
-                         .ofType(classOf[java.lang.Integer])
-                         .defaultsTo(1000)
-    val topicWhiteListOpt = parser.accepts("topic-white-list", "White list of topics to verify replica consistency. Defaults to all topics.")
-                         .withRequiredArg
-                         .describedAs("Java regex (String)")
-                         .ofType(classOf[String])
-                         .defaultsTo(".*")
-    val initialOffsetTimeOpt = parser.accepts("time", "Timestamp for getting the initial offsets.")
-                           .withRequiredArg
-                           .describedAs("timestamp/-1(latest)/-2(earliest)")
-                           .ofType(classOf[java.lang.Long])
-                           .defaultsTo(-1L)
-    val reportIntervalOpt = parser.accepts("report-interval-ms", "The reporting interval.")
-                         .withRequiredArg
-                         .describedAs("ms")
-                         .ofType(classOf[java.lang.Long])
-                         .defaultsTo(30 * 1000L)
-    val helpOpt = parser.accepts("help", "Print usage information.").forHelp()
-    val versionOpt = parser.accepts("version", "Print version information and exit.").forHelp()
+    val opts = validateAndParseArgs(args)
+    val options = opts.options
 
-    val options = parser.parse(args: _*)
+    val topicWhiteListFilter = Whitelist(options.valueOf(opts.topicWhiteListOpt))
 
-    if (args.length == 0 || options.has(helpOpt)) {
-      CommandLineUtils.printUsageAndDie(parser, "Validate that all replicas for a set of topics have the same data.")
-    }
+    val fetchSize = options.valueOf(opts.fetchSizeOpt).intValue
+    val maxWaitMs = options.valueOf(opts.maxWaitMsOpt).intValue
+    val initialOffsetTime = options.valueOf(opts.initialOffsetTimeOpt).longValue
+    val reportInterval = options.valueOf(opts.reportIntervalOpt).longValue
+    val brokerList = opts.bootstrapServers
 
-    if (options.has(versionOpt)) {
-      CommandLineUtils.printVersionAndDie()
-    }
-    CommandLineUtils.checkRequiredArgs(parser, options, brokerListOpt)
-
-    val regex = options.valueOf(topicWhiteListOpt)
-    val topicWhiteListFiler = new IncludeList(regex)
-
-    try Pattern.compile(regex)
-    catch {
-      case _: PatternSyntaxException =>
-        throw new RuntimeException(s"$regex is an invalid regex.")
-    }
-
-    val fetchSize = options.valueOf(fetchSizeOpt).intValue
-    val maxWaitMs = options.valueOf(maxWaitMsOpt).intValue
-    val initialOffsetTime = options.valueOf(initialOffsetTimeOpt).longValue
-    val reportInterval = options.valueOf(reportIntervalOpt).longValue
-    // getting topic metadata
     info("Getting topic metadata...")
-    val brokerList = options.valueOf(brokerListOpt)
-    ToolsUtils.validatePortOrDie(parser, brokerList)
-
     val (topicsMetadata, brokerInfo) = {
       val adminClient = createAdminClient(brokerList)
       try ((listTopicsMetadata(adminClient), brokerDetails(adminClient)))
@@ -143,13 +156,11 @@ object ReplicaVerificationTool extends Logging {
     }
 
     val filteredTopicMetadata = topicsMetadata.filter { topicMetaData =>
-      topicWhiteListFiler.isTopicAllowed(topicMetaData.name, excludeInternalTopics = false)
+      topicWhiteListFilter.isTopicAllowed(topicMetaData.name, excludeInternalTopics = false)
     }
 
-    if (filteredTopicMetadata.isEmpty) {
-      error(s"No topics found. $topicWhiteListOpt if specified, is either filtering out all topics or there is no topic.")
-      Exit.exit(1)
-    }
+    if (filteredTopicMetadata.isEmpty)
+      CommandLineUtils.printUsageAndDie(opts.parser, s"No topics found. ${opts.topicWhiteListOpt} if specified, is either filtering out all topics or there is no topic.")
 
     val topicPartitionReplicas = filteredTopicMetadata.flatMap { topicMetadata =>
       topicMetadata.partitions.asScala.flatMap { partitionMetadata =>
@@ -207,6 +218,10 @@ object ReplicaVerificationTool extends Logging {
 
   }
 
+  def getCurrentTimeString() = {
+    ReplicaVerificationTool.dateFormat.format(new Date(Time.SYSTEM.milliseconds))
+  }
+
   private def listTopicsMetadata(adminClient: Admin): Seq[TopicDescription] = {
     val topics = adminClient.listTopics(new ListTopicsOptions().listInternal(true)).names.get
     adminClient.describeTopics(topics).all.get.values.asScala.toBuffer
@@ -223,16 +238,16 @@ object ReplicaVerificationTool extends Logging {
   }
 
   private def initialOffsets(topicPartitions: Seq[TopicPartition], consumerConfig: Properties,
-                             initialOffsetTime: Long): collection.Map[TopicPartition, Long] = {
+                             initialOffsetTime: Long): Map[TopicPartition, Long] = {
     val consumer = createConsumer(consumerConfig)
     try {
-      if (ListOffsetsRequest.LATEST_TIMESTAMP == initialOffsetTime)
-        consumer.endOffsets(topicPartitions.asJava).asScala.map { case (k, v) => k -> v.longValue }
-      else if (ListOffsetsRequest.EARLIEST_TIMESTAMP == initialOffsetTime)
-        consumer.beginningOffsets(topicPartitions.asJava).asScala.map { case (k, v) => k -> v.longValue }
+      if (ListOffsetRequest.LATEST_TIMESTAMP == initialOffsetTime)
+        consumer.endOffsets(topicPartitions.asJava).asScala.mapValues(_.longValue).toMap
+      else if (ListOffsetRequest.EARLIEST_TIMESTAMP == initialOffsetTime)
+        consumer.beginningOffsets(topicPartitions.asJava).asScala.mapValues(_.longValue).toMap
       else {
         val timestampsToSearch = topicPartitions.map(tp => tp -> (initialOffsetTime: java.lang.Long)).toMap
-        consumer.offsetsForTimes(timestampsToSearch.asJava).asScala.map { case (k, v) => k -> v.offset }
+        consumer.offsetsForTimes(timestampsToSearch.asJava).asScala.mapValues(v => v.offset).toMap
       }
     } finally consumer.close()
   }
@@ -254,12 +269,12 @@ private case class TopicPartitionReplica(topic: String, partitionId: Int, replic
 
 private case class MessageInfo(replicaId: Int, offset: Long, nextOffset: Long, checksum: Long)
 
-private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[TopicPartition, Int],
-                            initialOffsets: collection.Map[TopicPartition, Long],
+private class ReplicaBuffer(expectedReplicasPerTopicPartition: Map[TopicPartition, Int],
+                            initialOffsets: Map[TopicPartition, Long],
                             expectedNumFetchers: Int,
                             reportInterval: Long) extends Logging {
   private val fetchOffsetMap = new Pool[TopicPartition, Long]
-  private val recordsCache = new Pool[TopicPartition, Pool[Int, FetchResponseData.PartitionData]]
+  private val recordsCache = new Pool[TopicPartition, Pool[Int, FetchResponse.PartitionData[MemoryRecords]]]
   private val fetcherBarrier = new AtomicReference(new CountDownLatch(expectedNumFetchers))
   private val verificationBarrier = new AtomicReference(new CountDownLatch(1))
   @volatile private var lastReportTime = Time.SYSTEM.milliseconds
@@ -282,7 +297,7 @@ private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[To
 
   private def initialize(): Unit = {
     for (topicPartition <- expectedReplicasPerTopicPartition.keySet)
-      recordsCache.put(topicPartition, new Pool[Int, FetchResponseData.PartitionData])
+      recordsCache.put(topicPartition, new Pool[Int, FetchResponse.PartitionData[MemoryRecords]])
     setInitialOffsets()
   }
 
@@ -292,7 +307,7 @@ private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[To
       fetchOffsetMap.put(tp, offset)
   }
 
-  def addFetchedData(topicAndPartition: TopicPartition, replicaId: Int, partitionData: FetchResponseData.PartitionData): Unit = {
+  def addFetchedData(topicAndPartition: TopicPartition, replicaId: Int, partitionData: FetchResponse.PartitionData[MemoryRecords]): Unit = {
     recordsCache.get(topicAndPartition).put(replicaId, partitionData)
   }
 
@@ -309,7 +324,7 @@ private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[To
         "fetched " + fetchResponsePerReplica.size + " replicas for " + topicPartition + ", but expected "
           + expectedReplicasPerTopicPartition(topicPartition) + " replicas")
       val recordBatchIteratorMap = fetchResponsePerReplica.map { case (replicaId, fetchResponse) =>
-        replicaId -> FetchResponse.recordsOrFail(fetchResponse).batches.iterator
+        replicaId -> fetchResponse.records.batches.iterator
       }
       val maxHw = fetchResponsePerReplica.values.map(_.highWatermark).max
 
@@ -332,14 +347,14 @@ private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[To
                       MessageInfo(replicaId, batch.lastOffset, batch.nextOffset, batch.checksum))
                   case Some(messageInfoFromFirstReplica) =>
                     if (messageInfoFromFirstReplica.offset != batch.lastOffset) {
-                      println(ReplicaVerificationTool.getCurrentTimeString() + ": partition " + topicPartition
+                      println(ReplicaVerificationTool.getCurrentTimeString + ": partition " + topicPartition
                         + ": replica " + messageInfoFromFirstReplica.replicaId + "'s offset "
                         + messageInfoFromFirstReplica.offset + " doesn't match replica "
                         + replicaId + "'s offset " + batch.lastOffset)
                       Exit.exit(1)
                     }
                     if (messageInfoFromFirstReplica.checksum != batch.checksum)
-                      println(ReplicaVerificationTool.getCurrentTimeString() + ": partition "
+                      println(ReplicaVerificationTool.getCurrentTimeString + ": partition "
                         + topicPartition + " has unmatched checksum at offset " + batch.lastOffset + "; replica "
                         + messageInfoFromFirstReplica.replicaId + "'s checksum " + messageInfoFromFirstReplica.checksum
                         + "; replica " + replicaId + "'s checksum " + batch.checksum)
@@ -356,8 +371,8 @@ private class ReplicaBuffer(expectedReplicasPerTopicPartition: collection.Map[To
         if (isMessageInAllReplicas) {
           val nextOffset = messageInfoFromFirstReplicaOpt.get.nextOffset
           fetchOffsetMap.put(topicPartition, nextOffset)
-          debug(s"${expectedReplicasPerTopicPartition(topicPartition)} replicas match at offset " +
-            s"$nextOffset for $topicPartition")
+          debug(expectedReplicasPerTopicPartition(topicPartition) + " replicas match at offset " +
+            nextOffset + " for " + topicPartition)
         }
       }
       if (maxHw - fetchOffsetMap.get(topicPartition) > maxLag) {
@@ -401,10 +416,10 @@ private class ReplicaFetcher(name: String, sourceBroker: Node, topicPartitions: 
 
     debug("Issuing fetch request ")
 
-    var fetchResponse: FetchResponse = null
+    var fetchResponse: FetchResponse[MemoryRecords] = null
     try {
       val clientResponse = fetchEndpoint.sendRequest(fetchRequestBuilder)
-      fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse]
+      fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse[MemoryRecords]]
     } catch {
       case t: Throwable =>
         if (!isRunning)
@@ -412,13 +427,14 @@ private class ReplicaFetcher(name: String, sourceBroker: Node, topicPartitions: 
     }
 
     if (fetchResponse != null) {
-      fetchResponse.data.responses.forEach(topicResponse =>
-        topicResponse.partitions.forEach(partitionResponse =>
-          replicaBuffer.addFetchedData(new TopicPartition(topicResponse.topic, partitionResponse.partitionIndex),
-            sourceBroker.id, partitionResponse)))
+      fetchResponse.responseData.asScala.foreach { case (tp, partitionData) =>
+        replicaBuffer.addFetchedData(tp, sourceBroker.id, partitionData)
+      }
     } else {
+      val emptyResponse = new FetchResponse.PartitionData(Errors.NONE, FetchResponse.INVALID_HIGHWATERMARK,
+        FetchResponse.INVALID_LAST_STABLE_OFFSET, FetchResponse.INVALID_LOG_START_OFFSET, null, MemoryRecords.EMPTY)
       for (topicAndPartition <- topicPartitions)
-        replicaBuffer.addFetchedData(topicAndPartition, sourceBroker.id, FetchResponse.partitionResponse(topicAndPartition.partition, Errors.NONE))
+        replicaBuffer.addFetchedData(topicAndPartition, sourceBroker.id, emptyResponse)
     }
 
     fetcherBarrier.countDown()
@@ -476,8 +492,7 @@ private class ReplicaFetcherBlockingSend(sourceNode: Node,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       consumerConfig.getInt(ConsumerConfig.RECEIVE_BUFFER_CONFIG),
       consumerConfig.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG),
-      consumerConfig.getLong(ConsumerConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG),
-      consumerConfig.getLong(ConsumerConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG),
+      ClientDnsLookup.DEFAULT,
       time,
       false,
       new ApiVersions,

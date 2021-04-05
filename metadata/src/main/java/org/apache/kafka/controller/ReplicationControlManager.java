@@ -71,6 +71,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 import static org.apache.kafka.clients.admin.AlterConfigOp.OpType.SET;
@@ -791,8 +792,7 @@ public class ReplicationControlManager {
                 record.setIsr(Replicas.toList(newIsr));
                 if (partition.leader == brokerId) {
                     // The fenced node will no longer be the leader.
-                    int newLeader = bestLeader(partition.replicas, newIsr,
-                        configurationControl.shouldUseUncleanLeaderElection(topic.name));
+                    int newLeader = bestLeader(partition.replicas, newIsr, false);
                     record.setLeader(newLeader);
                 } else {
                     // Bump the partition leader epoch.
@@ -841,33 +841,13 @@ public class ReplicationControlManager {
                 throw new RuntimeException("Partition " + topicIdPartition +
                     " existed in isrMembers, but not in the partitions map.");
             }
-            boolean brokerInIsr = Replicas.contains(partition.isr, brokerId);
-            boolean shouldBecomeLeader;
-            if (configurationControl.shouldUseUncleanLeaderElection(topic.name)) {
-                shouldBecomeLeader = Replicas.contains(partition.replicas, brokerId);
-            } else {
-                shouldBecomeLeader = brokerInIsr;
-            }
-            if (shouldBecomeLeader) {
-                if (brokerInIsr) {
-                    if (log.isDebugEnabled()) {
-                        log.debug("The newly active node {} will be the leader for the " +
-                            "previously offline partition {}.",
-                            brokerId, topicIdPartition);
-                    }
-                } else {
-                    log.info("The newly active node {} will be the leader for the " +
-                        "previously offline partition {}, after an UNCLEAN leader election.",
-                        brokerId, topicIdPartition);
-                }
-                PartitionChangeRecord record = new PartitionChangeRecord().
+            // TODO: if this partition is configured for unclean leader election,
+            // check the replica set rather than the ISR.
+            if (Replicas.contains(partition.isr, brokerId)) {
+                records.add(new ApiMessageAndVersion(new PartitionChangeRecord().
                     setPartitionId(topicIdPartition.partitionId()).
                     setTopicId(topic.id).
-                    setLeader(brokerId);
-                if (!brokerInIsr) {
-                    record.setIsr(Replicas.toList(partition.isr, brokerId));
-                }
-                records.add(new ApiMessageAndVersion(record, (short) 0));
+                    setLeader(brokerId), (short) 0));
             }
         }
     }
@@ -1025,5 +1005,48 @@ public class ReplicationControlManager {
             heartbeatManager.fence(brokerId);
         }
         return ControllerResult.of(records, null);
+    }
+
+    class ReplicationControlIterator implements Iterator<List<ApiMessageAndVersion>> {
+        private final long epoch;
+        private final Iterator<TopicControlInfo> iterator;
+
+        ReplicationControlIterator(long epoch) {
+            this.epoch = epoch;
+            this.iterator = topics.values(epoch).iterator();
+        }
+
+        @Override
+        public boolean hasNext() {
+            return iterator.hasNext();
+        }
+
+        @Override
+        public List<ApiMessageAndVersion> next() {
+            if (!hasNext()) throw new NoSuchElementException();
+            TopicControlInfo topic = iterator.next();
+            List<ApiMessageAndVersion> records = new ArrayList<>();
+            records.add(new ApiMessageAndVersion(new TopicRecord().
+                setName(topic.name).
+                setTopicId(topic.id), (short) 0));
+            for (Entry<Integer, PartitionControlInfo> entry : topic.parts.entrySet(epoch)) {
+                PartitionControlInfo partition = entry.getValue();
+                records.add(new ApiMessageAndVersion(new PartitionRecord().
+                    setPartitionId(entry.getKey()).
+                    setTopicId(topic.id).
+                    setReplicas(Replicas.toList(partition.replicas)).
+                    setIsr(Replicas.toList(partition.isr)).
+                    setRemovingReplicas(Replicas.toList(partition.removingReplicas)).
+                    setAddingReplicas(Replicas.toList(partition.addingReplicas)).
+                    setLeader(partition.leader).
+                    setLeaderEpoch(partition.leaderEpoch).
+                    setPartitionEpoch(partition.partitionEpoch), (short) 0));
+            }
+            return records;
+        }
+    }
+
+    ReplicationControlIterator iterator(long epoch) {
+        return new ReplicationControlIterator(epoch);
     }
 }

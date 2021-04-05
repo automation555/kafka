@@ -26,9 +26,6 @@ public interface ReplicationPolicy {
     /** How to rename remote topics; generally should be like us-west.topic1. */
     String formatRemoteTopic(String sourceClusterAlias, String topic);
 
-    /** How to restore source topics from remote topics; generally should be like us-west.topic1 -> topic1 */
-    String restoreSourceTopic(String sourceClusterAlias, String topic);
-    
     /** Source cluster alias of given remote topic, e.g. "us-west" for "us-west.topic1".
      *  Returns null if not a remote topic.
      */
@@ -59,5 +56,10 @@ public interface ReplicationPolicy {
     default boolean isInternalTopic(String topic) {
         return topic.endsWith(".internal") || topic.endsWith("-internal") || topic.startsWith("__")
             || topic.startsWith(".");
+    }
+
+    /** Checks if the policy can track back to the source of the topic. */
+    default boolean canTrackSource(String topic) {
+        return !isInternalTopic(topic);
     }
 }

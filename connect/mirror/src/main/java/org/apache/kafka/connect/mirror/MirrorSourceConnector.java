@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.connect.mirror;
 
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.source.SourceConnector;
 import org.apache.kafka.common.config.ConfigDef;
@@ -84,20 +83,20 @@ public class MirrorSourceConnector extends SourceConnector {
         // nop
     }
 
-    @VisibleForTesting
+    // visible for testing
     MirrorSourceConnector(List<TopicPartition> knownSourceTopicPartitions, MirrorConnectorConfig config) {
         this.knownSourceTopicPartitions = knownSourceTopicPartitions;
         this.config = config;
     }
 
-    @VisibleForTesting
+    // visible for testing
     MirrorSourceConnector(SourceAndTarget sourceAndTarget, ReplicationPolicy replicationPolicy,
             TopicFilter topicFilter, ConfigPropertyFilter configPropertyFilter) {
         this.sourceAndTarget = sourceAndTarget;
         this.replicationPolicy = replicationPolicy;
         this.topicFilter = topicFilter;
         this.configPropertyFilter = configPropertyFilter;
-    }
+    } 
 
     @Override
     public void start(Map<String, String> props) {
@@ -187,7 +186,7 @@ public class MirrorSourceConnector extends SourceConnector {
         return "1";
     }
 
-    @VisibleForTesting
+    // visible for testing
     List<TopicPartition> findSourceTopicPartitions()
             throws InterruptedException, ExecutionException {
         Set<String> topics = listTopics(sourceAdminClient).stream()
@@ -198,59 +197,38 @@ public class MirrorSourceConnector extends SourceConnector {
             .collect(Collectors.toList());
     }
 
-    @VisibleForTesting
+    // visible for testing
     List<TopicPartition> findTargetTopicPartitions()
             throws InterruptedException, ExecutionException {
         Set<String> topics = listTopics(targetAdminClient).stream()
-            .filter(t -> sourceAndTarget.source().equals(replicationPolicy.topicSource(t)))
-            .filter(t -> !t.equals(config.checkpointsTopic()))
+            // Allow replication policies that can't track back to the source of a topic (like LegacyReplicationPolicy)
+            // consider all topics as target topics.
+            .filter(t -> !replicationPolicy.canTrackSource(t)
+                    || sourceAndTarget.source().equals(replicationPolicy.topicSource(t)))
             .collect(Collectors.toSet());
         return describeTopics(targetAdminClient, topics).stream()
                 .flatMap(MirrorSourceConnector::expandTopicDescription)
                 .collect(Collectors.toList());
     }
 
-    @VisibleForTesting
+    // visible for testing
     void refreshTopicPartitions()
             throws InterruptedException, ExecutionException {
-
-        List<TopicPartition> sourceTopicPartitions = findSourceTopicPartitions();
-        List<TopicPartition> targetTopicPartitions = findTargetTopicPartitions();
-
-        Set<TopicPartition> sourceTopicPartitionsSet = new HashSet<>(sourceTopicPartitions);
-        Set<TopicPartition> knownSourceTopicPartitionsSet = new HashSet<>(knownSourceTopicPartitions);
-
-        Set<TopicPartition> upstreamTargetTopicPartitions = targetTopicPartitions.stream()
+        knownSourceTopicPartitions = findSourceTopicPartitions();
+        knownTargetTopicPartitions = findTargetTopicPartitions();
+        List<TopicPartition> upstreamTargetTopicPartitions = knownTargetTopicPartitions.stream()
                 .map(x -> new TopicPartition(replicationPolicy.upstreamTopic(x.topic()), x.partition()))
-                .collect(Collectors.toSet());
+                .collect(Collectors.toList());
 
-        Set<TopicPartition> missingInTarget = new HashSet<>(sourceTopicPartitions);
-        missingInTarget.removeAll(upstreamTargetTopicPartitions);
-
-        knownTargetTopicPartitions = targetTopicPartitions;
-
-        // Detect if topic-partitions were added or deleted from the source cluster
-        // or if topic-partitions are missing from the target cluster
-        if (!knownSourceTopicPartitionsSet.equals(sourceTopicPartitionsSet) || !missingInTarget.isEmpty()) {
-
-            Set<TopicPartition> newTopicPartitions = sourceTopicPartitionsSet;
-            newTopicPartitions.removeAll(knownSourceTopicPartitions);
-
-            Set<TopicPartition> deletedTopicPartitions = knownSourceTopicPartitionsSet;
-            deletedTopicPartitions.removeAll(sourceTopicPartitions);
-
-            log.info("Found {} new topic-partitions on {}. " +
-                     "Found {} deleted topic-partitions on {}. " +
-                     "Found {} topic-partitions missing on {}.",
-                     newTopicPartitions.size(), sourceAndTarget.source(),
-                     deletedTopicPartitions.size(), sourceAndTarget.source(),
-                     missingInTarget.size(), sourceAndTarget.target());
-
-            log.trace("Found new topic-partitions on {}: {}", sourceAndTarget.source(), newTopicPartitions);
-            log.trace("Found deleted topic-partitions on {}: {}", sourceAndTarget.source(), deletedTopicPartitions);
-            log.trace("Found missing topic-partitions on {}: {}", sourceAndTarget.target(), missingInTarget);
-
-            knownSourceTopicPartitions = sourceTopicPartitions;
+        Set<TopicPartition> newTopicPartitions = new HashSet<>(knownSourceTopicPartitions);
+        newTopicPartitions.removeAll(upstreamTargetTopicPartitions);
+        Set<TopicPartition> deadTopicPartitions = new HashSet<>(upstreamTargetTopicPartitions);
+        deadTopicPartitions.removeAll(knownSourceTopicPartitions);
+        if (!newTopicPartitions.isEmpty() || !deadTopicPartitions.isEmpty()) {
+            log.info("Found {} topic-partitions on {}. {} are new. {} were removed. Previously had {}.",
+                    knownSourceTopicPartitions.size(), sourceAndTarget.source(), newTopicPartitions.size(),
+                    deadTopicPartitions.size(), knownSourceTopicPartitions.size());
+            log.trace("Found new topic-partitions: {}", newTopicPartitions);
             computeAndCreateTopicPartitions();
             context.requestTaskReconfiguration();
         }
@@ -306,7 +284,7 @@ public class MirrorSourceConnector extends SourceConnector {
         MirrorUtils.createSinglePartitionCompactedTopic(config.offsetSyncsTopic(), config.offsetSyncsTopicReplicationFactor(), config.sourceAdminConfig());
     }
 
-    @VisibleForTesting
+    // visible for testing
     void computeAndCreateTopicPartitions()
             throws InterruptedException, ExecutionException {
         Map<String, Long> partitionCounts = knownSourceTopicPartitions.stream()
@@ -323,7 +301,7 @@ public class MirrorSourceConnector extends SourceConnector {
         createTopicPartitions(partitionCounts, newTopics, newPartitions);
     }
 
-    @VisibleForTesting
+    // visible for testing
     void createTopicPartitions(Map<String, Long> partitionCounts, List<NewTopic> newTopics,
             Map<String, NewPartitions> newPartitions) {
         targetAdminClient.createTopics(newTopics, new CreateTopicsOptions()).values().forEach((k, v) -> v.whenComplete((x, e) -> {

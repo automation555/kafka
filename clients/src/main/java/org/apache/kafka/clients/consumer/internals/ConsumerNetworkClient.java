@@ -95,9 +95,6 @@ public class ConsumerNetworkClient implements Closeable {
         this.requestTimeoutMs = requestTimeoutMs;
     }
 
-    public int defaultRequestTimeoutMs() {
-        return requestTimeoutMs;
-    }
 
     /**
      * Send a request with the default timeout. See {@link #send(Node, AbstractRequest.Builder, int)}.
@@ -139,15 +136,6 @@ public class ConsumerNetworkClient implements Closeable {
         lock.lock();
         try {
             return client.leastLoadedNode(time.milliseconds());
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public boolean ready(Node node, long now) {
-        lock.lock();
-        try {
-            return client.ready(node, now);
         } finally {
             lock.unlock();
         }
@@ -456,7 +444,7 @@ public class ConsumerNetworkClient implements Closeable {
                 if (node == null)
                     break;
 
-                failUnsentRequests(node, DisconnectException.INSTANCE);
+                failUnsentRequests(node, new DisconnectException("On-demand disconnection with " + node.host()));
                 client.disconnect(node.idString());
             }
         } finally {
@@ -604,7 +592,7 @@ public class ConsumerNetworkClient implements Closeable {
             } else if (response.wasDisconnected()) {
                 log.debug("Cancelled request with header {} due to node {} being disconnected",
                         response.requestHeader(), response.destination());
-                future.raise(DisconnectException.INSTANCE);
+                future.raise(new DisconnectException("Disconnected from " + response.destination()));
             } else if (response.versionMismatch() != null) {
                 future.raise(response.versionMismatch());
             } else {

@@ -60,7 +60,6 @@ class SocketServerTest {
   val props = TestUtils.createBrokerConfig(0, TestUtils.MockZkConnect, port = 0)
   props.put("listeners", "PLAINTEXT://localhost:0")
   props.put("num.network.threads", "1")
-  props.put("socket.tcp.no.delay", "true")
   props.put("socket.send.buffer.bytes", "300000")
   props.put("socket.receive.buffer.bytes", "300000")
   props.put("queued.max.requests", "50")
@@ -98,6 +97,7 @@ class SocketServerTest {
     sockets.foreach(_.close())
     sockets.clear()
     kafkaLogger.setLevel(logLevelToRestore)
+    TestUtils.resetLogging
   }
 
   def sendRequest(socket: Socket, request: Array[Byte], id: Option[Short] = None, flush: Boolean = true): Unit = {
@@ -514,7 +514,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
           credentialProvider, memoryPool, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def connectionId(socket: Socket): String = overrideConnectionId
           override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
@@ -1097,7 +1097,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean = false): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
           credentialProvider, MemoryPool.NONE, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def sendResponse(response: RequestChannel.Response, responseSend: Send): Unit = {
             conn.close()
@@ -1141,7 +1141,7 @@ class SocketServerTest {
       override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                                 protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean): Processor = {
         new Processor(id, time, config.socketRequestMaxBytes, dataPlaneRequestChannel, connectionQuotas,
-          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics,
+          config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics,
           credentialProvider, memoryPool, new LogContext(), Processor.ConnectionQueueSize, isPrivilegedListener, apiVersionManager) {
           override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
             val testableSelector = new TestableSelector(config, channelBuilder, time, metrics)
@@ -1744,7 +1744,7 @@ class SocketServerTest {
       // In each iteration, SocketServer processes at most connectionQueueSize (1 in this test)
       // new connections and then does poll() to process data from existing connections. So for
       // 5 connections, we expect 5 iterations. Since we stop when the 5th connection is processed,
-      // we can safely check that there were at least 4 polls prior to the 5th connection.
+      // we can safely check that there were atleast 4 polls prior to the 5th connection.
       val pollCount = testableSelector.operationCounts(SelectorOperation.Poll)
       assertTrue(pollCount >= numConnections - 1, s"Connections created too quickly: $pollCount")
       verifyAcceptorBlockedPercent("PLAINTEXT", expectBlocked = true)
@@ -1905,7 +1905,7 @@ class SocketServerTest {
     override def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
                               protocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean = false): Processor = {
       new Processor(id, time, config.socketRequestMaxBytes, requestChannel, connectionQuotas, config.connectionsMaxIdleMs,
-        config.failedAuthenticationDelayMs, config.socketTcpNoDelay, listenerName, protocol, config, metrics, credentialProvider,
+        config.failedAuthenticationDelayMs, listenerName, protocol, config, metrics, credentialProvider,
         memoryPool, new LogContext(), connectionQueueSize, isPrivilegedListener, apiVersionManager) {
 
         override protected[network] def createSelector(channelBuilder: ChannelBuilder): Selector = {
@@ -1958,7 +1958,7 @@ class SocketServerTest {
   }
 
   class TestableSelector(config: KafkaConfig, channelBuilder: ChannelBuilder, time: Time, metrics: Metrics, metricTags: mutable.Map[String, String] = mutable.Map.empty)
-    extends Selector(config.socketRequestMaxBytes, config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs, config.socketTcpNoDelay,
+    extends Selector(config.socketRequestMaxBytes, config.connectionsMaxIdleMs, config.failedAuthenticationDelayMs,
       metrics, time, "socket-server", metricTags.asJava, false, true, channelBuilder, MemoryPool.NONE, new LogContext()) {
 
     val failures = mutable.Map[SelectorOperation, Throwable]()

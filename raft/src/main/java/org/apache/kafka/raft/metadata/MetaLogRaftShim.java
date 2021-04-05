@@ -24,6 +24,7 @@ import org.apache.kafka.metalog.MetaLogManager;
 import org.apache.kafka.raft.BatchReader;
 import org.apache.kafka.raft.LeaderAndEpoch;
 import org.apache.kafka.raft.RaftClient;
+import org.apache.kafka.snapshot.SnapshotReader;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -122,6 +123,11 @@ public class MetaLogRaftShim implements MetaLogManager {
             } finally {
                 reader.close();
             }
+        }
+
+        @Override
+        public void handleSnapshot(SnapshotReader<ApiMessageAndVersion> reader) {
+            reader.close();
         }
 
         @Override

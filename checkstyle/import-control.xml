@@ -281,6 +281,7 @@
     <allow pkg="org.apache.kafka.queue"/>
     <allow pkg="org.apache.kafka.raft"/>
     <allow pkg="org.apache.kafka.shell"/>
+    <allow pkg="org.apache.kafka.snapshot"/>
     <allow pkg="org.jline"/>
     <allow pkg="scala.compat"/>
   </subpackage>
@@ -528,7 +529,6 @@
         <allow class="javax.ws.rs.core.Response" />
         <allow pkg="com.fasterxml.jackson.core.type" />
         <allow pkg="org.apache.kafka.metadata" />
-        <allow class="scala.collection.JavaConverters" />
       </subpackage>
     </subpackage>
 

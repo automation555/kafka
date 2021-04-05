@@ -16,19 +16,18 @@
  */
 package org.apache.kafka.raft;
 
+import org.apache.kafka.snapshot.SnapshotReader;
 import org.apache.kafka.snapshot.SnapshotWriter;
 
-import java.io.Closeable;
-import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-public interface RaftClient<T> extends Closeable {
+public interface RaftClient<T> extends AutoCloseable {
 
     interface Listener<T> {
         /**
          * Callback which is invoked for all records committed to the log.
-         * It is the responsibility of the caller to invoke {@link BatchReader#close()}
+         * It is the responsibility of this implementation to invoke {@link BatchReader#close()}
          * after consuming the reader.
          *
          * Note that there is not a one-to-one correspondence between writes through
@@ -43,6 +42,18 @@ public interface RaftClient<T> extends Closeable {
          * @param reader reader instance which must be iterated and closed
          */
         void handleCommit(BatchReader<T> reader);
+
+        /**
+         * Callback which is invoked when the Listener needs to load a snapshot.
+         * It is the responsibility of this implementation to invoke {@link SnapshotReader#close()}
+         * after consuming the reader.
+         *
+         * When handling this call, the implementation must assume that all previous calls
+         * to {@link #handleCommit} contain invalid data.
+         *
+         * @param reader snapshot reader instance which must be iterated and closed
+         */
+        void handleSnapshot(SnapshotReader<T> reader);
 
         /**
          * Invoked after this node has become a leader. This is only called after
@@ -66,12 +77,9 @@ public interface RaftClient<T> extends Closeable {
     }
 
     /**
-     * Initialize the client.
-     * This should only be called once on startup.
-     *
-     * @throws IOException For any IO errors during initialization
+     * Initialize the client. This should only be called once on startup.
      */
-    void initialize() throws IOException;
+    void initialize();
 
     /**
      * Register a listener to get commit/leader notifications.
@@ -104,7 +112,6 @@ public interface RaftClient<T> extends Closeable {
      * @param records the list of records to append
      * @return the expected offset of the last record; {@link Long#MAX_VALUE} if the records could
      *         be committed; null if no memory could be allocated for the batch at this time
-     *         or the leader is about to shutdown and not accepting any writes
      * @throws RecordBatchTooLargeException if the size of the records is greater than the maximum
      *         batch size; if this exception is throw none of the elements in records were
      *         committed
@@ -127,7 +134,6 @@ public interface RaftClient<T> extends Closeable {
      * @param records the list of records to append
      * @return the expected offset of the last record; {@link Long#MAX_VALUE} if the records could
      *         be committed; null if no memory could be allocated for the batch at this time
-     *         or the leader is about to shutdown and not accepting any writes
      * @throws RecordBatchTooLargeException if the size of the records is greater than the maximum
      *         batch size; if this exception is throw none of the elements in records were
      *         committed
@@ -159,5 +165,5 @@ public interface RaftClient<T> extends Closeable {
      * @param snapshotId the end offset and epoch that identifies the snapshot
      * @return a writable snapshot
      */
-    SnapshotWriter<T> createSnapshot(OffsetAndEpoch snapshotId) throws IOException;
+    SnapshotWriter<T> createSnapshot(OffsetAndEpoch snapshotId);
 }

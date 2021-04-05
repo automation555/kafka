@@ -37,6 +37,7 @@ import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{TopicPartition, Uuid, protocol}
 import org.apache.kafka.raft.BatchReader.Batch
 import org.apache.kafka.raft.{BatchReader, RaftClient, RaftConfig, RecordSerde}
+import org.apache.kafka.snapshot.SnapshotReader
 
 import scala.jdk.CollectionConverters._
 
@@ -147,6 +148,7 @@ class TestRaftServer(
     case class HandleClaim(epoch: Int) extends RaftEvent
     case object HandleResign extends RaftEvent
     case class HandleCommit(reader: BatchReader[Array[Byte]]) extends RaftEvent
+    case class HandleSnapshot(reader: SnapshotReader[Array[Byte]]) extends RaftEvent
     case object Shutdown extends RaftEvent
 
     private val eventQueue = new LinkedBlockingDeque[RaftEvent]()
@@ -170,6 +172,10 @@ class TestRaftServer(
 
     override def handleCommit(reader: BatchReader[Array[Byte]]): Unit = {
       eventQueue.offer(HandleCommit(reader))
+    }
+
+    override def handleSnapshot(reader: SnapshotReader[Array[Byte]]): Unit = {
+      eventQueue.offer(HandleSnapshot(reader))
     }
 
     override def initiateShutdown(): Boolean = {
@@ -223,7 +229,11 @@ class TestRaftServer(
             reader.close()
           }
 
-        case _ =>
+        case HandleSnapshot(reader) =>
+          // Ignore snapshots; only interested on records appended by this leader
+          reader.close()
+
+        case Shutdown => // Ignore shutdown command
       }
     }
 

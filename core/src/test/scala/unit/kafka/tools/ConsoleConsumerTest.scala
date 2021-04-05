@@ -17,15 +17,14 @@
 
 package kafka.tools
 
-import java.io.{ByteArrayOutputStream, PrintStream}
+import java.io.PrintStream
 import java.nio.file.Files
-import java.util.{HashMap, Map => JMap}
 
+import kafka.common.MessageFormatter
 import kafka.tools.ConsoleConsumer.ConsumerWrapper
 import kafka.utils.{Exit, TestUtils}
 import org.apache.kafka.clients.consumer.{ConsumerRecord, MockConsumer, OffsetResetStrategy}
-import org.apache.kafka.common.{MessageFormatter, TopicPartition}
-import org.apache.kafka.common.record.TimestampType
+import org.apache.kafka.common.{Node, PartitionInfo, TopicPartition}
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.test.MockDeserializer
 import org.mockito.Mockito._
@@ -34,7 +33,7 @@ import ArgumentMatchers._
 import org.junit.Assert._
 import org.junit.{Before, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 class ConsoleConsumerTest {
 
@@ -146,7 +145,7 @@ class ConsoleConsumerTest {
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
-    assertEquals(3, config.offsetArg)
+    assertEquals("3", config.offsetArg)
     assertEquals(false, config.fromBeginning)
 
   }
@@ -187,7 +186,7 @@ class ConsoleConsumerTest {
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
-    assertEquals(-1, config.offsetArg)
+    assertEquals("latest", config.offsetArg)
     assertEquals(false, config.fromBeginning)
     assertEquals(false, config.formatter.asInstanceOf[DefaultMessageFormatter].printValue)
   }
@@ -421,8 +420,7 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--property", "print.key=true",
       "--property", "key.deserializer=org.apache.kafka.test.MockDeserializer",
-      "--property", "key.deserializer.my-props=abc",
-      "--property", "value.deserializer=org.apache.kafka.test.MockDeserializer",
+      "--property", "key.deserializer.my-props=abc"
     )
     val config = new ConsoleConsumer.ConsumerConfig(args)
     assertTrue(config.formatter.isInstanceOf[DefaultMessageFormatter])
@@ -432,32 +430,6 @@ class ConsoleConsumerTest {
     assertEquals(1, formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.size)
     assertEquals("abc", formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.get("my-props"))
     assertTrue(formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].isKey)
-
-    val initialCount = MockDeserializer.closeCount.get()
-    formatter.close()
-    // 1 (key deserializer) + 1 (value deserializer)
-    assertEquals(2 + initialCount, MockDeserializer.closeCount.get())
-  }
-
-  @Test
-  def testCloseLoggingMessageFormatter(): Unit = {
-    val args = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--formatter", classOf[LoggingMessageFormatter].getName,
-      "--property", "print.key=true",
-      "--property", "key.deserializer=org.apache.kafka.test.MockDeserializer",
-      "--property", "key.deserializer.my-props=abc",
-      "--property", "value.deserializer=org.apache.kafka.test.MockDeserializer",
-    )
-    val config = new ConsoleConsumer.ConsumerConfig(args)
-    assertTrue(config.formatter.isInstanceOf[LoggingMessageFormatter])
-    val formatter = config.formatter.asInstanceOf[LoggingMessageFormatter]
-
-    val initialCount = MockDeserializer.closeCount.get()
-    formatter.close()
-    // 1 (key deserializer) + 1 (value deserializer)
-    assertEquals(2 + initialCount, MockDeserializer.closeCount.get())
   }
 
   @Test
@@ -472,7 +444,7 @@ class ConsoleConsumerTest {
     var config = new ConsoleConsumer.ConsumerConfig(args)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
-    assertEquals(-2, config.offsetArg)
+    assertEquals("earliest", config.offsetArg)
     assertEquals(true, config.fromBeginning)
 
     // Start from latest
@@ -485,7 +457,7 @@ class ConsoleConsumerTest {
     config = new ConsoleConsumer.ConsumerConfig(args)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
-    assertEquals(-1, config.offsetArg)
+    assertEquals("latest", config.offsetArg)
     assertEquals(false, config.fromBeginning)
   }
 
@@ -525,74 +497,54 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def testDefaultMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new DefaultMessageFormatter()
-    val configs: JMap[String, String] = new HashMap()
+  def testReadLastNMessages(): Unit = {
+    val topic = "test"
+    val tp1 = new TopicPartition(topic, 0)
+    val startOffset: java.lang.Long = 0L
+    val totalMessages: java.lang.Long = 10L
+    val lastN = -3
 
-    formatter.configure(configs)
-    var out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("value\n", out.toString)
+    val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
+    val partitionInfo = new PartitionInfo(topic, 0, null, new Array[Node](0), new Array[Node](0))
 
-    configs.put("print.key", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("key\tvalue\n", out.toString)
+    mockConsumer.updatePartitions(topic, List(partitionInfo).asJava)
+    mockConsumer.updateBeginningOffsets(Map(tp1 -> startOffset).asJava)
+    mockConsumer.updateEndOffsets(Map(tp1 -> totalMessages).asJava)
 
-    configs.put("print.partition", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("Partition:0\tkey\tvalue\n", out.toString)
+    val consumer = new ConsumerWrapper(Some(topic), Some(0), Some(lastN.toString), None, mockConsumer)
 
-    configs.put("print.timestamp", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("NO_TIMESTAMP\tPartition:0\tkey\tvalue\n", out.toString)
+    0 until totalMessages.intValue foreach { i =>
+      mockConsumer.addRecord(new ConsumerRecord[Array[Byte], Array[Byte]](topic, 0, i, "key".getBytes, "value".getBytes))
+    }
 
-    configs.put("print.offset", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("NO_TIMESTAMP\tPartition:0\tOffset:123\tkey\tvalue\n", out.toString)
-
-    out = new ByteArrayOutputStream()
-    val record2 = new ConsumerRecord("topic", 0, 123, 123L, TimestampType.CREATE_TIME, 321L, -1, -1, "key".getBytes, "value".getBytes)
-    formatter.writeTo(record2, new PrintStream(out))
-    assertEquals("CreateTime:123\tPartition:0\tOffset:123\tkey\tvalue\n", out.toString)
-    formatter.close()
+    val formatter = mock(classOf[MessageFormatter])
+    ConsoleConsumer.process(-1, formatter, consumer, System.out, skipMessageOnError = false)
+    verify(formatter, times(Math.abs(lastN))).writeTo(any(), any())
   }
 
   @Test
-  def testNoOpMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new NoOpMessageFormatter()
+  def testLastNExceedingTotalMessageCount(): Unit = {
+    val topic = "test"
+    val tp1 = new TopicPartition(topic, 0)
+    val startOffset: java.lang.Long = 0L
+    val totalMessages: java.lang.Long = 10L
+    val lastN = Long.MinValue
 
-    formatter.configure(new HashMap())
-    val out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("", out.toString)
+    val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
+    val partitionInfo = new PartitionInfo(topic, 0, null, new Array[Node](0), new Array[Node](0))
+
+    mockConsumer.updatePartitions(topic, List(partitionInfo).asJava)
+    mockConsumer.updateBeginningOffsets(Map(tp1 -> startOffset).asJava)
+    mockConsumer.updateEndOffsets(Map(tp1 -> totalMessages).asJava)
+
+    val consumer = new ConsumerWrapper(Some(topic), Some(0), Some(lastN.toString), None, mockConsumer)
+
+    0 until totalMessages.intValue foreach { i =>
+      mockConsumer.addRecord(new ConsumerRecord[Array[Byte], Array[Byte]](topic, 0, i, "key".getBytes, "value".getBytes))
+    }
+
+    val formatter = mock(classOf[MessageFormatter])
+    ConsoleConsumer.process(-1, formatter, consumer, System.out, skipMessageOnError = false)
+    verify(formatter, times(totalMessages.toInt)).writeTo(any(), any())
   }
-
-  @Test
-  def testChecksumMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new ChecksumMessageFormatter()
-    val configs: JMap[String, String] = new HashMap()
-
-    formatter.configure(configs)
-    var out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("checksum:-1\n", out.toString)
-
-    configs.put("topic", "topic1")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("topic1:checksum:-1\n", out.toString)
-  }
-
 }

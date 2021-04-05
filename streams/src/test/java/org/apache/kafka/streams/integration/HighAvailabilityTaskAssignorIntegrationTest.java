@@ -24,6 +24,7 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.utils.Bytes;
@@ -42,15 +43,14 @@ import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.NoRetryException;
 import org.apache.kafka.test.TestUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 
-import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -73,18 +73,8 @@ import static org.hamcrest.Matchers.is;
 
 @Category(IntegrationTest.class)
 public class HighAvailabilityTaskAssignorIntegrationTest {
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(1);
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
-
 
     @Rule
     public TestName testName = new TestName();
@@ -119,7 +109,16 @@ public class HighAvailabilityTaskAssignorIntegrationTest {
             new TopicPartition(storeChangelog, 1)
         );
 
-        IntegrationTestUtils.cleanStateBeforeTest(CLUSTER, 2, inputTopic, storeChangelog);
+        IntegrationTestUtils.cleanStateBeforeTest(
+            CLUSTER,
+            2,
+            mkMap(
+                mkEntry(inputTopic, Collections.emptyMap()),
+                mkEntry(storeChangelog, mkMap(
+                    mkEntry(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT))
+                )
+            )
+        );
 
         final ReentrantLock assignmentLock = new ReentrantLock();
         final AtomicInteger assignmentsCompleted = new AtomicInteger(0);

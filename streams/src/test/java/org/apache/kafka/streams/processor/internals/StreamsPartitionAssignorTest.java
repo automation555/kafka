@@ -1210,7 +1210,7 @@ public class StreamsPartitionAssignorTest {
             false
         ) {
             @Override
-            public Set<String> makeReady(final Map<String, InternalTopicConfig> topics) {
+            public void setup(final Map<String, InternalTopicConfig> topics) {
                 throw new TimeoutException("KABOOM!");
             }
         };
@@ -1243,9 +1243,9 @@ public class StreamsPartitionAssignorTest {
             false
         ) {
             @Override
-            public Set<String> makeReady(final Map<String, InternalTopicConfig> topics) {
+            public void setup(final Map<String, InternalTopicConfig> topics) {
                 if (topics.isEmpty()) {
-                    return emptySet();
+                    return;
                 }
                 throw new TimeoutException("KABOOM!");
             }

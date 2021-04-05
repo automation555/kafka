@@ -24,6 +24,7 @@ import java.util.Properties
 import kafka.common.{InconsistentBrokerMetadataException, KafkaException}
 import kafka.server.RawMetaProperties._
 import kafka.utils._
+import org.apache.kafka.common.Uuid
 import org.apache.kafka.common.utils.Utils
 
 import scala.collection.mutable
@@ -96,13 +97,23 @@ class RawMetaProperties(val props: Properties = new Properties()) {
 object MetaProperties {
   def parse(properties: RawMetaProperties): MetaProperties = {
     properties.requireVersion(expectedVersion = 1)
-    val clusterId = require(ClusterIdKey, properties.clusterId)
+    val clusterId = requireClusterId(properties)
     val nodeId = require(NodeIdKey, properties.nodeId)
     new MetaProperties(clusterId, nodeId)
   }
 
   def require[T](key: String, value: Option[T]): T = {
     value.getOrElse(throw new RuntimeException(s"Failed to find required property $key."))
+  }
+
+  def requireClusterId(properties: RawMetaProperties): Uuid = {
+    val value = require(ClusterIdKey, properties.clusterId)
+    try {
+      Uuid.fromString(value)
+    } catch {
+      case e: Throwable => throw new RuntimeException(s"Failed to parse $ClusterIdKey property " +
+        s"as a UUID: ${e.getMessage}")
+    }
   }
 }
 
@@ -124,13 +135,13 @@ case class ZkMetaProperties(
 }
 
 case class MetaProperties(
-  clusterId: String,
+  clusterId: Uuid,
   nodeId: Int,
 ) {
   def toProperties: Properties = {
     val properties = new RawMetaProperties()
     properties.version = 1
-    properties.clusterId = clusterId
+    properties.clusterId = clusterId.toString
     properties.nodeId = nodeId
     properties.props
   }
@@ -160,8 +171,7 @@ object BrokerMetadataCheckpoint extends Logging {
             brokerMetadataMap += logDir -> properties
           case None =>
             if (!ignoreMissing) {
-              throw new KafkaException(s"No `meta.properties` found in $logDir " +
-                "(have you run `kafka-storage.sh` to format the directory?)")
+              throw new KafkaException(s"No `meta.properties` found in $logDir")
             }
         }
       } catch {
@@ -229,7 +239,7 @@ class BrokerMetadataCheckpoint(val file: File) extends Logging {
         Some(Utils.loadProps(absolutePath))
       } catch {
         case _: NoSuchFileException =>
-          warn(s"No meta.properties file under dir $absolutePath")
+          info(s"No meta.properties file under dir $absolutePath")
           None
         case e: Exception =>
           error(s"Failed to read meta.properties file under dir $absolutePath", e)

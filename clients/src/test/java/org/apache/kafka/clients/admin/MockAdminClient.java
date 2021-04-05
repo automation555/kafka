@@ -238,7 +238,7 @@ public class MockAdminClient extends AdminClient {
                 createTopicResult.put(topicName, future);
                 continue;
             }
-            int replicationFactor = newTopic.replicationFactor();
+            int replicationFactor = Math.max(newTopic.replicationFactor(), 0);
             if (replicationFactor > brokers.size())
                 throw new IllegalArgumentException(
                     String.format("NewTopic %s cannot have a replication factor of %d that is larger than the number of brokers %s",
@@ -249,7 +249,7 @@ public class MockAdminClient extends AdminClient {
                 replicas.add(brokers.get(i));
             }
 
-            int numberOfPartitions = newTopic.numPartitions();
+            int numberOfPartitions = Math.max(newTopic.numPartitions(), 0);
             List<TopicPartitionInfo> partitions = new ArrayList<>(numberOfPartitions);
             // Partitions start off on the first log directory of each broker, for now.
             List<String> logDirs = new ArrayList<>(numberOfPartitions);
@@ -544,7 +544,7 @@ public class MockAdminClient extends AdminClient {
                 for (AlterConfigOp op : ops) {
                     switch (op.opType()) {
                         case SET:
-                            newMap.put(op.configEntry().name(), op.configEntry().value().orElse("null"));
+                            newMap.put(op.configEntry().name(), op.configEntry().value());
                             break;
                         case DELETE:
                             newMap.remove(op.configEntry().name());
@@ -567,7 +567,7 @@ public class MockAdminClient extends AdminClient {
                 for (AlterConfigOp op : ops) {
                     switch (op.opType()) {
                         case SET:
-                            newMap.put(op.configEntry().name(), op.configEntry().value().orElse("null"));
+                            newMap.put(op.configEntry().name(), op.configEntry().value());
                             break;
                         case DELETE:
                             newMap.remove(op.configEntry().name());

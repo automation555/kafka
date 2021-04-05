@@ -31,14 +31,14 @@ import org.apache.kafka.test.MockDeserializer
 import org.mockito.Mockito._
 import org.mockito.ArgumentMatchers
 import ArgumentMatchers._
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{Before, Test}
 
 import scala.jdk.CollectionConverters._
 
 class ConsoleConsumerTest {
 
-  @BeforeEach
+  @Before
   def setup(): Unit = {
     ConsoleConsumer.messageCount = 0
   }
@@ -151,7 +151,7 @@ class ConsoleConsumerTest {
 
   }
 
-  @Test
+  @Test(expected = classOf[IllegalArgumentException])
   def shouldExitOnUnrecognizedNewConsumerOption(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
@@ -162,8 +162,12 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--from-beginning")
 
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
+    //When
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   @Test
@@ -264,7 +268,7 @@ class ConsoleConsumerTest {
     assertEquals("latest", consumerProperties.getProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG))
   }
 
-  @Test
+  @Test(expected = classOf[IllegalArgumentException])
   def shouldExitOnInvalidConfigWithAutoOffsetResetAndConflictingFromBeginning(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
@@ -274,11 +278,13 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--consumer-property", "auto.offset.reset=latest",
       "--from-beginning")
+
     try {
       val config = new ConsoleConsumer.ConsumerConfig(args)
-      assertThrows(classOf[IllegalArgumentException], () => ConsoleConsumer.consumerProps(config))
+      ConsoleConsumer.consumerProps(config)
+    } finally {
+      Exit.resetExitProcedure()
     }
-    finally Exit.resetExitProcedure()
   }
 
   @Test
@@ -317,7 +323,12 @@ class ConsoleConsumerTest {
       "--consumer.config", propsFile.getAbsolutePath
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // the same in all three places
     propsFile = TestUtils.tempFile()
@@ -348,7 +359,12 @@ class ConsoleConsumerTest {
       "--consumer.config", propsFile.getAbsolutePath
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // different via --consumer-property and --group
     args = Array(
@@ -358,7 +374,12 @@ class ConsoleConsumerTest {
       "--consumer-property", "group.id=group-from-properties"
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // different via --group and --consumer.config
     propsFile = TestUtils.tempFile()
@@ -371,7 +392,13 @@ class ConsoleConsumerTest {
       "--group", "group-from-arguments",
       "--consumer.config", propsFile.getAbsolutePath
     )
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // via --group only
     args = Array(
@@ -394,7 +421,8 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--property", "print.key=true",
       "--property", "key.deserializer=org.apache.kafka.test.MockDeserializer",
-      "--property", "key.deserializer.my-props=abc"
+      "--property", "key.deserializer.my-props=abc",
+      "--property", "value.deserializer=org.apache.kafka.test.MockDeserializer",
     )
     val config = new ConsoleConsumer.ConsumerConfig(args)
     assertTrue(config.formatter.isInstanceOf[DefaultMessageFormatter])
@@ -404,6 +432,32 @@ class ConsoleConsumerTest {
     assertEquals(1, formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.size)
     assertEquals("abc", formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.get("my-props"))
     assertTrue(formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].isKey)
+
+    val initialCount = MockDeserializer.closeCount.get()
+    formatter.close()
+    // 1 (key deserializer) + 1 (value deserializer)
+    assertEquals(2 + initialCount, MockDeserializer.closeCount.get())
+  }
+
+  @Test
+  def testCloseLoggingMessageFormatter(): Unit = {
+    val args = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--formatter", classOf[LoggingMessageFormatter].getName,
+      "--property", "print.key=true",
+      "--property", "key.deserializer=org.apache.kafka.test.MockDeserializer",
+      "--property", "key.deserializer.my-props=abc",
+      "--property", "value.deserializer=org.apache.kafka.test.MockDeserializer",
+    )
+    val config = new ConsoleConsumer.ConsumerConfig(args)
+    assertTrue(config.formatter.isInstanceOf[LoggingMessageFormatter])
+    val formatter = config.formatter.asInstanceOf[LoggingMessageFormatter]
+
+    val initialCount = MockDeserializer.closeCount.get()
+    formatter.close()
+    // 1 (key deserializer) + 1 (value deserializer)
+    assertEquals(2 + initialCount, MockDeserializer.closeCount.get())
   }
 
   @Test
@@ -435,7 +489,7 @@ class ConsoleConsumerTest {
     assertEquals(false, config.fromBeginning)
   }
 
-  @Test
+  @Test(expected = classOf[IllegalArgumentException])
   def shouldExitOnGroupIdAndPartitionGivenTogether(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
@@ -445,11 +499,15 @@ class ConsoleConsumerTest {
       "--group", "test-group",
       "--partition", "0")
 
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
+    //When
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
-  @Test
+  @Test(expected = classOf[IllegalArgumentException])
   def shouldExitOnOffsetWithoutPartition(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
@@ -458,8 +516,12 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--offset", "10")
 
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
+    //When
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   @Test

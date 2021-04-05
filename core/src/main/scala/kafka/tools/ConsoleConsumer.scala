@@ -21,8 +21,10 @@ import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import java.util.{Collections, Locale, Map, Properties, Random}
+
 import com.typesafe.scalalogging.LazyLogging
 import joptsimple._
 import kafka.utils.Implicits._
@@ -31,7 +33,7 @@ import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, ConsumerReco
 import org.apache.kafka.common.{MessageFormatter, TopicPartition}
 import org.apache.kafka.common.errors.{AuthenticationException, TimeoutException, WakeupException}
 import org.apache.kafka.common.record.TimestampType
-import org.apache.kafka.common.requests.ListOffsetsRequest
+import org.apache.kafka.common.requests.ListOffsetRequest
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, Deserializer}
 import org.apache.kafka.common.utils.Utils
 
@@ -337,8 +339,8 @@ object ConsoleConsumer extends Logging {
     val offsetArg =
       if (options.has(offsetOpt)) {
         options.valueOf(offsetOpt).toLowerCase(Locale.ROOT) match {
-          case "earliest" => ListOffsetsRequest.EARLIEST_TIMESTAMP
-          case "latest" => ListOffsetsRequest.LATEST_TIMESTAMP
+          case "earliest" => ListOffsetRequest.EARLIEST_TIMESTAMP
+          case "latest" => ListOffsetRequest.LATEST_TIMESTAMP
           case offsetString =>
             try {
               val offset = offsetString.toLong
@@ -350,8 +352,8 @@ object ConsoleConsumer extends Logging {
             }
         }
       }
-      else if (fromBeginning) ListOffsetsRequest.EARLIEST_TIMESTAMP
-      else ListOffsetsRequest.LATEST_TIMESTAMP
+      else if (fromBeginning) ListOffsetRequest.EARLIEST_TIMESTAMP
+      else ListOffsetRequest.LATEST_TIMESTAMP
 
     CommandLineUtils.checkRequiredArgs(parser, options, bootstrapServerOpt)
 
@@ -404,7 +406,7 @@ object ConsoleConsumer extends Logging {
           seek(topic, partitionId, offset)
         case (Some(topic), Some(partitionId), None, None) =>
           // default to latest if no offset is provided
-          seek(topic, partitionId, ListOffsetsRequest.LATEST_TIMESTAMP)
+          seek(topic, partitionId, ListOffsetRequest.LATEST_TIMESTAMP)
         case (Some(topic), None, None, None) =>
           consumer.subscribe(Collections.singletonList(topic))
         case (None, None, None, Some(whitelist)) =>
@@ -421,8 +423,8 @@ object ConsoleConsumer extends Logging {
       val topicPartition = new TopicPartition(topic, partitionId)
       consumer.assign(Collections.singletonList(topicPartition))
       offset match {
-        case ListOffsetsRequest.EARLIEST_TIMESTAMP => consumer.seekToBeginning(Collections.singletonList(topicPartition))
-        case ListOffsetsRequest.LATEST_TIMESTAMP => consumer.seekToEnd(Collections.singletonList(topicPartition))
+        case ListOffsetRequest.EARLIEST_TIMESTAMP => consumer.seekToBeginning(Collections.singletonList(topicPartition))
+        case ListOffsetRequest.LATEST_TIMESTAMP => consumer.seekToEnd(Collections.singletonList(topicPartition))
         case _ => consumer.seek(topicPartition, offset)
       }
     }
@@ -493,7 +495,7 @@ class DefaultMessageFormatter extends MessageFormatter {
     headersDeserializer = getPropertyIfExists(configs, "headers.deserializer", getDeserializerProperty(false))
   }
 
-  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
+  override def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
 
     def writeSeparator(columnSeparator: Boolean): Unit = {
       if (columnSeparator)
@@ -593,6 +595,15 @@ class DefaultMessageFormatter extends MessageFormatter {
     else
       None
   }
+
+  override def close(): Unit = {
+    val firstException = new AtomicReference[Throwable]()
+    Utils.closeAllQuietly(firstException, "close key/value deserializer",
+      () => keyDeserializer.foreach(_.close()),
+      () => valueDeserializer.foreach(_.close()),
+      () => headersDeserializer.foreach(_.close()))
+    if (firstException.get() != null) throw firstException.get()
+  }
 }
 
 class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
@@ -600,13 +611,15 @@ class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
 
   override def configure(configs: Map[String, _]): Unit = defaultWriter.configure(configs)
 
-  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
+  override def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
     import consumerRecord._
     defaultWriter.writeTo(consumerRecord, output)
     logger.info({if (timestampType != TimestampType.NO_TIMESTAMP_TYPE) s"$timestampType:$timestamp, " else ""} +
                   s"key:${if (key == null) "null" else new String(key, StandardCharsets.UTF_8)}, " +
                   s"value:${if (value == null) "null" else new String(value, StandardCharsets.UTF_8)}")
   }
+
+  override def close(): Unit = defaultWriter.close()
 }
 
 class NoOpMessageFormatter extends MessageFormatter {

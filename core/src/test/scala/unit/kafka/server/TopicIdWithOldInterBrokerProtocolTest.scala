@@ -17,17 +17,16 @@
 
 package kafka.server
 
-import java.util.{Arrays, Properties}
+import java.util.{Arrays, LinkedHashMap, Optional, Properties}
 
-import kafka.api.{KAFKA_2_7_IV0, LeaderAndIsr}
+import kafka.api.KAFKA_2_7_IV0
 import kafka.network.SocketServer
 import kafka.utils.TestUtils
-import org.apache.kafka.common.Uuid
+import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.message.DeleteTopicsRequestData
 import org.apache.kafka.common.message.DeleteTopicsRequestData.DeleteTopicState
-import org.apache.kafka.common.message.StopReplicaRequestData.{StopReplicaPartitionState, StopReplicaTopicState}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
-import org.apache.kafka.common.requests.{DeleteTopicsRequest, DeleteTopicsResponse, MetadataRequest, MetadataResponse, StopReplicaRequest, StopReplicaResponse}
+import org.apache.kafka.common.requests.{DeleteTopicsRequest, DeleteTopicsResponse, FetchRequest, FetchResponse, MetadataRequest, MetadataResponse}
 import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 import org.junit.jupiter.api.{BeforeEach, Test}
 
@@ -60,6 +59,45 @@ class TopicIdWithOldInterBrokerProtocolTest extends BaseRequestTest {
       assertEquals(Errors.NONE, topicMetadata.error)
       assertEquals(Uuid.ZERO_UUID, topicMetadata.topicId())
     }
+  }
+
+  // This also simulates sending a fetch to a broker that is still in the process of updating.
+  @Test
+  def testFetchTopicIdsWithOldIBPWrongFetchVersion(): Unit = {
+    val replicaAssignment = Map(0 -> Seq(1, 2, 0), 1 -> Seq(2, 0, 1))
+    val topic1 = "topic1"
+    val tp0 = new TopicPartition("topic1", 0)
+    val maxResponseBytes = 800
+    val maxPartitionBytes = 190
+    val topicIds = Map("topic1" -> Uuid.randomUuid())
+    val topicNames = topicIds.map(_.swap)
+
+    val leadersMap = createTopic(topic1, replicaAssignment)
+    val req = createFetchRequest(maxResponseBytes, maxPartitionBytes, Seq(tp0),  Map.empty, topicIds, ApiKeys.FETCH.latestVersion())
+    val resp = sendFetchRequest(leadersMap(0), req)
+
+    val responseData = resp.responseData(topicNames.asJava, ApiKeys.FETCH.latestVersion())
+    assertEquals(Errors.UNSUPPORTED_VERSION.code, responseData.get(tp0).errorCode);
+  }
+
+  @Test
+  def testFetchTopicIdsWithOldIBPCorrectFetchVersion(): Unit = {
+    val replicaAssignment = Map(0 -> Seq(1, 2, 0), 1 -> Seq(2, 0, 1))
+    val topic1 = "topic1"
+    val tp0 = new TopicPartition("topic1", 0)
+    val maxResponseBytes = 800
+    val maxPartitionBytes = 190
+    val topicIds = Map("topic1" -> Uuid.randomUuid())
+    val topicNames = topicIds.map(_.swap)
+
+    val leadersMap = createTopic(topic1, replicaAssignment)
+    val req = createFetchRequest(maxResponseBytes, maxPartitionBytes, Seq(tp0), Map.empty, topicIds, 12)
+    val resp = sendFetchRequest(leadersMap(0), req)
+
+    assertEquals(Errors.NONE, resp.error())
+
+    val responseData = resp.responseData(topicNames.asJava, 12)
+    assertEquals(Errors.NONE.code, responseData.get(tp0).errorCode);
   }
 
   @Test
@@ -98,44 +136,34 @@ class TopicIdWithOldInterBrokerProtocolTest extends BaseRequestTest {
     assertEquals(2, error(Errors.UNSUPPORTED_VERSION))
   }
 
-  @Test
-  def testUnsupportedVersionOnStopReplicaRequest(): Unit = {
-    val topic = "topic"
-    createTopic(topic)
-
-    val server = servers.head
-    val topicId = server.metadataCache.getTopicId(topic)
-
-    for (version <- 4 to ApiKeys.STOP_REPLICA.latestVersion() ) {
-      val topicStates = Seq(
-        new StopReplicaTopicState()
-          .setTopicName(topic)
-          .setTopicId(topicId)
-          .setPartitionStates(Seq(new StopReplicaPartitionState()
-            .setPartitionIndex(0)
-            .setLeaderEpoch(LeaderAndIsr.initialLeaderEpoch)
-            .setDeletePartition(false)).asJava)
-      ).asJava
-
-      val request = new StopReplicaRequest.Builder(version.toShort,
-        server.config.brokerId, server.replicaManager.controllerEpoch, server.kafkaController.brokerEpoch,
-        false, topicStates).build()
-      val response = sendStopReplicaRequest(request)
-
-      assertEquals(Errors.UNSUPPORTED_VERSION, response.error())
-    }
-  }
-
   private def sendMetadataRequest(request: MetadataRequest, destination: Option[SocketServer]): MetadataResponse = {
     connectAndReceive[MetadataResponse](request, destination = destination.getOrElse(anySocketServer))
   }
 
-  private def sendDeleteTopicsRequest(request: DeleteTopicsRequest, socketServer: SocketServer = controllerSocketServer): DeleteTopicsResponse = {
-    connectAndReceive[DeleteTopicsResponse](request, destination = socketServer)
+  private def createFetchRequest(maxResponseBytes: Int, maxPartitionBytes: Int, topicPartitions: Seq[TopicPartition],
+                                 offsetMap: Map[TopicPartition, Long],
+                                 topicIds: Map[String, Uuid],
+                                 version: Short): FetchRequest = {
+    FetchRequest.Builder.forConsumer(version, Int.MaxValue, 0, createPartitionMap(maxPartitionBytes, topicPartitions, offsetMap), topicIds.asJava)
+      .setMaxBytes(maxResponseBytes).build()
   }
 
-  private def sendStopReplicaRequest(request: StopReplicaRequest, socketServer: SocketServer = controllerSocketServer): StopReplicaResponse = {
-    connectAndReceive[StopReplicaResponse](request, destination = socketServer)
+  private def createPartitionMap(maxPartitionBytes: Int, topicPartitions: Seq[TopicPartition],
+                                 offsetMap: Map[TopicPartition, Long]): LinkedHashMap[TopicPartition, FetchRequest.PartitionData] = {
+    val partitionMap = new LinkedHashMap[TopicPartition, FetchRequest.PartitionData]
+    topicPartitions.foreach { tp =>
+      partitionMap.put(tp, new FetchRequest.PartitionData(offsetMap.getOrElse(tp, 0), 0L, maxPartitionBytes,
+        Optional.empty()))
+    }
+    partitionMap
+  }
+
+  private def sendFetchRequest(leaderId: Int, request: FetchRequest): FetchResponse = {
+    connectAndReceive[FetchResponse](request, destination = brokerSocketServer(leaderId))
+  }
+
+  private def sendDeleteTopicsRequest(request: DeleteTopicsRequest, socketServer: SocketServer = controllerSocketServer): DeleteTopicsResponse = {
+    connectAndReceive[DeleteTopicsResponse](request, destination = socketServer)
   }
 
   private def validateTopicIsDeleted(topic: String): Unit = {

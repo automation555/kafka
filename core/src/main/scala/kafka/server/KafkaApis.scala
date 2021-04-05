@@ -57,7 +57,6 @@ import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetFor
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.{EpochEndOffset, OffsetForLeaderTopicResult, OffsetForLeaderTopicResultCollection}
 import org.apache.kafka.common.message._
 import org.apache.kafka.common.metrics.Metrics
-import org.apache.kafka.common.network.ClientInformation
 import org.apache.kafka.common.network.{ListenerName, Send}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.record._
@@ -662,11 +661,21 @@ class KafkaApis(val requestChannel: RequestChannel,
     val versionId = request.header.apiVersion
     val clientId = request.header.clientId
     val fetchRequest = request.body[FetchRequest]
+    val (topicIds, topicNames) =
+      if (fetchRequest.version() >= 13)
+        metadataCache.topicIdInfo()
+      else
+        (Collections.emptyMap[String, Uuid](), Collections.emptyMap[Uuid, String]())
+
     val fetchContext = fetchManager.newContext(
+      fetchRequest.version,
       fetchRequest.metadata,
-      fetchRequest.fetchData,
-      fetchRequest.toForget,
-      fetchRequest.isFromFollower)
+      fetchRequest.isFromFollower,
+      fetchRequest.fetchDataAndError(topicNames),
+      fetchRequest.forgottenTopics(topicNames),
+      topicNames,
+      topicIds)
+
 
     val clientMetadata: Option[ClientMetadata] = if (versionId >= 11) {
       // Fetch API version 11 added preferred replica logic
@@ -685,21 +694,21 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (fetchRequest.isFromFollower) {
       // The follower must have ClusterAction on ClusterResource in order to fetch partition data.
       if (authHelper.authorize(request.context, CLUSTER_ACTION, CLUSTER, CLUSTER_NAME)) {
-        fetchContext.foreachPartition { (topicPartition, data) =>
+        fetchContext.foreachResolvedPartition { (topicPartition, data) =>
           if (!metadataCache.contains(topicPartition))
             erroneous += topicPartition -> FetchResponse.partitionResponse(topicPartition.partition, Errors.UNKNOWN_TOPIC_OR_PARTITION)
           else
             interesting += (topicPartition -> data)
         }
       } else {
-        fetchContext.foreachPartition { (part, _) =>
+        fetchContext.foreachResolvedPartition { (part, _) =>
           erroneous += part -> FetchResponse.partitionResponse(part.partition, Errors.TOPIC_AUTHORIZATION_FAILED)
         }
       }
     } else {
       // Regular Kafka consumers need READ permission on each partition they are fetching.
       val partitionDatas = new mutable.ArrayBuffer[(TopicPartition, FetchRequest.PartitionData)]
-      fetchContext.foreachPartition { (topicPartition, partitionData) =>
+      fetchContext.foreachResolvedPartition { (topicPartition, partitionData) =>
         partitionDatas += topicPartition -> partitionData
       }
       val authorizedTopics = authHelper.filterByAuthorized(request.context, READ, TOPIC, partitionDatas)(_._1.topic)
@@ -821,20 +830,30 @@ class KafkaApis(val requestChannel: RequestChannel,
       def createResponse(throttleTimeMs: Int): FetchResponse = {
         // Down-convert messages for each partition if required
         val convertedData = new util.LinkedHashMap[TopicPartition, FetchResponseData.PartitionData]
-        unconvertedFetchResponse.responseData.forEach { (tp, unconvertedPartitionData) =>
-          val error = Errors.forCode(unconvertedPartitionData.errorCode)
-          if (error != Errors.NONE)
-            debug(s"Fetch request with correlation id ${request.header.correlationId} from client $clientId " +
-              s"on partition $tp failed due to ${error.exceptionName}")
-          convertedData.put(tp, maybeConvertFetchedData(tp, unconvertedPartitionData))
+        unconvertedFetchResponse.data().responses().forEach { topicResponse =>
+          if (topicResponse.topic() != "") {
+            topicResponse.partitions().forEach{ unconvertedPartitionData =>
+              val tp = new TopicPartition(topicResponse.topic(), unconvertedPartitionData.partitionIndex())
+              val error = Errors.forCode(unconvertedPartitionData.errorCode)
+              if (error != Errors.NONE)
+                debug(s"Fetch request with correlation id ${request.header.correlationId} from client $clientId " +
+                  s"on partition $tp failed due to ${error.exceptionName}")
+              convertedData.put(tp, maybeConvertFetchedData(tp, unconvertedPartitionData))
+            }
+          }
         }
 
         // Prepare fetch response from converted data
-        val response = FetchResponse.of(unconvertedFetchResponse.error, throttleTimeMs, unconvertedFetchResponse.sessionId, convertedData)
+        val response =
+          FetchResponse.prepareResponse(unconvertedFetchResponse.error, convertedData, fetchContext.getUnresolvedTopicData(), topicIds, throttleTimeMs, unconvertedFetchResponse.sessionId)
         // record the bytes out metrics only when the response is being sent
-        response.responseData.forEach { (tp, data) =>
-          brokerTopicStats.updateBytesOut(tp.topic, fetchRequest.isFromFollower,
-            reassigningPartitions.contains(tp), FetchResponse.recordsSize(data))
+        response.data().responses().forEach { topicResponse =>
+          if (topicResponse.topic() != "") {
+            topicResponse.partitions().forEach { data =>
+              val tp = new TopicPartition(topicResponse.topic(), data.partitionIndex())
+              brokerTopicStats.updateBytesOut(tp.topic, fetchRequest.isFromFollower, reassigningPartitions.contains(tp), FetchResponse.recordsSize(data))
+            }
+          }
         }
         response
       }
@@ -852,9 +871,10 @@ class KafkaApis(val requestChannel: RequestChannel,
       if (fetchRequest.isFromFollower) {
         // We've already evaluated against the quota and are good to go. Just need to record it now.
         unconvertedFetchResponse = fetchContext.updateAndGenerateResponseData(partitions)
-        val responseSize = KafkaApis.sizeOfThrottledPartitions(versionId, unconvertedFetchResponse, quotas.leader)
+        val responseSize = KafkaApis.sizeOfThrottledPartitions(versionId, unconvertedFetchResponse, quotas.leader, topicIds)
         quotas.leader.record(responseSize)
-        trace(s"Sending Fetch response with partitions.size=${unconvertedFetchResponse.responseData.size}, " +
+        val responsePartitionsSize = unconvertedFetchResponse.data().responses().stream().mapToInt(_.partitions().size()).sum()
+        trace(s"Sending Fetch response with partitions.size=$responsePartitionsSize, " +
           s"metadata=${unconvertedFetchResponse.sessionId}")
         requestHelper.sendResponseExemptThrottle(request, createResponse(0), Some(updateConversionStats))
       } else {
@@ -886,7 +906,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         } else {
           // Get the actual response. This will update the fetch context.
           unconvertedFetchResponse = fetchContext.updateAndGenerateResponseData(partitions)
-          trace(s"Sending Fetch response with partitions.size=$responseSize, metadata=${unconvertedFetchResponse.sessionId}")
+          val responsePartitionsSize = unconvertedFetchResponse.data().responses().stream().mapToInt(_.partitions().size()).sum()
+          trace(s"Sending Fetch response with partitions.size=$responsePartitionsSize, " +
+            s"metadata=${unconvertedFetchResponse.sessionId}")
         }
 
         // Send the response immediately.
@@ -1691,10 +1713,6 @@ class KafkaApis(val requestChannel: RequestChannel,
       } else if (!apiVersionRequest.isValid) {
         apiVersionRequest.getErrorResponse(requestThrottleMs, Errors.INVALID_REQUEST.exception)
       } else {
-        request.channelMetadataRegistry.registerClientInformation(new ClientInformation(
-          apiVersionRequest.data.clientSoftwareName,
-          apiVersionRequest.data.clientSoftwareVersion))
-
         apiVersionManager.apiVersionResponse(requestThrottleMs)
       }
     }
@@ -3370,11 +3388,13 @@ class KafkaApis(val requestChannel: RequestChannel,
 object KafkaApis {
   // Traffic from both in-sync and out of sync replicas are accounted for in replication quota to ensure total replication
   // traffic doesn't exceed quota.
+  // TODO: remove resolvedResponseData method when sizeOf can take a data object.
   private[server] def sizeOfThrottledPartitions(versionId: Short,
                                                 unconvertedResponse: FetchResponse,
-                                                quota: ReplicationQuotaManager): Int = {
-    FetchResponse.sizeOf(versionId, unconvertedResponse.responseData.entrySet
-      .iterator.asScala.filter(element => quota.isThrottled(element.getKey)).asJava)
+                                                quota: ReplicationQuotaManager,
+                                                topicIds: util.Map[String, Uuid]): Int = {
+    FetchResponse.sizeOf(versionId, unconvertedResponse.resolvedResponseData.entrySet
+      .iterator.asScala.filter(element => quota.isThrottled(element.getKey)).asJava, Collections.emptyList(), topicIds)
   }
 
   // visible for testing

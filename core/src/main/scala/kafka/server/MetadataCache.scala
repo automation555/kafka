@@ -62,10 +62,6 @@ trait MetadataCache {
 
   def getAllTopics(): collection.Set[String]
 
-  def getTopicId(topicName: String): Uuid
-
-  def getTopicName(topicId: Uuid): Option[String]
-
   def getAllPartitions(): collection.Set[TopicPartition]
 
   def getNonExistingTopics(topics: collection.Set[String]): collection.Set[String]
@@ -77,6 +73,12 @@ trait MetadataCache {
   def getPartitionInfo(topic: String, partitionId: Int): Option[UpdateMetadataRequestData.UpdateMetadataPartitionState]
 
   def numPartitions(topic: String): Option[Int]
+
+  def topicNamesToIds(): util.Map[String, Uuid]
+
+  def topicIdsToNames(): util.Map[Uuid, String]
+
+  def topicIdInfo(): (util.Map[String, Uuid], util.Map[Uuid, String])
 
   /**
    * Get a partition leader's endpoint
@@ -259,18 +261,25 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
     getAllTopics(metadataSnapshot)
   }
 
-  def getTopicId(topicName: String): Uuid = {
-    metadataSnapshot.topicIds.getOrElse(topicName, Uuid.ZERO_UUID)
-  }
-
-  def getTopicName(topicId: Uuid): Option[String] = {
-    metadataSnapshot.topicNames.get(topicId)
-  }
-
   def getAllPartitions(): Set[TopicPartition] = {
     metadataSnapshot.partitionStates.flatMap { case (topicName, partitionsAndStates) =>
       partitionsAndStates.keys.map(partitionId => new TopicPartition(topicName, partitionId.toInt))
     }.toSet
+  }
+
+  def topicNamesToIds(): util.Map[String, Uuid] = {
+    metadataSnapshot.topicIds.asJava
+  }
+
+  def topicIdsToNames(): util.Map[Uuid, String] = {
+    metadataSnapshot.topicNames.asJava
+  }
+
+  /**
+   * This method returns a map from topic names to IDs and a map from topic IDs to names
+   */
+  def topicIdInfo(): (util.Map[String, Uuid], util.Map[Uuid, String]) = {
+    (topicNamesToIds(), topicIdsToNames())
   }
 
   private def getAllTopics(snapshot: MetadataSnapshot): Set[String] = {
@@ -479,7 +488,7 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
                               controllerId: Option[Int],
                               aliveBrokers: mutable.LongMap[Broker],
                               aliveNodes: mutable.LongMap[collection.Map[ListenerName, Node]]) {
-    val topicNames: Map[Uuid, String] = topicIds.map{case(topicName, topicId) => (topicId, topicName)}
+    val topicNames = topicIds.map { case (topicName, topicId) => (topicId, topicName) }
   }
 
 }

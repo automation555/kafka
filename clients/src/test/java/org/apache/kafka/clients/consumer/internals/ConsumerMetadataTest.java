@@ -19,8 +19,8 @@ package org.apache.kafka.clients.consumer.internals;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
-import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -111,9 +112,12 @@ public class ConsumerMetadataTest {
 
     @Test
     public void testTransientTopics() {
+        Map<String, Uuid> topicIds = new HashMap<>();
+        topicIds.put("foo", Uuid.randomUuid());
         subscription.subscribe(singleton("foo"), new NoOpConsumerRebalanceListener());
         ConsumerMetadata metadata = newConsumerMetadata(false);
-        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWith(1, singletonMap("foo", 1)), false, time.milliseconds());
+        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWithIds(1, singletonMap("foo", 1), topicIds), false, time.milliseconds());
+        assertEquals(topicIds, metadata.topicIds());
         assertFalse(metadata.updateRequested());
 
         metadata.addTransientTopics(singleton("foo"));
@@ -125,14 +129,18 @@ public class ConsumerMetadataTest {
         Map<String, Integer> topicPartitionCounts = new HashMap<>();
         topicPartitionCounts.put("foo", 1);
         topicPartitionCounts.put("bar", 1);
-        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWith(1, topicPartitionCounts), false, time.milliseconds());
+        topicIds.put("bar", Uuid.randomUuid());
+        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWithIds(1, topicPartitionCounts, topicIds), false, time.milliseconds());
+        assertEquals(topicIds, metadata.topicIds());
         assertFalse(metadata.updateRequested());
 
         assertEquals(Utils.mkSet("foo", "bar"), new HashSet<>(metadata.fetch().topics()));
 
         metadata.clearTransientTopics();
-        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWith(1, topicPartitionCounts), false, time.milliseconds());
+        topicIds.remove("bar");
+        metadata.updateWithCurrentRequestVersion(RequestTestUtils.metadataUpdateWithIds(1, topicPartitionCounts, topicIds), false, time.milliseconds());
         assertEquals(singleton("foo"), new HashSet<>(metadata.fetch().topics()));
+        assertEquals(topicIds, metadata.topicIds());
     }
 
     private void testBasicSubscription(Set<String> expectedTopics, Set<String> expectedInternalTopics) {
@@ -159,14 +167,9 @@ public class ConsumerMetadataTest {
     }
 
     private MetadataResponse.TopicMetadata topicMetadata(String topic, boolean isInternal) {
-        MetadataResponseData.MetadataResponsePartition partitionMetadata = new MetadataResponseData.MetadataResponsePartition()
-            .setErrorCode(Errors.NONE.code())
-            .setPartitionIndex(0)
-            .setLeaderId(node.id())
-            .setLeaderEpoch(5)
-            .setReplicaNodes(singletonList(node.id()))
-            .setIsrNodes(singletonList(node.id()))
-            .setOfflineReplicas(singletonList(node.id()));
+        MetadataResponse.PartitionMetadata partitionMetadata = new MetadataResponse.PartitionMetadata(Errors.NONE,
+                new TopicPartition(topic, 0), Optional.of(node.id()), Optional.of(5),
+                singletonList(node.id()), singletonList(node.id()), singletonList(node.id()));
         return new MetadataResponse.TopicMetadata(Errors.NONE, topic, isInternal, singletonList(partitionMetadata));
     }
 

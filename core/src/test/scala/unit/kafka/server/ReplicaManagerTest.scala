@@ -59,6 +59,9 @@ import scala.jdk.CollectionConverters._
 class ReplicaManagerTest {
 
   val topic = "test-topic"
+  val topicId = Uuid.randomUuid()
+  val topicIds = scala.Predef.Map("test-topic" -> topicId)
+  val topicNames = scala.Predef.Map(topicId -> "test-topic")
   val time = new MockTime
   val scheduler = new MockScheduler(time)
   val metrics = new Metrics
@@ -232,7 +235,6 @@ class ReplicaManagerTest {
       replicaManager.createPartition(topicPartition)
         .createLogIfNotExists(isNew = false, isFutureReplica = false,
           new LazyOffsetCheckpoints(replicaManager.highWatermarkCheckpoints))
-      val topicIds = Collections.singletonMap(topic, Uuid.randomUuid())
 
       def leaderAndIsrRequest(epoch: Int): LeaderAndIsrRequest = new LeaderAndIsrRequest.Builder(ApiKeys.LEADER_AND_ISR.latestVersion, 0, 0, brokerEpoch,
         Seq(new LeaderAndIsrPartitionState()
@@ -245,7 +247,7 @@ class ReplicaManagerTest {
           .setZkVersion(0)
           .setReplicas(brokerList)
           .setIsNew(true)).asJava,
-        topicIds,
+        topicIds.asJava,
         Set(new Node(0, "host1", 0), new Node(1, "host2", 1)).asJava).build()
 
       replicaManager.becomeLeaderOrFollower(0, leaderAndIsrRequest(0), (_, _) => ())
@@ -1447,7 +1449,7 @@ class ReplicaManagerTest {
    * 'leaderEpochInLeaderAndIsr' leader epoch for partition 'topicPartition'.
    */
   private def prepareReplicaManagerAndLogManager(timer: MockTimer,
-                                                 partition: Int,
+                                                 topicPartition: Int,
                                                  leaderEpochInLeaderAndIsr: Int,
                                                  followerBrokerId: Int,
                                                  leaderBrokerId: Int,
@@ -1464,24 +1466,20 @@ class ReplicaManagerTest {
 
     val mockScheduler = new MockScheduler(time)
     val mockBrokerTopicStats = new BrokerTopicStats
-    val logConfig = LogConfig()
     val mockLogDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
-    val topicPartition = new TopicPartition(topic, partition)
     val mockLog = new Log(
-      new LocalLog(new File(new File(config.logDirs.head), s"$topic-0"),
-      logConfig, 0L, time.scheduler, time, topicPartition, mockLogDirFailureChannel),
-      logConfig,
+      _dir = new File(new File(config.logDirs.head), s"$topic-0"),
+      config = LogConfig(),
       logStartOffset = 0L,
+      recoveryPoint = 0L,
       scheduler = mockScheduler,
       brokerTopicStats = mockBrokerTopicStats,
       time = time,
       maxProducerIdExpirationMs = 30000,
       producerIdExpirationCheckIntervalMs = 30000,
-      topicPartition,
-      producerStateManager = new ProducerStateManager(
-        topicPartition,
-        new File(new File(config.logDirs.head), topicPartition.toString),
-        30000),
+      topicPartition = new TopicPartition(topic, topicPartition),
+      producerStateManager = new ProducerStateManager(new TopicPartition(topic, topicPartition),
+        new File(new File(config.logDirs.head), s"$topic-$topicPartition"), 30000),
       logDirFailureChannel = mockLogDirFailureChannel) {
 
       override def endOffsetForEpoch(leaderEpoch: Int): Option[OffsetAndEpoch] = {
@@ -1500,7 +1498,7 @@ class ReplicaManagerTest {
     }
 
     // Expect to call LogManager.truncateTo exactly once
-    val topicPartitionObj = new TopicPartition(topic, partition)
+    val topicPartitionObj = new TopicPartition(topic, topicPartition)
     val mockLogMgr: LogManager = EasyMock.createMock(classOf[LogManager])
     EasyMock.expect(mockLogMgr.liveLogDirs).andReturn(config.logDirs.map(new File(_).getAbsoluteFile)).anyTimes
     EasyMock.expect(mockLogMgr.getOrCreateLog(EasyMock.eq(topicPartitionObj),
@@ -1535,6 +1533,10 @@ class ReplicaManagerTest {
         followerBrokerId -> new Node(followerBrokerId, "host2", 9092, "rack-b")).toMap
       )
       .anyTimes()
+    EasyMock
+      .expect(metadataCache.topicNamesToIds()).andStubReturn(topicIds.asJava)
+    EasyMock
+      .expect(metadataCache.topicIdsToNames()).andStubReturn(topicNames.asJava)
     EasyMock.replay(metadataCache)
 
     val mockProducePurgatory = new DelayedOperationPurgatory[DelayedProduce](
@@ -1576,7 +1578,7 @@ class ReplicaManagerTest {
                 val initialOffset = InitialFetchState(
                   leader = new BrokerEndPoint(0, "localhost", 9092),
                   initOffset = 0L, currentLeaderEpoch = leaderEpochInLeaderAndIsr)
-                addPartitions(Map(new TopicPartition(topic, partition) -> initialOffset))
+                addPartitions(Map(new TopicPartition(topic, topicPartition) -> initialOffset))
                 super.doWork()
 
                 // Shut the thread down after one iteration to avoid double-counting truncations
@@ -1722,6 +1724,8 @@ class ReplicaManagerTest {
 
     val metadataCache: MetadataCache = Mockito.mock(classOf[MetadataCache])
     Mockito.when(metadataCache.getAliveBrokers).thenReturn(aliveBrokers)
+    Mockito.when(metadataCache.topicNamesToIds()).thenReturn(topicIds.asJava)
+    Mockito.when(metadataCache.topicIdsToNames()).thenReturn(topicNames.asJava)
 
     aliveBrokerIds.foreach { brokerId =>
       Mockito.when(metadataCache.getAliveBroker(brokerId))

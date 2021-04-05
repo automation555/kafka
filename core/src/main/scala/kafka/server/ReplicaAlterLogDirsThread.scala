@@ -91,20 +91,22 @@ class ReplicaAlterLogDirsThread(name: String,
       }
     }
 
+    val fetchData = request.fetchData(replicaMgr.metadataCache.topicIdsToNames())
+
     replicaMgr.fetchMessages(
       0L, // timeout is 0 so that the callback will be executed immediately
       Request.FutureLocalReplicaId,
       request.minBytes,
       request.maxBytes,
       false,
-      request.fetchData.asScala.toSeq,
+      fetchData.asScala.toSeq,
       UnboundedQuota,
       processResponseCallback,
       request.isolationLevel,
       None)
 
     if (partitionData == null)
-      throw new IllegalStateException(s"Failed to fetch data for partitions ${request.fetchData.keySet().toArray.mkString(",")}")
+      throw new IllegalStateException(s"Failed to fetch data for partitions ${fetchData.keySet().toArray.mkString(",")}")
 
     partitionData.toMap
   }
@@ -256,6 +258,9 @@ class ReplicaAlterLogDirsThread(name: String,
   private def buildFetchForPartition(tp: TopicPartition, fetchState: PartitionFetchState): ResultWithPartitions[Option[ReplicaFetch]] = {
     val requestMap = new util.LinkedHashMap[TopicPartition, FetchRequest.PartitionData]
     val partitionsWithError = mutable.Set[TopicPartition]()
+    val topics = new util.HashSet[String]()
+    val topicIds = replicaMgr.metadataCache.topicNamesToIds()
+    val topicIdsInRequest = new util.HashSet[String]()
 
     try {
       val logStartOffset = replicaMgr.futureLocalLogOrException(tp).logStartOffset
@@ -265,6 +270,9 @@ class ReplicaAlterLogDirsThread(name: String,
         Optional.empty[Integer]
       requestMap.put(tp, new FetchRequest.PartitionData(fetchState.fetchOffset, logStartOffset,
         fetchSize, Optional.of(fetchState.currentLeaderEpoch), lastFetchedEpoch))
+      topics.add(tp.topic())
+      if (topicIds.containsKey(tp.topic()))
+        topicIdsInRequest.add(tp.topic())
     } catch {
       case e: KafkaStorageException =>
         debug(s"Failed to build fetch for $tp", e)
@@ -276,7 +284,12 @@ class ReplicaAlterLogDirsThread(name: String,
     } else {
       // Set maxWait and minBytes to 0 because the response should return immediately if
       // the future log has caught up with the current log of the partition
-      val requestBuilder = FetchRequest.Builder.forReplica(ApiKeys.FETCH.latestVersion, replicaId, 0, 0, requestMap).setMaxBytes(maxBytes)
+      val version: Short = if (ApiKeys.FETCH.latestVersion >= 13 && topics.size() != topicIdsInRequest.size())
+        12
+      else
+        ApiKeys.FETCH.latestVersion
+      val requestBuilder = FetchRequest.Builder.forReplica(version, replicaId, 0, 0, requestMap,
+        topicIds).setMaxBytes(maxBytes)
       Some(ReplicaFetch(requestMap, requestBuilder))
     }
 

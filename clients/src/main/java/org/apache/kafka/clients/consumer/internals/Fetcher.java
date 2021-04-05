@@ -38,6 +38,7 @@ import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.errors.InvalidTopicException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
@@ -254,8 +255,14 @@ public class Fetcher<K, V> implements Closeable {
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
             final Node fetchTarget = entry.getKey();
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
+            final short maxVersion;
+            if (!data.canUseTopicIds()) {
+                maxVersion = (short) 12;
+            } else {
+                maxVersion = ApiKeys.FETCH.latestVersion();
+            }
             final FetchRequest.Builder request = FetchRequest.Builder
-                    .forConsumer(this.maxWaitMs, this.minBytes, data.toSend())
+                    .forConsumer(maxVersion, this.maxWaitMs, this.minBytes, data.toSend(), metadata.topicIds())
                     .isolationLevel(isolationLevel)
                     .setMaxBytes(this.maxBytes)
                     .metadata(data.metadata())
@@ -276,6 +283,7 @@ public class Fetcher<K, V> implements Closeable {
                 public void onSuccess(ClientResponse resp) {
                     synchronized (Fetcher.this) {
                         try {
+                            @SuppressWarnings("unchecked")
                             FetchResponse response = (FetchResponse) resp.responseBody();
                             FetchSessionHandler handler = sessionHandler(fetchTarget.id());
                             if (handler == null) {
@@ -283,14 +291,15 @@ public class Fetcher<K, V> implements Closeable {
                                         fetchTarget.id());
                                 return;
                             }
-                            if (!handler.handleResponse(response)) {
+                            if (!handler.handleResponse(response, maxVersion)) {
                                 return;
                             }
 
-                            Set<TopicPartition> partitions = new HashSet<>(response.responseData().keySet());
+                            Map<TopicPartition, FetchResponseData.PartitionData> responseData = response.responseData(data.topicNames(), maxVersion);
+                            Set<TopicPartition> partitions = new HashSet<>(responseData.keySet());
                             FetchResponseMetricAggregator metricAggregator = new FetchResponseMetricAggregator(sensors, partitions);
 
-                            for (Map.Entry<TopicPartition, FetchResponseData.PartitionData> entry : response.responseData().entrySet()) {
+                            for (Map.Entry<TopicPartition, FetchResponseData.PartitionData> entry : responseData.entrySet()) {
                                 TopicPartition partition = entry.getKey();
                                 FetchRequest.PartitionData requestData = data.sessionPartitions().get(partition);
                                 if (requestData == null) {
@@ -1153,6 +1162,7 @@ public class Fetcher<K, V> implements Closeable {
         validatePositionsOnMetadataChange();
 
         long currentTimeMs = time.milliseconds();
+        Map<String, Uuid> topicIds = metadata.topicIds();
 
         for (TopicPartition partition : fetchablePartitions()) {
             FetchPosition position = this.subscriptions.position(partition);
@@ -1191,7 +1201,7 @@ public class Fetcher<K, V> implements Closeable {
                     fetchable.put(node, builder);
                 }
 
-                builder.add(partition, new FetchRequest.PartitionData(position.offset,
+                builder.add(partition, topicIds.getOrDefault(partition.topic(), Uuid.ZERO_UUID), new FetchRequest.PartitionData(position.offset,
                     FetchRequest.INVALID_LOG_START_OFFSET, this.fetchSize,
                     position.currentLeader.epoch, Optional.empty()));
 
@@ -1299,11 +1309,15 @@ public class Fetcher<K, V> implements Closeable {
                        error == Errors.REPLICA_NOT_AVAILABLE ||
                        error == Errors.KAFKA_STORAGE_ERROR ||
                        error == Errors.FENCED_LEADER_EPOCH ||
-                       error == Errors.OFFSET_NOT_AVAILABLE) {
+                       error == Errors.OFFSET_NOT_AVAILABLE ||
+                       error == Errors.UNSUPPORTED_VERSION) {
                 log.debug("Error in fetch for partition {}: {}", tp, error.exceptionName());
                 this.metadata.requestUpdate();
             } else if (error == Errors.UNKNOWN_TOPIC_OR_PARTITION) {
                 log.warn("Received unknown topic or partition error in fetch for partition {}", tp);
+                this.metadata.requestUpdate();
+            } else if (error == Errors.UNKNOWN_TOPIC_ID) {
+                log.warn("Received unknown topic ID error in fetch for partition {}", tp);
                 this.metadata.requestUpdate();
             } else if (error == Errors.OFFSET_OUT_OF_RANGE) {
                 Optional<Integer> clearedReplicaId = subscriptions.clearPreferredReadReplica(tp);
@@ -1385,7 +1399,7 @@ public class Fetcher<K, V> implements Closeable {
             byte[] valueByteArray = valueBytes == null ? null : Utils.toArray(valueBytes);
             V value = valueBytes == null ? null : this.valueDeserializer.deserialize(partition.topic(), headers, valueByteArray);
             return new ConsumerRecord<>(partition.topic(), partition.partition(), offset,
-                                        timestamp, timestampType,
+                                        timestamp, timestampType, record.checksumOrNull(),
                                         keyByteArray == null ? ConsumerRecord.NULL_SIZE : keyByteArray.length,
                                         valueByteArray == null ? ConsumerRecord.NULL_SIZE : valueByteArray.length,
                                         key, value, headers, leaderEpoch);

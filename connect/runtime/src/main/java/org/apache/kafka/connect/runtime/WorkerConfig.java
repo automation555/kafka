@@ -240,7 +240,7 @@ public class WorkerConfig extends AbstractConfig {
         "Class name or alias of implementation of <code>ConnectorClientConfigOverridePolicy</code>. Defines what client configurations can be "
         + "overriden by the connector. The default implementation is `None`. The other possible policies in the framework include `All` "
         + "and `Principal`. ";
-    public static final String CONNECTOR_CLIENT_POLICY_CLASS_DEFAULT = "None";
+    public static final String CONNECTOR_CLIENT_POLICY_CLASS_DEFAULT = "All";
 
 
     public static final String METRICS_SAMPLE_WINDOW_MS_CONFIG = CommonClientConfigs.METRICS_SAMPLE_WINDOW_MS_CONFIG;
@@ -285,7 +285,8 @@ public class WorkerConfig extends AbstractConfig {
                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                         Type.STRING,
                         ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
-                        in(ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                        in(ClientDnsLookup.DEFAULT.toString(),
+                           ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
                         Importance.MEDIUM,
                         CLIENT_DNS_LOOKUP_DOC)

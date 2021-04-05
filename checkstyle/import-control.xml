@@ -48,7 +48,6 @@
   <allow pkg="org.apache.kafka.common.memory" />
 
   <subpackage name="common">
-    <allow class="org.apache.kafka.clients.consumer.ConsumerRecord" exact-match="true" />
     <disallow pkg="org.apache.kafka.clients" />
     <allow pkg="org.apache.kafka.common" exact-match="true" />
     <allow pkg="org.apache.kafka.common.annotation" />
@@ -64,7 +63,6 @@
 
     <subpackage name="config">
       <allow pkg="org.apache.kafka.common.config" />
-      <allow pkg="org.apache.kafka.common.quota" />
       <!-- for testing -->
       <allow pkg="org.apache.kafka.common.metrics" />
     </subpackage>
@@ -120,7 +118,6 @@
     <subpackage name="protocol">
       <allow pkg="org.apache.kafka.common.errors" />
       <allow pkg="org.apache.kafka.common.message" />
-      <allow pkg="org.apache.kafka.common.network" />
       <allow pkg="org.apache.kafka.common.protocol" />
       <allow pkg="org.apache.kafka.common.protocol.types" />
       <allow pkg="org.apache.kafka.common.record" />
@@ -146,7 +143,6 @@
 
     <subpackage name="requests">
       <allow pkg="org.apache.kafka.common.acl" />
-      <allow pkg="org.apache.kafka.common.feature" />
       <allow pkg="org.apache.kafka.common.protocol" />
       <allow pkg="org.apache.kafka.common.message" />
       <allow pkg="org.apache.kafka.common.network" />
@@ -265,7 +261,6 @@
       <allow pkg="kafka.log" />
       <allow pkg="scala" />
       <allow class="kafka.zk.EmbeddedZookeeper"/>
-      <allow pkg="com.fasterxml.jackson" />
     </subpackage>
 
     <subpackage name="test">
@@ -364,8 +359,7 @@
 
     <subpackage name="runtime">
       <allow pkg="org.apache.kafka.connect" />
-      <allow pkg="org.reflections"/>
-      <allow pkg="org.reflections.util"/>
+      <allow pkg="io.github.classgraph"/>
       <allow pkg="javax.crypto"/>
       <allow pkg="org.eclipse.jetty.util" />
 
@@ -408,7 +402,6 @@
 
     <subpackage name="util">
       <allow pkg="org.apache.kafka.connect" />
-      <allow pkg="org.reflections.vfs" />
       <!-- for annotations to avoid code duplication -->
       <allow pkg="com.fasterxml.jackson.annotation" />
       <allow pkg="com.fasterxml.jackson.databind" />

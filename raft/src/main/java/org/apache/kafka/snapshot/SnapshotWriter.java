@@ -25,6 +25,8 @@ import org.apache.kafka.raft.RecordSerde;
 import org.apache.kafka.raft.internals.BatchAccumulator;
 import org.apache.kafka.raft.internals.BatchAccumulator.CompletedBatch;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.List;
 
 /**
@@ -40,7 +42,7 @@ import java.util.List;
  *
  * @see org.apache.kafka.raft.RaftClient#createSnapshot(OffsetAndEpoch)
  */
-final public class SnapshotWriter<T> implements AutoCloseable {
+final public class SnapshotWriter<T> implements Closeable {
     final private RawSnapshotWriter snapshot;
     final private BatchAccumulator<T> accumulator;
     final private Time time;
@@ -57,6 +59,7 @@ final public class SnapshotWriter<T> implements AutoCloseable {
      */
     public SnapshotWriter(
         RawSnapshotWriter snapshot,
+        int maxUnflushedBytes,
         int maxBatchSize,
         MemoryPool memoryPool,
         Time time,
@@ -70,6 +73,7 @@ final public class SnapshotWriter<T> implements AutoCloseable {
             snapshot.snapshotId().epoch,
             0,
             Integer.MAX_VALUE,
+            maxUnflushedBytes,
             maxBatchSize,
             memoryPool,
             time,
@@ -100,9 +104,10 @@ final public class SnapshotWriter<T> implements AutoCloseable {
      * The list of record passed are guaranteed to get written together.
      *
      * @param records the list of records to append to the snapshot
+     * @throws IOException for any IO error while appending
      * @throws IllegalStateException if append is called when isFrozen is true
      */
-    public void append(List<T> records) {
+    public void append(List<T> records) throws IOException {
         if (snapshot.isFrozen()) {
             String message = String.format(
                 "Append not supported. Snapshot is already frozen: id = '%s'.",
@@ -121,8 +126,10 @@ final public class SnapshotWriter<T> implements AutoCloseable {
 
     /**
      * Freezes the snapshot by flushing all pending writes and marking it as immutable.
+     *
+     * @throws IOException for any IO error during freezing
      */
-    public void freeze() {
+    public void freeze() throws IOException {
         appendBatches(accumulator.drain());
         snapshot.freeze();
         accumulator.close();
@@ -131,14 +138,16 @@ final public class SnapshotWriter<T> implements AutoCloseable {
     /**
      * Closes the snapshot writer.
      *
-     * If close is called without first calling freeze the snapshot is aborted.
+     * If close is called without first calling freeze the the snapshot is aborted.
+     *
+     * @throws IOException for any IO error during close
      */
-    public void close() {
+    public void close() throws IOException {
         snapshot.close();
         accumulator.close();
     }
 
-    private void appendBatches(List<CompletedBatch<T>> batches) {
+    private void appendBatches(List<CompletedBatch<T>> batches) throws IOException {
         try {
             for (CompletedBatch<T> batch : batches) {
                 snapshot.append(batch.data);

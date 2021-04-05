@@ -28,7 +28,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -82,6 +81,11 @@ public class RaftConfig {
         "wait for writes to accumulate before flushing them to disk.";
     public static final int DEFAULT_QUORUM_LINGER_MS = 25;
 
+    public static final String QUORUM_APPEND_MAX_UNFLUSHED_BYTES_CONFIG = QUORUM_PREFIX + "append.max.unflushed.bytes";
+    public static final String QUORUM_APPEND_MAX_UNFLUSHED_BYTES_DOC = "The maximum number of bytes that the leader " +
+        "will allow to be accumulated before appending to the topic partition.";
+    public static final int DEFAULT_QUORUM_APPEND_MAX_UNFLUSHED_BYTES = 1_024;
+
     public static final String QUORUM_REQUEST_TIMEOUT_MS_CONFIG = QUORUM_PREFIX +
         CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG;
     public static final String QUORUM_REQUEST_TIMEOUT_MS_DOC = CommonClientConfigs.REQUEST_TIMEOUT_MS_DOC;
@@ -99,6 +103,7 @@ public class RaftConfig {
     private final int fetchTimeoutMs;
     private final int appendLingerMs;
     private final Map<Integer, AddressSpec> voterConnections;
+    private final int maxUnflushedBytes;
 
     public interface AddressSpec {
     }
@@ -145,7 +150,8 @@ public class RaftConfig {
             abstractConfig.getInt(QUORUM_ELECTION_TIMEOUT_MS_CONFIG),
             abstractConfig.getInt(QUORUM_ELECTION_BACKOFF_MAX_MS_CONFIG),
             abstractConfig.getInt(QUORUM_FETCH_TIMEOUT_MS_CONFIG),
-            abstractConfig.getInt(QUORUM_LINGER_MS_CONFIG));
+            abstractConfig.getInt(QUORUM_LINGER_MS_CONFIG),
+            abstractConfig.getInt(QUORUM_APPEND_MAX_UNFLUSHED_BYTES_CONFIG));
     }
 
     public RaftConfig(
@@ -155,7 +161,8 @@ public class RaftConfig {
         int electionTimeoutMs,
         int electionBackoffMaxMs,
         int fetchTimeoutMs,
-        int appendLingerMs
+        int appendLingerMs,
+        int maxUnflushedBytes
     ) {
         this.voterConnections = voterConnections;
         this.requestTimeoutMs = requestTimeoutMs;
@@ -164,6 +171,7 @@ public class RaftConfig {
         this.electionBackoffMaxMs = electionBackoffMaxMs;
         this.fetchTimeoutMs = fetchTimeoutMs;
         this.appendLingerMs = appendLingerMs;
+        this.maxUnflushedBytes = maxUnflushedBytes;
     }
 
     public int requestTimeoutMs() {
@@ -188,6 +196,10 @@ public class RaftConfig {
 
     public int appendLingerMs() {
         return appendLingerMs;
+    }
+
+    public int maxUnflushedBytes() {
+        return maxUnflushedBytes;
     }
 
     public Set<Integer> quorumVoterIds() {
@@ -242,16 +254,12 @@ public class RaftConfig {
     }
 
     public static List<Node> quorumVoterStringsToNodes(List<String> voters) {
-        return voterConnectionsToNodes(parseVoterConnections(voters));
-    }
-
-    public static List<Node> voterConnectionsToNodes(Map<Integer, RaftConfig.AddressSpec> voterConnections) {
-        return voterConnections.entrySet().stream()
-            .filter(Objects::nonNull)
+        return parseVoterConnections(voters).entrySet().stream()
             .filter(connection -> connection.getValue() instanceof InetAddressSpec)
             .map(connection -> {
-                InetAddressSpec spec = (InetAddressSpec) connection.getValue();
-                return new Node(connection.getKey(), spec.address.getHostName(), spec.address.getPort());
+                InetAddressSpec inetAddressSpec = InetAddressSpec.class.cast(connection.getValue());
+                return new Node(connection.getKey(), inetAddressSpec.address.getHostName(),
+                    inetAddressSpec.address.getPort());
             })
             .collect(Collectors.toList());
     }

@@ -31,9 +31,6 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLException;
 import java.io.Closeable;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -82,7 +79,6 @@ public class SslFactory implements Reconfigurable, Closeable {
         this.keystoreVerifiableUsingTruststore = keystoreVerifiableUsingTruststore;
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public void configure(Map<String, ?> configs) throws KafkaException {
         if (sslEngineFactory != null) {
@@ -90,8 +86,7 @@ public class SslFactory implements Reconfigurable, Closeable {
         }
         this.endpointIdentification = (String) configs.get(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG);
 
-        // The input map must be a mutable RecordingMap in production.
-        Map<String, Object> nextConfigs = (Map<String, Object>) configs;
+        Map<String, Object> nextConfigs = new HashMap<>(configs);
         if (clientAuthConfigOverride != null) {
             nextConfigs.put(BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG, clientAuthConfigOverride);
         }
@@ -100,6 +95,7 @@ public class SslFactory implements Reconfigurable, Closeable {
             try {
                 SslEngineValidator.validate(builder, builder);
             } catch (Exception e) {
+                log.error("SSLFactory configure failed during validate", e);
                 throw new ConfigException("A client SSLEngine created with the provided settings " +
                         "can't connect to a server SSLEngine created with those settings.", e);
             }
@@ -134,12 +130,7 @@ public class SslFactory implements Reconfigurable, Closeable {
                 (Class<? extends SslEngineFactory>) configs.get(SslConfigs.SSL_ENGINE_FACTORY_CLASS_CONFIG);
         SslEngineFactory sslEngineFactory;
         if (sslEngineFactoryClass == null) {
-            try {
-                sslEngineFactory = new DefaultSslEngineFactory();
-            } catch (IOException e) {
-                log.error("Failed to instantiate new ssl factory due to IOException", e);
-                return null;
-            }
+            sslEngineFactory = new DefaultSslEngineFactory();
         } else {
             sslEngineFactory = Utils.newInstance(sslEngineFactoryClass);
         }
@@ -191,14 +182,6 @@ public class SslFactory implements Reconfigurable, Closeable {
         }
     }
 
-    public SSLEngine createSslEngine(Socket socket) {
-        return createSslEngine(peerHost(socket), socket.getPort());
-    }
-
-    /**
-     * Prefer `createSslEngine(Socket)` if a `Socket` instance is available. If using this overload,
-     * avoid reverse DNS resolution in the computation of `peerHost`.
-     */
     public SSLEngine createSslEngine(String peerHost, int peerPort) {
         if (sslEngineFactory == null) {
             throw new IllegalStateException("SslFactory has not been configured.");
@@ -208,44 +191,6 @@ public class SslFactory implements Reconfigurable, Closeable {
         } else {
             return sslEngineFactory.createClientSslEngine(peerHost, peerPort, endpointIdentification);
         }
-    }
-
-    /**
-     * Returns host/IP address of remote host without reverse DNS lookup to be used as the host
-     * for creating SSL engine. This is used as a hint for session reuse strategy and also for
-     * hostname verification of server hostnames.
-     * <p>
-     * Scenarios:
-     * <ul>
-     *   <li>Server-side
-     *   <ul>
-     *     <li>Server accepts connection from a client. Server knows only client IP
-     *     address. We want to avoid reverse DNS lookup of the client IP address since the server
-     *     does not verify or use client hostname. The IP address can be used directly.</li>
-     *   </ul>
-     *   </li>
-     *   <li>Client-side
-     *   <ul>
-     *     <li>Client connects to server using hostname. No lookup is necessary
-     *     and the hostname should be used to create the SSL engine. This hostname is validated
-     *     against the hostname in SubjectAltName (dns) or CommonName in the certificate if
-     *     hostname verification is enabled. Authentication fails if hostname does not match.</li>
-     *     <li>Client connects to server using IP address, but certificate contains only
-     *     SubjectAltName (dns). Use of reverse DNS lookup to determine hostname introduces
-     *     a security vulnerability since authentication would be reliant on a secure DNS.
-     *     Hence hostname verification should fail in this case.</li>
-     *     <li>Client connects to server using IP address and certificate contains
-     *     SubjectAltName (ipaddress). This could be used when Kafka is on a private network.
-     *     If reverse DNS lookup is used, authentication would succeed using IP address if lookup
-     *     fails and IP address is used, but authentication would fail if lookup succeeds and
-     *     dns name is used. For consistency and to avoid dependency on a potentially insecure
-     *     DNS, reverse DNS lookup should be avoided and the IP address specified by the client for
-     *     connection should be used to create the SSL engine.</li>
-     *   </ul></li>
-     * </ul>
-     */
-    private String peerHost(Socket socket) {
-        return new InetSocketAddress(socket.getInetAddress(), 0).getHostString();
     }
 
     public SslEngineFactory sslEngineFactory() {

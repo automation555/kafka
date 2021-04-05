@@ -78,7 +78,9 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -157,6 +159,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     private final WorkerGroupMember member;
     private final AtomicBoolean stopping;
     private final boolean isTopicTrackingEnabled;
+    private volatile CompletableFuture<Void> startupFuture;
 
     // Track enough information about the current membership state to be able to determine which requests via the API
     // and the from other nodes are safe to process
@@ -299,19 +302,36 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
     @Override
     public void start() {
+        CompletableFuture<Void> result = this.startupFuture = new CompletableFuture<>();
         this.herderExecutor.submit(this);
+        while (true) {
+            try {
+                result.get();
+                break;
+            } catch (ExecutionException e) {
+                log.error("Exception starting herder", e.getCause());
+                break;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     @Override
     public void run() {
         try {
-            log.info("Herder starting");
+            try {
+                log.info("Herder starting");
 
-            startServices();
+                startServices();
 
-            log.info("Herder started");
-            running = true;
-
+                log.info("Herder started");
+                running = true;
+                startupFuture.complete(null);
+            } catch (Throwable t) {
+                startupFuture.completeExceptionally(t);
+                throw t;
+            }
             while (!stopping.get()) {
                 tick();
             }
@@ -402,7 +422,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             log.debug("Scheduled rebalance at: {} (now: {} nextRequestTimeoutMs: {}) ",
                     scheduledRebalance, now, nextRequestTimeoutMs);
         }
-        if (isLeader() && internalRequestValidationEnabled() && keyExpiration < Long.MAX_VALUE) {
+        if (internalRequestValidationEnabled() && keyExpiration < Long.MAX_VALUE) {
             nextRequestTimeoutMs = Math.min(nextRequestTimeoutMs, Math.max(keyExpiration - now, 0));
             log.debug("Scheduled next key rotation at: {} (now: {} nextRequestTimeoutMs: {}) ",
                     keyExpiration, now, nextRequestTimeoutMs);
@@ -1573,11 +1593,10 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
             synchronized (DistributedHerder.this) {
                 DistributedHerder.this.sessionKey = sessionKey.key();
-                // Track the expiration of the key.
+                // Track the expiration of the key if and only if this worker is the leader
                 // Followers will receive rotated keys from the leader and won't be responsible for
-                // tracking expiration and distributing new keys themselves, but may become leaders
-                // later on and will need to know when to update the key.
-                if (keyRotationIntervalMs > 0) {
+                // tracking expiration and distributing new keys themselves
+                if (isLeader() && keyRotationIntervalMs > 0) {
                     DistributedHerder.this.keyExpiration = sessionKey.creationTimestamp() + keyRotationIntervalMs;
                 }
             }

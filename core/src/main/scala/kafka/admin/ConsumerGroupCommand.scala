@@ -127,11 +127,7 @@ object ConsumerGroupCommand extends Logging {
   private[admin] case class MemberAssignmentState(group: String, consumerId: String, host: String, clientId: String,
                                              numPartitions: Int, assignment: List[TopicPartition])
 
-  private[admin] case class GroupState(group: String, coordinator: Node, assignmentStrategy: String, state: String, numMembers: Int){
-    def coordinatorString:String ={
-      s"${coordinator.host}:${coordinator.port} (${coordinator.idString})"
-    }
-  }
+  private[admin] case class GroupState(group: String, coordinator: Node, assignmentStrategy: String, state: String, numMembers: Int)
 
   private[admin] sealed trait CsvRecord
   private[admin] case class CsvRecordWithGroup(group: String, topic: String, partition: Int, offset: Long) extends CsvRecord
@@ -295,18 +291,14 @@ object ConsumerGroupCommand extends Logging {
     }
 
     private def printStates(states: Map[String, GroupState]): Unit = {
-      val stateProps =  states.filter{case(groupId,state)=>shouldPrintMemberState(groupId, Some(state.state), Some(1))}
-        .map{case (_,state)=>
-          (state.group,state.coordinatorString,state.assignmentStrategy,state.state,state.numMembers)
+      for ((groupId, state) <- states) {
+        if (shouldPrintMemberState(groupId, Some(state.state), Some(1))) {
+          val coordinator = s"${state.coordinator.host}:${state.coordinator.port} (${state.coordinator.idString})"
+          val coordinatorColLen = Math.max(25, coordinator.length)
+          print(s"\n%${-coordinatorColLen}s %-25s %-20s %-15s %s".format("GROUP", "COORDINATOR (ID)", "ASSIGNMENT-STRATEGY", "STATE", "#MEMBERS"))
+          print(s"\n%${-coordinatorColLen}s %-25s %-20s %-15s %s".format(state.group, coordinator, state.assignmentStrategy, state.state, state.numMembers))
+          println()
         }
-      val hasAllGroups = opts.options.has(opts.allGroupsOpt)
-      val offset =  Math.max(25,stateProps.maxBy{_._2.length}._2.length)
-      if(stateProps.nonEmpty && hasAllGroups){
-        print(s"\n%${-offset}s %-25s %-20s %-15s %s".format("GROUP", "COORDINATOR (ID)", "ASSIGNMENT-STRATEGY", "STATE", "#MEMBERS"))
-      }
-      stateProps.foreach{ case(group,coordinator,assignmentStrategy,state,numMembers)=>
-        if(!hasAllGroups) print(s"\n%${-offset}s %-25s %-20s %-15s %s".format("GROUP", "COORDINATOR (ID)", "ASSIGNMENT-STRATEGY", "STATE", "#MEMBERS"))
-        print(s"\n%${-offset}s %-25s %-20s %-15s %s\n".format(group, coordinator, assignmentStrategy, state, numMembers))
       }
     }
 
@@ -653,8 +645,10 @@ object ConsumerGroupCommand extends Logging {
     }
 
     private def withTimeoutMs [T <: AbstractOptions[T]] (options : T) =  {
-      val t = opts.options.valueOf(opts.timeoutMsOpt).intValue()
-      options.timeoutMs(t)
+      if (opts.options.has(opts.timeoutMsOpt)){
+        options.timeoutMs(opts.options.valueOf(opts.timeoutMsOpt).intValue())
+      }
+      options
     }
 
     private def parseTopicPartitionsToReset(groupId: String, topicArgs: Seq[String]): Seq[TopicPartition] = topicArgs.flatMap {
@@ -972,7 +966,6 @@ object ConsumerGroupCommand extends Logging {
                              .withRequiredArg
                              .describedAs("timeout (ms)")
                              .ofType(classOf[Long])
-                             .defaultsTo(5000)
     val commandConfigOpt = parser.accepts("command-config", CommandConfigDoc)
                                   .withRequiredArg
                                   .describedAs("command config property file")

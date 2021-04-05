@@ -77,7 +77,7 @@ trait MetadataCache {
   /**
    * Get a partition leader's endpoint
    *
-   * @return  If the leader is known, and the listener name is available, return Some(node). If the leader is known,
+   * @return  If the leader is known, and the listener name is available, return Some(node). If the the leader is known,
    *          but the listener is unavailable, return Some(Node.NO_NODE). Otherwise, if the leader is not known,
    *          return None
    */
@@ -392,7 +392,7 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
       aliveNodes.get(brokerId).foreach { listenerMap =>
         val listeners = listenerMap.keySet
         if (!aliveNodes.values.forall(_.keySet == listeners))
-          error(s"Listeners are not identical across brokers: $aliveNodes")
+          info(s"Listeners are not identical across brokers: $aliveNodes")
       }
 
       val newTopicIds = updateMetadataRequest.topicStates().asScala

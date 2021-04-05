@@ -59,11 +59,6 @@ case class MetadataBroker(id: Int,
       case Some(node) => new BrokerEndPoint(node.id, node.host, node.port)
     }
   }
-
-  def node(listenerName: ListenerName): Node = {
-    endpoints.getOrElse(listenerName.value, throw new BrokerEndPointNotAvailableException(
-      s"End point with listener name ${listenerName.value} not found for broker $id"))
-  }
 }
 
 class MetadataBrokersBuilder(log: Logger, prevBrokers: MetadataBrokers) {
@@ -112,7 +107,7 @@ object MetadataBrokers {
       }
     }
     if (!listenersIdenticalAcrossBrokers) {
-      log.error("Listeners are not identical across alive brokers. " +
+      log.info("Listeners are not identical across alive brokers. " +
         _aliveBrokers.asScala.map(
           broker => s"${broker.id}: ${broker.endpoints.keySet.mkString(", ")}"))
     }

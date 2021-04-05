@@ -254,9 +254,9 @@ public class WorkerCoordinatorTest {
         client.prepareResponse(joinGroupLeaderResponse(1, consumerId, memberConfigOffsets, Errors.NONE));
         client.prepareResponse(body -> {
             SyncGroupRequest sync = (SyncGroupRequest) body;
-            return sync.data().memberId().equals(consumerId) &&
-                    sync.data().generationId() == 1 &&
-                    sync.groupAssignments().containsKey(consumerId);
+            assertEquals(consumerId, sync.data().memberId());
+            assertEquals(1, sync.data().generationId());
+            assertTrue(sync.groupAssignments().containsKey(consumerId));
         }, syncGroupResponse(ConnectProtocol.Assignment.NO_ERROR, "leader", 1L, Collections.singletonList(connectorId1),
                 Collections.emptyList(), Errors.NONE));
         coordinator.ensureActiveGroup();
@@ -288,9 +288,9 @@ public class WorkerCoordinatorTest {
         client.prepareResponse(joinGroupFollowerResponse(1, memberId, "leader", Errors.NONE));
         client.prepareResponse(body -> {
             SyncGroupRequest sync = (SyncGroupRequest) body;
-            return sync.data().memberId().equals(memberId) &&
-                    sync.data().generationId() == 1 &&
-                    sync.data().assignments().isEmpty();
+            assertEquals(memberId, sync.data().memberId());
+            assertEquals(1, sync.data().generationId());
+            assertTrue(sync.data().assignments().isEmpty());
         }, syncGroupResponse(ConnectProtocol.Assignment.NO_ERROR, "leader", 1L, Collections.emptyList(),
                 Collections.singletonList(taskId1x0), Errors.NONE));
         coordinator.ensureActiveGroup();
@@ -324,11 +324,11 @@ public class WorkerCoordinatorTest {
 
         // config mismatch results in assignment error
         client.prepareResponse(joinGroupFollowerResponse(1, memberId, "leader", Errors.NONE));
-        MockClient.RequestMatcher matcher = body -> {
+        MockClient.RequestAssertion matcher = body -> {
             SyncGroupRequest sync = (SyncGroupRequest) body;
-            return sync.data().memberId().equals(memberId) &&
-                    sync.data().generationId() == 1 &&
-                    sync.data().assignments().isEmpty();
+            assertEquals(memberId, sync.data().memberId());
+            assertEquals(1, sync.data().generationId());
+            assertTrue(sync.data().assignments().isEmpty());
         };
         client.prepareResponse(matcher, syncGroupResponse(ConnectProtocol.Assignment.CONFIG_MISMATCH, "leader", 10L,
                 Collections.emptyList(), Collections.emptyList(), Errors.NONE));
@@ -364,7 +364,7 @@ public class WorkerCoordinatorTest {
         assertEquals(Collections.singletonList(taskId1x0), rebalanceListener.assignment.tasks());
 
         // and join the group again
-        coordinator.requestRejoin("test");
+        coordinator.requestRejoin();
         client.prepareResponse(joinGroupFollowerResponse(1, "consumer", "leader", Errors.NONE));
         client.prepareResponse(syncGroupResponse(ConnectProtocol.Assignment.NO_ERROR, "leader", 1L, Collections.singletonList(connectorId1),
                 Collections.emptyList(), Errors.NONE));

@@ -196,7 +196,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         final List<TopicPartition> toClear = new ArrayList<>();
 
         for (Map.Entry<TopicPartition, List<ConsumerRecord<K, V>>> entry : this.records.entrySet()) {
-            if (!subscriptions.isPaused(entry.getKey())) {
+            if (!subscriptions.isPaused(entry.getKey()) && subscriptions.hasValidPosition(entry.getKey())) {
                 final List<ConsumerRecord<K, V>> recs = entry.getValue();
                 for (final ConsumerRecord<K, V> rec : recs) {
                     long position = subscriptions.position(entry.getKey()).offset;
@@ -218,22 +218,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         }
 
         toClear.forEach(p -> this.records.remove(p));
-
-        final Map<TopicPartition, ConsumerRecords.Metadata> metadata = new HashMap<>();
-        for (final TopicPartition partition : subscriptions.assignedPartitions()) {
-            if (subscriptions.hasValidPosition(partition) && beginningOffsets.containsKey(partition) && endOffsets.containsKey(partition)) {
-                final SubscriptionState.FetchPosition position = subscriptions.position(partition);
-                final long offset = position.offset;
-                final long startOffset = beginningOffsets.get(partition);
-                final long endOffset = endOffsets.get(partition);
-                metadata.put(
-                    partition,
-                    new ConsumerRecords.Metadata(System.currentTimeMillis(), offset, startOffset, endOffset)
-                );
-            }
-        }
-
-        return new ConsumerRecords<>(results, metadata);
+        return new ConsumerRecords<>(results);
     }
 
     public synchronized void addRecord(ConsumerRecord<K, V> record) {
@@ -244,7 +229,6 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
             throw new IllegalStateException("Cannot add records for a partition that is not assigned to the consumer");
         List<ConsumerRecord<K, V>> recs = this.records.computeIfAbsent(tp, k -> new ArrayList<>());
         recs.add(record);
-        this.endOffsets.compute(tp, (ignore, offset) -> offset == null ? record.offset() : Math.max(offset, record.offset()));
     }
 
     /**

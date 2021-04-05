@@ -14,10 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package kafka.testkit;
 
 import kafka.server.MetaProperties;
-
 import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.network.ListenerName;
 
@@ -56,8 +56,8 @@ public class TestKitNodes {
                 BrokerNode brokerNode = (BrokerNode) node;
                 brokerNodes.put(node.id(), brokerNode);
             } else {
-                throw new RuntimeException(
-                    "Can't handle TestKitNode subclass " + node.getClass().getSimpleName());
+                throw new RuntimeException("Can't handle TestKitNode subclass " +
+                        node.getClass().getSimpleName());
             }
             return this;
         }
@@ -75,12 +75,13 @@ public class TestKitNodes {
                 if (!controllerNodes.isEmpty()) {
                     nextId = controllerNodes.lastKey() + 1;
                 }
-                controllerNodes.put(nextId, new ControllerNode.Builder().setId(nextId).build());
+                controllerNodes.put(nextId, new ControllerNode.Builder().
+                    setId(nextId).build());
             }
             return this;
         }
 
-        public Builder setNumKip500BrokerNodes(int numBrokerNodes) {
+        public Builder setNumBrokerNodes(int numBrokerNodes) {
             if (numBrokerNodes < 0) {
                 throw new RuntimeException("Invalid negative value for numBrokerNodes");
             }
@@ -92,7 +93,8 @@ public class TestKitNodes {
                 if (!brokerNodes.isEmpty()) {
                     nextId = brokerNodes.lastKey() + 1;
                 }
-                brokerNodes.put(nextId, new BrokerNode.Builder().setId(nextId).build());
+                brokerNodes.put(nextId, new BrokerNode.Builder().
+                    setId(nextId).build());
             }
             return this;
         }
@@ -103,14 +105,14 @@ public class TestKitNodes {
             }
             return new TestKitNodes(clusterId, controllerNodes, brokerNodes);
         }
-
     }
 
     private final Uuid clusterId;
     private final NavigableMap<Integer, ControllerNode> controllerNodes;
     private final NavigableMap<Integer, BrokerNode> brokerNodes;
 
-    private TestKitNodes(Uuid clusterId, NavigableMap<Integer, ControllerNode> controllerNodes,
+    private TestKitNodes(Uuid clusterId,
+                         NavigableMap<Integer, ControllerNode> controllerNodes,
                          NavigableMap<Integer, BrokerNode> brokerNodes) {
         this.clusterId = clusterId;
         this.controllerNodes = controllerNodes;
@@ -150,15 +152,14 @@ public class TestKitNodes {
         NavigableMap<Integer, BrokerNode> newBrokerNodes = new TreeMap<>();
         for (Entry<Integer, ControllerNode> entry : controllerNodes.entrySet()) {
             ControllerNode node = entry.getValue();
-            newControllerNodes.put(entry.getKey(),
-                new ControllerNode(node.id(), absolutize(baseDirectory, node.metadataDirectory())));
+            newControllerNodes.put(entry.getKey(), new ControllerNode(node.id(),
+                absolutize(baseDirectory, node.metadataDirectory())));
         }
         for (Entry<Integer, BrokerNode> entry : brokerNodes.entrySet()) {
             BrokerNode node = entry.getValue();
-            newBrokerNodes.put(entry.getKey(),
-                new BrokerNode(node.id(), node.incarnationId(),
-                    absolutize(baseDirectory, node.metadataDirectory()),
-                    absolutize(baseDirectory, node.logDataDirectories())));
+            newBrokerNodes.put(entry.getKey(), new BrokerNode(node.id(),
+                node.incarnationId(), absolutize(baseDirectory, node.metadataDirectory()),
+                absolutize(baseDirectory, node.logDataDirectories())));
         }
         return new TestKitNodes(clusterId, newControllerNodes, newBrokerNodes);
     }
@@ -177,5 +178,4 @@ public class TestKitNodes {
         }
         return Paths.get(base, directory).toAbsolutePath().toString();
     }
-
 }

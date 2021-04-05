@@ -84,7 +84,7 @@ class ReassignPartitionsTest(ProduceConsumeValidateTest):
         self.logger.debug("Jumble partition assignment with seed " + str(seed))
         random.seed(seed)
         # The list may still be in order, but that's ok
-        shuffled_list = list(range(0, self.num_partitions))
+        shuffled_list = range(0, self.num_partitions)
         random.shuffle(shuffled_list)
 
         for i in range(0, self.num_partitions):
@@ -158,3 +158,4 @@ class ReassignPartitionsTest(ProduceConsumeValidateTest):
 
         self.enable_idempotence=True
         self.run_produce_consume_validate(core_test_action=lambda: self.reassign_partitions(bounce_brokers))
+        self.kafka.replica_leader_epochs_match(self.topic, range(0, self.num_partitions))

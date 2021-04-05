@@ -20,84 +20,68 @@ package kafka.tools
 
 import java.util.Properties
 
-import kafka.utils.{CommandDefaultOptions, CommandLineUtils, Exit, ToolsUtils}
+import joptsimple._
+import kafka.utils.{CommandLineUtils, Exit, ToolsUtils}
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.common.{PartitionInfo, TopicPartition}
 import org.apache.kafka.common.requests.ListOffsetRequest
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
+import org.apache.kafka.common.utils.Utils
 
 import scala.collection.JavaConverters._
-import scala.collection.Seq
 
 object GetOffsetShell {
 
-  val helpText = "An interactive shell for getting topic offsets."
-  val clientId = "GetOffsetShell"
-
-  class GetOffsetShellOptions(args: Array[String]) extends CommandDefaultOptions(args)  {
-    val brokerListOpt = parser.accepts("broker-list", "DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified. The list of hostname and port of the server to connect to in the form HOST1:PORT1,HOST2:PORT2.")
-      .withRequiredArg
-      .describedAs("HOST1:PORT1,...,HOST3:PORT3")
-      .ofType(classOf[String])
-    val bootstrapServerOpt = parser.accepts("bootstrap-server", "REQUIRED. The server(s) to connect to in the form HOST1:PORT1,HOST2:PORT2.")
-      .requiredUnless("broker-list")
-      .withRequiredArg
-      .describedAs("HOST1:PORT1,...,HOST3:PORT3")
-      .ofType(classOf[String])
-    val topicOpt = parser.accepts("topic", "REQUIRED: The topic to get offset from.")
-      .withRequiredArg
-      .describedAs("topic")
-      .ofType(classOf[String])
-    val partitionOpt = parser.accepts("partitions", "comma separated list of partition ids. If not specified, it will find offsets for all partitions")
-      .withRequiredArg
-      .describedAs("partition ids")
-      .ofType(classOf[String])
-      .defaultsTo("")
-    val timeOpt = parser.accepts("time", "timestamp of the offsets before that. [Note: No offset is returned, if the timestamp greater than recently commited record timestamp is given.]")
-      .withRequiredArg
-      .describedAs("timestamp/-1(latest)/-2(earliest)")
-      .ofType(classOf[java.lang.Long])
-      .defaultsTo(-1L)
-    parser.accepts("offsets", "DEPRECATED AND IGNORED: number of offsets returned")
-      .withRequiredArg
-      .describedAs("count")
-      .ofType(classOf[java.lang.Integer])
-      .defaultsTo(1)
-    parser.accepts("max-wait-ms", "DEPRECATED AND IGNORED: The max amount of time each fetch request waits.")
-      .withRequiredArg
-      .describedAs("ms")
-      .ofType(classOf[java.lang.Integer])
-      .defaultsTo(1000)
-
-    options = parser.parse(args : _*)
-
-    def bootstrapServers: String = {
-      val listOpt = if (options.has(bootstrapServerOpt))
-        bootstrapServerOpt
-      else
-        brokerListOpt
-
-      options.valueOf(listOpt)
-    }
-  }
-
-  def validateAndParseArgs(args: Array[String]): GetOffsetShellOptions = {
-    val opts = new GetOffsetShellOptions(args)
-    CommandLineUtils.printHelpAndExitIfNeeded(opts, helpText)
-
-    CommandLineUtils.checkRequiredArgs(opts.parser, opts.options, opts.topicOpt)
-
-    ToolsUtils.validatePortOrDie(opts.parser, opts.bootstrapServers)
-    opts
-  }
-
   def main(args: Array[String]): Unit = {
-    val opts = validateAndParseArgs(args)
-    val options = opts.options
+    val parser = new OptionParser(false)
+    val brokerListOpt = parser.accepts("broker-list", "REQUIRED: The list of hostname and port of the server to connect to.")
+                           .withRequiredArg
+                           .describedAs("hostname:port,...,hostname:port")
+                           .ofType(classOf[String])
+    val topicOpt = parser.accepts("topic", "REQUIRED: The topic to get offset from.")
+                           .withRequiredArg
+                           .describedAs("topic")
+                           .ofType(classOf[String])
+    val partitionOpt = parser.accepts("partitions", "comma separated list of partition ids. If not specified, it will find offsets for all partitions")
+                           .withRequiredArg
+                           .describedAs("partition ids")
+                           .ofType(classOf[String])
+                           .defaultsTo("")
+    val timeOpt = parser.accepts("time", "timestamp of the offsets before that. [Note: No offset is returned, if the timestamp greater than recently commited record timestamp is given.]")
+                           .withRequiredArg
+                           .describedAs("timestamp/-1(latest)/-2(earliest)")
+                           .ofType(classOf[java.lang.Long])
+                           .defaultsTo(-1L)
+                           
+    val commandConfigOpt = parser.accepts("command.config", "Command config properties file(SSL etc).")
+                               .withOptionalArg()
+                               .describedAs("config file")
+                               .ofType(classOf[String])  
+                          
+    parser.accepts("offsets", "DEPRECATED AND IGNORED: number of offsets returned")
+                           .withRequiredArg
+                           .describedAs("count")
+                           .ofType(classOf[java.lang.Integer])
+                           .defaultsTo(1)
+    parser.accepts("max-wait-ms", "DEPRECATED AND IGNORED: The max amount of time each fetch request waits.")
+                           .withRequiredArg
+                           .describedAs("ms")
+                           .ofType(classOf[java.lang.Integer])
+                           .defaultsTo(1000)
 
-    val topic = options.valueOf(opts.topicOpt)
+   if (args.length == 0)
+      CommandLineUtils.printUsageAndDie(parser, "An interactive shell for getting topic offsets.")
+
+    val options = parser.parse(args : _*)
+
+    CommandLineUtils.checkRequiredArgs(parser, options, brokerListOpt, topicOpt)
+
+    val clientId = "GetOffsetShell"
+    val brokerList = options.valueOf(brokerListOpt)
+    ToolsUtils.validatePortOrDie(parser, brokerList)
+    val topic = options.valueOf(topicOpt)
     val partitionIdsRequested: Set[Int] = {
-      val partitionsString = options.valueOf(opts.partitionOpt)
+      val partitionsString = options.valueOf(partitionOpt)
       if (partitionsString.isEmpty)
         Set.empty
       else
@@ -105,14 +89,19 @@ object GetOffsetShell {
           try partitionString.toInt
           catch {
             case _: NumberFormatException =>
-              CommandLineUtils.printUsageAndDie(opts.parser, s"--partitions expects a comma separated list of numeric partition ids, but received: $partitionsString")
+              System.err.println(s"--partitions expects a comma separated list of numeric partition ids, but received: $partitionsString")
+              Exit.exit(1)
           }
         }.toSet
     }
-    val listOffsetsTimestamp = options.valueOf(opts.timeOpt).longValue
-
-    val config = new Properties
-    config.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, opts.bootstrapServers)
+    val listOffsetsTimestamp = options.valueOf(timeOpt).longValue
+    
+    val config = if (options.has(commandConfigOpt))
+       Utils.loadProps(options.valueOf(commandConfigOpt))
+    else
+      new Properties
+      
+    config.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerList)
     config.setProperty(ConsumerConfig.CLIENT_ID_CONFIG, clientId)
     val consumer = new KafkaConsumer(config, new ByteArrayDeserializer, new ByteArrayDeserializer)
 
@@ -149,9 +138,7 @@ object GetOffsetShell {
       case ListOffsetRequest.LATEST_TIMESTAMP => consumer.endOffsets(topicPartitions.asJava).asScala
       case _ =>
         val timestampsToSearch = topicPartitions.map(tp => tp -> (listOffsetsTimestamp: java.lang.Long)).toMap.asJava
-        consumer.offsetsForTimes(timestampsToSearch).asScala.map { case (k, x) =>
-          if (x == null) (k, null) else (k, x.offset: java.lang.Long)
-        }
+        consumer.offsetsForTimes(timestampsToSearch).asScala.mapValues(x => if (x == null) null else x.offset)
     }
 
     partitionOffsets.toSeq.sortBy { case (tp, _) => tp.partition }.foreach { case (tp, offset) =>

@@ -32,10 +32,13 @@ import org.apache.kafka.common.Uuid.ZERO_UUID
 import org.apache.kafka.common.errors.{InvalidRequestException, NotControllerException, TopicDeletionDisabledException}
 import org.apache.kafka.common.memory.MemoryPool
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
+import org.apache.kafka.common.message.CreateTopicsRequestData.{CreatableTopic, CreatableTopicCollection}
+import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicResult
 import org.apache.kafka.common.message.DeleteTopicsRequestData.DeleteTopicState
 import org.apache.kafka.common.message.DeleteTopicsResponseData.DeletableTopicResult
-import org.apache.kafka.common.message.{BrokerRegistrationRequestData, DeleteTopicsRequestData}
+import org.apache.kafka.common.message.{BrokerRegistrationRequestData, CreateTopicsRequestData, DeleteTopicsRequestData}
 import org.apache.kafka.common.network.{ClientInformation, ListenerName}
+import org.apache.kafka.common.protocol.Errors.{INVALID_REQUEST, NONE, TOPIC_AUTHORIZATION_FAILED}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse, BrokerRegistrationRequest, BrokerRegistrationResponse, RequestContext, RequestHeader, RequestTestUtils}
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
@@ -149,6 +152,35 @@ class ControllerApisTest {
   }
 
   @Test
+  def testCreateTopics(): Unit = {
+    val controller = new MockController.Builder().build()
+    val controllerApis = createControllerApis(None, controller)
+    val request = new CreateTopicsRequestData().setTopics(new CreatableTopicCollection(
+      util.Arrays.asList(new CreatableTopic().setName("foo").setNumPartitions(1).setReplicationFactor(3),
+        new CreatableTopic().setName("foo").setNumPartitions(2).setReplicationFactor(3),
+        new CreatableTopic().setName("bar").setNumPartitions(2).setReplicationFactor(3),
+        new CreatableTopic().setName("bar").setNumPartitions(2).setReplicationFactor(3),
+        new CreatableTopic().setName("bar").setNumPartitions(2).setReplicationFactor(3),
+        new CreatableTopic().setName("baz").setNumPartitions(2).setReplicationFactor(3),
+        new CreatableTopic().setName("quux").setNumPartitions(2).setReplicationFactor(3),
+    ).iterator()))
+    val expectedResponse = Set(new CreatableTopicResult().setName("foo").
+        setErrorCode(INVALID_REQUEST.code()).
+        setErrorMessage("Found multiple entries for this topic."),
+      new CreatableTopicResult().setName("bar").
+        setErrorCode(INVALID_REQUEST.code()).
+        setErrorMessage("Found multiple entries for this topic."),
+      new CreatableTopicResult().setName("baz").
+        setErrorCode(NONE.code()).
+        setTopicId(new Uuid(0L, 1L)),
+      new CreatableTopicResult().setName("quux").
+        setErrorCode(TOPIC_AUTHORIZATION_FAILED.code()))
+    assertEquals(expectedResponse, controllerApis.createTopics(request,
+      false,
+      _ => Set("baz")).topics().asScala.toSet)
+  }
+
+  @Test
   def testDeleteTopicsByName(): Unit = {
     val fooId = Uuid.fromString("vZKYST0pSA2HO5x_6hoO2Q")
     val controller = new MockController.Builder().newInitialTopic("foo", fooId).build()
@@ -156,7 +188,7 @@ class ControllerApisTest {
     val request = new DeleteTopicsRequestData().setTopicNames(
       util.Arrays.asList("foo", "bar", "quux", "quux"))
     val expectedResponse = Set(new DeletableTopicResult().setName("quux").
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("Duplicate topic name."),
       new DeletableTopicResult().setName("bar").
         setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code()).
@@ -182,7 +214,7 @@ class ControllerApisTest {
     request.topics().add(new DeleteTopicState().setName(null).setTopicId(quuxId))
     request.topics().add(new DeleteTopicState().setName(null).setTopicId(quuxId))
     val response = Set(new DeletableTopicResult().setName(null).setTopicId(quuxId).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("Duplicate topic id."),
       new DeletableTopicResult().setName(null).setTopicId(barId).
         setErrorCode(Errors.UNKNOWN_TOPIC_ID.code()).
@@ -216,19 +248,19 @@ class ControllerApisTest {
     request.topics().add(new DeleteTopicState().setName(null).setTopicId(bazId))
     request.topics().add(new DeleteTopicState().setName(null).setTopicId(bazId))
     val response = Set(new DeletableTopicResult().setName(null).setTopicId(ZERO_UUID).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("Neither topic name nor id were specified."),
       new DeletableTopicResult().setName("foo").setTopicId(fooId).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("You may not specify both topic name and topic id."),
       new DeletableTopicResult().setName("bar").setTopicId(barId).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("The provided topic name maps to an ID that was already supplied."),
       new DeletableTopicResult().setName("quux").setTopicId(ZERO_UUID).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("Duplicate topic name."),
       new DeletableTopicResult().setName(null).setTopicId(bazId).
-        setErrorCode(Errors.INVALID_REQUEST.code()).
+        setErrorCode(INVALID_REQUEST.code()).
         setErrorMessage("Duplicate topic id."))
     assertEquals(response, controllerApis.deleteTopics(request,
       ApiKeys.DELETE_TOPICS.latestVersion().toInt,

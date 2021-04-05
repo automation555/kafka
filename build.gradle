@@ -46,7 +46,6 @@ spotless {
   scala {
     target 'streams/**/*.scala'
     scalafmt("$versions.scalafmt").configFile('checkstyle/.scalafmt.conf')
-    licenseHeaderFile 'checkstyle/java.header', 'package'
   }
 }
 
@@ -96,7 +95,7 @@ allprojects {
 
 ext {
   gradleVersion = versions.gradle
-  minJavaVersion = "11"
+  minJavaVersion = "8"
   buildVersionFileName = "kafka-version.properties"
 
   defaultMaxHeapSize = "2g"
@@ -1340,20 +1339,11 @@ project(':tools') {
     implementation libs.jacksonJaxrsJsonProvider
     implementation libs.jerseyContainerServlet
     implementation libs.jerseyHk2
-    implementation libs.jerseyMediaJsonJackson
     implementation libs.jaxbApi // Jersey dependency that was available in the JDK before Java 9
     implementation libs.activation // Jersey dependency that was available in the JDK before Java 9
-    implementation (libs.jettyServer) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation (libs.jettyServlet) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation (libs.jettyServlets) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation libs.jakartaServletApi
-    implementation libs.jsr311Api
+    implementation libs.jettyServer
+    implementation libs.jettyServlet
+    implementation libs.jettyServlets
 
     testImplementation project(':clients')
     testImplementation libs.junitJupiter
@@ -1434,18 +1424,8 @@ project(':streams') {
   dependencies {
     api project(':clients')
 
-    // use `api` dependency for `connect-json` for compatibility (e.g. users who use `JsonSerializer`/`JsonDeserializer`
-    // at compile-time without an explicit dependency on `connect-json`)
-    // this dependency should be removed after we unify data API
-    api(project(':connect:json')) {
-      // this transitive dependency is not used in Streams, and it breaks SBT builds
-      exclude module: 'jakarta.ws.rs-api'
-    }
-    
-    // `org.rocksdb.Options` is part of Kafka Streams public api via `RocksDBConfigSetter`
-    api libs.rocksDBJni
-    
     implementation libs.slf4jApi
+    implementation libs.rocksDBJni
     implementation libs.jacksonAnnotations
     implementation libs.jacksonDatabind
 
@@ -1650,8 +1630,14 @@ project(':streams:examples') {
   archivesBaseName = "kafka-streams-examples"
 
   dependencies {
+    // this dependency should be removed after we unify data API
+    implementation(project(':connect:json')) {
+      // this transitive dependency is not used in Streams, and it breaks SBT builds
+      exclude module: 'javax.ws.rs-api'
+    }
+
     implementation project(':streams')
-    implementation project(':connect:json')  // this dependency should be removed after we unify data API
+
     implementation libs.slf4jlog4j
 
     testImplementation project(':streams:test-utils')
@@ -1947,7 +1933,7 @@ project(':connect:api') {
   dependencies {
     api project(':clients')
     implementation libs.slf4jApi
-    implementation libs.jakartaRsApi
+    implementation libs.jaxrsApi
 
     testImplementation libs.junitJupiter
     testRuntimeOnly libs.slf4jlog4j
@@ -2072,23 +2058,12 @@ project(':connect:runtime') {
     implementation libs.jacksonJaxrsJsonProvider
     implementation libs.jerseyContainerServlet
     implementation libs.jerseyHk2
-    implementation libs.jerseyMediaJsonJackson
     implementation libs.jaxbApi // Jersey dependency that was available in the JDK before Java 9
     implementation libs.activation // Jersey dependency that was available in the JDK before Java 9
-    implementation (libs.jettyServer) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation (libs.jettyServlet) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation (libs.jettyServlets) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation (libs.jettyClient) {
-      exclude group: 'org.slf4j', module: 'slf4j-api'
-    }
-    implementation libs.jakartaServletApi
-    implementation libs.jsr311Api
+    implementation libs.jettyServer
+    implementation libs.jettyServlet
+    implementation libs.jettyServlets
+    implementation libs.jettyClient
     implementation libs.reflections
     implementation libs.mavenArtifact
 
@@ -2215,7 +2190,7 @@ project(':connect:basic-auth-extension') {
   dependencies {
     implementation project(':connect:api')
     implementation libs.slf4jApi
-    implementation libs.jakartaRsApi
+    implementation libs.jaxrsApi
 
     testImplementation libs.bcpkix
     testImplementation libs.easymock
@@ -2342,5 +2317,10 @@ task aggregatedJavadoc(type: Javadoc, dependsOn: compileJava) {
   options.encoding = 'UTF-8'
   // Turn off doclint for now, see https://blog.joda.org/2014/02/turning-off-doclint-in-jdk-8-javadoc.html for rationale
   options.addStringOption('Xdoclint:none', '-quiet')
-  options.links "https://docs.oracle.com/en/java/javase/${JavaVersion.current().majorVersion}/docs/api/"
+
+  // The URL structure was changed to include the locale after Java 8
+  if (JavaVersion.current().isJava11Compatible())
+    options.links "https://docs.oracle.com/en/java/javase/${JavaVersion.current().majorVersion}/docs/api/"
+  else
+    options.links "https://docs.oracle.com/javase/8/docs/api/"
 }

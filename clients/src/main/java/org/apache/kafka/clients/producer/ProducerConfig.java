@@ -101,12 +101,6 @@ public class ProducerConfig extends AbstractConfig {
                                            + " remains alive. This is the strongest available guarantee. This is equivalent to the acks=-1 setting."
                                            + "</ul>";
 
-    /**
-     * <code>enable.dynamic.config</code>
-     */
-    public static final String ENABLE_DYNAMIC_CONFIG_CONFIG = CommonClientConfigs.ENABLE_DYNAMIC_CONFIG_CONFIG;
-    public static final String ENABLE_DYNAMIC_CONFIG_DOC = CommonClientConfigs.ENABLE_DYNAMIC_CONFIG_DOC;
-
     /** <code>linger.ms</code> */
     public static final String LINGER_MS_CONFIG = "linger.ms";
     private static final String LINGER_MS_DOC = "The producer groups together any records that arrive in between request transmissions into a single batched request. "
@@ -182,6 +176,9 @@ public class ProducerConfig extends AbstractConfig {
 
     /** <code>retry.backoff.ms</code> */
     public static final String RETRY_BACKOFF_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG;
+
+    /** <code>retry.backoff.max.ms</code> */
+    public static final String RETRY_BACKOFF_MAX_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MAX_MS_CONFIG;
 
     /** <code>compression.type</code> */
     public static final String COMPRESSION_TYPE_CONFIG = "compression.type";
@@ -314,11 +311,6 @@ public class ProducerConfig extends AbstractConfig {
                                         in("all", "-1", "0", "1"),
                                         Importance.HIGH,
                                         ACKS_DOC)
-                                .define(ENABLE_DYNAMIC_CONFIG_CONFIG,
-                                        Type.BOOLEAN,
-                                        true,
-                                        Importance.MEDIUM,
-                                        ENABLE_DYNAMIC_CONFIG_DOC)
                                 .define(COMPRESSION_TYPE_CONFIG, Type.STRING, "none", Importance.HIGH, COMPRESSION_TYPE_DOC)
                                 .define(BATCH_SIZE_CONFIG, Type.INT, 16384, atLeast(0), Importance.MEDIUM, BATCH_SIZE_DOC)
                                 .define(LINGER_MS_CONFIG, Type.LONG, 0, atLeast(0), Importance.MEDIUM, LINGER_MS_DOC)
@@ -334,7 +326,8 @@ public class ProducerConfig extends AbstractConfig {
                                         MAX_REQUEST_SIZE_DOC)
                                 .define(RECONNECT_BACKOFF_MS_CONFIG, Type.LONG, 50L, atLeast(0L), Importance.LOW, CommonClientConfigs.RECONNECT_BACKOFF_MS_DOC)
                                 .define(RECONNECT_BACKOFF_MAX_MS_CONFIG, Type.LONG, 1000L, atLeast(0L), Importance.LOW, CommonClientConfigs.RECONNECT_BACKOFF_MAX_MS_DOC)
-                                .define(RETRY_BACKOFF_MS_CONFIG, Type.LONG, 100L, atLeast(0L), Importance.LOW, CommonClientConfigs.RETRY_BACKOFF_MS_DOC)
+                                .define(RETRY_BACKOFF_MS_CONFIG, Type.LONG, CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MS, atLeast(0L), Importance.LOW, CommonClientConfigs.RETRY_BACKOFF_MS_DOC)
+                                .define(RETRY_BACKOFF_MAX_MS_CONFIG, Type.LONG, CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MAX_MS, atLeast(0L), Importance.LOW, CommonClientConfigs.RETRY_BACKOFF_MAX_MS_DOC)
                                 .define(MAX_BLOCK_MS_CONFIG,
                                         Type.LONG,
                                         60 * 1000,
@@ -450,6 +443,7 @@ public class ProducerConfig extends AbstractConfig {
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
         CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
+        CommonClientConfigs.warnInconsistentConfigs(this);
         CommonClientConfigs.warnIfDeprecatedRetriesValue(this);
         Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
         maybeOverrideEnableIdempotence(refinedConfigs);
@@ -562,7 +556,7 @@ public class ProducerConfig extends AbstractConfig {
         return userConfiguredTransactions || idempotenceEnabled;
     }
 
-    public ProducerConfig(Map<?, ?> props, boolean doLog) {
+    ProducerConfig(Map<?, ?> props, boolean doLog) {
         super(CONFIG, props, doLog);
     }
 

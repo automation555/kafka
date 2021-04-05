@@ -70,7 +70,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     private boolean shouldRebalance;
 
     public MockConsumer(OffsetResetStrategy offsetResetStrategy) {
-        this.subscriptions = new SubscriptionState(new LogContext(), offsetResetStrategy);
+        this.subscriptions = new SubscriptionState(new LogContext(), offsetResetStrategy, 100, 100);
         this.partitions = new HashMap<>();
         this.records = new HashMap<>();
         this.paused = new HashSet<>();
@@ -146,7 +146,6 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         ensureNotClosed();
         committed.clear();
         this.subscriptions.assignFromUser(new HashSet<>(partitions));
-        this.paused.retainAll(partitions);
     }
 
     @Override

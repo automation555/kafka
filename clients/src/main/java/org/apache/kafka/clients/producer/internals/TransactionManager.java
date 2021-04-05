@@ -19,6 +19,7 @@ package org.apache.kafka.clients.producer.internals;
 import org.apache.kafka.clients.ApiVersion;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.ClientResponse;
+import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.NodeApiVersions;
 import org.apache.kafka.clients.RequestCompletionHandler;
 import org.apache.kafka.clients.consumer.CommitFailedException;
@@ -28,6 +29,7 @@ import org.apache.kafka.common.errors.InvalidPidMappingException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.UnknownProducerIdException;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
@@ -97,6 +99,8 @@ public class TransactionManager {
     private final int transactionTimeoutMs;
     private final ApiVersions apiVersions;
     private final boolean autoDowngradeTxnCommit;
+    final static double RETRY_BACKOFF_JITTER = CommonClientConfigs.RETRY_BACKOFF_JITTER;
+    final static int RETRY_BACKOFF_EXP_BASE = CommonClientConfigs.RETRY_BACKOFF_EXP_BASE;
 
     private static class TopicPartitionBookkeeper {
 
@@ -214,7 +218,7 @@ public class TransactionManager {
     // This is used by the TxnRequestHandlers to control how long to back off before a given request is retried.
     // For instance, this value is lowered by the AddPartitionsToTxnHandler when it receives a CONCURRENT_TRANSACTIONS
     // error for the first AddPartitionsRequest in a transaction.
-    private final long retryBackoffMs;
+    private final ExponentialBackoff retryBackoff;
 
     // The retryBackoff is overridden to the following value if the first AddPartitions receives a
     // CONCURRENT_TRANSACTIONS error.
@@ -227,7 +231,6 @@ public class TransactionManager {
 
     private volatile State currentState = State.UNINITIALIZED;
     private volatile RuntimeException lastError = null;
-    private volatile RuntimeException abortableError = null;
     private volatile ProducerIdAndEpoch producerIdAndEpoch;
     private volatile boolean transactionStarted = false;
     private volatile boolean epochBumpRequired = false;
@@ -290,6 +293,7 @@ public class TransactionManager {
                               final String transactionalId,
                               final int transactionTimeoutMs,
                               final long retryBackoffMs,
+                              long retryBackoffMaxMs,
                               final ApiVersions apiVersions,
                               final boolean autoDowngradeTxnCommit) {
         this.producerIdAndEpoch = ProducerIdAndEpoch.NONE;
@@ -305,7 +309,8 @@ public class TransactionManager {
         this.pendingTxnOffsetCommits = new HashMap<>();
         this.partitionsWithUnresolvedSequences = new HashMap<>();
         this.partitionsToRewriteSequences = new HashSet<>();
-        this.retryBackoffMs = retryBackoffMs;
+        this.retryBackoff = new ExponentialBackoff(
+                retryBackoffMs, RETRY_BACKOFF_EXP_BASE, retryBackoffMaxMs, RETRY_BACKOFF_JITTER);
         this.topicPartitionBookkeeper = new TopicPartitionBookkeeper();
         this.apiVersions = apiVersions;
         this.autoDowngradeTxnCommit = autoDowngradeTxnCommit;
@@ -370,7 +375,7 @@ public class TransactionManager {
         // If the error is an INVALID_PRODUCER_ID_MAPPING error, the server will not accept an EndTxnRequest, so skip
         // directly to InitProducerId. Otherwise, we must first abort the transaction, because the producer will be
         // fenced if we directly call InitProducerId.
-        if (!(abortableError instanceof InvalidPidMappingException)) {
+        if (!(lastError instanceof InvalidPidMappingException)) {
             EndTxnRequest.Builder builder = new EndTxnRequest.Builder(
                     new EndTxnRequestData()
                             .setTransactionalId(transactionalId)
@@ -1064,7 +1069,7 @@ public class TransactionManager {
 
     private void transitionTo(State target, RuntimeException error) {
         if (!currentState.isTransitionValid(currentState, target)) {
-            String idString = transactionalId == null ? "" : "TransactionalId " + transactionalId + ": ";
+            String idString = transactionalId == null ?  "" : "TransactionalId " + transactionalId + ": ";
             throw new KafkaException(idString + "Invalid transition attempted from state "
                     + currentState.name() + " to state " + target.name());
         }
@@ -1073,13 +1078,7 @@ public class TransactionManager {
             if (error == null)
                 throw new IllegalArgumentException("Cannot transition to " + target + " with a null exception");
             lastError = error;
-            if (target == State.ABORTABLE_ERROR) {
-                abortableError = error;
-            }
         } else {
-            if (target != State.ABORTING_TRANSACTION) {
-                abortableError = null;
-            }
             lastError = null;
         }
 
@@ -1121,7 +1120,8 @@ public class TransactionManager {
         return false;
     }
 
-    private void enqueueRequest(TxnRequestHandler requestHandler) {
+    // Visible for testing
+    void enqueueRequest(TxnRequestHandler requestHandler) {
         log.debug("Enqueuing transactional request {}", requestHandler.requestBuilder());
         pendingRequests.add(requestHandler);
     }
@@ -1205,12 +1205,6 @@ public class TransactionManager {
         return coordinatorSupportsBumpingEpoch;
     }
 
-    private void resetTransactions() {
-        newPartitionsInTransaction.clear();
-        pendingPartitionsInTransaction.clear();
-        partitionsInTransaction.clear();
-    }
-
     private void completeTransaction() {
         if (epochBumpRequired) {
             transitionTo(State.INITIALIZING);
@@ -1218,7 +1212,6 @@ public class TransactionManager {
             transitionTo(State.READY);
         }
         lastError = null;
-        abortableError = null;
         epochBumpRequired = false;
         transactionStarted = false;
         newPartitionsInTransaction.clear();
@@ -1229,6 +1222,8 @@ public class TransactionManager {
     abstract class TxnRequestHandler implements RequestCompletionHandler {
         protected final TransactionalRequestResult result;
         private boolean isRetry = false;
+        private int attempts = 0;
+        private long retryBackoffMs = retryBackoff.baseBackoff();
 
         TxnRequestHandler(TransactionalRequestResult result) {
             this.result = result;
@@ -1264,6 +1259,7 @@ public class TransactionManager {
         void reenqueue() {
             synchronized (TransactionManager.this) {
                 this.isRetry = true;
+                this.retryBackoffMs = retryBackoff.backoff(this.attempts++);
                 enqueueRequest(this);
             }
         }
@@ -1317,6 +1313,10 @@ public class TransactionManager {
             return isRetry;
         }
 
+        int attempts() {
+            return attempts;
+        }
+
         boolean isEndTxn() {
             return false;
         }
@@ -1368,9 +1368,7 @@ public class TransactionManager {
                 setProducerIdAndEpoch(producerIdAndEpoch);
                 transitionTo(State.READY);
                 lastError = null;
-                abortableError = null;
                 if (this.isEpochBump) {
-                    epochBumpRequired = false;
                     resetSequenceNumbers();
                 }
                 result.done();
@@ -1399,7 +1397,7 @@ public class TransactionManager {
         private AddPartitionsToTxnHandler(AddPartitionsToTxnRequest.Builder builder) {
             super("AddPartitionsToTxn");
             this.builder = builder;
-            this.retryBackoffMs = TransactionManager.this.retryBackoffMs;
+            this.retryBackoffMs = TransactionManager.this.retryBackoff.baseBackoff();
         }
 
         @Override
@@ -1418,7 +1416,7 @@ public class TransactionManager {
             Map<TopicPartition, Errors> errors = addPartitionsToTxnResponse.errors();
             boolean hasPartitionErrors = false;
             Set<String> unauthorizedTopics = new HashSet<>();
-            retryBackoffMs = TransactionManager.this.retryBackoffMs;
+            retryBackoffMs = TransactionManager.this.retryBackoff.backoff(this.attempts());
 
             for (Map.Entry<TopicPartition, Errors> topicPartitionErrorEntry : errors.entrySet()) {
                 TopicPartition topicPartition = topicPartitionErrorEntry.getKey();
@@ -1486,7 +1484,7 @@ public class TransactionManager {
 
         @Override
         public long retryBackoffMs() {
-            return Math.min(TransactionManager.this.retryBackoffMs, this.retryBackoffMs);
+            return this.retryBackoffMs;
         }
 
         private void maybeOverrideRetryBackoffMs() {

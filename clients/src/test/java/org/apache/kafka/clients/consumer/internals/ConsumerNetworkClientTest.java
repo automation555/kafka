@@ -36,22 +36,20 @@ import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.HeartbeatRequest;
 import org.apache.kafka.common.requests.HeartbeatResponse;
 import org.apache.kafka.common.requests.MetadataResponse;
-import org.apache.kafka.common.requests.RequestTestUtils;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -64,7 +62,7 @@ public class ConsumerNetworkClientTest {
     private MockTime time = new MockTime(1);
     private Cluster cluster = TestUtils.singletonCluster(topicName, 1);
     private Node node = cluster.nodes().get(0);
-    private Metadata metadata = new Metadata(100, 50000, new LogContext(),
+    private Metadata metadata = new Metadata(100, 100, 50000, new LogContext(),
             new ClusterResourceListeners());
     private MockClient client = new MockClient(time, metadata);
     private ConsumerNetworkClient consumerClient = new ConsumerNetworkClient(new LogContext(),
@@ -88,21 +86,21 @@ public class ConsumerNetworkClientTest {
     }
 
     @Test
-    public void sendWithinBackoffPeriodAfterAuthenticationFailure() {
+    public void sendWithinBlackoutPeriodAfterAuthenticationFailure() {
         client.authenticationFailed(node, 300);
         client.prepareResponse(heartbeatResponse(Errors.NONE));
         final RequestFuture<ClientResponse> future = consumerClient.send(node, heartbeat());
         consumerClient.poll(future);
         assertTrue(future.failed());
-        assertTrue(future.exception() instanceof AuthenticationException, "Expected only an authentication error.");
+        assertTrue("Expected only an authentication error.", future.exception() instanceof AuthenticationException);
 
-        time.sleep(30); // wait less than the backoff period
+        time.sleep(30); // wait less than the blackout period
         assertTrue(client.connectionFailed(node));
 
         final RequestFuture<ClientResponse> future2 = consumerClient.send(node, heartbeat());
         consumerClient.poll(future2);
         assertTrue(future2.failed());
-        assertTrue(future2.exception() instanceof AuthenticationException, "Expected only an authentication error.");
+        assertTrue("Expected only an authentication error.", future2.exception() instanceof AuthenticationException);
     }
 
     @Test
@@ -247,20 +245,20 @@ public class ConsumerNetworkClientTest {
         }
     }
 
-    @Test
+    @Test(expected = InvalidTopicException.class)
     public void testInvalidTopicExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.INVALID_TOPIC_EXCEPTION), Collections.emptyMap());
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
-        assertThrows(InvalidTopicException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
+        consumerClient.poll(time.timer(Duration.ZERO));
     }
 
-    @Test
+    @Test(expected = TopicAuthorizationException.class)
     public void testTopicAuthorizationExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.TOPIC_AUTHORIZATION_FAILED), Collections.emptyMap());
         metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
-        assertThrows(TopicAuthorizationException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
+        consumerClient.poll(time.timer(Duration.ZERO));
     }
 
     @Test

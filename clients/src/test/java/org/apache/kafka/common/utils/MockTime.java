@@ -28,16 +28,18 @@ import java.util.function.Supplier;
  */
 public class MockTime implements Time {
 
-    public interface Listener {
-        void onTimeUpdated();
+    interface MockTimeListener {
+        void tick();
     }
 
     /**
      * Listeners which are waiting for time changes.
      */
-    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<MockTimeListener> listeners = new CopyOnWriteArrayList<>();
 
     private final long autoTickMs;
+    // Record the sum of auto ticked milliseconds
+    private AtomicLong autoTickedMs;
 
     // Values from `nanoTime` and `currentTimeMillis` are not comparable, so we store them separately to allow tests
     // using this class to detect bugs where this is incorrectly assumed to be true
@@ -56,9 +58,10 @@ public class MockTime implements Time {
         this.timeMs = new AtomicLong(currentTimeMs);
         this.highResTimeNs = new AtomicLong(currentHighResTimeNs);
         this.autoTickMs = autoTickMs;
+        this.autoTickedMs = new AtomicLong(0);
     }
 
-    public void addListener(Listener listener) {
+    public void addListener(MockTimeListener listener) {
         listeners.add(listener);
     }
 
@@ -75,8 +78,18 @@ public class MockTime implements Time {
     }
 
     private void maybeSleep(long ms) {
-        if (ms != 0)
+        if (ms != 0) {
             sleep(ms);
+            autoTickedMs.getAndAdd(ms);
+        }
+    }
+
+    public long autoTickedMs() {
+        return autoTickedMs.get();
+    }
+
+    public void resetAutoTickedCounter() {
+        autoTickedMs.set(0);
     }
 
     @Override
@@ -88,7 +101,7 @@ public class MockTime implements Time {
 
     @Override
     public void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException {
-        Listener listener = () -> {
+        MockTimeListener listener = () -> {
             synchronized (obj) {
                 obj.notify();
             }
@@ -119,8 +132,8 @@ public class MockTime implements Time {
     }
 
     private void tick() {
-        for (Listener listener : listeners) {
-            listener.onTimeUpdated();
+        for (MockTimeListener listener : listeners) {
+            listener.tick();
         }
     }
 }

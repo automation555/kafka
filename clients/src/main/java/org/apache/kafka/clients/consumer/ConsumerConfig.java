@@ -127,13 +127,6 @@ public class ConsumerConfig extends AbstractConfig {
     public static final String AUTO_OFFSET_RESET_DOC = "What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that data has been deleted): <ul><li>earliest: automatically reset the offset to the earliest offset<li>latest: automatically reset the offset to the latest offset</li><li>none: throw exception to the consumer if no previous offset is found for the consumer's group</li><li>anything else: throw exception to the consumer.</li></ul>";
 
     /**
-     * <code>nearest.offset.reset</code>
-     */
-    public static final String NEAREST_OFFSET_RESET = "nearest.offset.reset";
-    private static final String NEAREST_OFFSET_RESET_DOC = "If true, then out of range errors will reset the consumer's offset to the nearest offset. to the earliest end of the broker range if it was under the range, or to the latest end of the broker range if it was over the range";
-    public static final boolean DEFAULT_NEAREST_OFFSET_RESET = false;
-
-    /**
      * <code>fetch.min.bytes</code>
      */
     public static final String FETCH_MIN_BYTES_CONFIG = "fetch.min.bytes";
@@ -201,6 +194,11 @@ public class ConsumerConfig extends AbstractConfig {
      * <code>retry.backoff.ms</code>
      */
     public static final String RETRY_BACKOFF_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG;
+
+    /**
+     * <code>retry.backoff.max.ms</code>
+     */
+    public static final String RETRY_BACKOFF_MAX_MS_CONFIG = CommonClientConfigs.RETRY_BACKOFF_MAX_MS_CONFIG;
 
     /**
      * <code>metrics.sample.window.ms</code>
@@ -432,21 +430,22 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.RECONNECT_BACKOFF_MAX_MS_DOC)
                                 .define(RETRY_BACKOFF_MS_CONFIG,
                                         Type.LONG,
-                                        100L,
+                                        CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MS,
                                         atLeast(0L),
                                         Importance.LOW,
                                         CommonClientConfigs.RETRY_BACKOFF_MS_DOC)
+                                .define(RETRY_BACKOFF_MAX_MS_CONFIG,
+                                        Type.LONG,
+                                        CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MAX_MS,
+                                        atLeast(0L),
+                                        Importance.LOW,
+                                        CommonClientConfigs.RETRY_BACKOFF_MAX_MS_DOC)
                                 .define(AUTO_OFFSET_RESET_CONFIG,
                                         Type.STRING,
                                         "latest",
                                         in("latest", "earliest", "none"),
                                         Importance.MEDIUM,
                                         AUTO_OFFSET_RESET_DOC)
-                                .define(NEAREST_OFFSET_RESET,
-                                        Type.BOOLEAN,
-                                        DEFAULT_NEAREST_OFFSET_RESET,
-                                        Importance.MEDIUM,
-                                        NEAREST_OFFSET_RESET_DOC)
                                 .define(CHECK_CRCS_CONFIG,
                                         Type.BOOLEAN,
                                         true,
@@ -572,6 +571,7 @@ public class ConsumerConfig extends AbstractConfig {
     @Override
     protected Map<String, Object> postProcessParsedConfig(final Map<String, Object> parsedValues) {
         CommonClientConfigs.warnIfDeprecatedDnsLookupValue(this);
+        CommonClientConfigs.warnInconsistentConfigs(this);
         Map<String, Object> refinedConfigs = CommonClientConfigs.postProcessReconnectBackoffConfigs(this, parsedValues);
         maybeOverrideClientId(refinedConfigs);
         return refinedConfigs;
@@ -591,9 +591,19 @@ public class ConsumerConfig extends AbstractConfig {
         }
     }
 
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
     public static Map<String, Object> addDeserializerToConfig(Map<String, Object> configs,
                                                               Deserializer<?> keyDeserializer,
                                                               Deserializer<?> valueDeserializer) {
+        return appendDeserializerToConfig(configs, keyDeserializer, valueDeserializer);
+    }
+
+    static Map<String, Object> appendDeserializerToConfig(Map<String, Object> configs,
+            Deserializer<?> keyDeserializer,
+            Deserializer<?> valueDeserializer) {
         Map<String, Object> newConfigs = new HashMap<>(configs);
         if (keyDeserializer != null)
             newConfigs.put(KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass());
@@ -602,6 +612,10 @@ public class ConsumerConfig extends AbstractConfig {
         return newConfigs;
     }
 
+    /**
+     * @deprecated Since 2.7.0. This will be removed in a future major release.
+     */
+    @Deprecated
     public static Properties addDeserializerToConfig(Properties properties,
                                                      Deserializer<?> keyDeserializer,
                                                      Deserializer<?> valueDeserializer) {

@@ -34,8 +34,7 @@ public class CommonClientConfigs {
     /*
      * NOTE: DO NOT CHANGE EITHER CONFIG NAMES AS THESE ARE PART OF THE PUBLIC API AND CHANGE WILL BREAK USER CODE.
      */
-    public static final String ENABLE_DYNAMIC_CONFIG_CONFIG = "enable.dynamic.config";
-    public static final String ENABLE_DYNAMIC_CONFIG_DOC = "Specifies wether or not dynamic updates to the clients configuration should take place";
+
     public static final String BOOTSTRAP_SERVERS_CONFIG = "bootstrap.servers";
     public static final String BOOTSTRAP_SERVERS_DOC = "A list of host/port pairs to use for establishing the initial connection to the Kafka cluster. The client will make use of all servers irrespective of which servers are specified here for bootstrapping&mdash;this list only impacts the initial hosts used to discover the full set of servers. This list should be in the form "
                                                        + "<code>host1:port1,host2:port2,...</code>. Since these servers are just used for the initial connection to "
@@ -85,6 +84,14 @@ public class CommonClientConfigs {
 
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
     public static final String RETRY_BACKOFF_MS_DOC = "The amount of time to wait before attempting to retry a failed request to a given topic partition. This avoids repeatedly sending requests in a tight loop under some failure scenarios.";
+    public static final Long DEFAULT_RETRY_BACKOFF_MS = 100L;
+
+    public static final String RETRY_BACKOFF_MAX_MS_CONFIG = "retry.backoff.max.ms";
+    public static final String RETRY_BACKOFF_MAX_MS_DOC = "The maximum amount of time in milliseconds to wait when retrying a request to the broker that has repeatedly failed. If provided, the backoff per client will increase exponentially for each failed request, up to this maximum. To prevent all clients from being synchronized upon retry, a randomized jitter with a factor of 0.2 will be applied to the backoff, resulting in the backoff falling within a range between 20% below and 20% above the computed value. If retry.backoff.ms is set to be higher than retry.backoff.max.ms, then retry.backoff.max.ms will be used as a constant backoff from the beginning without any exponential increase";
+    public static final Long DEFAULT_RETRY_BACKOFF_MAX_MS = 1000L;
+
+    public static final Double RETRY_BACKOFF_JITTER = 0.2;
+    public static final int RETRY_BACKOFF_EXP_BASE = 2;
 
     public static final String METRICS_SAMPLE_WINDOW_MS_CONFIG = "metrics.sample.window.ms";
     public static final String METRICS_SAMPLE_WINDOW_MS_DOC = "The window of time a metrics sample is computed over.";
@@ -194,6 +201,26 @@ public class CommonClientConfigs {
                 "future version. Please use '{}' or another non-deprecated value.",
                 CLIENT_DNS_LOOKUP_CONFIG, ClientDnsLookup.DEFAULT,
                 ClientDnsLookup.USE_ALL_DNS_IPS);
+    }
+
+    public static void warnInconsistentConfigs(AbstractConfig config) {
+        long retryBackoffMs = config.getLong(RETRY_BACKOFF_MS_CONFIG);
+        long retryBackoffMaxMs = config.getLong(RETRY_BACKOFF_MAX_MS_CONFIG);
+        if (retryBackoffMs > retryBackoffMaxMs) {
+            log.warn("Configuration '{}' with value '{}' is greater than Configuration '{}' with" +
+                            " value '{}'. A static backoff with value '{}' will be applied.",
+                    RETRY_BACKOFF_MS_CONFIG, retryBackoffMs,
+                    RETRY_BACKOFF_MAX_MS_CONFIG, retryBackoffMaxMs, retryBackoffMs);
+        }
+
+        long connectionSetupTimeoutMs = config.getLong(SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG);
+        long connectionSetupTimeoutMaxMs = config.getLong(SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG);
+        if (connectionSetupTimeoutMs > connectionSetupTimeoutMaxMs) {
+            log.warn("Configuration '{}' with value '{}' is greater than Configuration '{}' with" +
+                            " value '{}'. A static backoff with value '{}' will be applied.",
+                    SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG, connectionSetupTimeoutMs,
+                    SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG, connectionSetupTimeoutMaxMs, retryBackoffMs);
+        }
     }
 
     public static void warnIfDeprecatedRetriesValue(AbstractConfig config) {

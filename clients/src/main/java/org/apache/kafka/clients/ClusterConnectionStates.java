@@ -46,11 +46,10 @@ final class ClusterConnectionStates {
     private Set<String> connectingNodes;
     private ExponentialBackoff reconnectBackoff;
     private ExponentialBackoff connectionSetupTimeout;
-    private final DnsNameResolver dnsNameResolver;
 
     public ClusterConnectionStates(long reconnectBackoffMs, long reconnectBackoffMaxMs,
                                    long connectionSetupTimeoutMs, long connectionSetupTimeoutMaxMs,
-                                   LogContext logContext, DnsNameResolver dnsNameResolver) {
+                                   LogContext logContext) {
         this.log = logContext.logger(ClusterConnectionStates.class);
         this.reconnectBackoff = new ExponentialBackoff(
                 reconnectBackoffMs,
@@ -64,7 +63,6 @@ final class ClusterConnectionStates {
                 CONNECTION_SETUP_TIMEOUT_JITTER);
         this.nodeState = new HashMap<>();
         this.connectingNodes = new HashSet<>();
-        this.dnsNameResolver = dnsNameResolver;
     }
 
     /**
@@ -158,8 +156,7 @@ final class ClusterConnectionStates {
         // Create a new NodeConnectionState if nodeState does not already contain one
         // for the specified id or if the hostname associated with the node id changed.
         nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
-            reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host, clientDnsLookup,
-            dnsNameResolver));
+            reconnectBackoff.baseBackoff(), connectionSetupTimeout.baseBackoff(), host, clientDnsLookup));
         connectingNodes.add(id);
     }
 
@@ -336,7 +333,7 @@ final class ClusterConnectionStates {
      */
     private void resetReconnectBackoff(NodeConnectionState nodeState) {
         nodeState.failedAttempts = 0;
-        nodeState.reconnectBackoffMs = reconnectBackoff.backoff(0);
+        nodeState.reconnectBackoffMs = reconnectBackoff.baseBackoff();
     }
 
     /**
@@ -347,7 +344,7 @@ final class ClusterConnectionStates {
      */
     private void resetConnectionSetupTimeout(NodeConnectionState nodeState) {
         nodeState.failedConnectAttempts = 0;
-        nodeState.connectionSetupTimeoutMs = connectionSetupTimeout.backoff(0);
+        nodeState.connectionSetupTimeoutMs = connectionSetupTimeout.baseBackoff();
     }
 
     /**
@@ -473,10 +470,9 @@ final class ClusterConnectionStates {
         private int addressIndex;
         private final String host;
         private final ClientDnsLookup clientDnsLookup;
-        private final DnsNameResolver dnsNameResolver;
 
         private NodeConnectionState(ConnectionState state, long lastConnectAttempt, long reconnectBackoffMs,
-                long connectionSetupTimeoutMs, String host, ClientDnsLookup clientDnsLookup, DnsNameResolver dnsNameResolver) {
+                long connectionSetupTimeoutMs, String host, ClientDnsLookup clientDnsLookup) {
             this.state = state;
             this.addresses = Collections.emptyList();
             this.addressIndex = -1;
@@ -488,7 +484,6 @@ final class ClusterConnectionStates {
             this.throttleUntilTimeMs = 0;
             this.host = host;
             this.clientDnsLookup = clientDnsLookup;
-            this.dnsNameResolver = dnsNameResolver;
         }
 
         public String host() {
@@ -503,7 +498,7 @@ final class ClusterConnectionStates {
         private InetAddress currentAddress() throws UnknownHostException {
             if (addresses.isEmpty()) {
                 // (Re-)initialize list
-                addresses = ClientUtils.resolve(host, dnsNameResolver, clientDnsLookup);
+                addresses = ClientUtils.resolve(host, clientDnsLookup);
                 addressIndex = 0;
             }
 

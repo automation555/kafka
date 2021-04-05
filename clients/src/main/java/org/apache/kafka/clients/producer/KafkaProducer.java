@@ -360,6 +360,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.metrics = new Metrics(metricConfig, reporters, time, metricsContext);
             this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG, Partitioner.class);
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
+            long retryBackoffMaxMS = config.getLong(ProducerConfig.RETRY_BACKOFF_MAX_MS_CONFIG);
             if (keySerializer == null) {
                 this.keySerializer = config.getConfiguredInstance(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                                                                                          Serializer.class);
@@ -402,6 +403,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     this.compressionType,
                     lingerMs(config),
                     retryBackoffMs,
+                    retryBackoffMaxMS,
                     deliveryTimeoutMs,
                     metrics,
                     PRODUCER_METRIC_GROUP_NAME,
@@ -417,6 +419,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 this.metadata = metadata;
             } else {
                 this.metadata = new ProducerMetadata(retryBackoffMs,
+                        retryBackoffMaxMS,
                         config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG),
                         config.getLong(ProducerConfig.METADATA_MAX_IDLE_CONFIG),
                         logContext,
@@ -467,21 +470,21 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 apiVersions,
                 throttleTimeSensor,
                 logContext);
-        validateAcks(producerConfig, log);
+        short acks = configureAcks(producerConfig, log);
         return new Sender(logContext,
                 client,
                 metadata,
                 this.accumulator,
                 maxInflightRequests == 1,
                 producerConfig.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG),
+                acks,
                 producerConfig.getInt(ProducerConfig.RETRIES_CONFIG),
                 metricsRegistry.senderMetrics,
                 time,
                 requestTimeoutMs,
                 producerConfig.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG),
                 this.transactionManager,
-                apiVersions,
-                this.producerConfig);
+                apiVersions);
     }
 
     private static int lingerMs(ProducerConfig config) {
@@ -526,12 +529,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             final String transactionalId = config.getString(ProducerConfig.TRANSACTIONAL_ID_CONFIG);
             final int transactionTimeoutMs = config.getInt(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG);
             final long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
+            final long retryBackoffMaxMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MAX_MS_CONFIG);
             final boolean autoDowngradeTxnCommit = config.getBoolean(ProducerConfig.AUTO_DOWNGRADE_TXN_COMMIT);
             transactionManager = new TransactionManager(
                 logContext,
                 transactionalId,
                 transactionTimeoutMs,
                 retryBackoffMs,
+                retryBackoffMaxMs,
                 apiVersions,
                 autoDowngradeTxnCommit);
 
@@ -551,7 +556,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         return config.getInt(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION);
     }
 
-    private static void validateAcks(ProducerConfig config, Logger log) {
+    private static short configureAcks(ProducerConfig config, Logger log) {
         boolean userConfiguredAcks = config.originals().containsKey(ProducerConfig.ACKS_CONFIG);
         short acks = Short.parseShort(config.getString(ProducerConfig.ACKS_CONFIG));
 
@@ -562,6 +567,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 throw new ConfigException("Must set " + ProducerConfig.ACKS_CONFIG + " to all in order to use the idempotent " +
                         "producer. Otherwise we cannot guarantee idempotence.");
         }
+        return acks;
     }
 
     /**

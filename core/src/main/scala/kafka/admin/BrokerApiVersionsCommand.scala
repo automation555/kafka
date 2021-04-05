@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, TimeUnit}
 
 import kafka.utils.{CommandDefaultOptions, CommandLineUtils}
-import kafka.utils.Implicits._
 import kafka.utils.Logging
 import org.apache.kafka.common.utils.Utils
 import org.apache.kafka.clients.{ApiVersions, ClientDnsLookup, ClientResponse, ClientUtils, CommonClientConfigs, Metadata, NetworkClient, NodeApiVersions}
@@ -40,7 +39,7 @@ import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.utils.LogContext
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 import org.apache.kafka.common.Node
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionCollection
+import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKeyCollection
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse, ApiVersionsRequest, ApiVersionsResponse, MetadataRequest, MetadataResponse}
 
 import scala.jdk.CollectionConverters._
@@ -60,7 +59,7 @@ object BrokerApiVersionsCommand {
     val adminClient = createAdminClient(opts)
     adminClient.awaitBrokers()
     val brokerMap = adminClient.listAllBrokerVersionInfo()
-    brokerMap.forKeyValue { (broker, versionInfoOrError) =>
+    brokerMap.foreach { case (broker, versionInfoOrError) =>
       versionInfoOrError match {
         case Success(v) => out.print(s"${broker} -> ${v.toString(true)}\n")
         case Failure(v) => out.print(s"${broker} -> ERROR: ${v}\n")
@@ -108,7 +107,7 @@ object BrokerApiVersionsCommand {
                             val client: ConsumerNetworkClient,
                             val bootstrapBrokers: List[Node]) extends Logging {
 
-    @volatile var running = true
+    @volatile var running: Boolean = true
     val pendingFutures = new ConcurrentLinkedQueue[RequestFuture[ClientResponse]]()
 
     val networkThread = new KafkaThread("admin-client-network-thread", () => {
@@ -135,7 +134,7 @@ object BrokerApiVersionsCommand {
     private def send(target: Node,
                      api: ApiKeys,
                      request: AbstractRequest.Builder[_ <: AbstractRequest]): AbstractResponse = {
-      val future = client.send(target, request)
+      val future: RequestFuture[ClientResponse] = client.send(target, request)
       pendingFutures.add(future)
       future.awaitDone(Long.MaxValue, TimeUnit.MILLISECONDS)
       pendingFutures.remove(future)
@@ -159,7 +158,7 @@ object BrokerApiVersionsCommand {
       throw new RuntimeException(s"Request $api failed on brokers $bootstrapBrokers")
     }
 
-    private def getApiVersions(node: Node): ApiVersionCollection = {
+    private def getApiVersions(node: Node): ApiVersionsResponseKeyCollection = {
       val response = send(node, ApiKeys.API_VERSIONS, new ApiVersionsRequest.Builder()).asInstanceOf[ApiVersionsResponse]
       Errors.forCode(response.data.errorCode).maybeThrow()
       response.data.apiKeys
@@ -226,7 +225,8 @@ object BrokerApiVersionsCommand {
         .define(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG,
           Type.STRING,
           ClientDnsLookup.USE_ALL_DNS_IPS.toString,
-          in(ClientDnsLookup.USE_ALL_DNS_IPS.toString,
+          in(ClientDnsLookup.DEFAULT.toString,
+            ClientDnsLookup.USE_ALL_DNS_IPS.toString,
             ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString),
           Importance.MEDIUM,
           CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC)
@@ -281,8 +281,9 @@ object BrokerApiVersionsCommand {
       val logContext = new LogContext(s"[LegacyAdminClient clientId=$clientId] ")
       val time = Time.SYSTEM
       val metrics = new Metrics(time)
-      val metadata = new Metadata(100L, 60 * 60 * 1000L, logContext,
-        new ClusterResourceListeners)
+      val metadata = new Metadata(CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MS,
+        CommonClientConfigs.DEFAULT_RETRY_BACKOFF_MAX_MS,
+        60 * 60 * 1000L, logContext, new ClusterResourceListeners)
       val channelBuilder = ClientUtils.createChannelBuilder(config, time, logContext)
       val requestTimeoutMs = config.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG)
       val connectionSetupTimeoutMs = config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG)
@@ -314,6 +315,7 @@ object BrokerApiVersionsCommand {
         requestTimeoutMs,
         connectionSetupTimeoutMs,
         connectionSetupTimeoutMaxMs,
+        ClientDnsLookup.USE_ALL_DNS_IPS,
         time,
         true,
         new ApiVersions,

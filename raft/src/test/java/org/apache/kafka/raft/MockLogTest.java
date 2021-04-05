@@ -485,8 +485,9 @@ public class MockLogTest {
             snapshot.freeze();
         }
 
-        RawSnapshotReader snapshot = log.readSnapshot(snapshotId).get();
-        assertEquals(0, snapshot.sizeInBytes());
+        try (RawSnapshotReader snapshot = log.readSnapshot(snapshotId).get()) {
+            assertEquals(0, snapshot.sizeInBytes());
+        }
     }
 
     @Test

@@ -281,6 +281,7 @@
     <allow pkg="org.apache.kafka.queue"/>
     <allow pkg="org.apache.kafka.raft"/>
     <allow pkg="org.apache.kafka.shell"/>
+    <allow pkg="org.apache.kafka.snapshot"/>
     <allow pkg="org.jline"/>
     <allow pkg="scala.compat"/>
   </subpackage>
@@ -297,8 +298,8 @@
 
   <subpackage name="trogdor">
     <allow pkg="com.fasterxml.jackson" />
-    <allow pkg="jakarta.servlet" />
-    <allow pkg="jakarta.ws.rs" />
+    <allow pkg="javax.servlet" />
+    <allow pkg="javax.ws.rs" />
     <allow pkg="net.sourceforge.argparse4j" />
     <allow pkg="org.apache.kafka.clients" />
     <allow pkg="org.apache.kafka.clients.admin" />
@@ -446,7 +447,7 @@
 
     <subpackage name="rest">
       <allow pkg="org.apache.kafka.connect.health" />
-      <allow pkg="jakarta.ws.rs" />
+      <allow pkg="javax.ws.rs" />
       <allow pkg= "javax.security.auth"/>
       <subpackage name="basic">
         <allow pkg="org.apache.kafka.connect.rest"/>
@@ -479,8 +480,8 @@
 
       <subpackage name="rest">
         <allow pkg="org.eclipse.jetty" />
-        <allow pkg="jakarta.ws.rs" />
-        <allow pkg="jakarta.servlet" />
+        <allow pkg="javax.ws.rs" />
+        <allow pkg="javax.servlet" />
         <allow pkg="org.glassfish.jersey" />
         <allow pkg="com.fasterxml.jackson" />
         <allow pkg="org.apache.http"/>
@@ -496,7 +497,7 @@
       </subpackage>
 
       <subpackage name="distributed">
-        <allow pkg="jakarta.ws.rs.core" />
+        <allow pkg="javax.ws.rs.core" />
       </subpackage>
     </subpackage>
 
@@ -525,7 +526,7 @@
         <allow pkg="kafka.zk" />
         <allow pkg="kafka.utils" />
         <allow class="javax.servlet.http.HttpServletResponse" />
-        <allow class="jakarta.ws.rs.core.Response" />
+        <allow class="javax.ws.rs.core.Response" />
         <allow pkg="com.fasterxml.jackson.core.type" />
         <allow pkg="org.apache.kafka.metadata" />
       </subpackage>
@@ -535,7 +536,7 @@
       <allow pkg="org.apache.kafka.connect.util.clusters" />
       <allow pkg="org.apache.kafka.connect" />
       <allow pkg="org.apache.kafka.tools" />
-      <allow pkg="jakarta.ws.rs" />
+      <allow pkg="javax.ws.rs" />
     </subpackage>
 
     <subpackage name="json">

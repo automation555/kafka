@@ -43,7 +43,6 @@ public class LeaderState implements EpochState {
     private final long epochStartOffset;
 
     private Optional<LogOffsetMetadata> highWatermark;
-    private Optional<LogOffsetMetadata> flushEndOffset;
     private final Map<Integer, ReplicaState> voterStates = new HashMap<>();
     private final Map<Integer, ReplicaState> observerStates = new HashMap<>();
     private final Set<Integer> grantingVoters = new HashSet<>();
@@ -61,7 +60,6 @@ public class LeaderState implements EpochState {
         this.epoch = epoch;
         this.epochStartOffset = epochStartOffset;
         this.highWatermark = Optional.empty();
-        this.flushEndOffset = Optional.empty();
 
         for (int voterId : voters) {
             boolean hasAcknowledgedLeader = voterId == localId;
@@ -84,10 +82,6 @@ public class LeaderState implements EpochState {
     @Override
     public int epoch() {
         return epoch;
-    }
-
-    public Optional<LogOffsetMetadata> getFlushEndOffset() {
-        return flushEndOffset;
     }
 
     public Set<Integer> followers() {
@@ -149,24 +143,6 @@ public class LeaderState implements EpochState {
             }
         }
         return false;
-    }
-
-    boolean maybeFlush(LogOffsetMetadata endOffsetMetadata) {
-        return flushEndOffset
-            .map(logOffsetMetadata -> endOffsetMetadata.offset > logOffsetMetadata.offset)
-            .orElse(true);
-    }
-
-    void updateFlushEndOffset(LogOffsetMetadata endOffsetMetadata) {
-        if (flushEndOffset.isPresent()) {
-            LogOffsetMetadata lastFlushedOffsetMetadata = flushEndOffset.get();
-            long lastFlushedOffset = lastFlushedOffsetMetadata.offset;
-
-            if (endOffsetMetadata.offset > lastFlushedOffset) {
-                flushEndOffset = Optional.of(endOffsetMetadata);
-            }
-        } else
-            flushEndOffset = Optional.of(endOffsetMetadata);
     }
 
     /**
@@ -319,22 +295,26 @@ public class LeaderState implements EpochState {
 
         @Override
         public String toString() {
-            return "ReplicaState(" +
-                "nodeId=" + nodeId +
-                ", endOffset=" + endOffset +
-                ", lastFetchTimestamp=" + lastFetchTimestamp +
-                ", hasAcknowledgedLeader=" + hasAcknowledgedLeader +
-                ')';
+            return String.format(
+                "ReplicaState(nodeId=%s, endOffset=%s, lastFetchTimestamp=%s, hasAcknowledgedLeader=%s)",
+                nodeId,
+                endOffset,
+                lastFetchTimestamp,
+                hasAcknowledgedLeader 
+            );
         }
     }
 
     @Override
     public String toString() {
-        return "Leader(" +
-            "localId=" + localId +
-            ", epoch=" + epoch +
-            ", epochStartOffset=" + epochStartOffset +
-            ')';
+        return String.format(
+            "Leader(localId=%s, epoch=%s, epochStartOffset=%s, highWatermark=%s, voterStates=%s)",
+            localId,
+            epoch,
+            epochStartOffset,
+            highWatermark,
+            voterStates
+        );
     }
 
     @Override

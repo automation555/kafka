@@ -20,10 +20,12 @@ import org.apache.kafka.common.record.Records;
 import org.apache.kafka.common.record.UnalignedRecords;
 import org.apache.kafka.raft.OffsetAndEpoch;
 
+import java.io.Closeable;
+
 /**
  * Interface for reading snapshots as a sequence of records.
  */
-public interface RawSnapshotReader {
+public interface RawSnapshotReader extends Closeable {
     /**
      * Returns the end offset and epoch for the snapshot.
      */

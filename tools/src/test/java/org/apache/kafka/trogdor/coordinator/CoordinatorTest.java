@@ -20,8 +20,6 @@ package org.apache.kafka.trogdor.coordinator;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
-import org.apache.kafka.common.metrics.KafkaMetric;
-import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.MockScheduler;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Scheduler;
@@ -77,6 +75,7 @@ public class CoordinatorTest {
     final public Timeout globalTimeout = Timeout.millis(120000);
 
     @Test
+    @SuppressWarnings("try")
     public void testCoordinatorStatus() throws Exception {
         try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
                 addCoordinator("node01").
@@ -87,6 +86,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testCoordinatorUptime() throws Exception {
         MockTime time = new MockTime(0, 200, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -103,6 +103,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testCreateTask() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -155,6 +156,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskDistribution() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -212,6 +214,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskCancellation() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -276,6 +279,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskDestruction() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -380,6 +384,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testNetworkPartitionFault() throws Exception {
         CapturingCommandRunner runner = new CapturingCommandRunner();
         MockTime time = new MockTime(0, 0, 0);
@@ -463,6 +468,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTasksRequest() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -523,6 +529,7 @@ public class CoordinatorTest {
      * we want the task to be marked as DONE and not re-sent should a second failure happen.
      */
     @Test
+    @SuppressWarnings("try")
     public void testAgentFailureAndTaskExpiry() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -574,6 +581,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequestWithOldStartMsGetsUpdated() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -599,6 +607,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequestWithFutureStartMsDoesNotGetRun() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -623,6 +632,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequest() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -657,6 +667,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testWorkersExitingAtDifferentTimes() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -722,237 +733,6 @@ public class CoordinatorTest {
                         false, status3)).
                     build()).
                 waitFor(coordinatorClient);
-        }
-    }
-
-    @Test
-    public void testCoordinatorMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        Scheduler scheduler = new MockScheduler(time);
-        try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
-                addCoordinator("node01").
-                addAgent("node02").
-                scheduler(scheduler).
-                build()) {
-            Coordinator coordinator = cluster.coordinator();
-            Metrics metrics = coordinator.trogdorMetrics.getMetrics();
-
-            HashMap<String, Double> expectedMetricMap = new HashMap<>();
-            expectedMetricMap.put("count", 5.0);
-            expectedMetricMap.put("created-task-count", 0.0);
-            expectedMetricMap.put("running-task-count", 0.0);
-            expectedMetricMap.put("done-task-count", 0.0);
-            expectedMetricMap.put("active-agents-count", 1.0);
-
-            assertEquals(5, metrics.metrics().size());
-
-            for (KafkaMetric metric : metrics.metrics().values()) {
-                assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-                assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-            }
-        }
-    }
-
-    @Test
-    public void testTaskCreatedMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        Scheduler scheduler = new MockScheduler(time);
-        try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
-                addCoordinator("node01").
-                addAgent("node02").
-                scheduler(scheduler).
-                build()) {
-            CoordinatorClient coordinatorClient = cluster.coordinatorClient();
-            Coordinator coordinator = cluster.coordinator();
-            Metrics metrics = coordinator.trogdorMetrics.getMetrics();
-
-            NoOpTaskSpec fooSpec = new NoOpTaskSpec(1, 10);
-            NoOpTaskSpec barSpec = new NoOpTaskSpec(3, 1);
-            NoOpTaskSpec bazSpec = new NoOpTaskSpec(1, 2);
-            coordinatorClient.createTask(new CreateTaskRequest("foo", fooSpec));
-            coordinatorClient.createTask(new CreateTaskRequest("bar", barSpec));
-            coordinatorClient.createTask(new CreateTaskRequest("baz", bazSpec));
-
-            HashMap<String, Double> expectedMetricMap = new HashMap<>();
-            expectedMetricMap.put("count", 5.0);
-            expectedMetricMap.put("created-task-count", 3.0);
-            expectedMetricMap.put("running-task-count", 0.0);
-            expectedMetricMap.put("done-task-count", 0.0);
-            expectedMetricMap.put("active-agents-count", 1.0);
-
-            assertEquals(5, metrics.metrics().size());
-
-            for (KafkaMetric metric : metrics.metrics().values()) {
-                assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-                assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-            }
-        }
-    }
-
-    @Test
-    public void testTaskRunningMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        Scheduler scheduler = new MockScheduler(time);
-        try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
-                addCoordinator("node01").
-                addAgent("node02").
-                scheduler(scheduler).
-                build()) {
-            CoordinatorClient coordinatorClient = cluster.coordinatorClient();
-            Coordinator coordinator = cluster.coordinator();
-            Metrics metrics = coordinator.trogdorMetrics.getMetrics();
-
-            new ExpectedTasks().waitFor(coordinatorClient);
-
-            NoOpTaskSpec fooSpec = new NoOpTaskSpec(1, 10);
-            NoOpTaskSpec barSpec = new NoOpTaskSpec(3, 1);
-            coordinatorClient.createTask(new CreateTaskRequest("foo", fooSpec));
-            coordinatorClient.createTask(new CreateTaskRequest("bar", barSpec));
-
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskPending(fooSpec)).
-                            build()).
-                    addTask(new ExpectedTaskBuilder("bar").
-                            taskState(new TaskPending(barSpec)).
-                            build()).
-                    waitFor(coordinatorClient);
-            time.sleep(2);
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskRunning(fooSpec, 2, new TextNode("active"))).
-                            workerState(new WorkerRunning("foo", fooSpec, 2, new TextNode("active"))).
-                            build()).
-                    waitFor(coordinatorClient).
-                    waitFor(cluster.agentClient("node02"));
-
-            HashMap<String, Double> expectedMetricMap = new HashMap<>();
-            expectedMetricMap.put("count", 5.0);
-            expectedMetricMap.put("created-task-count", 2.0);
-            expectedMetricMap.put("running-task-count", 1.0);
-            expectedMetricMap.put("done-task-count", 0.0);
-            expectedMetricMap.put("active-agents-count", 1.0);
-
-            assertEquals(5, metrics.metrics().size());
-
-            for (KafkaMetric metric : metrics.metrics().values()) {
-                assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-                assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-            }
-        }
-    }
-
-    @Test
-    public void testTaskDoneMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        Scheduler scheduler = new MockScheduler(time);
-        try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
-                addCoordinator("node01").
-                addAgent("node02").
-                scheduler(scheduler).
-                build()) {
-            new ExpectedTasks().waitFor(cluster.coordinatorClient());
-
-            Coordinator coordinator = cluster.coordinator();
-            Metrics metrics = coordinator.trogdorMetrics.getMetrics();
-
-            NoOpTaskSpec fooSpec = new NoOpTaskSpec(1, 2);
-            cluster.coordinatorClient().createTask(
-                    new CreateTaskRequest("foo", fooSpec));
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskPending(fooSpec)).
-                            build()).
-                    waitFor(cluster.coordinatorClient());
-
-            time.sleep(2);
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskRunning(fooSpec, 2, new TextNode("active"))).
-                            workerState(new WorkerRunning("foo", fooSpec, 2, new TextNode("active"))).
-                            build()).
-                    waitFor(cluster.coordinatorClient()).
-                    waitFor(cluster.agentClient("node02"));
-
-            time.sleep(3);
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskDone(fooSpec, 2, 5, "", false, new TextNode("done"))).
-                            build()).
-                    waitFor(cluster.coordinatorClient());
-
-            HashMap<String, Double> expectedMetricMap = new HashMap<>();
-            expectedMetricMap.put("count", 5.0);
-            expectedMetricMap.put("created-task-count", 1.0);
-            expectedMetricMap.put("running-task-count", 1.0);
-            expectedMetricMap.put("done-task-count", 1.0);
-            expectedMetricMap.put("active-agents-count", 1.0);
-
-            assertEquals(5, metrics.metrics().size());
-
-            for (KafkaMetric metric : metrics.metrics().values()) {
-                assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-                assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-            }
-        }
-    }
-
-    @Test
-    public void testActiveAgentsMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        Scheduler scheduler = new MockScheduler(time);
-        try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
-                addCoordinator("node01").
-                addAgent("node01").
-                addAgent("node02").
-                scheduler(scheduler).
-                build()) {
-            CoordinatorClient coordinatorClient = cluster.coordinatorClient();
-            Coordinator coordinator = cluster.coordinator();
-            Metrics metrics = coordinator.trogdorMetrics.getMetrics();
-            AgentClient agentClient1 = cluster.agentClient("node01");
-            AgentClient agentClient2 = cluster.agentClient("node02");
-
-            new ExpectedTasks().
-                    waitFor(coordinatorClient).
-                    waitFor(agentClient1).
-                    waitFor(agentClient2);
-
-            NoOpTaskSpec fooSpec = new NoOpTaskSpec(5, 7);
-            coordinatorClient.createTask(new CreateTaskRequest("foo", fooSpec));
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").taskState(
-                            new TaskPending(fooSpec)).build()).
-                    waitFor(coordinatorClient).
-                    waitFor(agentClient1).
-                    waitFor(agentClient2);
-
-            time.sleep(11);
-            ObjectNode status1 = new ObjectNode(JsonNodeFactory.instance);
-            status1.set("node01", new TextNode("active"));
-            status1.set("node02", new TextNode("active"));
-            new ExpectedTasks().
-                    addTask(new ExpectedTaskBuilder("foo").
-                            taskState(new TaskRunning(fooSpec, 11, status1)).
-                            workerState(new WorkerRunning("foo", fooSpec, 11,  new TextNode("active"))).
-                            build()).
-                    waitFor(coordinatorClient).
-                    waitFor(agentClient1).
-                    waitFor(agentClient2);
-
-            HashMap<String, Double> expectedMetricMap = new HashMap<>();
-            expectedMetricMap.put("count", 5.0);
-            expectedMetricMap.put("created-task-count", 1.0);
-            expectedMetricMap.put("running-task-count", 1.0);
-            expectedMetricMap.put("done-task-count", 0.0);
-            expectedMetricMap.put("active-agents-count", 2.0);
-
-            assertEquals(5, metrics.metrics().size());
-
-            for (KafkaMetric metric : metrics.metrics().values()) {
-                assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-                assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-            }
         }
     }
 };

@@ -94,7 +94,6 @@ class WorkerSinkTask extends WorkerTask {
     private int commitFailures;
     private boolean pausedForRedelivery;
     private boolean committing;
-    private boolean taskStopped;
     private final WorkerErrantRecordReporter workerErrantRecordReporter;
 
     public WorkerSinkTask(ConnectorTaskId id,
@@ -139,7 +138,6 @@ class WorkerSinkTask extends WorkerTask {
         this.sinkTaskMetricsGroup.recordOffsetSequenceNumber(commitSeqno);
         this.consumer = consumer;
         this.isTopicTrackingEnabled = workerConfig.getBoolean(TOPIC_TRACKING_ENABLE_CONFIG);
-        this.taskStopped = false;
         this.workerErrantRecordReporter = workerErrantRecordReporter;
     }
 
@@ -170,7 +168,6 @@ class WorkerSinkTask extends WorkerTask {
         } catch (Throwable t) {
             log.warn("Could not stop task", t);
         }
-        taskStopped = true;
         Utils.closeQuietly(consumer, "consumer");
         Utils.closeQuietly(transformationChain, "transformation chain");
         Utils.closeQuietly(retryWithToleranceOperator, "retry operator");
@@ -193,15 +190,15 @@ class WorkerSinkTask extends WorkerTask {
 
     @Override
     public void execute() {
-        log.info("{} Executing sink task", this);
+        initializeAndStart();
         // Make sure any uncommitted data has been committed and the task has
         // a chance to clean up its state
-        try (UncheckedCloseable suppressible = this::closePartitions) {
+        UncheckedCloseable suppressible = this::closePartitions;
+        try {
             while (!isStopping())
                 iteration();
-        } catch (WakeupException e) {
-            log.trace("Consumer woken up during initial offset commit attempt, " 
-                + "but succeeded during a later attempt");
+        } finally {
+            suppressible.close();
         }
     }
 
@@ -290,7 +287,6 @@ class WorkerSinkTask extends WorkerTask {
     /**
      * Initializes and starts the SinkTask.
      */
-    @Override
     protected void initializeAndStart() {
         SinkConnectorConfig.validate(taskConfig);
 
@@ -336,7 +332,7 @@ class WorkerSinkTask extends WorkerTask {
     }
 
     private void doCommitSync(Map<TopicPartition, OffsetAndMetadata> offsets, int seqno) {
-        log.debug("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
+        log.info("{} Committing offsets synchronously using sequence number {}: {}", this, seqno, offsets);
         try {
             consumer.commitSync(offsets);
             onCommitCompleted(null, seqno, offsets);
@@ -350,8 +346,13 @@ class WorkerSinkTask extends WorkerTask {
     }
 
     private void doCommitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, final int seqno) {
-        log.debug("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
-        OffsetCommitCallback cb = (tpOffsets, error) -> onCommitCompleted(error, seqno, tpOffsets);
+        log.info("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
+        OffsetCommitCallback cb = new OffsetCommitCallback() {
+            @Override
+            public void onComplete(Map<TopicPartition, OffsetAndMetadata> offsets, Exception error) {
+                onCommitCompleted(error, seqno, offsets);
+            }
+        };
         consumer.commitAsync(offsets, cb);
     }
 
@@ -491,10 +492,10 @@ class WorkerSinkTask extends WorkerTask {
     }
 
     private SinkRecord convertAndTransformRecord(final ConsumerRecord<byte[], byte[]> msg) {
-        SchemaAndValue keyAndSchema = retryWithToleranceOperator.execute(() -> convertKey(msg),
+        SchemaAndValue keyAndSchema = retryWithToleranceOperator.execute(() -> keyConverter.toConnectData(msg.topic(), msg.headers(), msg.key()),
                 Stage.KEY_CONVERTER, keyConverter.getClass());
 
-        SchemaAndValue valueAndSchema = retryWithToleranceOperator.execute(() -> convertValue(msg),
+        SchemaAndValue valueAndSchema = retryWithToleranceOperator.execute(() -> valueConverter.toConnectData(msg.topic(), msg.headers(), msg.value()),
                 Stage.VALUE_CONVERTER, valueConverter.getClass());
 
         Headers headers = retryWithToleranceOperator.execute(() -> convertHeadersFor(msg), Stage.HEADER_CONVERTER, headerConverter.getClass());
@@ -524,26 +525,6 @@ class WorkerSinkTask extends WorkerTask {
         }
         // Error reporting will need to correlate each sink record with the original consumer record
         return new InternalSinkRecord(msg, transformedRecord);
-    }
-
-    private SchemaAndValue convertKey(ConsumerRecord<byte[], byte[]> msg) {
-        try {
-            return keyConverter.toConnectData(msg.topic(), msg.headers(), msg.key());
-        } catch (Exception e) {
-            log.error("{} Error converting message key in topic '{}' partition {} at offset {} and timestamp {}: {}",
-                    this, msg.topic(), msg.partition(), msg.offset(), msg.timestamp(), e.getMessage(), e);
-            throw e;
-        }
-    }
-
-    private SchemaAndValue convertValue(ConsumerRecord<byte[], byte[]> msg) {
-        try {
-            return valueConverter.toConnectData(msg.topic(), msg.headers(), msg.value());
-        } catch (Exception e) {
-            log.error("{} Error converting message value in topic '{}' partition {} at offset {} and timestamp {}: {}",
-                    this, msg.topic(), msg.partition(), msg.offset(), msg.timestamp(), e.getMessage(), e);
-            throw e;
-        }
     }
 
     private Headers convertHeadersFor(ConsumerRecord<byte[], byte[]> record) {
@@ -711,10 +692,6 @@ class WorkerSinkTask extends WorkerTask {
 
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
-            if (taskStopped) {
-                log.trace("Skipping partition revocation callback as task has already been stopped");
-                return;
-            }
             log.debug("{} Partitions revoked", WorkerSinkTask.this);
             try {
                 closePartitions();

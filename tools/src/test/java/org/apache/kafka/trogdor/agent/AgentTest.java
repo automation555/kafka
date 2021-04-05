@@ -18,8 +18,6 @@
 package org.apache.kafka.trogdor.agent;
 
 import com.fasterxml.jackson.databind.node.TextNode;
-import org.apache.kafka.common.metrics.KafkaMetric;
-import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.MockScheduler;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Scheduler;
@@ -69,7 +67,6 @@ import java.util.TreeMap;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
 
 public class AgentTest {
     @Rule
@@ -359,7 +356,7 @@ public class AgentTest {
         }
 
         @Override
-        public void close() throws Exception {
+        public void close() throws IOException {
             Utils.delete(tempDir);
         }
     }
@@ -374,7 +371,7 @@ public class AgentTest {
         new ExpectedTasks().waitFor(client);
 
         try (MockKibosh mockKibosh = new MockKibosh()) {
-            assertEquals(KiboshControlFile.EMPTY, mockKibosh.read());
+            Assert.assertEquals(KiboshControlFile.EMPTY, mockKibosh.read());
             FilesUnreadableFaultSpec fooSpec = new FilesUnreadableFaultSpec(0, 900000,
                 Collections.singleton("myAgent"), mockKibosh.tempDir.getPath(), "/foo", 123);
             client.createWorker(new CreateWorkerRequest(0, "foo", fooSpec));
@@ -383,7 +380,7 @@ public class AgentTest {
                     workerState(new WorkerRunning("foo", fooSpec, 0, new TextNode("Added fault foo"))).
                     build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
+            Assert.assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
                 new KiboshFilesUnreadableFaultSpec("/foo", 123))), mockKibosh.read());
             FilesUnreadableFaultSpec barSpec = new FilesUnreadableFaultSpec(0, 900000,
                 Collections.singleton("myAgent"), mockKibosh.tempDir.getPath(), "/bar", 456);
@@ -394,7 +391,7 @@ public class AgentTest {
                 addTask(new ExpectedTaskBuilder("bar").
                     workerState(new WorkerRunning("bar", barSpec, 0, new TextNode("Added fault bar"))).build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(new ArrayList<Kibosh.KiboshFaultSpec>() {{
+            Assert.assertEquals(new KiboshControlFile(new ArrayList<Kibosh.KiboshFaultSpec>() {{
                     add(new KiboshFilesUnreadableFaultSpec("/foo", 123));
                     add(new KiboshFilesUnreadableFaultSpec("/bar", 456));
                 }}), mockKibosh.read());
@@ -406,7 +403,7 @@ public class AgentTest {
                 addTask(new ExpectedTaskBuilder("bar").
                     workerState(new WorkerRunning("bar", barSpec, 0, new TextNode("Added fault bar"))).build()).
                 waitFor(client);
-            assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
+            Assert.assertEquals(new KiboshControlFile(Collections.<Kibosh.KiboshFaultSpec>singletonList(
                 new KiboshFilesUnreadableFaultSpec("/bar", 456))), mockKibosh.read());
         }
     }
@@ -495,34 +492,4 @@ public class AgentTest {
         agent.waitForShutdown();
     }
 
-    @Test
-    public void testAgentMetrics() throws Exception {
-        MockTime time = new MockTime(0, 0, 0);
-        MockScheduler scheduler = new MockScheduler(time);
-        Agent agent = createAgent(scheduler);
-        AgentClient client = new AgentClient.Builder().
-                maxTries(10).target("localhost", agent.port()).build();
-        AgentStatusResponse status = client.status();
-        Metrics metrics = agent.trogdorMetrics.getMetrics();
-
-        assertEquals(Collections.emptyMap(), status.workers());
-        new ExpectedTasks().waitFor(client);
-
-        HashMap<String, Double> expectedMetricMap = new HashMap<>();
-        expectedMetricMap.put("count", 5.0);
-        expectedMetricMap.put("created-task-count", 0.0);
-        expectedMetricMap.put("running-task-count", 0.0);
-        expectedMetricMap.put("done-task-count", 0.0);
-        expectedMetricMap.put("active-agents-count", 1.0);
-
-        assertEquals(5, metrics.metrics().size());
-
-        for (KafkaMetric metric : metrics.metrics().values()) {
-            assertTrue(expectedMetricMap.containsKey(metric.metricName().name()));
-            assertEquals(expectedMetricMap.get(metric.metricName().name()), (double) metric.metricValue(), 0);
-        }
-
-        agent.beginShutdown();
-        agent.waitForShutdown();
-    }
 };

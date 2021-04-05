@@ -21,6 +21,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.kafka.clients.ApiVersions;
+import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.ManualMetadataUpdater;
 import org.apache.kafka.clients.NetworkClient;
@@ -136,11 +137,14 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         boolean tryConnect();
+
+        void close();
     }
 
     static class ConnectStressor implements Stressor {
         private final AdminClientConfig conf;
         private final ManualMetadataUpdater updater;
+        private final ChannelBuilder channelBuilder;
         private final LogContext logContext = new LogContext();
 
         ConnectStressor(ConnectionStressSpec spec) {
@@ -152,6 +156,7 @@ public class ConnectionStressWorker implements TaskWorker {
                 conf.getList(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG),
                 conf.getString(AdminClientConfig.CLIENT_DNS_LOOKUP_CONFIG));
             this.updater = new ManualMetadataUpdater(Cluster.bootstrap(addresses).nodes());
+            this.channelBuilder = ClientUtils.createChannelBuilder(conf, TIME, logContext);
         }
 
         @Override
@@ -159,8 +164,6 @@ public class ConnectionStressWorker implements TaskWorker {
             try {
                 List<Node> nodes = updater.fetchNodes();
                 Node targetNode = nodes.get(ThreadLocalRandom.current().nextInt(nodes.size()));
-                // channelBuilder will be closed as part of Selector.close()
-                ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(conf, TIME, logContext);
                 try (Metrics metrics = new Metrics()) {
                     try (Selector selector = new Selector(conf.getLong(AdminClientConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
                         metrics, TIME, "", channelBuilder, logContext)) {
@@ -175,11 +178,12 @@ public class ConnectionStressWorker implements TaskWorker {
                             1000,
                             10 * 1000,
                             127 * 1000,
+                            ClientDnsLookup.forConfig(conf.getString(AdminClientConfig.CLIENT_DNS_LOOKUP_CONFIG)),
                             TIME,
                             false,
                             new ApiVersions(),
                             logContext)) {
-                            NetworkClientUtils.awaitReady(client, targetNode, TIME, 500);
+                            NetworkClientUtils.awaitReady(client, targetNode, TIME, 100);
                         }
                     }
                 }
@@ -190,8 +194,9 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         @Override
-        public void close() throws Exception {
+        public void close() {
             Utils.closeQuietly(updater, "ManualMetadataUpdater");
+            Utils.closeQuietly(channelBuilder, "ChannelBuilder");
         }
     }
 
@@ -217,7 +222,7 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         @Override
-        public void close() throws Exception {
+        public void close() {
         }
     }
 

@@ -179,8 +179,6 @@ public class AssignmentInfo {
                     out.writeInt(errCode);
                     break;
                 case 7:
-                case 8:
-                case 9:
                     out.writeInt(usedVersion);
                     out.writeInt(commonlySupportedVersion);
                     encodeActiveAndStandbyTaskAssignment(out);
@@ -194,7 +192,6 @@ public class AssignmentInfo {
             }
 
             out.flush();
-            out.close();
 
             return ByteBuffer.wrap(baos.toByteArray());
         } catch (final IOException ex) {
@@ -354,8 +351,6 @@ public class AssignmentInfo {
                     assignmentInfo.errCode = in.readInt();
                     break;
                 case 7:
-                case 8:
-                case 9:
                     commonlySupportedVersion = in.readInt();
                     assignmentInfo = new AssignmentInfo(usedVersion, commonlySupportedVersion);
                     decodeActiveTasks(assignmentInfo, in);

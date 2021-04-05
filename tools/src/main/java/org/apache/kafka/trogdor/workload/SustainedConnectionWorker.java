@@ -48,11 +48,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -140,6 +140,7 @@ public class SustainedConnectionWorker implements TaskWorker {
         boolean needsRefresh(long milliseconds);
         void refresh();
         void claim();
+        void close();
     }
 
     private abstract class ClaimableConnection implements SustainedConnection {
@@ -159,7 +160,7 @@ public class SustainedConnectionWorker implements TaskWorker {
         }
 
         @Override
-        public void close() throws Exception {
+        public void close() {
             this.closeQuietly();
         }
 
@@ -308,6 +309,7 @@ public class SustainedConnectionWorker implements TaskWorker {
         private KafkaConsumer<byte[], byte[]> consumer;
         private TopicPartition activePartition;
         private final String topicName;
+        private final Random rand;
         private final Properties props;
 
         ConsumerSustainedConnection() {
@@ -315,6 +317,7 @@ public class SustainedConnectionWorker implements TaskWorker {
             this.topicName = SustainedConnectionWorker.this.spec.topicName();
             this.consumer = null;
             this.activePartition = null;
+            this.rand = new Random();
             this.refreshRate = SustainedConnectionWorker.this.spec.refreshRateMs();
 
             // This variable is used to maintain the connection properties.
@@ -343,7 +346,7 @@ public class SustainedConnectionWorker implements TaskWorker {
                             .collect(Collectors.toList());
 
                     // Select a random partition and assign it.
-                    this.activePartition = partitions.get(ThreadLocalRandom.current().nextInt(partitions.size()));
+                    this.activePartition = partitions.get(this.rand.nextInt(partitions.size()));
                     this.consumer.assign(Collections.singletonList(this.activePartition));
                 }
 

@@ -17,10 +17,10 @@
 
 package kafka.server
 
-import java.net.{InetAddress, UnknownHostException}
 import java.util.Properties
 
 import kafka.log.LogConfig
+import kafka.security.CredentialProvider
 import org.apache.kafka.common.config.ConfigDef
 import org.apache.kafka.common.config.ConfigDef.Importance._
 import org.apache.kafka.common.config.ConfigDef.Range._
@@ -44,11 +44,11 @@ object DynamicConfig {
     val DefaultReplicationThrottledRate = ReplicationQuotaManagerConfig.QuotaBytesPerSecondDefault
 
     // Documentation
-    val LeaderReplicationThrottledRateDoc = "A long representing the upper bound (bytes/sec) on replication traffic for leaders enumerated in the " +
-      s"property ${LogConfig.LeaderReplicationThrottledReplicasProp} (for each topic). This property can be only set dynamically. It is suggested that the " +
+    val LeaderReplicationThrottledRateDoc = "A long representing the upper bound (bytes/sec) on total replication traffic for leaders enumerated in the " +
+      s"property ${LogConfig.LeaderReplicationThrottledReplicasProp} on the broker. This property can be only set dynamically. It is suggested that the " +
       s"limit be kept above 1MB/s for accurate behaviour."
-    val FollowerReplicationThrottledRateDoc = "A long representing the upper bound (bytes/sec) on replication traffic for followers enumerated in the " +
-      s"property ${LogConfig.FollowerReplicationThrottledReplicasProp} (for each topic). This property can be only set dynamically. It is suggested that the " +
+    val FollowerReplicationThrottledRateDoc = "A long representing the upper bound (bytes/sec) on total replication traffic for followers enumerated in the " +
+      s"property ${LogConfig.FollowerReplicationThrottledReplicasProp} on the broker. This property can be only set dynamically. It is suggested that the " +
       s"limit be kept above 1MB/s for accurate behaviour."
     val ReplicaAlterLogDirsIoMaxBytesPerSecondDoc = "A long representing the upper bound (bytes/sec) on disk IO used for moving replica between log directories on the same broker. " +
       s"This property can be only set dynamically. It is suggested that the limit be kept above 1MB/s for accurate behaviour."
@@ -68,11 +68,42 @@ object DynamicConfig {
   }
 
   object QuotaConfigs {
-    def isClientOrUserQuotaConfig(name: String): Boolean = org.apache.kafka.common.config.internals.QuotaConfigs.isClientOrUserConfig(name)
+    val ProducerByteRateOverrideProp = "producer_byte_rate"
+    val ConsumerByteRateOverrideProp = "consumer_byte_rate"
+    val RequestPercentageOverrideProp = "request_percentage"
+    val ControllerMutationOverrideProp = "controller_mutation_rate"
+    private val configNames = Set(ProducerByteRateOverrideProp, ConsumerByteRateOverrideProp,
+      RequestPercentageOverrideProp, ControllerMutationOverrideProp)
+
+    def isQuotaConfig(name: String): Boolean = configNames.contains(name)
   }
 
   object Client {
-    private val clientConfigs = org.apache.kafka.common.config.internals.QuotaConfigs.clientConfigs()
+    // Properties
+    val ProducerByteRateOverrideProp = QuotaConfigs.ProducerByteRateOverrideProp
+    val ConsumerByteRateOverrideProp = QuotaConfigs.ConsumerByteRateOverrideProp
+    val RequestPercentageOverrideProp = QuotaConfigs.RequestPercentageOverrideProp
+    val ControllerMutationOverrideProp = QuotaConfigs.ControllerMutationOverrideProp
+
+    // Defaults
+    val DefaultProducerOverride = ClientQuotaManagerConfig.QuotaDefault
+    val DefaultConsumerOverride = ClientQuotaManagerConfig.QuotaDefault
+    val DefaultRequestOverride = ClientRequestQuotaManager.QuotaRequestPercentDefault
+    val DefaultControllerMutationOverride = ControllerMutationQuotaManager.QuotaControllerMutationDefault
+
+    // Documentation
+    val ProducerOverrideDoc = "A rate representing the upper bound (bytes/sec) for producer traffic."
+    val ConsumerOverrideDoc = "A rate representing the upper bound (bytes/sec) for consumer traffic."
+    val RequestOverrideDoc = "A percentage representing the upper bound of time spent for processing requests."
+    val ControllerMutationOverrideDoc = "The rate at which mutations are accepted for the create topics request, " +
+      "the create partitions request and the delete topics request. The rate is accumulated by the number of partitions created or deleted."
+
+    // Definitions
+    private val clientConfigs = new ConfigDef()
+      .define(ProducerByteRateOverrideProp, LONG, DefaultProducerOverride, MEDIUM, ProducerOverrideDoc)
+      .define(ConsumerByteRateOverrideProp, LONG, DefaultConsumerOverride, MEDIUM, ConsumerOverrideDoc)
+      .define(RequestPercentageOverrideProp, DOUBLE, DefaultRequestOverride, MEDIUM, RequestOverrideDoc)
+      .define(ControllerMutationOverrideProp, DOUBLE, DefaultControllerMutationOverride, MEDIUM, ControllerMutationOverrideDoc)
 
     def configKeys = clientConfigs.configKeys
 
@@ -82,34 +113,18 @@ object DynamicConfig {
   }
 
   object User {
-    private val userConfigs = org.apache.kafka.common.config.internals.QuotaConfigs.userConfigs()
+    // Definitions
+    private val userConfigs = CredentialProvider.userCredentialConfigs
+      .define(Client.ProducerByteRateOverrideProp, LONG, Client.DefaultProducerOverride, MEDIUM, Client.ProducerOverrideDoc)
+      .define(Client.ConsumerByteRateOverrideProp, LONG, Client.DefaultConsumerOverride, MEDIUM, Client.ConsumerOverrideDoc)
+      .define(Client.RequestPercentageOverrideProp, DOUBLE, Client.DefaultRequestOverride, MEDIUM, Client.RequestOverrideDoc)
+      .define(Client.ControllerMutationOverrideProp, DOUBLE, Client.DefaultControllerMutationOverride, MEDIUM, Client.ControllerMutationOverrideDoc)
 
     def configKeys = userConfigs.configKeys
 
     def names = userConfigs.names
 
     def validate(props: Properties) = DynamicConfig.validate(userConfigs, props, customPropsAllowed = false)
-  }
-
-  object Ip {
-    private val ipConfigs = org.apache.kafka.common.config.internals.QuotaConfigs.ipConfigs()
-
-    def configKeys = ipConfigs.configKeys
-
-    def names = ipConfigs.names
-
-    def validate(props: Properties) = DynamicConfig.validate(ipConfigs, props, customPropsAllowed = false)
-
-    def isValidIpEntity(ip: String): Boolean = {
-      if (ip != ConfigEntityName.Default) {
-        try {
-          InetAddress.getByName(ip)
-        } catch {
-          case _: UnknownHostException => return false
-        }
-      }
-      true
-    }
   }
 
   private def validate(configDef: ConfigDef, props: Properties, customPropsAllowed: Boolean) = {

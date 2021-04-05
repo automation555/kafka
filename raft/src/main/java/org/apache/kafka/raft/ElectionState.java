@@ -100,6 +100,7 @@ public class ElectionState {
         return "Election(epoch=" + epoch +
                 ", leaderIdOpt=" + leaderIdOpt +
                 ", votedIdOpt=" + votedIdOpt +
+                ", voters=" + voters +
                 ')';
     }
 

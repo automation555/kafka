@@ -37,6 +37,7 @@ import org.apache.kafka.streams.LagInfo;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
+import org.apache.kafka.streams.errors.UnknownStateStoreException;
 import org.apache.kafka.streams.integration.utils.EmbeddedKafkaCluster;
 import org.apache.kafka.streams.integration.utils.IntegrationTestUtils;
 import org.apache.kafka.streams.kstream.Consumed;
@@ -54,6 +55,7 @@ import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
 import org.apache.kafka.streams.state.ReadOnlySessionStore;
 import org.apache.kafka.streams.state.ReadOnlyWindowStore;
+import org.apache.kafka.streams.state.StreamsMetadata;
 import org.apache.kafka.streams.state.WindowStoreIterator;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.MockMapper;
@@ -61,9 +63,8 @@ import org.apache.kafka.test.NoRetryException;
 import org.apache.kafka.test.TestUtils;
 import org.hamcrest.Matchers;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -83,6 +84,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -117,6 +119,7 @@ import static org.hamcrest.core.IsEqual.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 @Category({IntegrationTest.class})
 public class QueryableStateIntegrationTest {
@@ -126,18 +129,8 @@ public class QueryableStateIntegrationTest {
 
     private static final int NUM_BROKERS = 1;
 
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(NUM_BROKERS);
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
-
     private static final int STREAM_THREE_PARTITIONS = 4;
     private final MockTime mockTime = CLUSTER.time;
     private String streamOne = "stream-one";
@@ -294,6 +287,7 @@ public class QueryableStateIntegrationTest {
         }
     }
 
+    @Deprecated // using KafkaStreams#metadataForKey
     private void verifyAllKVKeys(final List<KafkaStreams> streamsList,
                                  final KafkaStreams streams,
                                  final KafkaStreamsTest.StateListenerStub stateListener,
@@ -311,10 +305,12 @@ public class QueryableStateIntegrationTest {
             for (final String key: keys) {
                 try {
                     final KeyQueryMetadata queryMetadata = streams.queryMetadataForKey(storeName, key, serializer);
+                    final StreamsMetadata metadata = streams.metadataForKey(storeName, key, serializer);
                     if (queryMetadata == null || queryMetadata.equals(KeyQueryMetadata.NOT_AVAILABLE)) {
                         noMetadataKeys.add(key);
                         continue;
                     }
+                    assertThat(metadata.hostInfo(), equalTo(queryMetadata.activeHost()));
                     if (!pickInstanceByPort) {
                         assertThat("Should have standbys to query from", !queryMetadata.standbyHosts().isEmpty());
                     }
@@ -346,6 +342,7 @@ public class QueryableStateIntegrationTest {
         });
     }
 
+    @Deprecated // using KafkaStreams#metadataForKey
     private void verifyAllWindowedKeys(final List<KafkaStreams> streamsList,
                                        final KafkaStreams streams,
                                        final KafkaStreamsTest.StateListenerStub stateListenerStub,
@@ -365,10 +362,12 @@ public class QueryableStateIntegrationTest {
             for (final String key: keys) {
                 try {
                     final KeyQueryMetadata queryMetadata = streams.queryMetadataForKey(storeName, key, serializer);
+                    final StreamsMetadata metadata = streams.metadataForKey(storeName, key, serializer);
                     if (queryMetadata == null || queryMetadata.equals(KeyQueryMetadata.NOT_AVAILABLE)) {
                         noMetadataKeys.add(key);
                         continue;
                     }
+                    assertThat(metadata.hostInfo(), equalTo(queryMetadata.activeHost()));
                     if (pickInstanceByPort) {
                         assertThat(queryMetadata.standbyHosts().size(), equalTo(0));
                     } else {
@@ -470,8 +469,8 @@ public class QueryableStateIntegrationTest {
                 streams.store(fromNameAndType(storeName, keyValueStore()));
             assertThat(store, Matchers.notNullValue());
 
-            final InvalidStateStoreException exception = assertThrows(
-                InvalidStateStoreException.class,
+            final UnknownStateStoreException exception = assertThrows(
+                UnknownStateStoreException.class,
                 () -> streams.store(fromNameAndType("no-table", keyValueStore()))
             );
             assertThat(
@@ -761,7 +760,7 @@ public class QueryableStateIntegrationTest {
         final Predicate<String, Long> filterPredicate = (key, value) -> key.contains("kafka");
         final KTable<String, Long> t1 = builder.table(streamOne);
         final KTable<String, Long> t2 = t1.filter(filterPredicate, Materialized.as("queryFilter"));
-        t1.filter(filterPredicate.negate(), Materialized.as("queryFilterNot"));
+        t1.filterNot(filterPredicate, Materialized.as("queryFilterNot"));
         t2.toStream().to(outputTopic);
 
         kafkaStreams = new KafkaStreams(builder.build(), streamsConfiguration);
@@ -1155,6 +1154,53 @@ public class QueryableStateIntegrationTest {
         assertThat(countState, equalTo(expectedCount));
     }
 
+    /**
+     * Verify that the new count is greater than or equal to the previous count.
+     * Note: this method changes the values in expectedWindowState and expectedCount
+     *
+     * @param keys                  All the keys we ever expect to find
+     * @param expectedWindowedCount Expected windowed count
+     * @param expectedCount         Expected count
+     * @param windowStore           Window Store
+     * @param keyValueStore         Key-value store
+     */
+    private void verifyGreaterOrEqual(final String[] keys,
+                                      final Map<String, Long> expectedWindowedCount,
+                                      final Map<String, Long> expectedCount,
+                                      final ReadOnlyWindowStore<String, Long> windowStore,
+                                      final ReadOnlyKeyValueStore<String, Long> keyValueStore) {
+        final Map<String, Long> windowState = new HashMap<>();
+        final Map<String, Long> countState = new HashMap<>();
+
+        for (final String key : keys) {
+            final Map<String, Long> map = fetchMap(windowStore, key);
+            windowState.putAll(map);
+            final Long value = keyValueStore.get(key);
+            if (value != null) {
+                countState.put(key, value);
+            }
+        }
+
+        for (final Map.Entry<String, Long> actualWindowStateEntry : windowState.entrySet()) {
+            if (expectedWindowedCount.containsKey(actualWindowStateEntry.getKey())) {
+                final Long expectedValue = expectedWindowedCount.get(actualWindowStateEntry.getKey());
+                assertTrue(actualWindowStateEntry.getValue() >= expectedValue);
+            }
+            // return this for next round of comparisons
+            expectedWindowedCount.put(actualWindowStateEntry.getKey(), actualWindowStateEntry.getValue());
+        }
+
+        for (final Map.Entry<String, Long> actualCountStateEntry : countState.entrySet()) {
+            if (expectedCount.containsKey(actualCountStateEntry.getKey())) {
+                final Long expectedValue = expectedCount.get(actualCountStateEntry.getKey());
+                assertTrue(actualCountStateEntry.getValue() >= expectedValue);
+            }
+            // return this for next round of comparisons
+            expectedCount.put(actualCountStateEntry.getKey(), actualCountStateEntry.getValue());
+        }
+
+    }
+
     private void waitUntilAtLeastNumRecordProcessed(final String topic,
                                                     final int numRecs) throws Exception {
         final long timeout = DEFAULT_TIMEOUT_MS;
@@ -1182,6 +1228,17 @@ public class QueryableStateIntegrationTest {
         return Collections.emptySet();
     }
 
+    private Map<String, Long> fetchMap(final ReadOnlyWindowStore<String, Long> store,
+                                       final String key) {
+        final WindowStoreIterator<Long> fetch =
+            store.fetch(key, ofEpochMilli(0), ofEpochMilli(System.currentTimeMillis()));
+        if (fetch.hasNext()) {
+            final KeyValue<Long, Long> next = fetch.next();
+            return Collections.singletonMap(key, next.value);
+        }
+        return Collections.emptyMap();
+    }
+
     /**
      * A class that periodically produces records in a separate thread
      */
@@ -1190,6 +1247,7 @@ public class QueryableStateIntegrationTest {
         private final List<String> inputValues;
         private final int numIterations;
         private int currIteration = 0;
+        boolean shutdown = false;
 
         ProducerRunnable(final String topic,
                          final List<String> inputValues,
@@ -1207,6 +1265,10 @@ public class QueryableStateIntegrationTest {
             return currIteration;
         }
 
+        synchronized void shutdown() {
+            shutdown = true;
+        }
+
         @Override
         public void run() {
             final Properties producerConfig = new Properties();
@@ -1218,7 +1280,7 @@ public class QueryableStateIntegrationTest {
             try (final KafkaProducer<String, String> producer =
                      new KafkaProducer<>(producerConfig, new StringSerializer(), new StringSerializer())) {
 
-                while (getCurrIteration() < numIterations) {
+                while (getCurrIteration() < numIterations && !shutdown) {
                     for (final String value : inputValues) {
                         producer.send(new ProducerRecord<>(topic, value));
                     }

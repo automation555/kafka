@@ -36,7 +36,6 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLProtocolException;
 import javax.net.ssl.SSLSession;
 
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.SslAuthenticationException;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.common.utils.ByteUtils;
@@ -108,7 +107,7 @@ public class SslTransportLayer implements TransportLayer {
         this.log = logContext.logger(getClass());
     }
 
-    @VisibleForTesting
+    // Visible for testing
     protected void startHandshake() throws IOException {
         if (state != State.NOT_INITIALIZED)
             throw new IllegalStateException("startHandshake() can only be called once, state " + state);
@@ -220,20 +219,20 @@ public class SslTransportLayer implements TransportLayer {
 
     /**
      * Reads available bytes from socket channel to `netReadBuffer`.
+     * Visible for testing.
      * @return  number of bytes read
      */
-    @VisibleForTesting
     protected int readFromSocketChannel() throws IOException {
         return socketChannel.read(netReadBuffer);
     }
 
     /**
     * Flushes the buffer to the network, non blocking.
+    * Visible for testing.
     * @param buf ByteBuffer
     * @return boolean true if the buffer has been emptied out, false otherwise
     * @throws IOException
     */
-    @VisibleForTesting
     protected boolean flush(ByteBuffer buf) throws IOException {
         int remaining = buf.remaining();
         if (remaining > 0) {
@@ -450,8 +449,20 @@ public class SslTransportLayer implements TransportLayer {
                 state = sslEngine.getSession().getProtocol().equals("TLSv1.3") ? State.POST_HANDSHAKE : State.READY;
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                 SSLSession session = sslEngine.getSession();
+                Principal principal = peerPrincipal();
                 log.debug("SSL handshake completed successfully with peerHost '{}' peerPort {} peerPrincipal '{}' cipherSuite '{}'",
-                        session.getPeerHost(), session.getPeerPort(), peerPrincipal(), session.getCipherSuite());
+                        session.getPeerHost(), session.getPeerPort(), principal, session.getCipherSuite());
+
+                if (principal != KafkaPrincipal.ANONYMOUS
+                        && (!sslEngine.getNeedClientAuth() && !sslEngine.getWantClientAuth())) {
+                    log.warn("Client authentication provided principal [{}], but SSL engine does not require client authentication",
+                            principal);
+                }
+
+                if (principal == KafkaPrincipal.ANONYMOUS && sslEngine.getWantClientAuth()) {
+                    log.info("SSL engine prefers client authentication, but none was provided");
+                }
+
                 metadataRegistry.registerCipherInformation(
                     new CipherInformation(session.getCipherSuite(),  session.getProtocol()));
             }
@@ -855,7 +866,7 @@ public class SslTransportLayer implements TransportLayer {
         return netReadBuffer;
     }
 
-    @VisibleForTesting
+    // Visibility for testing
     protected ByteBuffer appReadBuffer() {
         return appReadBuffer;
     }

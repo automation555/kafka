@@ -79,7 +79,7 @@ public class TopicConfig {
     public static final String MAX_MESSAGE_BYTES_DOC =
         "The largest record batch size allowed by Kafka (after compression if compression is enabled). " +
         "If this is increased and there are consumers older than 0.10.2, the consumers' fetch " +
-        "size must also be increased so that they can fetch record batches this large. " +
+        "size must also be increased so that the they can fetch record batches this large. " +
         "In the latest message format version, records are always grouped into batches for efficiency. " +
         "In previous message format versions, uncompressed records are not grouped into batches and this " +
         "limit only applies to a single record in that case.";
@@ -140,8 +140,8 @@ public class TopicConfig {
     public static final String MIN_IN_SYNC_REPLICAS_DOC = "When a producer sets acks to \"all\" (or \"-1\"), " +
         "this configuration specifies the minimum number of replicas that must acknowledge " +
         "a write for the write to be considered successful. If this minimum cannot be met, " +
-        "then the producer will raise an exception (either NotEnoughReplicas or " +
-        "NotEnoughReplicasAfterAppend).<br>When used together, <code>min.insync.replicas</code> and <code>acks</code> " +
+        "then the producer will raise an exception (InconsistentReplicationFactorException)." +
+        "<br>When used together, <code>min.insync.replicas</code> and <code>acks</code> " +
         "allow you to enforce greater durability guarantees. A typical scenario would be to " +
         "create a topic with a replication factor of 3, set <code>min.insync.replicas</code> to 2, and " +
         "produce with <code>acks</code> of \"all\". This will ensure that the producer raises an exception " +

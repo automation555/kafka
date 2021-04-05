@@ -131,9 +131,6 @@ object Defaults {
   val MinInSyncReplicas = 1
   val MessageDownConversionEnable = true
 
-  val MaxPartitions = Int.MaxValue
-  val MaxBrokerPartitions = Int.MaxValue
-
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMs = RequestTimeoutMs
   val ControllerMessageQueueSize = Int.MaxValue
@@ -417,10 +414,6 @@ object KafkaConfig {
   val CreateTopicPolicyClassNameProp = "create.topic.policy.class.name"
   val AlterConfigPolicyClassNameProp = "alter.config.policy.class.name"
   val LogMessageDownConversionEnableProp = LogConfigPrefix + "message.downconversion.enable"
-
-  val MaxPartitionsProp = "max.partitions"
-  val MaxBrokerPartitionsProp = "max.broker.partitions"
-
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsProp = "controller.socket.timeout.ms"
   val DefaultReplicationFactorProp = "default.replication.factor"
@@ -761,8 +754,8 @@ object KafkaConfig {
   val MinInSyncReplicasDoc = "When a producer sets acks to \"all\" (or \"-1\"), " +
     "min.insync.replicas specifies the minimum number of replicas that must acknowledge " +
     "a write for the write to be considered successful. If this minimum cannot be met, " +
-    "then the producer will raise an exception (either NotEnoughReplicas or " +
-    "NotEnoughReplicasAfterAppend).<br>When used together, min.insync.replicas and acks " +
+    "then the producer will raise an exception (InconsistentReplicationFactorException)." +
+    "<br>When used together, min.insync.replicas and acks " +
     "allow you to enforce greater durability guarantees. A typical scenario would be to " +
     "create a topic with a replication factor of 3, set min.insync.replicas to 2, and " +
     "produce with acks of \"all\". This will ensure that the producer raises an exception " +
@@ -773,15 +766,6 @@ object KafkaConfig {
   val AlterConfigPolicyClassNameDoc = "The alter configs policy class that should be used for validation. The class should " +
     "implement the <code>org.apache.kafka.server.policy.AlterConfigPolicy</code> interface."
   val LogMessageDownConversionEnableDoc = TopicConfig.MESSAGE_DOWNCONVERSION_ENABLE_DOC;
-
-  val MaxPartitionsDoc = "The maximum number of partitions in all brokers combined. " +
-    "If the number of partitions in all the brokers combined already exceed this configuration " +
-    "at the time at which this configuration is set, then the cluster will continue to funtion normally, " +
-    "however, it won' t be possible to create new partitions."
-  val MaxBrokerPartitionsDoc = "The maximum number of partitions per broker. " +
-    "If the number of partitions in a given broker already exceeds this configuration at the time at which " +
-    "this configuration is set, then the broker will continue to function normally. However, it won't be possible " +
-    "to assign more replicas to that broker."
 
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsDoc = "The socket timeout for controller-to-broker channels"
@@ -1079,8 +1063,6 @@ object KafkaConfig {
       .define(CreateTopicPolicyClassNameProp, CLASS, null, LOW, CreateTopicPolicyClassNameDoc)
       .define(AlterConfigPolicyClassNameProp, CLASS, null, LOW, AlterConfigPolicyClassNameDoc)
       .define(LogMessageDownConversionEnableProp, BOOLEAN, Defaults.MessageDownConversionEnable, LOW, LogMessageDownConversionEnableDoc)
-      .define(MaxPartitionsProp, INT, Defaults.MaxPartitions, HIGH, MaxPartitionsDoc)
-      .define(MaxBrokerPartitionsProp, INT, Defaults.MaxBrokerPartitions, HIGH, MaxBrokerPartitionsDoc)
 
       /** ********* Replication configuration ***********/
       .define(ControllerSocketTimeoutMsProp, INT, Defaults.ControllerSocketTimeoutMs, MEDIUM, ControllerSocketTimeoutMsDoc)
@@ -1247,20 +1229,6 @@ object KafkaConfig {
 
   def apply(props: java.util.Map[_, _]): KafkaConfig = new KafkaConfig(props, true)
 
-  def configType(configName: String): Option[ConfigDef.Type] = {
-    def typeOf(name: String): Option[ConfigDef.Type] = Option(configDef.configKeys.get(name)).map(_.`type`)
-
-    typeOf(configName) match {
-      case Some(t) => Some(t)
-      case None =>
-        DynamicBrokerConfig.brokerConfigSynonyms(configName, matchListenerOverride = true).flatMap(typeOf).headOption
-    }
-  }
-
-  def maybeSensitive(configType: Option[ConfigDef.Type]): Boolean = {
-    // If we can't determine the config entry type, treat it as a sensitive config to be safe
-    configType.isEmpty || configType.contains(ConfigDef.Type.PASSWORD)
-  }
 }
 
 class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigOverride: Option[DynamicBrokerConfig])
@@ -1476,9 +1444,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   def logMessageTimestampType = TimestampType.forName(getString(KafkaConfig.LogMessageTimestampTypeProp))
   def logMessageTimestampDifferenceMaxMs: Long = getLong(KafkaConfig.LogMessageTimestampDifferenceMaxMsProp)
   def logMessageDownConversionEnable: Boolean = getBoolean(KafkaConfig.LogMessageDownConversionEnableProp)
-
-  def maxPartitions = getInt(KafkaConfig.MaxPartitionsProp)
-  def maxBrokerPartitions = getInt(KafkaConfig.MaxBrokerPartitionsProp)
 
   /** ********* Replication configuration ***********/
   val controllerSocketTimeoutMs: Int = getInt(KafkaConfig.ControllerSocketTimeoutMsProp)

@@ -33,12 +33,12 @@ def doValidation() {
   '''
 }
 
-def doTest(target = "unitTest integrationTest") {
-  sh """
-    ./gradlew -PscalaVersion=$SCALA_VERSION ${target} \
+def doTest() {
+  sh '''
+    ./gradlew -PscalaVersion=$SCALA_VERSION unitTest integrationTest \
         --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed \
         -PignoreFailures=true -PmaxParallelForks=2 -PmaxTestRetries=1 -PmaxTestRetryFailures=5
-  """
+  '''
   junit '**/build/test-results/**/TEST-*.xml'
 }
 
@@ -46,8 +46,8 @@ def doStreamsArchetype() {
   echo 'Verify that Kafka Streams archetype compiles'
 
   sh '''
-    ./gradlew streams:publishToMavenLocal clients:publishToMavenLocal connect:json:publishToMavenLocal connect:api:publishToMavenLocal \
-         || { echo 'Could not publish kafka-streams.jar (and dependencies) locally to Maven'; exit 1; }
+    ./gradlew streams:install clients:install connect:json:install connect:api:install \
+         || { echo 'Could not install kafka-streams.jar (and dependencies) locally`'; exit 1; }
   '''
 
   VERSION = sh(script: 'grep "^version=" gradle.properties | cut -d= -f 2', returnStdout: true).trim()
@@ -79,6 +79,9 @@ def doStreamsArchetype() {
               || { echo 'Could not compile streams quickstart archetype project'; exit 1; }
         '''
       }
+
+      echo 'Cleaning up test-streams-archetype'
+      deleteDir()
     }
   }
 }
@@ -101,8 +104,8 @@ pipeline {
         stage('JDK 8') {
           agent { label 'ubuntu' }
           tools {
-            jdk 'jdk_1.8_latest'
-            maven 'maven_3_latest'
+            jdk 'JDK 1.8 (latest)'
+            maven 'Maven 3.6.3'
           }
           options {
             timeout(time: 8, unit: 'HOURS') 
@@ -122,7 +125,7 @@ pipeline {
         stage('JDK 11') {
           agent { label 'ubuntu' }
           tools {
-            jdk 'jdk_11_latest'
+            jdk 'JDK 11 (latest)'
           }
           options {
             timeout(time: 8, unit: 'HOURS') 
@@ -139,10 +142,10 @@ pipeline {
           }
         }
        
-        stage('JDK 16') {
+        stage('JDK 15') {
           agent { label 'ubuntu' }
           tools {
-            jdk 'jdk_16_latest'
+            jdk 'JDK 15 (latest)'
           }
           options {
             timeout(time: 8, unit: 'HOURS') 
@@ -155,26 +158,7 @@ pipeline {
             setupGradle()
             doValidation()
             doTest()
-            echo 'Skipping Kafka Streams archetype test for Java 16'
-          }
-        }
-
-        stage('ARM') {
-          agent { label 'arm4' }
-          options {
-            timeout(time: 2, unit: 'HOURS') 
-            timestamps()
-          }
-          environment {
-            SCALA_VERSION=2.12
-          }
-          steps {
-            setupGradle()
-            doValidation()
-            catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-              doTest('unitTest')
-            }
-            echo 'Skipping Kafka Streams archetype test for ARM build'
+            echo 'Skipping Kafka Streams archetype test for Java 15'
           }
         }
       }

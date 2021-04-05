@@ -590,20 +590,6 @@ class KafkaConfigTest {
         case KafkaConfig.ZkSyncTimeMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.ZkEnableSecureAclsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean")
         case KafkaConfig.ZkMaxInFlightRequestsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
-        case KafkaConfig.ZkSslClientEnableProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean")
-        case KafkaConfig.ZkClientCnxnSocketProp =>  //ignore string
-        case KafkaConfig.ZkSslKeyStoreLocationProp =>  //ignore string
-        case KafkaConfig.ZkSslKeyStorePasswordProp =>  //ignore string
-        case KafkaConfig.ZkSslKeyStoreTypeProp =>  //ignore string
-        case KafkaConfig.ZkSslTrustStoreLocationProp =>  //ignore string
-        case KafkaConfig.ZkSslTrustStorePasswordProp =>  //ignore string
-        case KafkaConfig.ZkSslTrustStoreTypeProp =>  //ignore string
-        case KafkaConfig.ZkSslProtocolProp =>  //ignore string
-        case KafkaConfig.ZkSslEnabledProtocolsProp =>  //ignore string
-        case KafkaConfig.ZkSslCipherSuitesProp =>  //ignore string
-        case KafkaConfig.ZkSslEndpointIdentificationAlgorithmProp => //ignore string
-        case KafkaConfig.ZkSslCrlEnableProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean")
-        case KafkaConfig.ZkSslOcspEnableProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean")
 
         case KafkaConfig.BrokerIdProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.NumNetworkThreadsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
@@ -650,8 +636,6 @@ class KafkaConfigTest {
         case KafkaConfig.LogCleanerDeleteRetentionMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.LogCleanerMinCompactionLagMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.LogCleanerMaxCompactionLagMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
-        case KafkaConfig.LogCleanerCompactionStrategyProp => assertPropertyInvalid(getBaseProperties(), name, "", "unknown_strategy")
-        case KafkaConfig.LogCleanerCompactionStrategyHeaderKeyProp => // ignore optional string
         case KafkaConfig.LogCleanerMinCleanRatioProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.LogIndexSizeMaxBytesProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "3")
         case KafkaConfig.LogFlushIntervalMessagesProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
@@ -710,6 +694,7 @@ class KafkaConfigTest {
         case KafkaConfig.NumQuotaSamplesProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
         case KafkaConfig.QuotaWindowSizeSecondsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
         case KafkaConfig.DeleteTopicEnableProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean", "0")
+        case KafkaConfig.FollowerFetchReadsInSyncEnableProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_boolean", "0")
 
         case KafkaConfig.MetricNumSamplesProp => assertPropertyInvalid(getBaseProperties, name, "not_a_number", "-1", "0")
         case KafkaConfig.MetricSampleWindowMsProp => assertPropertyInvalid(getBaseProperties, name, "not_a_number", "-1", "0")
@@ -848,15 +833,6 @@ class KafkaConfigTest {
     assertTrue(isValidKafkaConfig(props))
     props.put(KafkaConfig.MaxConnectionsPerIpOverridesProp, "127.0.0.0#:100")
     assertFalse(isValidKafkaConfig(props))
-  }
-
-  @Test
-  def testInvalidCompactionHeaderKeyConfig(): Unit = {
-    val props = new Properties
-    props.setProperty(KafkaConfig.LogCleanerCompactionStrategyProp, "header")
-    intercept[Exception] {
-      KafkaConfig.fromProps(props)
-    }
   }
 
   private def assertPropertyInvalid(validRequiredProps: => Properties, name: String, values: Any*): Unit = {

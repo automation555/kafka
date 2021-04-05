@@ -157,9 +157,9 @@ public class ReplicaFetcherThreadBenchmark {
             Mockito.when(offsetCheckpoints.fetch(logDir.getAbsolutePath(), tp)).thenReturn(Option.apply(0L));
             Partition partition = new Partition(tp, 100, ApiVersion$.MODULE$.latestVersion(),
                     0, Time.SYSTEM, partitionStateStore, new DelayedOperationsMock(tp),
-                    Mockito.mock(MetadataCache.class), logManager);
+                    Mockito.mock(MetadataCache.class), logManager, Partition.defaultFollowerPendingFetchAvailabilityConfig());
 
-            partition.makeFollower(partitionState, offsetCheckpoints);
+            partition.makeFollower(0, partitionState, 0, offsetCheckpoints);
             pool.put(tp, partition);
             offsetAndEpochs.put(tp, new OffsetAndEpoch(0, 0));
             BaseRecords fetched = new BaseRecords() {
@@ -241,10 +241,10 @@ public class ReplicaFetcherThreadBenchmark {
                     3,
                     new BrokerEndPoint(3, "host", 3000),
                     config,
-                    Time.SYSTEM,
                     new FailedPartitions(),
                     replicaManager,
                     new Metrics(),
+                    Time.SYSTEM,
                     new ReplicaQuota() {
                         @Override
                         public boolean isQuotaExceeded() {

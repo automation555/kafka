@@ -25,7 +25,7 @@ import kafka.cluster.EndPoint
 import kafka.coordinator.group.OffsetConfig
 import kafka.coordinator.transaction.{TransactionLog, TransactionStateManager}
 import kafka.message.{BrokerCompressionCodec, CompressionCodec, ZStdCompressionCodec}
-import kafka.security.authorizer.AuthorizerUtils
+import kafka.security.authorizer.AuthorizerWrapper
 import kafka.utils.CoreUtils
 import kafka.utils.Implicits._
 import org.apache.kafka.clients.CommonClientConfigs
@@ -33,7 +33,6 @@ import org.apache.kafka.common.Reconfigurable
 import org.apache.kafka.common.config.SecurityConfig
 import org.apache.kafka.common.config.ConfigDef.{ConfigKey, ValidList}
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs
-import org.apache.kafka.common.config.types.Password
 import org.apache.kafka.common.config.{AbstractConfig, ConfigDef, ConfigException, SaslConfigs, SslClientAuth, SslConfigs, TopicConfig}
 import org.apache.kafka.common.metrics.Sensor
 import org.apache.kafka.common.network.ListenerName
@@ -41,9 +40,8 @@ import org.apache.kafka.common.record.{LegacyRecord, Records, TimestampType}
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.utils.Utils
 import org.apache.kafka.server.authorizer.Authorizer
-import org.apache.zookeeper.client.ZKClientConfig
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.{Map, Seq}
 
 object Defaults {
@@ -52,17 +50,12 @@ object Defaults {
   val ZkSyncTimeMs = 2000
   val ZkEnableSecureAcls = false
   val ZkMaxInFlightRequests = 10
-  val ZkSslClientEnable = false
-  val ZkSslProtocol = "TLSv1.2"
-  val ZkSslEndpointIdentificationAlgorithm = "HTTPS"
-  val ZkSslCrlEnable = false
-  val ZkSslOcspEnable = false
 
   /** ********* General Configuration ***********/
   val BrokerIdGenerationEnable = true
   val MaxReservedBrokerId = 1000
   val BrokerId = -1
-  val MessageMaxBytes = 1024 * 1024 + Records.LOG_OVERHEAD
+  val MessageMaxBytes = 1000000 + Records.LOG_OVERHEAD
   val NumNetworkThreads = 3
   val NumIoThreads = 8
   val BackgroundThreads = 10
@@ -114,9 +107,6 @@ object Defaults {
   val LogCleanerDeleteRetentionMs = 24 * 60 * 60 * 1000L
   val LogCleanerMinCompactionLagMs = 0L
   val LogCleanerMaxCompactionLagMs = Long.MaxValue
-  val LogCleanerCompactionStrategyOffset = "offset"
-  val LogCleanerCompactionStrategyTimestamp = "timestamp"
-  val LogCleanerCompactionStrategyHeader = "header"
   val LogIndexSizeMaxBytes = 10 * 1024 * 1024
   val LogIndexIntervalBytes = 4096
   val LogFlushIntervalMessages = Long.MaxValue
@@ -157,6 +147,8 @@ object Defaults {
   val UncleanLeaderElectionEnable = false
   val InterBrokerSecurityProtocol = SecurityProtocol.PLAINTEXT.toString
   val InterBrokerProtocolVersion = ApiVersion.latestVersion.toString
+
+  val FollowerFetchReadsInSyncEnable = true
 
   /** ********* Controlled shutdown configuration ***********/
   val ControlledShutdownMaxRetries = 3
@@ -242,7 +234,7 @@ object Defaults {
 
   /** ********* Sasl configuration ***********/
   val SaslMechanismInterBrokerProtocol = SaslConfigs.DEFAULT_SASL_MECHANISM
-  val SaslEnabledMechanisms = BrokerSecurityConfigs.DEFAULT_SASL_ENABLED_MECHANISMS
+  val SaslEnabledMechanisms = SaslConfigs.DEFAULT_SASL_ENABLED_MECHANISMS
   val SaslKerberosKinitCmd = SaslConfigs.DEFAULT_KERBEROS_KINIT_CMD
   val SaslKerberosTicketRenewWindowFactor = SaslConfigs.DEFAULT_KERBEROS_TICKET_RENEW_WINDOW_FACTOR
   val SaslKerberosTicketRenewJitter = SaslConfigs.DEFAULT_KERBEROS_TICKET_RENEW_JITTER
@@ -279,62 +271,6 @@ object KafkaConfig {
   val ZkSyncTimeMsProp = "zookeeper.sync.time.ms"
   val ZkEnableSecureAclsProp = "zookeeper.set.acl"
   val ZkMaxInFlightRequestsProp = "zookeeper.max.in.flight.requests"
-  val ZkSslClientEnableProp = "zookeeper.ssl.client.enable"
-  val ZkClientCnxnSocketProp = "zookeeper.clientCnxnSocket"
-  val ZkSslKeyStoreLocationProp = "zookeeper.ssl.keystore.location"
-  val ZkSslKeyStorePasswordProp = "zookeeper.ssl.keystore.password"
-  val ZkSslKeyStoreTypeProp = "zookeeper.ssl.keystore.type"
-  val ZkSslTrustStoreLocationProp = "zookeeper.ssl.truststore.location"
-  val ZkSslTrustStorePasswordProp = "zookeeper.ssl.truststore.password"
-  val ZkSslTrustStoreTypeProp = "zookeeper.ssl.truststore.type"
-  val ZkSslProtocolProp = "zookeeper.ssl.protocol"
-  val ZkSslEnabledProtocolsProp = "zookeeper.ssl.enabled.protocols"
-  val ZkSslCipherSuitesProp = "zookeeper.ssl.cipher.suites"
-  val ZkSslEndpointIdentificationAlgorithmProp = "zookeeper.ssl.endpoint.identification.algorithm"
-  val ZkSslCrlEnableProp = "zookeeper.ssl.crl.enable"
-  val ZkSslOcspEnableProp = "zookeeper.ssl.ocsp.enable"
-
-  // a map from the Kafka config to the corresponding ZooKeeper Java system property
-  private[kafka] val ZkSslConfigToSystemPropertyMap: Map[String, String] = Map(
-    ZkSslClientEnableProp -> ZKClientConfig.SECURE_CLIENT,
-    ZkClientCnxnSocketProp -> ZKClientConfig.ZOOKEEPER_CLIENT_CNXN_SOCKET,
-    ZkSslKeyStoreLocationProp -> "zookeeper.ssl.keyStore.location",
-    ZkSslKeyStorePasswordProp -> "zookeeper.ssl.keyStore.password",
-    ZkSslKeyStoreTypeProp -> "zookeeper.ssl.keyStore.type",
-    ZkSslTrustStoreLocationProp -> "zookeeper.ssl.trustStore.location",
-    ZkSslTrustStorePasswordProp -> "zookeeper.ssl.trustStore.password",
-    ZkSslTrustStoreTypeProp -> "zookeeper.ssl.trustStore.type",
-    ZkSslProtocolProp -> "zookeeper.ssl.protocol",
-    ZkSslEnabledProtocolsProp -> "zookeeper.ssl.enabledProtocols",
-    ZkSslCipherSuitesProp -> "zookeeper.ssl.ciphersuites",
-    ZkSslEndpointIdentificationAlgorithmProp -> "zookeeper.ssl.hostnameVerification",
-    ZkSslCrlEnableProp -> "zookeeper.ssl.crl",
-    ZkSslOcspEnableProp -> "zookeeper.ssl.ocsp")
-
-  private[kafka] def getZooKeeperClientProperty(clientConfig: ZKClientConfig, kafkaPropName: String): Option[String] = {
-    Option(clientConfig.getProperty(ZkSslConfigToSystemPropertyMap(kafkaPropName)))
-  }
-
-  private[kafka] def setZooKeeperClientProperty(clientConfig: ZKClientConfig, kafkaPropName: String, kafkaPropValue: Any): Unit = {
-    clientConfig.setProperty(ZkSslConfigToSystemPropertyMap(kafkaPropName),
-      kafkaPropName match {
-        case ZkSslEndpointIdentificationAlgorithmProp => (kafkaPropValue.toString.toUpperCase == "HTTPS").toString
-        case ZkSslEnabledProtocolsProp | ZkSslCipherSuitesProp => kafkaPropValue match {
-          case list: java.util.List[_] => list.asInstanceOf[java.util.List[_]].asScala.mkString(",")
-          case _ => kafkaPropValue.toString
-        }
-        case _ => kafkaPropValue.toString
-    })
-  }
-
-  // For ZooKeeper TLS client authentication to be enabled the client must (at a minimum) configure itself as using TLS
-  // with both a client connection socket and a key store location explicitly set.
-  private[kafka] def zkTlsClientAuthEnabled(zkClientConfig: ZKClientConfig) = {
-    getZooKeeperClientProperty(zkClientConfig, ZkSslClientEnableProp).getOrElse("false") == "true" &&
-      getZooKeeperClientProperty(zkClientConfig, ZkClientCnxnSocketProp).isDefined &&
-      getZooKeeperClientProperty(zkClientConfig, ZkSslKeyStoreLocationProp).isDefined
-  }
-
   /** ********* General Configuration ***********/
   val BrokerIdGenerationEnableProp = "broker.id.generation.enable"
   val MaxReservedBrokerIdProp = "reserved.broker.max.id"
@@ -398,8 +334,6 @@ object KafkaConfig {
   val LogCleanerDeleteRetentionMsProp = "log.cleaner.delete.retention.ms"
   val LogCleanerMinCompactionLagMsProp = "log.cleaner.min.compaction.lag.ms"
   val LogCleanerMaxCompactionLagMsProp = "log.cleaner.max.compaction.lag.ms"
-  val LogCleanerCompactionStrategyProp = "log.cleaner.compaction.strategy"
-  val LogCleanerCompactionStrategyHeaderKeyProp = "log.cleaner.compaction.strategy.header"
   val LogIndexSizeMaxBytesProp = "log.index.size.max.bytes"
   val LogIndexIntervalBytesProp = "log.index.interval.bytes"
   val LogFlushIntervalMessagesProp = "log.flush.interval.messages"
@@ -443,6 +377,9 @@ object KafkaConfig {
   val InterBrokerProtocolVersionProp = "inter.broker.protocol.version"
   val InterBrokerListenerNameProp = "inter.broker.listener.name"
   val ReplicaSelectorClassProp = "replica.selector.class"
+  // may need to find a better name
+  val FollowerFetchReadsInSyncEnableProp = "follower.fetch.reads.insync.enable"
+
   /** ********* Controlled shutdown configuration ***********/
   val ControlledShutdownMaxRetriesProp = "controlled.shutdown.max.retries"
   val ControlledShutdownRetryBackoffMsProp = "controlled.shutdown.retry.backoff.ms"
@@ -525,7 +462,6 @@ object KafkaConfig {
   val SslSecureRandomImplementationProp = SslConfigs.SSL_SECURE_RANDOM_IMPLEMENTATION_CONFIG
   val SslClientAuthProp = BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG
   val SslPrincipalMappingRulesProp = BrokerSecurityConfigs.SSL_PRINCIPAL_MAPPING_RULES_CONFIG
-  var SslEngineFactoryClassProp = SslConfigs.SSL_ENGINE_FACTORY_CLASS_CONFIG
 
   /** ********* SASL Configuration ****************/
   val SaslMechanismInterBrokerProtocolProp = "sasl.mechanism.inter.broker.protocol"
@@ -572,41 +508,6 @@ object KafkaConfig {
   val ZkSyncTimeMsDoc = "How far a ZK follower can be behind a ZK leader"
   val ZkEnableSecureAclsDoc = "Set client to use secure ACLs"
   val ZkMaxInFlightRequestsDoc = "The maximum number of unacknowledged requests the client will send to Zookeeper before blocking."
-  val ZkSslClientEnableDoc = "Set client to use TLS when connecting to ZooKeeper." +
-    " An explicit value overrides any value set via the <code>zookeeper.client.secure</code> system property (note the different name)." +
-    s" Defaults to false if neither is set; when true, <code>$ZkClientCnxnSocketProp</code> must be set (typically to <code>org.apache.zookeeper.ClientCnxnSocketNetty</code>); other values to set may include " +
-    ZkSslConfigToSystemPropertyMap.keys.toList.sorted.filter(x => x != ZkSslClientEnableProp && x != ZkClientCnxnSocketProp).mkString("<code>", "</code>, <code>", "</code>")
-  val ZkClientCnxnSocketDoc = "Typically set to <code>org.apache.zookeeper.ClientCnxnSocketNetty</code> when using TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the same-named <code>${ZkSslConfigToSystemPropertyMap(ZkClientCnxnSocketProp)}</code> system property."
-  val ZkSslKeyStoreLocationDoc = "Keystore location when using a client-side certificate with TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslKeyStoreLocationProp)}</code> system property (note the camelCase)."
-  val ZkSslKeyStorePasswordDoc = "Keystore password when using a client-side certificate with TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslKeyStorePasswordProp)}</code> system property (note the camelCase)." +
-    " Note that ZooKeeper does not support a key password different from the keystore password, so be sure to set the key password in the keystore to be identical to the keystore password; otherwise the connection attempt to Zookeeper will fail."
-  val ZkSslKeyStoreTypeDoc = "Keystore type when using a client-side certificate with TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslKeyStoreTypeProp)}</code> system property (note the camelCase)." +
-    " The default value of <code>null</code> means the type will be auto-detected based on the filename extension of the keystore."
-  val ZkSslTrustStoreLocationDoc = "Truststore location when using TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslTrustStoreLocationProp)}</code> system property (note the camelCase)."
-  val ZkSslTrustStorePasswordDoc = "Truststore password when using TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslTrustStorePasswordProp)}</code> system property (note the camelCase)."
-  val ZkSslTrustStoreTypeDoc = "Truststore type when using TLS connectivity to ZooKeeper." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslTrustStoreTypeProp)}</code> system property (note the camelCase)." +
-    " The default value of <code>null</code> means the type will be auto-detected based on the filename extension of the truststore."
-  val ZkSslProtocolDoc = "Specifies the protocol to be used in ZooKeeper TLS negotiation." +
-    s" An explicit value overrides any value set via the same-named <code>${ZkSslConfigToSystemPropertyMap(ZkSslProtocolProp)}</code> system property."
-  val ZkSslEnabledProtocolsDoc = "Specifies the enabled protocol(s) in ZooKeeper TLS negotiation (csv)." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslEnabledProtocolsProp)}</code> system property (note the camelCase)." +
-    s" The default value of <code>null</code> means the enabled protocol will be the value of the <code>${KafkaConfig.ZkSslProtocolProp}</code> configuration property."
-  val ZkSslCipherSuitesDoc = "Specifies the enabled cipher suites to be used in ZooKeeper TLS negotiation (csv)." +
-    s""" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslCipherSuitesProp)}</code> system property (note the single word \"ciphersuites\").""" +
-    " The default value of <code>null</code> means the list of enabled cipher suites is determined by the Java runtime being used."
-  val ZkSslEndpointIdentificationAlgorithmDoc = "Specifies whether to enable hostname verification in the ZooKeeper TLS negotiation process, with (case-insensitively) \"https\" meaning ZooKeeper hostname verification is enabled and an explicit blank value meaning it is disabled (disabling it is only recommended for testing purposes)." +
-    s""" An explicit value overrides any \"true\" or \"false\" value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslEndpointIdentificationAlgorithmProp)}</code> system property (note the different name and values; true implies https and false implies blank)."""
-  val ZkSslCrlEnableDoc = "Specifies whether to enable Certificate Revocation List in the ZooKeeper TLS protocols." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslCrlEnableProp)}</code> system property (note the shorter name)."
-  val ZkSslOcspEnableDoc = "Specifies whether to enable Online Certificate Status Protocol in the ZooKeeper TLS protocols." +
-    s" Overrides any explicit value set via the <code>${ZkSslConfigToSystemPropertyMap(ZkSslOcspEnableProp)}</code> system property (note the shorter name)."
   /** ********* General Configuration ***********/
   val BrokerIdGenerationEnableDoc = s"Enable automatic broker id generation on the server. When enabled the value configured for $MaxReservedBrokerIdProp should be reviewed."
   val MaxReservedBrokerIdDoc = "Max number that can be used for a broker.id"
@@ -734,15 +635,6 @@ object KafkaConfig {
   val LogCleanerDeleteRetentionMsDoc = "How long are delete records retained?"
   val LogCleanerMinCompactionLagMsDoc = "The minimum time a message will remain uncompacted in the log. Only applicable for logs that are being compacted."
   val LogCleanerMaxCompactionLagMsDoc = "The maximum time a message will remain ineligible for compaction in the log. Only applicable for logs that are being compacted."
-  val LogCleanerCompactionStrategyDoc = "The retention strategy to use when compacting the log. " +
-    "Only applicable for logs that are being compacted. " + 
-    "By default the compaction strategy is set to \"offset\" where the latest offset for the key is retained. " + 
-    "For \"header\" strategy, the value provided by the producer in the record header will be used to determine " +
-    "the latest record for the key. For \"timestamp\" strategy, the record tiemstamp will be used to determine the " +
-    "latest record for the key. So setting the strategy to anything other than \"offset\" will replace the offset " +
-    "when calculating which records to retain for the value (i.e. provided by the producer) matching " + 
-    "the given strategy name (case-insensitive). The valid strategies are \"offset\", \"timestamp\" and \"header\".";
-  val LogCleanerCompactionStrategyHeaderKeyDoc = "The header key for the compaction. Only applicable for compaction strategy header."
   val LogIndexSizeMaxBytesDoc = "The maximum size in bytes of the offset index"
   val LogIndexIntervalBytesDoc = "The interval with which we add an entry to the offset index"
   val LogFlushIntervalMessagesDoc = "The number of messages accumulated on a log partition before messages are flushed to disk "
@@ -861,6 +753,7 @@ object KafkaConfig {
   val TransactionsRemoveExpiredTransactionsIntervalMsDoc = "The interval at which to remove transactions that have expired due to <code>transactional.id.expiration.ms</code> passing"
 
   /** ********* Fetch Configuration **************/
+  val FollowerFetchReadsInsyncEnableDoc = "It allows the follower to be insync if there are any pending fetch requests to be processed having offsets >= log-end-offset value at the earlier fetch request."
   val MaxIncrementalFetchSessionCacheSlotsDoc = "The maximum number of incremental fetch sessions that we will maintain."
   val FetchMaxBytesDoc = "The maximum number of bytes we will return for a fetch request. Must be at least 1024."
 
@@ -925,7 +818,6 @@ object KafkaConfig {
   val SslSecureRandomImplementationDoc = SslConfigs.SSL_SECURE_RANDOM_IMPLEMENTATION_DOC
   val SslClientAuthDoc = BrokerSecurityConfigs.SSL_CLIENT_AUTH_DOC
   val SslPrincipalMappingRulesDoc = BrokerSecurityConfigs.SSL_PRINCIPAL_MAPPING_RULES_DOC
-  val SslEngineFactoryClassDoc = SslConfigs.SSL_ENGINE_FACTORY_CLASS_DOC
 
   /** ********* Sasl Configuration ****************/
   val SaslMechanismInterBrokerProtocolDoc = "SASL mechanism used for inter-broker communication. Default is GSSAPI."
@@ -979,20 +871,6 @@ object KafkaConfig {
       .define(ZkSyncTimeMsProp, INT, Defaults.ZkSyncTimeMs, LOW, ZkSyncTimeMsDoc)
       .define(ZkEnableSecureAclsProp, BOOLEAN, Defaults.ZkEnableSecureAcls, HIGH, ZkEnableSecureAclsDoc)
       .define(ZkMaxInFlightRequestsProp, INT, Defaults.ZkMaxInFlightRequests, atLeast(1), HIGH, ZkMaxInFlightRequestsDoc)
-      .define(ZkSslClientEnableProp, BOOLEAN, Defaults.ZkSslClientEnable, MEDIUM, ZkSslClientEnableDoc)
-      .define(ZkClientCnxnSocketProp, STRING, null, MEDIUM, ZkClientCnxnSocketDoc)
-      .define(ZkSslKeyStoreLocationProp, STRING, null, MEDIUM, ZkSslKeyStoreLocationDoc)
-      .define(ZkSslKeyStorePasswordProp, PASSWORD, null, MEDIUM, ZkSslKeyStorePasswordDoc)
-      .define(ZkSslKeyStoreTypeProp, STRING, null, MEDIUM, ZkSslKeyStoreTypeDoc)
-      .define(ZkSslTrustStoreLocationProp, STRING, null, MEDIUM, ZkSslTrustStoreLocationDoc)
-      .define(ZkSslTrustStorePasswordProp, PASSWORD, null, MEDIUM, ZkSslTrustStorePasswordDoc)
-      .define(ZkSslTrustStoreTypeProp, STRING, null, MEDIUM, ZkSslTrustStoreTypeDoc)
-      .define(ZkSslProtocolProp, STRING, Defaults.ZkSslProtocol, LOW, ZkSslProtocolDoc)
-      .define(ZkSslEnabledProtocolsProp, LIST, null, LOW, ZkSslEnabledProtocolsDoc)
-      .define(ZkSslCipherSuitesProp, LIST, null, LOW, ZkSslCipherSuitesDoc)
-      .define(ZkSslEndpointIdentificationAlgorithmProp, STRING, Defaults.ZkSslEndpointIdentificationAlgorithm, LOW, ZkSslEndpointIdentificationAlgorithmDoc)
-      .define(ZkSslCrlEnableProp, BOOLEAN, Defaults.ZkSslCrlEnable, LOW, ZkSslCrlEnableDoc)
-      .define(ZkSslOcspEnableProp, BOOLEAN, Defaults.ZkSslOcspEnable, LOW, ZkSslOcspEnableDoc)
 
       /** ********* General Configuration ***********/
       .define(BrokerIdGenerationEnableProp, BOOLEAN, Defaults.BrokerIdGenerationEnable, MEDIUM, BrokerIdGenerationEnableDoc)
@@ -1061,9 +939,6 @@ object KafkaConfig {
       .define(LogCleanerDeleteRetentionMsProp, LONG, Defaults.LogCleanerDeleteRetentionMs, MEDIUM, LogCleanerDeleteRetentionMsDoc)
       .define(LogCleanerMinCompactionLagMsProp, LONG, Defaults.LogCleanerMinCompactionLagMs, MEDIUM, LogCleanerMinCompactionLagMsDoc)
       .define(LogCleanerMaxCompactionLagMsProp, LONG, Defaults.LogCleanerMaxCompactionLagMs, MEDIUM, LogCleanerMaxCompactionLagMsDoc)
-      .define(LogCleanerCompactionStrategyProp, STRING, Defaults.LogCleanerCompactionStrategyOffset,
-        in(Defaults.LogCleanerCompactionStrategyOffset, Defaults.LogCleanerCompactionStrategyTimestamp, Defaults.LogCleanerCompactionStrategyHeader), MEDIUM, LogCleanerCompactionStrategyDoc)
-      .define(LogCleanerCompactionStrategyHeaderKeyProp, STRING, "", MEDIUM, LogCleanerCompactionStrategyHeaderKeyDoc)
       .define(LogIndexSizeMaxBytesProp, INT, Defaults.LogIndexSizeMaxBytes, atLeast(4), MEDIUM, LogIndexSizeMaxBytesDoc)
       .define(LogIndexIntervalBytesProp, INT, Defaults.LogIndexIntervalBytes, atLeast(0), MEDIUM, LogIndexIntervalBytesDoc)
       .define(LogFlushIntervalMessagesProp, LONG, Defaults.LogFlushIntervalMessages, atLeast(1), HIGH, LogFlushIntervalMessagesDoc)
@@ -1107,6 +982,7 @@ object KafkaConfig {
       .define(InterBrokerProtocolVersionProp, STRING, Defaults.InterBrokerProtocolVersion, ApiVersionValidator, MEDIUM, InterBrokerProtocolVersionDoc)
       .define(InterBrokerListenerNameProp, STRING, null, MEDIUM, InterBrokerListenerNameDoc)
       .define(ReplicaSelectorClassProp, STRING, null, MEDIUM, ReplicaSelectorClassDoc)
+      .define(FollowerFetchReadsInSyncEnableProp, BOOLEAN, Defaults.FollowerFetchReadsInSyncEnable, HIGH, FollowerFetchReadsInsyncEnableDoc)
 
       /** ********* Controlled shutdown configuration ***********/
       .define(ControlledShutdownMaxRetriesProp, INT, Defaults.ControlledShutdownMaxRetries, MEDIUM, ControlledShutdownMaxRetriesDoc)
@@ -1192,7 +1068,6 @@ object KafkaConfig {
       .define(SslClientAuthProp, STRING, Defaults.SslClientAuthentication, in(Defaults.SslClientAuthenticationValidValues:_*), MEDIUM, SslClientAuthDoc)
       .define(SslCipherSuitesProp, LIST, Collections.emptyList(), MEDIUM, SslCipherSuitesDoc)
       .define(SslPrincipalMappingRulesProp, STRING, Defaults.SslPrincipalMappingRules, LOW, SslPrincipalMappingRulesDoc)
-      .define(SslEngineFactoryClassProp, CLASS, null, LOW, SslEngineFactoryClassDoc)
 
       /** ********* Sasl Configuration ****************/
       .define(SaslMechanismInterBrokerProtocolProp, STRING, Defaults.SaslMechanismInterBrokerProtocol, MEDIUM, SaslMechanismInterBrokerProtocolDoc)
@@ -1249,38 +1124,6 @@ object KafkaConfig {
 
   def apply(props: java.util.Map[_, _]): KafkaConfig = new KafkaConfig(props, true)
 
-  private def typeOf(name: String): Option[ConfigDef.Type] = Option(configDef.configKeys.get(name)).map(_.`type`)
-
-  def configType(configName: String): Option[ConfigDef.Type] = {
-    val configType = configTypeExact(configName)
-    if (configType.isDefined) {
-      return configType
-    }
-    typeOf(configName) match {
-      case Some(t) => Some(t)
-      case None =>
-        DynamicBrokerConfig.brokerConfigSynonyms(configName, matchListenerOverride = true).flatMap(typeOf).headOption
-    }
-  }
-
-  private def configTypeExact(exactName: String): Option[ConfigDef.Type] = {
-    val configType = typeOf(exactName).orNull
-    if (configType != null) {
-      Some(configType)
-    } else {
-      val configKey = DynamicConfig.Broker.brokerConfigDef.configKeys().get(exactName)
-      if (configKey != null) {
-        Some(configKey.`type`)
-      } else {
-        None
-      }
-    }
-  }
-
-  def maybeSensitive(configType: Option[ConfigDef.Type]): Boolean = {
-    // If we can't determine the config entry type, treat it as a sensitive config to be safe
-    configType.isEmpty || configType.contains(ConfigDef.Type.PASSWORD)
-  }
 }
 
 class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigOverride: Option[DynamicBrokerConfig])
@@ -1295,11 +1138,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   private[server] def updateCurrentConfig(newConfig: KafkaConfig): Unit = {
     this.currentConfig = newConfig
   }
-
-  // The following captures any system properties impacting ZooKeeper TLS configuration
-  // and defines the default values this instance will use if no explicit config is given.
-  // We make it part of each instance rather than the object to facilitate testing.
-  private val zkClientConfigViaSystemProperties = new ZKClientConfig()
 
   override def originals: util.Map[String, AnyRef] =
     if (this eq currentConfig) super.originals else currentConfig.originals
@@ -1328,85 +1166,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   val zkSyncTimeMs: Int = getInt(KafkaConfig.ZkSyncTimeMsProp)
   val zkEnableSecureAcls: Boolean = getBoolean(KafkaConfig.ZkEnableSecureAclsProp)
   val zkMaxInFlightRequests: Int = getInt(KafkaConfig.ZkMaxInFlightRequestsProp)
-
-  private def zkBooleanConfigOrSystemPropertyWithDefaultValue(propKey: String): Boolean = {
-    // Use the system property if it exists and the Kafka config value was defaulted rather than actually provided
-    // Need to translate any system property value from true/false (String) to true/false (Boolean)
-    val actuallyProvided = originals.containsKey(propKey)
-    if (actuallyProvided) getBoolean(propKey) else {
-      val sysPropValue = KafkaConfig.getZooKeeperClientProperty(zkClientConfigViaSystemProperties, propKey)
-      sysPropValue match {
-        case Some("true") => true
-        case Some(_) => false
-        case _ => getBoolean(propKey) // not specified so use the default value
-      }
-    }
-  }
-
-  private def zkStringConfigOrSystemPropertyWithDefaultValue(propKey: String): String = {
-    // Use the system property if it exists and the Kafka config value was defaulted rather than actually provided
-    val actuallyProvided = originals.containsKey(propKey)
-    if (actuallyProvided) getString(propKey) else {
-      val sysPropValue = KafkaConfig.getZooKeeperClientProperty(zkClientConfigViaSystemProperties, propKey)
-      sysPropValue match {
-        case Some(_) => sysPropValue.get
-        case _ => getString(propKey) // not specified so use the default value
-      }
-    }
-  }
-
-  private def zkOptionalStringConfigOrSystemProperty(propKey: String): Option[String] = {
-    Option(getString(propKey)) match {
-      case config: Some[String] => config
-      case _ => KafkaConfig.getZooKeeperClientProperty(zkClientConfigViaSystemProperties, propKey)
-    }
-  }
-  private def zkPasswordConfigOrSystemProperty(propKey: String): Option[Password] = {
-    Option(getPassword(propKey)) match {
-      case config: Some[Password] => config
-      case _ => {
-        val sysProp = KafkaConfig.getZooKeeperClientProperty (zkClientConfigViaSystemProperties, propKey)
-        if (sysProp.isDefined) Some (new Password (sysProp.get) ) else None
-      }
-    }
-  }
-  private def zkListConfigOrSystemProperty(propKey: String): Option[util.List[String]] = {
-    Option(getList(propKey)) match {
-      case config: Some[util.List[String]] => config
-      case _ => {
-        val sysProp = KafkaConfig.getZooKeeperClientProperty(zkClientConfigViaSystemProperties, propKey)
-        if (sysProp.isDefined) Some(sysProp.get.split("\\s*,\\s*").toList.asJava) else None
-      }
-    }
-  }
-
-  val zkSslClientEnable = zkBooleanConfigOrSystemPropertyWithDefaultValue(KafkaConfig.ZkSslClientEnableProp)
-  val zkClientCnxnSocketClassName = zkOptionalStringConfigOrSystemProperty(KafkaConfig.ZkClientCnxnSocketProp)
-  val zkSslKeyStoreLocation = zkOptionalStringConfigOrSystemProperty(KafkaConfig.ZkSslKeyStoreLocationProp)
-  val zkSslKeyStorePassword = zkPasswordConfigOrSystemProperty(KafkaConfig.ZkSslKeyStorePasswordProp)
-  val zkSslKeyStoreType = zkOptionalStringConfigOrSystemProperty(KafkaConfig.ZkSslKeyStoreTypeProp)
-  val zkSslTrustStoreLocation = zkOptionalStringConfigOrSystemProperty(KafkaConfig.ZkSslTrustStoreLocationProp)
-  val zkSslTrustStorePassword = zkPasswordConfigOrSystemProperty(KafkaConfig.ZkSslTrustStorePasswordProp)
-  val zkSslTrustStoreType = zkOptionalStringConfigOrSystemProperty(KafkaConfig.ZkSslTrustStoreTypeProp)
-  val ZkSslProtocol = zkStringConfigOrSystemPropertyWithDefaultValue(KafkaConfig.ZkSslProtocolProp)
-  val ZkSslEnabledProtocols = zkListConfigOrSystemProperty(KafkaConfig.ZkSslEnabledProtocolsProp)
-  val ZkSslCipherSuites = zkListConfigOrSystemProperty(KafkaConfig.ZkSslCipherSuitesProp)
-  val ZkSslEndpointIdentificationAlgorithm = {
-    // Use the system property if it exists and the Kafka config value was defaulted rather than actually provided
-    // Need to translate any system property value from true/false to HTTPS/<blank>
-    val kafkaProp = KafkaConfig.ZkSslEndpointIdentificationAlgorithmProp
-    val actuallyProvided = originals.containsKey(kafkaProp)
-    if (actuallyProvided) getString(kafkaProp) else {
-      val sysPropValue = KafkaConfig.getZooKeeperClientProperty(zkClientConfigViaSystemProperties, kafkaProp)
-      sysPropValue match {
-        case Some("true") => "HTTPS"
-        case Some(_) => ""
-        case _ => getString(kafkaProp) // not specified so use the default value
-      }
-    }
-  }
-  val ZkSslCrlEnable = zkBooleanConfigOrSystemPropertyWithDefaultValue(KafkaConfig.ZkSslCrlEnableProp)
-  val ZkSslOcspEnable = zkBooleanConfigOrSystemPropertyWithDefaultValue(KafkaConfig.ZkSslOcspEnableProp)
   /** ********* General Configuration ***********/
   val brokerIdGenerationEnable: Boolean = getBoolean(KafkaConfig.BrokerIdGenerationEnableProp)
   val maxReservedBrokerId: Int = getInt(KafkaConfig.MaxReservedBrokerIdProp)
@@ -1431,7 +1190,12 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
     if (className == null || className.isEmpty)
       None
     else {
-      Some(AuthorizerUtils.createAuthorizer(className))
+      val authZ = Utils.newInstance(className, classOf[Object]) match {
+        case auth: Authorizer => auth
+        case auth: kafka.security.auth.Authorizer => new AuthorizerWrapper(auth)
+        case auth => throw new ConfigException(s"Authorizer does not implement ${classOf[Authorizer].getName} or kafka.security.auth.Authorizer .")
+      }
+      Some(authZ)
     }
   }
 
@@ -1478,8 +1242,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   def logCleanerDeleteRetentionMs = getLong(KafkaConfig.LogCleanerDeleteRetentionMsProp)
   def logCleanerMinCompactionLagMs = getLong(KafkaConfig.LogCleanerMinCompactionLagMsProp)
   def logCleanerMaxCompactionLagMs = getLong(KafkaConfig.LogCleanerMaxCompactionLagMsProp)
-  def logCleanerCompactionStrategy = getString(KafkaConfig.LogCleanerCompactionStrategyProp)
-  def logCleanerCompactionStrategyHeaderKey = getString(KafkaConfig.LogCleanerCompactionStrategyHeaderKeyProp)
   val logCleanerBackoffMs = getLong(KafkaConfig.LogCleanerBackoffMsProp)
   def logCleanerMinCleanRatio = getDouble(KafkaConfig.LogCleanerMinCleanRatioProp)
   val logCleanerEnable = getBoolean(KafkaConfig.LogCleanerEnableProp)
@@ -1519,6 +1281,7 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   val leaderImbalancePerBrokerPercentage = getInt(KafkaConfig.LeaderImbalancePerBrokerPercentageProp)
   val leaderImbalanceCheckIntervalSeconds = getLong(KafkaConfig.LeaderImbalanceCheckIntervalSecondsProp)
   def uncleanLeaderElectionEnable: java.lang.Boolean = getBoolean(KafkaConfig.UncleanLeaderElectionEnableProp)
+  val followerFetchReadsInSyncEnable = getBoolean(KafkaConfig.FollowerFetchReadsInSyncEnableProp)
 
   // We keep the user-provided String as `ApiVersion.apply` can choose a slightly different version (eg if `0.10.0`
   // is passed, `0.10.0-IV0` may be picked)
@@ -1738,9 +1501,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
     require(logRetentionTimeMillis >= 1 || logRetentionTimeMillis == -1, "log.retention.ms must be unlimited (-1) or, equal or greater than 1")
     require(logDirs.nonEmpty, "At least one log directory must be defined via log.dirs or log.dir.")
     require(logCleanerDedupeBufferSize / logCleanerThreads > 1024 * 1024, "log.cleaner.dedupe.buffer.size must be at least 1MB per cleaner thread.")
-    if (Defaults.LogCleanerCompactionStrategyHeader.equalsIgnoreCase(logCleanerCompactionStrategy)) {
-      require(logCleanerCompactionStrategyHeaderKey.trim().isEmpty(), KafkaConfig.LogCleanerCompactionStrategyHeaderKeyProp + " must be specified.")
-    }
     require(replicaFetchWaitMaxMs <= replicaSocketTimeoutMs, "replica.socket.timeout.ms should always be at least replica.fetch.wait.max.ms" +
       " to prevent unnecessary socket timeouts")
     require(replicaFetchWaitMaxMs <= replicaLagTimeMaxMs, "replica.fetch.wait.max.ms should always be less than or equal to replica.lag.time.max.ms" +

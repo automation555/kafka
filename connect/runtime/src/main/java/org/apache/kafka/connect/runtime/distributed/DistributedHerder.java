@@ -91,6 +91,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import static org.apache.kafka.connect.runtime.WorkerConfig.TOPIC_TRACKING_ENABLE_CONFIG;
+import static org.apache.kafka.connect.runtime.distributed.ConnectProtocol.CONNECT_PROTOCOL_V0;
+import static org.apache.kafka.connect.runtime.distributed.ConnectProtocolCompatibility.EAGER;
+import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V2;
 
 /**
  * <p>
@@ -255,7 +258,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         sessionKey = null;
         backoffRetries = BACKOFF_RETRIES;
 
-        currentProtocolVersion = ConnectProtocolCompatibility.fromName(
+        currentProtocolVersion = ConnectProtocolCompatibility.compatibility(
             config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)
         ).protocolVersion();
         if (!internalRequestValidationEnabled(currentProtocolVersion)) {
@@ -389,7 +392,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         AtomicReference<Set<ConnectorTaskId>> taskConfigUpdatesCopy = new AtomicReference<>();
 
         boolean shouldReturn;
-        if (member.currentProtocolVersion() == ConnectProtocolCompatibility.EAGER.protocolVersion()) {
+        if (member.currentProtocolVersion() == CONNECT_PROTOCOL_V0) {
             shouldReturn = updateConfigsWithEager(connectorConfigUpdatesCopy,
                     connectorTargetStateChangesCopy);
             // With eager protocol we should return immediately if needsReconfigRebalance has
@@ -1156,14 +1159,14 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // in case reading the log takes too long, leave the group to ensure a quick rebalance (although by default we should be out of the group already)
             // and back off to avoid a tight loop of rejoin-attempt-to-catch-up-leave
             log.warn("Didn't reach end of config log quickly enough", e);
-            member.maybeLeaveGroup("taking too long to read the log");
+            member.maybeLeaveGroup("taking too long to read the log", true);
             backoff(workerUnsyncBackoffMs);
             return false;
         }
     }
 
     private void backoff(long ms) {
-        if (ConnectProtocolCompatibility.fromProtocolVersion(currentProtocolVersion) == ConnectProtocolCompatibility.EAGER) {
+        if (ConnectProtocolCompatibility.fromProtocolVersion(currentProtocolVersion) == EAGER) {
             time.sleep(ms);
             return;
         }
@@ -1226,7 +1229,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         startAndStop(callables);
 
         synchronized (this) {
-            runningAssignment = member.currentProtocolVersion() == ConnectProtocolCompatibility.EAGER.protocolVersion()
+            runningAssignment = member.currentProtocolVersion() == CONNECT_PROTOCOL_V0
                                 ? ExtendedAssignment.empty()
                                 : assignment;
         }
@@ -1292,7 +1295,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         final TargetState initialState = configState.targetState(connectorName);
         final Callback<TargetState> onInitialStateChange = (error, newState) -> {
             if (error != null) {
-                callback.onCompletion(new ConnectException("Failed to start connector: " + connectorName, error), null);
+                callback.onCompletion(new ConnectException("Failed to start connector: " + connectorName), null);
                 return;
             }
 
@@ -1492,7 +1495,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     }
 
     private static boolean internalRequestValidationEnabled(short protocolVersion) {
-        return protocolVersion >= ConnectProtocolCompatibility.SESSIONED.protocolVersion();
+        return protocolVersion >= CONNECT_PROTOCOL_V2;
     }
 
     private DistributedHerderRequest peekWithoutException() {
@@ -1737,7 +1740,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // Note that since we don't reset the assignment, we don't revoke leadership here. During a rebalance,
             // it is still important to have a leader that can write configs, offsets, etc.
 
-            if (rebalanceResolved || currentProtocolVersion >= ConnectProtocolCompatibility.COMPATIBLE.protocolVersion()) {
+            if (rebalanceResolved) {
                 List<Callable<Void>> callables = new ArrayList<>();
                 for (final String connectorName : connectors) {
                     callables.add(getConnectorStoppingCallable(connectorName));

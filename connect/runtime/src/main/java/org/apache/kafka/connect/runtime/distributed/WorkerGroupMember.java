@@ -148,7 +148,7 @@ public class WorkerGroupMember {
                     restUrl,
                     configStorage,
                     listener,
-                    ConnectProtocolCompatibility.fromName(config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)),
+                    ConnectProtocolCompatibility.compatibility(config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)),
                     config.getInt(DistributedConfig.SCHEDULED_REBALANCE_MAX_DELAY_MS_CONFIG));
 
             AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics, time.milliseconds());
@@ -203,8 +203,8 @@ public class WorkerGroupMember {
         coordinator.requestRejoin();
     }
 
-    public void maybeLeaveGroup(String leaveReason) {
-        coordinator.maybeLeaveGroup(leaveReason);
+    public void maybeLeaveGroup(String leaveReason, boolean shouldWarn) {
+        coordinator.maybeLeaveGroup(leaveReason, shouldWarn);
     }
 
     public String ownerUrl(String connector) {

@@ -23,7 +23,6 @@ import java.util
 import java.util.Arrays.asList
 import java.util.concurrent.TimeUnit
 import java.util.{Collections, Optional, Properties, Random}
-
 import kafka.api.{ApiVersion, KAFKA_0_10_2_IV0, KAFKA_2_2_IV1, LeaderAndIsr}
 import kafka.cluster.{Broker, Partition}
 import kafka.controller.{ControllerContext, KafkaController}
@@ -55,6 +54,7 @@ import org.apache.kafka.common.message.StopReplicaRequestData.{StopReplicaPartit
 import org.apache.kafka.common.message.UpdateMetadataRequestData.{UpdateMetadataBroker, UpdateMetadataEndpoint, UpdateMetadataPartitionState}
 import org.apache.kafka.common.message._
 import org.apache.kafka.common.metrics.Metrics
+import org.apache.kafka.common.network.DefaultChannelMetadataRegistry
 import org.apache.kafka.common.network.{ClientInformation, ListenerName}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.quota.{ClientQuotaAlteration, ClientQuotaEntity}
@@ -1627,42 +1627,24 @@ class KafkaApisTest {
     val brokerEpoch = 230498320L
 
     val fooPartition = new TopicPartition("foo", 0)
-    val fooTopicId = Uuid.randomUuid()
     val groupMetadataPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, 0)
-    val groupMetadataTopicId = Uuid.randomUuid()
     val txnStatePartition = new TopicPartition(Topic.TRANSACTION_STATE_TOPIC_NAME, 0)
-    val txnStateTopicId = Uuid.randomUuid()
-    val topicIds = Map("foo" -> fooTopicId, Topic.GROUP_METADATA_TOPIC_NAME -> groupMetadataTopicId, Topic.TRANSACTION_STATE_TOPIC_NAME -> txnStateTopicId)
-    val topicNames = topicIds.map{case(topicName, topicId) => (topicId, topicName)}
-
-    val updateMetadataPartitionStates = Seq(
-      new UpdateMetadataPartitionState().setTopicName("foo"),
-      new UpdateMetadataPartitionState().setTopicName(Topic.GROUP_METADATA_TOPIC_NAME),
-      new UpdateMetadataPartitionState().setTopicName(Topic.TRANSACTION_STATE_TOPIC_NAME)
-    )
-
-    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, controllerId,
-      controllerEpoch, brokerEpoch, updateMetadataPartitionStates.asJava, Seq.empty[UpdateMetadataBroker].asJava, topicIds.asJava).build()
-    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
 
     val topicStates = Seq(
       new StopReplicaTopicState()
         .setTopicName(groupMetadataPartition.topic)
-        .setTopicId(groupMetadataTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(groupMetadataPartition.partition)
           .setLeaderEpoch(leaderEpoch)
           .setDeletePartition(deletePartition)).asJava),
       new StopReplicaTopicState()
         .setTopicName(txnStatePartition.topic)
-        .setTopicId(txnStateTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(txnStatePartition.partition)
           .setLeaderEpoch(leaderEpoch)
           .setDeletePartition(deletePartition)).asJava),
       new StopReplicaTopicState()
         .setTopicName(fooPartition.topic)
-        .setTopicId(fooTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(fooPartition.partition)
           .setLeaderEpoch(leaderEpoch)
@@ -1684,8 +1666,8 @@ class KafkaApisTest {
       EasyMock.eq(controllerId),
       EasyMock.eq(controllerEpoch),
       EasyMock.eq(brokerEpoch),
-      EasyMock.eq(stopReplicaRequest.partitionStates(topicNames.asJava).asScala))
-    ).andReturn(
+      EasyMock.eq(stopReplicaRequest.partitionStates().asScala)
+    )).andReturn(
       (mutable.Map(
         groupMetadataPartition -> Errors.NONE,
         txnStatePartition -> Errors.NONE,
@@ -2886,17 +2868,9 @@ class KafkaApisTest {
     val controllerEpoch = 5
     val capturedResponse: Capture[AbstractResponse] = EasyMock.newCapture()
     val fooPartition = new TopicPartition("foo", 0)
-    val fooTopicId = Uuid.randomUuid()
-
-    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, controllerId,
-      controllerEpoch, controllerEpoch, Seq(new UpdateMetadataPartitionState().setTopicName("foo")).asJava,
-      Seq.empty[UpdateMetadataBroker].asJava, Map("foo" -> fooTopicId).asJava).build()
-    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
-
     val topicStates = Seq(
       new StopReplicaTopicState()
         .setTopicName(fooPartition.topic)
-        .setTopicId(fooTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(fooPartition.partition)
           .setLeaderEpoch(1)
@@ -2918,7 +2892,7 @@ class KafkaApisTest {
       EasyMock.eq(controllerId),
       EasyMock.eq(controllerEpoch),
       EasyMock.eq(brokerEpochInRequest),
-      EasyMock.eq(stopReplicaRequest.partitionStates(Map(fooTopicId -> "foo").asJava).asScala)
+      EasyMock.eq(stopReplicaRequest.partitionStates().asScala)
     )).andStubReturn(
       (mutable.Map(
         fooPartition -> Errors.NONE
@@ -3147,7 +3121,8 @@ class KafkaApisTest {
       startTimeNanos = time.nanoseconds(),
       memoryPool = MemoryPool.NONE,
       buffer = envelopeBuffer,
-      metrics = requestChannelMetrics
+      metrics = requestChannelMetrics,
+      channelMetadataRegistry = new DefaultChannelMetadataRegistry
     )
   }
 
@@ -3164,7 +3139,7 @@ class KafkaApisTest {
       listenerName, SecurityProtocol.PLAINTEXT, ClientInformation.EMPTY, fromPrivilegedListener,
       Optional.of(kafkaPrincipalSerde))
     new RequestChannel.Request(processor = 1, context = context, startTimeNanos = 0, MemoryPool.NONE, buffer,
-      requestChannelMetrics, envelope = None)
+      requestChannelMetrics, new DefaultChannelMetadataRegistry, envelope = None)
   }
 
   private def expectNoThrottling(request: RequestChannel.Request): Capture[AbstractResponse] = {

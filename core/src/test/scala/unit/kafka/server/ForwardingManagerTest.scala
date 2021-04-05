@@ -25,12 +25,13 @@ import kafka.network
 import kafka.network.RequestChannel
 import kafka.utils.MockTime
 import org.apache.kafka.clients.{MockClient, NodeApiVersions}
-import org.apache.kafka.clients.MockClient.RequestAssertion
+import org.apache.kafka.clients.MockClient.RequestMatcher
 import org.apache.kafka.common.Node
 import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
 import org.apache.kafka.common.memory.MemoryPool
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.message.{AlterConfigsResponseData, ApiVersionsResponseData}
+import org.apache.kafka.common.network.DefaultChannelMetadataRegistry
 import org.apache.kafka.common.network.{ClientInformation, ListenerName}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse, AlterConfigsRequest, AlterConfigsResponse, EnvelopeRequest, EnvelopeResponse, RequestContext, RequestHeader, RequestTestUtils}
@@ -72,7 +73,7 @@ class ForwardingManagerTest {
       requestCorrelationId + 1)
 
     Mockito.when(controllerNodeProvider.get()).thenReturn(Some(new Node(0, "host", 1234)))
-    val isEnvelopeRequest: RequestAssertion = request => assertTrue(request.isInstanceOf[EnvelopeRequest])
+    val isEnvelopeRequest: RequestMatcher = request => request.isInstanceOf[EnvelopeRequest]
     client.prepareResponse(isEnvelopeRequest, new EnvelopeResponse(responseBuffer, Errors.NONE));
 
     val responseOpt = new AtomicReference[Option[AbstractResponse]]()
@@ -96,7 +97,7 @@ class ForwardingManagerTest {
       requestHeader.apiVersion, requestCorrelationId)
 
     Mockito.when(controllerNodeProvider.get()).thenReturn(Some(new Node(0, "host", 1234)))
-    val isEnvelopeRequest: RequestAssertion = request => assertTrue(request.isInstanceOf[EnvelopeRequest])
+    val isEnvelopeRequest: RequestMatcher = request => request.isInstanceOf[EnvelopeRequest]
     client.prepareResponse(isEnvelopeRequest, new EnvelopeResponse(responseBuffer, Errors.UNSUPPORTED_VERSION));
 
     val responseOpt = new AtomicReference[Option[AbstractResponse]]()
@@ -239,6 +240,7 @@ class ForwardingManagerTest {
       memoryPool = MemoryPool.NONE,
       buffer = requestBuffer,
       metrics = new RequestChannel.Metrics(ListenerType.CONTROLLER),
+      channelMetadataRegistry = new DefaultChannelMetadataRegistry,
       envelope = None
     )
   }

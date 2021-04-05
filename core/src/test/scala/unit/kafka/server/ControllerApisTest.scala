@@ -21,7 +21,6 @@ import java.net.InetAddress
 import java.util
 import java.util.Properties
 import java.util.concurrent.ExecutionException
-
 import kafka.network.RequestChannel
 import kafka.raft.RaftManager
 import kafka.server.QuotaFactory.QuotaManagers
@@ -32,11 +31,10 @@ import org.apache.kafka.common.Uuid.ZERO_UUID
 import org.apache.kafka.common.errors.{InvalidRequestException, NotControllerException, TopicDeletionDisabledException}
 import org.apache.kafka.common.memory.MemoryPool
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
-import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsTopic
-import org.apache.kafka.common.message.CreatePartitionsResponseData.CreatePartitionsTopicResult
 import org.apache.kafka.common.message.DeleteTopicsRequestData.DeleteTopicState
 import org.apache.kafka.common.message.DeleteTopicsResponseData.DeletableTopicResult
-import org.apache.kafka.common.message.{BrokerRegistrationRequestData, CreatePartitionsRequestData, DeleteTopicsRequestData}
+import org.apache.kafka.common.message.{BrokerRegistrationRequestData, DeleteTopicsRequestData}
+import org.apache.kafka.common.network.DefaultChannelMetadataRegistry
 import org.apache.kafka.common.network.{ClientInformation, ListenerName}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse, BrokerRegistrationRequest, BrokerRegistrationResponse, RequestContext, RequestHeader, RequestTestUtils}
@@ -89,7 +87,7 @@ class ControllerApisTest {
       controller,
       raftManager,
       new KafkaConfig(props),
-      MetaProperties("JgxuGe9URy-E-ceaL04lEw", nodeId = nodeId),
+      MetaProperties(Uuid.fromString("JgxuGe9URy-E-ceaL04lEw"), nodeId = nodeId),
       Seq.empty,
       new SimpleApiVersionManager(ListenerType.CONTROLLER)
     )
@@ -115,7 +113,7 @@ class ControllerApisTest {
     val context = new RequestContext(header, "1", InetAddress.getLocalHost, KafkaPrincipal.ANONYMOUS,
       listenerName, SecurityProtocol.PLAINTEXT, ClientInformation.EMPTY, false)
     new RequestChannel.Request(processor = 1, context = context, startTimeNanos = 0, MemoryPool.NONE, buffer,
-      requestChannelMetrics)
+      requestChannelMetrics, new DefaultChannelMetadataRegistry)
   }
 
   @Test
@@ -339,30 +337,6 @@ class ControllerApisTest {
         false,
         _ => Set("foo", "bar"),
         _ => Set("foo", "bar")))
-  }
-
-  @Test
-  def testCreatePartitionsRequest(): Unit = {
-    val controller = new MockController.Builder().
-      newInitialTopic("foo", Uuid.fromString("vZKYST0pSA2HO5x_6hoO2Q")).
-      newInitialTopic("bar", Uuid.fromString("VlFu5c51ToiNx64wtwkhQw")).build()
-    val controllerApis = createControllerApis(None, controller)
-    val request = new CreatePartitionsRequestData()
-    request.topics().add(new CreatePartitionsTopic().setName("foo").setAssignments(null).setCount(5))
-    request.topics().add(new CreatePartitionsTopic().setName("bar").setAssignments(null).setCount(5))
-    request.topics().add(new CreatePartitionsTopic().setName("bar").setAssignments(null).setCount(5))
-    request.topics().add(new CreatePartitionsTopic().setName("bar").setAssignments(null).setCount(5))
-    request.topics().add(new CreatePartitionsTopic().setName("baz").setAssignments(null).setCount(5))
-    assertEquals(Set(new CreatePartitionsTopicResult().setName("foo").
-        setErrorCode(Errors.NONE.code()).
-        setErrorMessage(null),
-      new CreatePartitionsTopicResult().setName("bar").
-        setErrorCode(Errors.INVALID_REQUEST.code()).
-        setErrorMessage("Duplicate topic name."),
-      new CreatePartitionsTopicResult().setName("baz").
-        setErrorCode(Errors.TOPIC_AUTHORIZATION_FAILED.code()).
-        setErrorMessage(null)),
-      controllerApis.createPartitions(request, false, _ => Set("foo", "bar")).asScala.toSet)
   }
 
   @AfterEach

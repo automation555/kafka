@@ -88,7 +88,6 @@ public class Selector implements Selectable, AutoCloseable {
 
     public static final long NO_IDLE_TIMEOUT_MS = -1;
     public static final int NO_FAILED_AUTHENTICATION_DELAY = 0;
-    public static final boolean ENABLE_TCP_NODELAY = true;
 
     private enum CloseMode {
         GRACEFUL(true),            // process outstanding buffered receives, notify disconnect
@@ -125,7 +124,6 @@ public class Selector implements Selectable, AutoCloseable {
     private final MemoryPool memoryPool;
     private final long lowMemThreshold;
     private final int failedAuthenticationDelayMs;
-    private final boolean tcpNoDelay;
 
     //indicates if the previous call to poll was able to make progress in reading already-buffered data.
     //this is used to prevent tight loops when memory is not available to read any more data
@@ -137,7 +135,6 @@ public class Selector implements Selectable, AutoCloseable {
      * @param connectionMaxIdleMs Max idle connection time (use {@link #NO_IDLE_TIMEOUT_MS} to disable idle timeout)
      * @param failedAuthenticationDelayMs Minimum time by which failed authentication response and channel close should be delayed by.
      *                                    Use {@link #NO_FAILED_AUTHENTICATION_DELAY} to disable this delay.
-     * @param tcpNoDelay The Nagle algorithm (TCP_NODELAY) socket option flag. Use {@link #ENABLE_TCP_NODELAY} to disable this delay.
      * @param metrics Registry for Selector metrics
      * @param time Time implementation
      * @param metricGrpPrefix Prefix for the group of metrics registered by Selector
@@ -149,7 +146,6 @@ public class Selector implements Selectable, AutoCloseable {
     public Selector(int maxReceiveSize,
             long connectionMaxIdleMs,
             int failedAuthenticationDelayMs,
-            boolean tcpNoDelay,
             Metrics metrics,
             Time time,
             String metricGrpPrefix,
@@ -186,12 +182,10 @@ public class Selector implements Selectable, AutoCloseable {
         this.lowMemThreshold = (long) (0.1 * this.memoryPool.size());
         this.failedAuthenticationDelayMs = failedAuthenticationDelayMs;
         this.delayedClosingChannels = (failedAuthenticationDelayMs > NO_FAILED_AUTHENTICATION_DELAY) ? new LinkedHashMap<String, DelayedAuthenticationFailureClose>() : null;
-        this.tcpNoDelay = tcpNoDelay;
     }
 
     public Selector(int maxReceiveSize,
                     long connectionMaxIdleMs,
-                    boolean tcpNoDelay,
                     Metrics metrics,
                     Time time,
                     String metricGrpPrefix,
@@ -201,14 +195,13 @@ public class Selector implements Selectable, AutoCloseable {
                     ChannelBuilder channelBuilder,
                     MemoryPool memoryPool,
                     LogContext logContext) {
-        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags,
+        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, metrics, time, metricGrpPrefix, metricTags,
                 metricsPerConnection, recordTimePerConnection, channelBuilder, memoryPool, logContext);
     }
 
     public Selector(int maxReceiveSize,
                     long connectionMaxIdleMs,
                     int failedAuthenticationDelayMs,
-                    boolean tcpNoDelay,
                     Metrics metrics,
                     Time time,
                     String metricGrpPrefix,
@@ -216,12 +209,11 @@ public class Selector implements Selectable, AutoCloseable {
                     boolean metricsPerConnection,
                     ChannelBuilder channelBuilder,
                     LogContext logContext) {
-        this(maxReceiveSize, connectionMaxIdleMs, failedAuthenticationDelayMs, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, false, channelBuilder, MemoryPool.NONE, logContext);
+        this(maxReceiveSize, connectionMaxIdleMs, failedAuthenticationDelayMs, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, false, channelBuilder, MemoryPool.NONE, logContext);
     }
 
     public Selector(int maxReceiveSize,
                     long connectionMaxIdleMs,
-                    boolean tcpNoDelay,
                     Metrics metrics,
                     Time time,
                     String metricGrpPrefix,
@@ -229,15 +221,15 @@ public class Selector implements Selectable, AutoCloseable {
                     boolean metricsPerConnection,
                     ChannelBuilder channelBuilder,
                     LogContext logContext) {
-        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, tcpNoDelay, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, channelBuilder, logContext);
+        this(maxReceiveSize, connectionMaxIdleMs, NO_FAILED_AUTHENTICATION_DELAY, metrics, time, metricGrpPrefix, metricTags, metricsPerConnection, channelBuilder, logContext);
     }
 
-    public Selector(long connectionMaxIdleMS, boolean tcpNoDelay, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
-        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, tcpNoDelay, metrics, time, metricGrpPrefix, Collections.emptyMap(), true, channelBuilder, logContext);
+    public Selector(long connectionMaxIdleMS, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
+        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, metrics, time, metricGrpPrefix, Collections.emptyMap(), true, channelBuilder, logContext);
     }
 
-    public Selector(long connectionMaxIdleMS, int failedAuthenticationDelayMs, boolean tcpNoDelay, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
-        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, failedAuthenticationDelayMs, tcpNoDelay, metrics, time, metricGrpPrefix, Collections.<String, String>emptyMap(), true, channelBuilder, logContext);
+    public Selector(long connectionMaxIdleMS, int failedAuthenticationDelayMs, Metrics metrics, Time time, String metricGrpPrefix, ChannelBuilder channelBuilder, LogContext logContext) {
+        this(NetworkReceive.UNLIMITED, connectionMaxIdleMS, failedAuthenticationDelayMs, metrics, time, metricGrpPrefix, Collections.<String, String>emptyMap(), true, channelBuilder, logContext);
     }
 
     /**
@@ -297,7 +289,7 @@ public class Selector implements Selectable, AutoCloseable {
             socket.setSendBufferSize(sendBufferSize);
         if (receiveBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setReceiveBufferSize(receiveBufferSize);
-        socket.setTcpNoDelay(tcpNoDelay);
+        socket.setTcpNoDelay(true);
     }
 
     /**
@@ -1067,9 +1059,15 @@ public class Selector implements Selectable, AutoCloseable {
     class SelectorChannelMetadataRegistry implements ChannelMetadataRegistry {
         private CipherInformation cipherInformation;
         private ClientInformation clientInformation;
+        private boolean closed = false;
 
         @Override
-        public void registerCipherInformation(final CipherInformation cipherInformation) {
+        public synchronized void registerCipherInformation(final CipherInformation cipherInformation) {
+            if (closed) {
+                log.warn("Attempted to update cipher, but the connection was closed.");
+                return;
+            }
+
             if (this.cipherInformation != null) {
                 if (this.cipherInformation.equals(cipherInformation))
                     return;
@@ -1081,12 +1079,17 @@ public class Selector implements Selectable, AutoCloseable {
         }
 
         @Override
-        public CipherInformation cipherInformation() {
+        public synchronized CipherInformation cipherInformation() {
             return cipherInformation;
         }
 
         @Override
-        public void registerClientInformation(final ClientInformation clientInformation) {
+        public synchronized void registerClientInformation(final ClientInformation clientInformation) {
+            if (closed) {
+                log.warn("Attempted to update client information, but the connection was closed.");
+                return;
+            }
+
             if (this.clientInformation != null) {
                 if (this.clientInformation.equals(clientInformation))
                     return;
@@ -1098,12 +1101,12 @@ public class Selector implements Selectable, AutoCloseable {
         }
 
         @Override
-        public ClientInformation clientInformation() {
+        public synchronized ClientInformation clientInformation() {
             return clientInformation;
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             if (this.cipherInformation != null) {
                 sensors.connectionsByCipher.decrement(this.cipherInformation);
                 this.cipherInformation = null;
@@ -1113,6 +1116,8 @@ public class Selector implements Selectable, AutoCloseable {
                 sensors.connectionsByClient.decrement(this.clientInformation);
                 this.clientInformation = null;
             }
+
+            this.closed = true;
         }
     }
 

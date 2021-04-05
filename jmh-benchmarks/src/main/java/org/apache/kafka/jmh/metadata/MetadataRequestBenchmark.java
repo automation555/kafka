@@ -23,13 +23,11 @@ import kafka.coordinator.transaction.TransactionCoordinator;
 import kafka.network.RequestChannel;
 import kafka.network.RequestConvertToJson;
 import kafka.server.AutoTopicCreationManager;
-import kafka.server.BrokerFeatures;
 import kafka.server.BrokerTopicStats;
 import kafka.server.ClientQuotaManager;
 import kafka.server.ClientRequestQuotaManager;
 import kafka.server.ControllerMutationQuotaManager;
 import kafka.server.FetchManager;
-import kafka.server.FinalizedFeatureCache;
 import kafka.server.KafkaApis;
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaConfig$;
@@ -38,17 +36,19 @@ import kafka.server.ZkMetadataCache;
 import kafka.server.QuotaFactory;
 import kafka.server.ReplicaManager;
 import kafka.server.ReplicationQuotaManager;
+import kafka.server.SimpleApiVersionManager;
 import kafka.server.ZkAdminManager;
 import kafka.server.ZkSupport;
 import kafka.server.metadata.CachedConfigRepository;
 import kafka.zk.KafkaZkClient;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.memory.MemoryPool;
+import org.apache.kafka.common.message.ApiMessageType;
 import org.apache.kafka.common.message.UpdateMetadataRequestData.UpdateMetadataBroker;
 import org.apache.kafka.common.message.UpdateMetadataRequestData.UpdateMetadataEndpoint;
 import org.apache.kafka.common.message.UpdateMetadataRequestData.UpdateMetadataPartitionState;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.network.ClientInformation;
+import org.apache.kafka.common.network.DefaultChannelMetadataRegistry;
 import org.apache.kafka.common.network.ListenerName;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.requests.MetadataRequest;
@@ -77,10 +77,8 @@ import scala.Option;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
@@ -133,7 +131,6 @@ public class MetadataRequestBenchmark {
     private void initializeMetadataCache() {
         List<UpdateMetadataBroker> liveBrokers = new LinkedList<>();
         List<UpdateMetadataPartitionState> partitionStates = new LinkedList<>();
-        Map<String, Uuid> topicIds = new HashMap<>();
 
         IntStream.range(0, 5).forEach(brokerId -> liveBrokers.add(
             new UpdateMetadataBroker().setId(brokerId)
@@ -142,7 +139,6 @@ public class MetadataRequestBenchmark {
 
         IntStream.range(0, topicCount).forEach(topicId -> {
             String topicName = "topic-" + topicId;
-            topicIds.put(topicName, Uuid.randomUuid());
 
             IntStream.range(0, partitionCount).forEach(partitionId -> {
                 partitionStates.add(
@@ -160,7 +156,7 @@ public class MetadataRequestBenchmark {
         UpdateMetadataRequest updateMetadataRequest = new UpdateMetadataRequest.Builder(
             ApiKeys.UPDATE_METADATA.latestVersion(),
             1, 1, 1,
-            partitionStates, liveBrokers, topicIds).build();
+            partitionStates, liveBrokers, Collections.emptyMap()).build();
         metadataCache.updateMetadata(100, updateMetadataRequest);
     }
 
@@ -177,7 +173,6 @@ public class MetadataRequestBenchmark {
         Properties kafkaProps =  new Properties();
         kafkaProps.put(KafkaConfig$.MODULE$.ZkConnectProp(), "zk");
         kafkaProps.put(KafkaConfig$.MODULE$.BrokerIdProp(), brokerId + "");
-        BrokerFeatures brokerFeatures = BrokerFeatures.createDefault();
         return new KafkaApis(requestChannel,
             new ZkSupport(adminManager, kafkaController, kafkaZkClient, Option.empty(), metadataCache),
             replicaManager,
@@ -196,8 +191,7 @@ public class MetadataRequestBenchmark {
             "clusterId",
             new SystemTime(),
             null,
-            brokerFeatures,
-            new FinalizedFeatureCache(brokerFeatures));
+            new SimpleApiVersionManager(ApiMessageType.ListenerType.ZK_BROKER));
     }
 
     @TearDown(Level.Trial)
@@ -214,7 +208,8 @@ public class MetadataRequestBenchmark {
         RequestContext context = new RequestContext(header, "1", null, principal,
             ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT),
             SecurityProtocol.PLAINTEXT, ClientInformation.EMPTY, false);
-        return new RequestChannel.Request(1, context, 0, MemoryPool.NONE, bodyBuffer, requestChannelMetrics, Option.empty());
+        return new RequestChannel.Request(1, context, 0, MemoryPool.NONE, bodyBuffer,
+            requestChannelMetrics, new DefaultChannelMetadataRegistry(), Option.empty());
     }
 
     @Benchmark

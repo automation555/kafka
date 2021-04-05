@@ -17,7 +17,7 @@
 
 package kafka.log
 
-import java.util.{Collections, Properties}
+import java.util.Properties
 
 import kafka.server.{KafkaConfig, KafkaServer, ThrottledReplicaListValidator}
 import kafka.utils.TestUtils
@@ -79,6 +79,8 @@ class LogConfigTest {
       case LogConfig.MinCleanableDirtyRatioProp => assertPropertyInvalid(name, "not_a_number", "-0.1", "1.2")
       case LogConfig.MinInSyncReplicasProp => assertPropertyInvalid(name, "not_a_number", "0", "-1")
       case LogConfig.MessageFormatVersionProp => assertPropertyInvalid(name, "")
+      case LogConfig.CompactionStrategyProp => assertPropertyInvalid(name, "", "unknown_strategy")
+      case LogConfig.CompactionStrategyHeaderKeyProp => // ignore optional string
       case _ => assertPropertyInvalid(name, "not_a_number", "-1")
     })
   }
@@ -94,11 +96,12 @@ class LogConfigTest {
   }
 
   @Test
-  def testCleanupPolicyDuplicatedItemsRemoved(): Unit = {
+  def testInvalidCompactionHeaderKeyConfig(): Unit = {
     val props = new Properties
-    props.setProperty(LogConfig.CleanupPolicyProp, "delete,compact,delete,compact")
-    LogConfig.processValues(props)
-    assertEquals("delete,compact", props.getProperty(LogConfig.CleanupPolicyProp))
+    props.setProperty(LogConfig.CompactionStrategyProp, "header")
+    intercept[Exception] {
+      LogConfig.validate(props)
+    }
   }
 
   @Test
@@ -134,8 +137,8 @@ class LogConfigTest {
   /* Sanity check that toHtml produces one of the expected configs */
   @Test
   def testToHtml(): Unit = {
-    val html = LogConfig.configDefCopy.toHtml(4, (key: String) => "prefix_" + key, Collections.emptyMap())
-    val expectedConfig = "<h4><a id=\"file.delete.delay.ms\"></a><a id=\"prefix_file.delete.delay.ms\" href=\"#prefix_file.delete.delay.ms\">file.delete.delay.ms</a></h4>"
+    val html = LogConfig.configDefCopy.toHtml
+    val expectedConfig = "<h4><a id=\"file.delete.delay.ms\" href=\"#file.delete.delay.ms\">file.delete.delay.ms</a></h4>"
     assertTrue(s"Could not find `$expectedConfig` in:\n $html", html.contains(expectedConfig))
   }
 

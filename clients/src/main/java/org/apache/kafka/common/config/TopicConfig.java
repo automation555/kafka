@@ -109,6 +109,19 @@ public class TopicConfig {
     public static final String MAX_COMPACTION_LAG_MS_DOC = "The maximum time a message will remain " +
         "ineligible for compaction in the log. Only applicable for logs that are being compacted.";
 
+    public static final String COMPACTION_STRATEGY_CONFIG = "compaction.strategy";
+    public static final String COMPACTION_STRATEGY_DOC = "The retention strategy to use when compacting the log. " +
+    	"Only applicable for logs that are being compacted. " + 
+    	"By default the compaction strategy is set to \"offset\" where the latest offset for the key is retained. " + 
+    	"For \"header\" strategy, the value provided by the producer in the record header will be used to determine " +
+    	"the latest record for the key. For \"timestamp\" strategy, the record tiemstamp will be used to determine the " +
+    	"latest record for the key. So setting the strategy to anything other than \"offset\" will replace the offset " +
+    	"when calculating which records to retain for the value (i.e. provided by the producer) matching " + 
+    	"the given strategy name (case-insensitive). The valid strategies are \"offset\", \"timestamp\" and \"header\".";
+
+    public static final String COMPACTION_STRATEGY_HEADER_KEY_CONFIG = "compaction.strategy.header";
+    public static final String COMPACTION_STRATEGY_HEADER_KEY_DOC = "The header key for the compaction. Only applicable for \"header\" compaction strategy.";
+
     public static final String MIN_CLEANABLE_DIRTY_RATIO_CONFIG = "min.cleanable.dirty.ratio";
     public static final String MIN_CLEANABLE_DIRTY_RATIO_DOC = "This configuration controls how frequently " +
         "the log compactor will attempt to clean the log (assuming <a href=\"#compaction\">log " +
@@ -140,8 +153,8 @@ public class TopicConfig {
     public static final String MIN_IN_SYNC_REPLICAS_DOC = "When a producer sets acks to \"all\" (or \"-1\"), " +
         "this configuration specifies the minimum number of replicas that must acknowledge " +
         "a write for the write to be considered successful. If this minimum cannot be met, " +
-        "then the producer will raise an exception (InconsistentReplicationFactorException)." +
-        "<br>When used together, <code>min.insync.replicas</code> and <code>acks</code> " +
+        "then the producer will raise an exception (either NotEnoughReplicas or " +
+        "NotEnoughReplicasAfterAppend).<br>When used together, <code>min.insync.replicas</code> and <code>acks</code> " +
         "allow you to enforce greater durability guarantees. A typical scenario would be to " +
         "create a topic with a replication factor of 3, set <code>min.insync.replicas</code> to 2, and " +
         "produce with <code>acks</code> of \"all\". This will ensure that the producer raises an exception " +

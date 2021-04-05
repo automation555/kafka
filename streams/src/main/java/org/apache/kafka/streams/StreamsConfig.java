@@ -412,7 +412,8 @@ public class StreamsConfig extends AbstractConfig {
     /** {@code max.task.idle.ms} */
     public static final String MAX_TASK_IDLE_MS_CONFIG = "max.task.idle.ms";
     private static final String MAX_TASK_IDLE_MS_DOC = "Maximum amount of time in milliseconds a stream task will stay idle when not all of its partition buffers contain records," +
-        " to avoid potential out-of-order record processing across multiple input streams.";
+        " to avoid potential out-of-order record processing across multiple input streams The value must be lower than <code>max.poll.interval.ms</code> to avoid rebalancing" +
+        " of unresponsive tasks.";
 
     /** {@code max.warmup.replicas} */
     public static final String MAX_WARMUP_REPLICAS_CONFIG = "max.warmup.replicas";
@@ -560,6 +561,15 @@ public class StreamsConfig extends AbstractConfig {
     @SuppressWarnings("WeakerAccess")
     public static final String WINDOW_STORE_CHANGE_LOG_ADDITIONAL_RETENTION_MS_CONFIG = "windowstore.changelog.additional.retention.ms";
     private static final String WINDOW_STORE_CHANGE_LOG_ADDITIONAL_RETENTION_MS_DOC = "Added to a windows maintainMs to ensure data is not deleted from the log prematurely. Allows for clock drift. Default is 1 day";
+
+    // deprecated
+
+    /** {@code partition.grouper} */
+    @SuppressWarnings("WeakerAccess")
+    @Deprecated
+    public static final String PARTITION_GROUPER_CLASS_CONFIG = "partition.grouper";
+    private static final String PARTITION_GROUPER_CLASS_DOC = "Partition grouper class that implements the <code>org.apache.kafka.streams.processor.PartitionGrouper</code> interface." +
+        " WARNING: This config is deprecated and will be removed in 3.0.0 release.";
 
     /**
      * {@code topology.optimization}
@@ -764,6 +774,11 @@ public class StreamsConfig extends AbstractConfig {
                     atLeast(0),
                     Importance.LOW,
                     CommonClientConfigs.METRICS_SAMPLE_WINDOW_MS_DOC)
+            .define(PARTITION_GROUPER_CLASS_CONFIG,
+                    Type.CLASS,
+                    org.apache.kafka.streams.processor.DefaultPartitionGrouper.class.getName(),
+                    Importance.LOW,
+                    PARTITION_GROUPER_CLASS_DOC)
             .define(POLL_MS_CONFIG,
                     Type.LONG,
                     100L,
@@ -1011,6 +1026,9 @@ public class StreamsConfig extends AbstractConfig {
                             final boolean doLog) {
         super(CONFIG, props, doLog);
         eosEnabled = StreamThread.eosEnabled(this);
+        if (props.containsKey(PARTITION_GROUPER_CLASS_CONFIG)) {
+            log.warn("Configuration parameter `{}` is deprecated and will be removed in 3.0.0 release.", PARTITION_GROUPER_CLASS_CONFIG);
+        }
         if (props.containsKey(RETRIES_CONFIG)) {
             log.warn("Configuration parameter `{}` is deprecated and will be removed in 3.0.0 release.", RETRIES_CONFIG);
         }

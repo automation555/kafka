@@ -60,7 +60,7 @@ public class Plugins {
         delegatingLoader.initLoaders();
     }
 
-    private static DelegatingClassLoader newDelegatingClassLoader(final List<String> paths) {
+    protected DelegatingClassLoader newDelegatingClassLoader(final List<String> paths) {
         return AccessController.doPrivileged(
                 (PrivilegedAction<DelegatingClassLoader>) () -> new DelegatingClassLoader(paths)
         );
@@ -163,7 +163,7 @@ public class Plugins {
         return delegatingLoader.converters();
     }
 
-    public Set<PluginDesc<Transformation<?>>> transformations() {
+    public Set<PluginDesc<Transformation>> transformations() {
         return delegatingLoader.transformations();
     }
 

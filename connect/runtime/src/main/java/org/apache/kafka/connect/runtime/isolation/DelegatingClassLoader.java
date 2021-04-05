@@ -47,18 +47,17 @@ import java.sql.Driver;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 public class DelegatingClassLoader extends URLClassLoader {
@@ -66,19 +65,19 @@ public class DelegatingClassLoader extends URLClassLoader {
     private static final String CLASSPATH_NAME = "classpath";
     private static final String UNDEFINED_VERSION = "undefined";
 
-    private final Map<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
-    private final Map<String, String> aliases;
+    private final ConcurrentMap<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
+    private final ConcurrentMap<String, String> aliases;
     private final SortedSet<PluginDesc<Connector>> connectors;
     private final SortedSet<PluginDesc<Converter>> converters;
     private final SortedSet<PluginDesc<HeaderConverter>> headerConverters;
-    private final SortedSet<PluginDesc<Transformation<?>>> transformations;
+    private final SortedSet<PluginDesc<Transformation>> transformations;
     private final SortedSet<PluginDesc<ConfigProvider>> configProviders;
     private final SortedSet<PluginDesc<ConnectRestExtension>> restExtensions;
     private final SortedSet<PluginDesc<ConnectorClientConfigOverridePolicy>> connectorClientConfigPolicies;
     private final List<String> pluginPaths;
 
     private static final String MANIFEST_PREFIX = "META-INF/services/";
-    private static final Class<?>[] SERVICE_LOADER_PLUGINS = new Class<?>[] {ConnectRestExtension.class, ConfigProvider.class};
+    private static final Class[] SERVICE_LOADER_PLUGINS = new Class[] {ConnectRestExtension.class, ConfigProvider.class};
     private static final Set<String> PLUGIN_MANIFEST_FILES =
         Arrays.stream(SERVICE_LOADER_PLUGINS).map(serviceLoaderPlugin -> MANIFEST_PREFIX + serviceLoaderPlugin.getName())
             .collect(Collectors.toSet());
@@ -86,8 +85,8 @@ public class DelegatingClassLoader extends URLClassLoader {
     public DelegatingClassLoader(List<String> pluginPaths, ClassLoader parent) {
         super(new URL[0], parent);
         this.pluginPaths = pluginPaths;
-        this.pluginLoaders = new HashMap<>();
-        this.aliases = new HashMap<>();
+        this.pluginLoaders = new ConcurrentHashMap<>();
+        this.aliases = new ConcurrentHashMap<>();
         this.connectors = new TreeSet<>();
         this.converters = new TreeSet<>();
         this.headerConverters = new TreeSet<>();
@@ -117,7 +116,7 @@ public class DelegatingClassLoader extends URLClassLoader {
         return headerConverters;
     }
 
-    public Set<PluginDesc<Transformation<?>>> transformations() {
+    public Set<PluginDesc<Transformation>> transformations() {
         return transformations;
     }
 
@@ -170,7 +169,7 @@ public class DelegatingClassLoader extends URLClassLoader {
         return classLoader;
     }
 
-    private static PluginClassLoader newPluginClassLoader(
+    protected PluginClassLoader newPluginClassLoader(
             final URL pluginLocation,
             final URL[] urls,
             final ClassLoader parent
@@ -313,7 +312,6 @@ public class DelegatingClassLoader extends URLClassLoader {
         );
     }
 
-    @SuppressWarnings("unchecked")
     private PluginScanResult scanPluginPath(
             ClassLoader loader,
             URL[] urls
@@ -329,7 +327,7 @@ public class DelegatingClassLoader extends URLClassLoader {
                 getPluginDesc(reflections, Connector.class, loader),
                 getPluginDesc(reflections, Converter.class, loader),
                 getPluginDesc(reflections, HeaderConverter.class, loader),
-                (Collection<PluginDesc<Transformation<?>>>) (Collection<?>) getPluginDesc(reflections, Transformation.class, loader),
+                getPluginDesc(reflections, Transformation.class, loader),
                 getServiceLoaderPluginDesc(ConfigProvider.class, loader),
                 getServiceLoaderPluginDesc(ConnectRestExtension.class, loader),
                 getServiceLoaderPluginDesc(ConnectorClientConfigOverridePolicy.class, loader)
@@ -341,14 +339,7 @@ public class DelegatingClassLoader extends URLClassLoader {
             Class<T> klass,
             ClassLoader loader
     ) throws InstantiationException, IllegalAccessException {
-        Set<Class<? extends T>> plugins;
-        try {
-            plugins = reflections.getSubTypesOf(klass);
-        } catch (ReflectionsException e) {
-            log.debug("Reflections scanner could not find any classes for URLs: " +
-                    reflections.getConfiguration().getUrls(), e);
-            return Collections.emptyList();
-        }
+        Set<Class<? extends T>> plugins = reflections.getSubTypesOf(klass);
 
         Collection<PluginDesc<T>> result = new ArrayList<>();
         for (Class<? extends T> plugin : plugins) {

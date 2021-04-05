@@ -29,13 +29,13 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.OutOfOrderSequenceException;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.KafkaClientSupplier;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.errors.DeserializationExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.errors.TaskMigratedException;
 import org.apache.kafka.streams.processor.StateRestoreListener;
@@ -60,7 +60,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -149,7 +148,7 @@ public class StreamThread extends Thread {
             this.validTransitions.addAll(Arrays.asList(validTransitions));
         }
 
-        public boolean isAlive() {
+        public boolean isRunning() {
             return equals(RUNNING) || equals(STARTING) || equals(PARTITIONS_REVOKED) || equals(PARTITIONS_ASSIGNED);
         }
 
@@ -237,9 +236,14 @@ public class StreamThread extends Thread {
         return oldState;
     }
 
+    public boolean isRunningAndNotRebalancing() {
+        // we do not need to grab stateLock since it is a single read
+        return state == State.RUNNING;
+    }
+
     public boolean isRunning() {
         synchronized (stateLock) {
-            return state.isAlive();
+            return state.isRunning();
         }
     }
 
@@ -494,7 +498,8 @@ public class StreamThread extends Thread {
         final Map<String, Object> restoreConsumerConfigs = config.getRestoreConsumerConfigs(getRestoreConsumerClientId(threadId));
         final Consumer<byte[], byte[]> restoreConsumer = clientSupplier.getRestoreConsumer(restoreConsumerConfigs);
         final Duration pollTime = Duration.ofMillis(config.getLong(StreamsConfig.POLL_MS_CONFIG));
-        final StoreChangelogReader changelogReader = new StoreChangelogReader(restoreConsumer, pollTime, userStateRestoreListener, logContext);
+        final DeserializationExceptionHandler deserializationExceptionHandler = config.defaultDeserializationExceptionHandler();
+        final StoreChangelogReader changelogReader = new StoreChangelogReader(restoreConsumer, pollTime, userStateRestoreListener, logContext, deserializationExceptionHandler);
 
         Producer<byte[], byte[]> threadProducer = null;
         final boolean eosEnabled = StreamsConfig.EXACTLY_ONCE.equals(config.getString(StreamsConfig.PROCESSING_GUARANTEE_CONFIG));
@@ -691,7 +696,7 @@ public class StreamThread extends Thread {
      * @throws StreamsException      if the store's change log does not contain the partition
      */
     private void runLoop() {
-        subscribeConsumer();
+        consumer.subscribe(builder.sourceTopicPattern(), rebalanceListener);
 
         while (isRunning()) {
             try {
@@ -702,18 +707,11 @@ public class StreamThread extends Thread {
                     enforceRebalance();
                 }
             } catch (final TaskMigratedException ignoreAndRejoinGroup) {
-                log.warn("Detected task " + ignoreAndRejoinGroup.migratedTask().id() +
-                             " that got migrated to another thread. This implies that this thread missed" +
-                             " a rebalance and dropped out of the consumer group. Will try to rejoin the" +
-                             " consumer group. Below is the detailed description of the task:\n" +
-                             ignoreAndRejoinGroup.migratedTask().toString(">"),
-                         ignoreAndRejoinGroup
-                         );
+                log.warn("Detected task {} that got migrated to another thread. " +
+                        "This implies that this thread missed a rebalance and dropped out of the consumer group. " +
+                        "Will try to rejoin the consumer group. Below is the detailed description of the task:\n{}",
+                    ignoreAndRejoinGroup.migratedTask().id(), ignoreAndRejoinGroup.migratedTask().toString(">"));
 
-                enforceRebalance();
-            } catch (final OutOfOrderSequenceException e) {
-                log.warn("Got an out of sequence error during normal processing, triggering a new rebalance and reinitialize", e);
-    
                 enforceRebalance();
             }
         }
@@ -721,15 +719,7 @@ public class StreamThread extends Thread {
 
     private void enforceRebalance() {
         consumer.unsubscribe();
-        subscribeConsumer();
-    }
-
-    private void subscribeConsumer() {
-        if (builder.usesPatternSubscription()) {
-            consumer.subscribe(builder.sourceTopicPattern(), rebalanceListener);
-        } else {
-            consumer.subscribe(builder.sourceTopicCollection(), rebalanceListener);
-        }
+        consumer.subscribe(builder.sourceTopicPattern(), rebalanceListener);
     }
 
     /**
@@ -762,13 +752,6 @@ public class StreamThread extends Thread {
             throw new StreamsException(logPrefix + "Unexpected state " + state + " during normal iteration");
         }
 
-        final long pollLatency = advanceNowAndComputeLatency();
-
-        if (records != null && !records.isEmpty()) {
-            pollSensor.record(pollLatency, now);
-            addRecordsToTasks(records);
-        }
-
         // Shutdown hook could potentially be triggered and transit the thread state to PENDING_SHUTDOWN during #pollRequests().
         // The task manager internal states could be uninitialized if the state transition happens during #onPartitionsAssigned().
         // Should only proceed when the thread is still running after #pollRequests(), because no external state mutation
@@ -776,6 +759,13 @@ public class StreamThread extends Thread {
         if (!isRunning()) {
             log.debug("State already transits to {}, skipping the run once call after poll request", state);
             return;
+        }
+
+        final long pollLatency = advanceNowAndComputeLatency();
+
+        if (records != null && !records.isEmpty()) {
+            pollSensor.record(pollLatency, now);
+            addRecordsToTasks(records);
         }
 
         // only try to initialize the assigned tasks
@@ -925,14 +915,6 @@ public class StreamThread extends Thread {
             final StreamTask task = taskManager.activeTask(partition);
 
             if (task == null) {
-                if (!isRunning()) {
-                    // if we are in PENDING_SHUTDOWN and don't find the task it implies that it was a newly assigned
-                    // task that we just skipped to create;
-                    // hence, we just skip adding the corresponding records
-                    log.info("State already transits to {}, skipping the add records to non-existing task for partition {}", state, partition);
-                    continue;
-                }
-
                 log.error(
                     "Unable to locate active task for received-record partition {}. Current tasks: {}",
                     partition,
@@ -1211,27 +1193,8 @@ public class StreamThread extends Thread {
             standbyTasksMetadata);
     }
 
-    public Map<TaskId, StreamTask> activeTasks() {
+    public Map<TaskId, StreamTask> tasks() {
         return taskManager.activeTasks();
-    }
-
-    public List<StreamTask> allStreamsTasks() {
-        return taskManager.allStreamsTasks();
-    }
-
-    public List<StandbyTask> allStandbyTasks() {
-        return taskManager.allStandbyTasks();
-    }
-
-    public Set<TaskId> restoringTaskIds() {
-        return taskManager.restoringTaskIds();
-    }
-
-    public Map<TaskId, Task> allTasks() {
-        final Map<TaskId, Task> result = new TreeMap<>();
-        result.putAll(taskManager.standbyTasks());
-        result.putAll(taskManager.activeTasks());
-        return result;
     }
 
     /**

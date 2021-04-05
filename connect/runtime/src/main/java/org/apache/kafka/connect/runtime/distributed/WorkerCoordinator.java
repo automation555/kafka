@@ -19,7 +19,6 @@ package org.apache.kafka.connect.runtime.distributed;
 import org.apache.kafka.clients.consumer.internals.AbstractCoordinator;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.clients.GroupRebalanceConfig;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.metrics.Measurable;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
@@ -51,9 +50,6 @@ import static org.apache.kafka.connect.runtime.distributed.ConnectProtocolCompat
  * to workers.
  */
 public class WorkerCoordinator extends AbstractCoordinator implements Closeable {
-    // Currently doesn't support multiple task assignment strategies, so we just fill in a default value
-    public static final String DEFAULT_SUBPROTOCOL = "default";
-
     private final Logger log;
     private final String restUrl;
     private final ConfigBackingStore configStorage;
@@ -115,7 +111,7 @@ public class WorkerCoordinator extends AbstractCoordinator implements Closeable 
         return "connect";
     }
 
-    @VisibleForTesting
+    // expose for tests
     @Override
     protected synchronized boolean ensureCoordinatorReady(final Timer timer) {
         return super.ensureCoordinatorReady(timer);
@@ -186,7 +182,7 @@ public class WorkerCoordinator extends AbstractCoordinator implements Closeable 
 
     @Override
     protected void onJoinComplete(int generation, String memberId, String protocol, ByteBuffer memberAssignment) {
-        ExtendedAssignment newAssignment = IncrementalCooperativeConnectProtocol.deserializeAssignment(memberAssignment);
+        ExtendedAssignment newAssignment = ExtendedAssignment.of(memberAssignment);
         log.debug("Deserialized new assignment: {}", newAssignment);
         currentConnectProtocol = ConnectProtocolCompatibility.fromProtocol(protocol);
         // At this point we always consider ourselves to be a member of the cluster, even if there was an assignment

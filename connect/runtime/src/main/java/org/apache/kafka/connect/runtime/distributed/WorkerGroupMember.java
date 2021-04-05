@@ -25,7 +25,6 @@ import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.clients.GroupRebalanceConfig;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.MetricsContext;
@@ -149,7 +148,7 @@ public class WorkerGroupMember {
                     restUrl,
                     configStorage,
                     listener,
-                    ConnectProtocolCompatibility.compatibility(config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)),
+                    ConnectProtocolCompatibility.fromName(config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)),
                     config.getInt(DistributedConfig.SCHEDULED_REBALANCE_MAX_DELAY_MS_CONFIG));
 
             AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics, time.milliseconds());
@@ -243,7 +242,7 @@ public class WorkerGroupMember {
             log.debug("The Connect group member has stopped.");
     }
 
-    @VisibleForTesting
+    // Visible for testing
     Metrics metrics() {
         return this.metrics;
     }

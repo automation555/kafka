@@ -260,11 +260,6 @@ public class DistributedConfig extends WorkerConfig {
                     atLeast(0L),
                     ConfigDef.Importance.LOW,
                     CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
-            .define(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG,
-                    ConfigDef.Type.BOOLEAN,
-                    CommonClientConfigs.DEFAULT_SOCKET_TCP_NODELAY,
-                    ConfigDef.Importance.LOW,
-                    CommonClientConfigs.SOCKET_TCP_NODELAY_DOC)
             .define(CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG,
                     ConfigDef.Type.LONG,
                     100L,
@@ -348,7 +343,7 @@ public class DistributedConfig extends WorkerConfig {
                     ConfigDef.LambdaValidator.with(
                         (name, value) -> {
                             try {
-                                ConnectProtocolCompatibility.compatibility((String) value);
+                                ConnectProtocolCompatibility.fromName((String) value);
                             } catch (Throwable t) {
                                 throw new ConfigException(name, value, "Invalid Connect protocol "
                                         + "compatibility");

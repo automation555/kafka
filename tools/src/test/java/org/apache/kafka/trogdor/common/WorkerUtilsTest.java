@@ -17,8 +17,7 @@
 
 package org.apache.kafka.trogdor.common;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
 
 import org.apache.kafka.clients.admin.MockAdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -30,8 +29,9 @@ import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.utils.Utils;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,8 +64,8 @@ public class WorkerUtilsTest {
     private MockAdminClient adminClient;
 
 
-    @BeforeEach
-    public void setUp() {
+    @Before
+    public void setUp() throws Exception {
         adminClient = new MockAdminClient(cluster, broker1);
     }
 
@@ -73,7 +73,8 @@ public class WorkerUtilsTest {
     public void testCreateOneTopic() throws Throwable {
         Map<String, NewTopic> newTopics = Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC);
 
-        WorkerUtils.createTopics(log, adminClient, newTopics, true);
+        WorkerUtils.createTopics(log, adminClient, newTopics, true, WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
         assertEquals(Collections.singleton(TEST_TOPIC), adminClient.listTopics().names().get());
         assertEquals(
             new TopicDescription(
@@ -90,7 +91,8 @@ public class WorkerUtilsTest {
         adminClient.timeoutNextRequest(1);
 
         WorkerUtils.createTopics(
-            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), true);
+            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), true,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
 
         assertEquals(
             new TopicDescription(
@@ -104,11 +106,12 @@ public class WorkerUtilsTest {
 
     @Test
     public void testCreateZeroTopicsDoesNothing() throws Throwable {
-        WorkerUtils.createTopics(log, adminClient, Collections.<String, NewTopic>emptyMap(), true);
+        WorkerUtils.createTopics(log, adminClient, Collections.<String, NewTopic>emptyMap(), true,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
         assertEquals(0, adminClient.listTopics().names().get().size());
     }
 
-    @Test
+    @Test(expected = TopicExistsException.class)
     public void testCreateTopicsFailsIfAtLeastOneTopicExists() throws Throwable {
         adminClient.addTopic(
             false,
@@ -123,10 +126,11 @@ public class WorkerUtilsTest {
         newTopics.put("one-more-topic",
                       new NewTopic("one-more-topic", TEST_PARTITIONS, TEST_REPLICATION_FACTOR));
 
-        assertThrows(TopicExistsException.class, () -> WorkerUtils.createTopics(log, adminClient, newTopics, true));
+        WorkerUtils.createTopics(log, adminClient, newTopics, true, WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
     }
 
-    @Test
+    @Test(expected = RuntimeException.class)
     public void testExistingTopicsMustHaveRequestedNumberOfPartitions() throws Throwable {
         List<TopicPartitionInfo> tpInfo = new ArrayList<>();
         tpInfo.add(new TopicPartitionInfo(0, broker1, singleReplica, Collections.<Node>emptyList()));
@@ -137,8 +141,9 @@ public class WorkerUtilsTest {
             tpInfo,
             null);
 
-        assertThrows(RuntimeException.class, () -> WorkerUtils.createTopics(
-            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), false));
+        WorkerUtils.createTopics(
+            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), false,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
     }
 
     @Test
@@ -158,7 +163,8 @@ public class WorkerUtilsTest {
             log, adminClient,
             Collections.singletonMap(
                 existingTopic,
-                new NewTopic(existingTopic, tpInfo.size(), TEST_REPLICATION_FACTOR)), false);
+                new NewTopic(existingTopic, tpInfo.size(), TEST_REPLICATION_FACTOR)), false,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
 
         assertEquals(Collections.singleton(existingTopic), adminClient.listTopics().names().get());
     }
@@ -169,7 +175,9 @@ public class WorkerUtilsTest {
         assertEquals(0, adminClient.listTopics().names().get().size());
 
         WorkerUtils.createTopics(
-            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), false);
+            log, adminClient, Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), false,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
+
 
         assertEquals(Collections.singleton(TEST_TOPIC), adminClient.listTopics().names().get());
         assertEquals(
@@ -198,7 +206,8 @@ public class WorkerUtilsTest {
                    new NewTopic(existingTopic, tpInfo.size(), TEST_REPLICATION_FACTOR));
         topics.put(TEST_TOPIC, NEW_TEST_TOPIC);
 
-        WorkerUtils.createTopics(log, adminClient, topics, false);
+        WorkerUtils.createTopics(log, adminClient, topics, false, WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
 
         assertEquals(Utils.mkSet(existingTopic, TEST_TOPIC), adminClient.listTopics().names().get());
     }
@@ -206,7 +215,8 @@ public class WorkerUtilsTest {
     @Test
     public void testCreateNonExistingTopicsWithZeroTopicsDoesNothing() throws Throwable {
         WorkerUtils.createTopics(
-            log, adminClient, Collections.<String, NewTopic>emptyMap(), false);
+            log, adminClient, Collections.<String, NewTopic>emptyMap(), false,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES, WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
         assertEquals(0, adminClient.listTopics().names().get().size());
     }
 
@@ -320,13 +330,18 @@ public class WorkerUtilsTest {
     @Test
     public void testVerifyTopics() throws Throwable {
         Map<String, NewTopic> newTopics = Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC);
-        WorkerUtils.createTopics(log, adminClient, newTopics, true);
+        WorkerUtils.createTopics(log, adminClient, newTopics, true, WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES,
+            WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
         adminClient.setFetchesRemainingUntilVisible(TEST_TOPIC, 2);
         WorkerUtils.verifyTopics(log, adminClient, Collections.singleton(TEST_TOPIC),
             Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), 3, 1);
         adminClient.setFetchesRemainingUntilVisible(TEST_TOPIC, 100);
-        assertThrows(UnknownTopicOrPartitionException.class, () ->
+        try {
             WorkerUtils.verifyTopics(log, adminClient, Collections.singleton(TEST_TOPIC),
-                Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), 2, 1));
+                    Collections.singletonMap(TEST_TOPIC, NEW_TEST_TOPIC), 2, 1);
+            Assert.fail("expected to get UnknownTopicOrPartitionException");
+        } catch (UnknownTopicOrPartitionException e) {
+            // expected
+        }
     }
 }

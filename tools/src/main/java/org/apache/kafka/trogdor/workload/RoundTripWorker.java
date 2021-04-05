@@ -147,7 +147,8 @@ public class RoundTripWorker implements TaskWorker {
                 }
                 status.update(new TextNode("Creating " + newTopics.keySet().size() + " topic(s)"));
                 WorkerUtils.createTopics(log, spec.bootstrapServers(), spec.commonClientConf(),
-                    spec.adminClientConf(), newTopics, false);
+                    spec.adminClientConf(), newTopics, true, WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES,
+                    WorkerUtils.DEFAULT_TOPIC_VERIFY_BACKOFF);
                 status.update(new TextNode("Created " + newTopics.keySet().size() + " topic(s)"));
                 toSendTracker = new ToSendTracker(spec.maxMessages());
                 toReceiveTracker = new ToReceiveTracker();
@@ -254,8 +255,8 @@ public class RoundTripWorker implements TaskWorker {
                         spec.valueGenerator().generate(messageIndex));
                     producer.send(record, (metadata, exception) -> {
                         if (exception == null) {
-                            lock.lock();
                             try {
+                                lock.lock();
                                 unackedSends -= 1;
                                 if (unackedSends <= 0)
                                     unackedSendsAreZero.signalAll();
@@ -272,8 +273,8 @@ public class RoundTripWorker implements TaskWorker {
             } catch (Throwable e) {
                 WorkerUtils.abort(log, "ProducerRunnable", e, doneFuture);
             } finally {
-                lock.lock();
                 try {
+                    lock.lock();
                     log.info("{}: ProducerRunnable is exiting.  messagesSent={}; uniqueMessagesSent={}; " +
                                     "ackedSends={}/{}.", id, messagesSent, uniqueMessagesSent,
                             spec.maxMessages() - unackedSends, spec.maxMessages());
@@ -359,8 +360,8 @@ public class RoundTripWorker implements TaskWorker {
                             if (toReceiveTracker.removePending(messageIndex)) {
                                 uniqueMessagesReceived++;
                                 if (uniqueMessagesReceived >= spec.maxMessages()) {
-                                    lock.lock();
                                     try {
+                                        lock.lock();
                                         log.info("{}: Consumer received the full count of {} unique messages.  " +
                                             "Waiting for all {} sends to be acked...", id, spec.maxMessages(), unackedSends);
                                         while (unackedSends > 0)

@@ -17,8 +17,6 @@
 
 package org.apache.kafka.trogdor.common;
 
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-
 import org.apache.kafka.trogdor.fault.FilesUnreadableFaultSpec;
 import org.apache.kafka.trogdor.fault.Kibosh;
 import org.apache.kafka.trogdor.fault.NetworkPartitionFaultSpec;
@@ -32,6 +30,7 @@ import org.apache.kafka.trogdor.workload.PartitionsSpec;
 import org.apache.kafka.trogdor.workload.ProduceBenchSpec;
 import org.apache.kafka.trogdor.workload.RoundTripWorkloadSpec;
 import org.apache.kafka.trogdor.workload.TopicsSpec;
+import org.junit.Test;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
@@ -39,7 +38,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.junit.jupiter.api.Test;
+
+import static org.junit.Assert.assertNotNull;
 
 public class JsonSerializationTest {
     @Test
@@ -55,7 +55,7 @@ public class JsonSerializationTest {
         verify(new WorkerRunning(null, null, 0, null));
         verify(new WorkerStopping(null, null, 0, null));
         verify(new ProduceBenchSpec(0, 0, null, null,
-            0, 0, null, null, Optional.empty(), null, null, null, null, null, false, false));
+            0, 0, null, null, Optional.empty(), null, null, null, null, null, false, false, false, 0));
         verify(new RoundTripWorkloadSpec(0, 0, null, null, null, null, null, null,
             0, null, null, 0));
         verify(new TopicsSpec());
@@ -75,7 +75,7 @@ public class JsonSerializationTest {
         for (Field field : clazz.getDeclaredFields()) {
             boolean wasAccessible = field.isAccessible();
             field.setAccessible(true);
-            assertNotNull(field.get(val2), "Field " + field + " was null.");
+            assertNotNull("Field " + field + " was null.", field.get(val2));
             field.setAccessible(wasAccessible);
         }
     }

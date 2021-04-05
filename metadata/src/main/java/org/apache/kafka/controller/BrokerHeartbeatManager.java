@@ -120,6 +120,16 @@ public class BrokerHeartbeatManager {
         boolean shuttingDown() {
             return controlledShutDownOffset >= 0;
         }
+
+        @Override
+        public String toString() {
+            return "BrokerHeartbeatState{" +
+                    "id=" + id +
+                    ", lastContactNs=" + lastContactNs +
+                    ", metadataOffset=" + metadataOffset +
+                    ", controlledShutDownOffset=" + controlledShutDownOffset +
+                    '}';
+        }
     }
 
     static class MetadataOffsetComparator implements Comparator<BrokerHeartbeatState> {
@@ -435,7 +445,6 @@ public class BrokerHeartbeatManager {
     /**
      * Place replicas on unfenced brokers.
      *
-     * @param startPartition    The partition ID to start with.
      * @param numPartitions     The number of partitions to place.
      * @param numReplicas       The number of replicas for each partition.
      * @param idToRack          A function mapping broker id to broker rack.
@@ -445,16 +454,14 @@ public class BrokerHeartbeatManager {
      *
      * @throws InvalidReplicationFactorException    If too many replicas were requested.
      */
-    List<List<Integer>> placeReplicas(int startPartition,
-                                      int numPartitions,
-                                      short numReplicas,
+    List<List<Integer>> placeReplicas(int numPartitions, short numReplicas,
                                       Function<Integer, Optional<String>> idToRack,
                                       ReplicaPlacementPolicy policy) {
         // TODO: support using fenced brokers here if necessary to get to the desired
         // number of replicas. We probably need to add a fenced boolean in UsableBroker.
         Iterator<UsableBroker> iterator = new UsableBrokerIterator(
             unfenced.iterator(), idToRack);
-        return policy.createPlacement(startPartition, numPartitions, numReplicas, iterator);
+        return policy.createPlacement(numPartitions, numReplicas, iterator);
     }
 
     static class UsableBrokerIterator implements Iterator<UsableBroker> {

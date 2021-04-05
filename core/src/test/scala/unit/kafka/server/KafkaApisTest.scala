@@ -61,7 +61,6 @@ import org.apache.kafka.common.quota.{ClientQuotaAlteration, ClientQuotaEntity}
 import org.apache.kafka.common.record.FileRecords.TimestampAndOffset
 import org.apache.kafka.common.record._
 import org.apache.kafka.common.replica.ClientMetadata
-import org.apache.kafka.common.requests.FetchRequest.FetchDataAndError
 import org.apache.kafka.common.requests.FindCoordinatorRequest.CoordinatorType
 import org.apache.kafka.common.requests.MetadataResponse.TopicMetadata
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
@@ -114,9 +113,6 @@ class KafkaApisTest {
   private val clusterId = "clusterId"
   private val time = new MockTime
   private val clientId = ""
-
-
-  private val emptyUnresolvedPart =  List[FetchRequest.UnresolvedPartitions]().asJava
 
   @AfterEach
   def tearDown(): Unit = {
@@ -2084,6 +2080,117 @@ class KafkaApisTest {
     assertTrue(response.topicsByError(Errors.UNKNOWN_TOPIC_OR_PARTITION).isEmpty)
   }
 
+  @Test
+  def testUnauthorizedTopicMetadataRequest(): Unit = {
+
+    // 1. Set up broker information
+    val plaintextListener = ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT)
+    val broker = new UpdateMetadataBroker()
+      .setId(0)
+      .setRack("rack")
+      .setEndpoints(Seq(
+        new UpdateMetadataEndpoint()
+          .setHost("broker0")
+          .setPort(9092)
+          .setSecurityProtocol(SecurityProtocol.PLAINTEXT.id)
+          .setListener(plaintextListener.value)
+      ).asJava)
+
+    // 2. Set up authorizer
+    val authorizer: Authorizer = EasyMock.niceMock(classOf[Authorizer])
+    val unauthorizedTopic = "unauthorized-topic"
+    val authorizedTopic = "authorized-topic"
+
+    val expectedActions = Seq(
+      new Action(AclOperation.DESCRIBE, new ResourcePattern(ResourceType.TOPIC, unauthorizedTopic, PatternType.LITERAL), 1, true, true),
+      new Action(AclOperation.DESCRIBE, new ResourcePattern(ResourceType.TOPIC, authorizedTopic, PatternType.LITERAL), 1, true, true)
+    )
+
+    // Here we need to use AuthHelperTest.matchSameElements instead of EasyMock.eq since the order of the request is unknown
+    EasyMock.expect(authorizer.authorize(anyObject[RequestContext], AuthHelperTest.matchSameElements(expectedActions.asJava)))
+      .andAnswer { () =>
+      val actions = EasyMock.getCurrentArguments.apply(1).asInstanceOf[util.List[Action]].asScala
+      actions.map { action =>
+        if (action.resourcePattern().name().equals(authorizedTopic))
+          AuthorizationResult.ALLOWED
+        else
+          AuthorizationResult.DENIED
+      }.asJava
+    }.times(2)
+
+    // 3. Set up MetadataCache
+    val authorizedTopicId = Uuid.randomUuid();
+    val unauthorizedTopicId = Uuid.randomUuid();
+
+    val topicIds = new util.HashMap[String, Uuid]()
+    topicIds.put(authorizedTopic, authorizedTopicId)
+    topicIds.put(unauthorizedTopic, unauthorizedTopicId)
+
+    def createDummyPartitionStates(topic: String) = {
+      new UpdateMetadataPartitionState()
+        .setTopicName(topic)
+        .setPartitionIndex(0)
+        .setControllerEpoch(0)
+        .setLeader(0)
+        .setLeaderEpoch(0)
+        .setReplicas(Collections.singletonList(0))
+        .setZkVersion(0)
+        .setIsr(Collections.singletonList(0))
+    }
+
+    // Send UpdateMetadataReq to update MetadataCache
+    val partitionStates = Seq(unauthorizedTopic, authorizedTopic).map(createDummyPartitionStates)
+
+    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, 0,
+      0, 0, partitionStates.asJava, Seq(broker).asJava, topicIds).build()
+    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
+
+    // 4. Send TopicMetadataReq using topicId
+    val metadataReqByTopicId = new MetadataRequest.Builder(util.Arrays.asList(authorizedTopicId, unauthorizedTopicId)).build()
+    val repByTopicId = buildRequest(metadataReqByTopicId, plaintextListener)
+    val capturedMetadataByTopicIdResp = expectNoThrottling(repByTopicId)
+    EasyMock.replay(clientRequestQuotaManager, requestChannel, authorizer)
+
+    createKafkaApis(authorizer = Some(authorizer)).handleTopicMetadataRequest(repByTopicId)
+    val metadataByTopicIdResp = capturedMetadataByTopicIdResp.getValue.asInstanceOf[MetadataResponse]
+
+    val metadataByTopicId = metadataByTopicIdResp.data().topics().asScala.groupBy(_.topicId()).map(kv => (kv._1, kv._2.head))
+
+    metadataByTopicId.foreach{ case (topicId, metadataResponseTopic) =>
+      if (topicId == unauthorizedTopicId) {
+        // Return an UNKNOWN_TOPIC_ID on unauthorized error
+        assertEquals(Errors.UNKNOWN_TOPIC_ID.code(), metadataResponseTopic.errorCode())
+        assertNull(metadataResponseTopic.name())
+      } else {
+        assertEquals(Errors.NONE.code(), metadataResponseTopic.errorCode())
+        assertEquals(authorizedTopic, metadataResponseTopic.name())
+      }
+    }
+
+    // 4. Send TopicMetadataReq using topic name
+    EasyMock.reset(clientRequestQuotaManager, requestChannel)
+    val metadataReqByTopicName = new MetadataRequest.Builder(util.Arrays.asList(authorizedTopic, unauthorizedTopic), false).build()
+    val repByTopicName = buildRequest(metadataReqByTopicName, plaintextListener)
+    val capturedMetadataByTopicNameResp = expectNoThrottling(repByTopicName)
+    EasyMock.replay(clientRequestQuotaManager, requestChannel)
+
+    createKafkaApis(authorizer = Some(authorizer)).handleTopicMetadataRequest(repByTopicName)
+    val metadataByTopicNameResp = capturedMetadataByTopicNameResp.getValue.asInstanceOf[MetadataResponse]
+
+    val metadataByTopicName = metadataByTopicNameResp.data().topics().asScala.groupBy(_.name()).map(kv => (kv._1, kv._2.head))
+
+    metadataByTopicName.foreach{ case (topicName, metadataResponseTopic) =>
+      if (topicName == unauthorizedTopic) {
+        assertEquals(Errors.TOPIC_AUTHORIZATION_FAILED.code(), metadataResponseTopic.errorCode())
+        // Do not return topic Id on unauthorized error
+        assertEquals(Uuid.ZERO_UUID, metadataResponseTopic.topicId())
+      } else {
+        assertEquals(Errors.NONE.code(), metadataResponseTopic.errorCode())
+        assertEquals(authorizedTopicId, metadataResponseTopic.topicId())
+      }
+    }
+  }
+
   /**
    * Verifies that sending a fetch request with version 9 works correctly when
    * ReplicaManager.getLogConfig returns None.
@@ -2116,21 +2223,16 @@ class KafkaApisTest {
       Optional.empty())).asJava
     val fetchMetadata = new JFetchMetadata(0, 0)
     val fetchContext = new FullFetchContext(time, new FetchSessionCache(1000, 100),
-      fetchMetadata, new FetchRequest.FetchDataAndError(fetchData, emptyUnresolvedPart),  metadataCache.topicNamesToIds(), false)
-    expect(fetchManager.newContext(
-      anyObject[Short],
-      anyObject[JFetchMetadata],
-      anyObject[Boolean],
-      anyObject[FetchDataAndError],
-      anyObject[util.List[FetchRequestData.ForgottenTopic]],
-      anyObject[util.Map[Uuid, String]],
-      anyObject[util.Map[String, Uuid]])).andReturn(fetchContext)
+      fetchMetadata, fetchData, false)
+    expect(fetchManager.newContext(anyObject[JFetchMetadata],
+      anyObject[util.Map[TopicPartition, FetchRequest.PartitionData]],
+      anyObject[util.List[TopicPartition]],
+      anyBoolean)).andReturn(fetchContext)
 
     EasyMock.expect(clientQuotaManager.maybeRecordAndGetThrottleTimeMs(
       anyObject[RequestChannel.Request](), anyDouble, anyLong)).andReturn(0)
 
-    val fetchRequest = new FetchRequest.Builder(9, 9, -1, 100, 0, fetchData,
-      metadataCache.topicNamesToIds())
+    val fetchRequest = new FetchRequest.Builder(9, 9, -1, 100, 0, fetchData)
       .build()
     val request = buildRequest(fetchRequest)
     val capturedResponse = expectNoThrottling(request)
@@ -2139,10 +2241,9 @@ class KafkaApisTest {
     createKafkaApis().handleFetchRequest(request)
 
     val response = capturedResponse.getValue.asInstanceOf[FetchResponse]
-    val responseData = response.responseData(metadataCache.topicIdsToNames(), 9)
-    assertTrue(responseData.containsKey(tp))
+    assertTrue(response.responseData.containsKey(tp))
 
-    val partitionData = responseData.get(tp)
+    val partitionData = response.responseData.get(tp)
     assertEquals(Errors.NONE.code, partitionData.errorCode)
     assertEquals(hw, partitionData.highWatermark)
     assertEquals(-1, partitionData.lastStableOffset)
@@ -2652,16 +2753,13 @@ class KafkaApisTest {
     val leaderEpoch = 0
     val tp0 = new TopicPartition("tp", 0)
 
-    setupBasicMetadataCache(tp0.topic, numPartitions = 1, 1, Uuid.randomUuid())
-    val hw = 3
-
     val fetchData = Collections.singletonMap(tp0, new FetchRequest.PartitionData(0, 0, Int.MaxValue, Optional.of(leaderEpoch)))
     val fetchFromFollower = buildRequest(new FetchRequest.Builder(
-      ApiKeys.FETCH.oldestVersion(), ApiKeys.FETCH.latestVersion(), 1, 1000, 0, fetchData,
-        metadataCache.topicNamesToIds()).build())
+      ApiKeys.FETCH.oldestVersion(), ApiKeys.FETCH.latestVersion(), 1, 1000, 0, fetchData
+    ).build())
 
-    // TODO: change?
     addTopicToMetadataCache(tp0.topic, numPartitions = 1)
+    val hw = 3
 
     val records = MemoryRecords.withRecords(CompressionType.NONE,
       new SimpleRecord(1000, "foo".getBytes(StandardCharsets.UTF_8)))
@@ -2679,15 +2777,11 @@ class KafkaApisTest {
 
     val fetchMetadata = new JFetchMetadata(0, 0)
     val fetchContext = new FullFetchContext(time, new FetchSessionCache(1000, 100),
-      fetchMetadata, new FetchRequest.FetchDataAndError(fetchData, emptyUnresolvedPart),  metadataCache.topicNamesToIds(), true)
-    expect(fetchManager.newContext(
-      anyObject[Short],
-      anyObject[JFetchMetadata],
-      anyObject[Boolean],
-      anyObject[FetchDataAndError],
-      anyObject[util.List[FetchRequestData.ForgottenTopic]],
-      anyObject[util.Map[Uuid, String]],
-      anyObject[util.Map[String, Uuid]])).andReturn(fetchContext)
+      fetchMetadata, fetchData, true)
+    expect(fetchManager.newContext(anyObject[JFetchMetadata],
+      anyObject[util.Map[TopicPartition, FetchRequest.PartitionData]],
+      anyObject[util.List[TopicPartition]],
+      anyBoolean)).andReturn(fetchContext)
 
     expect(replicaQuotaManager.record(anyLong()))
     expect(replicaManager.getLogConfig(EasyMock.eq(tp0))).andReturn(None)
@@ -3179,8 +3273,7 @@ class KafkaApisTest {
   private def createBasicMetadataRequest(topic: String,
                                          numPartitions: Int,
                                          brokerEpoch: Long,
-                                         numBrokers: Int,
-                                         topicId: Uuid = Uuid.ZERO_UUID): UpdateMetadataRequest = {
+                                         numBrokers: Int): UpdateMetadataRequest = {
     val replicas = List(0.asInstanceOf[Integer]).asJava
 
     def createPartitionState(partition: Int) = new UpdateMetadataPartitionState()
@@ -3198,12 +3291,7 @@ class KafkaApisTest {
     val liveBrokers = (0 until numBrokers).map(
       brokerId => createMetadataBroker(brokerId, plaintextListener))
     new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, 0,
-      0, brokerEpoch, partitionStates.asJava, liveBrokers.asJava, Collections.singletonMap(topic, topicId)).build()
-  }
-
-  private def setupBasicMetadataCache(topic: String, numPartitions: Int, numBrokers: Int, topicId: Uuid): Unit = {
-    val updateMetadataRequest = createBasicMetadataRequest(topic, numPartitions, 0, numBrokers, topicId)
-    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
+      0, brokerEpoch, partitionStates.asJava, liveBrokers.asJava, Collections.emptyMap()).build()
   }
 
   private def addTopicToMetadataCache(topic: String, numPartitions: Int, numBrokers: Int = 1): Unit = {
@@ -3266,23 +3354,8 @@ class KafkaApisTest {
   }
 
   @Test
-  def testSizeOfThrottledPartitionsWithIdError(): Unit = {
-    val unresolvedTopicData = Collections.singletonList(new FetchResponseData.FetchableTopicResponse()
-      .setTopicId(Uuid.randomUuid())
-      .setPartitions(Collections.singletonList(new FetchResponseData.PartitionData()
-        .setPartitionIndex(0)
-        .setErrorCode(Errors.UNKNOWN_TOPIC_ID.code()))))
-    checkSizeOfThrottledPartitions(unresolvedTopicData)
-  }
-
-  @Test
   def testSizeOfThrottledPartitions(): Unit = {
-    checkSizeOfThrottledPartitions(Collections.emptyList())
-  }
 
-  private def checkSizeOfThrottledPartitions(unresolvedTopicData: util.List[FetchResponseData.FetchableTopicResponse]): Unit = {
-    val topicNames = new util.HashMap[Uuid, String]
-    val topicIds = new util.HashMap[String, Uuid]()
     def fetchResponse(data: Map[TopicPartition, String]): FetchResponse = {
       val responseData = new util.LinkedHashMap[TopicPartition, FetchResponseData.PartitionData](
         data.map { case (tp, raw) =>
@@ -3293,19 +3366,13 @@ class KafkaApisTest {
             .setLogStartOffset(0)
             .setRecords(MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord(100, raw.getBytes(StandardCharsets.UTF_8))))
       }.toMap.asJava)
-
-      data.foreach{case (tp, _) =>
-        val id = Uuid.randomUuid()
-        topicIds.put(tp.topic(), id)
-        topicNames.put(id, tp.topic())
-      }
-      FetchResponse.prepareResponse(Errors.NONE, responseData, unresolvedTopicData, topicIds, 100, 100)
+      FetchResponse.of(Errors.NONE, 100, 100, responseData)
     }
 
     val throttledPartition = new TopicPartition("throttledData", 0)
     val throttledData = Map(throttledPartition -> "throttledData")
     val expectedSize = FetchResponse.sizeOf(FetchResponseData.HIGHEST_SUPPORTED_VERSION,
-      fetchResponse(throttledData).responseData(topicNames, FetchResponseData.HIGHEST_SUPPORTED_VERSION).entrySet.iterator, Collections.emptyList(), topicIds)
+      fetchResponse(throttledData).responseData.entrySet.iterator)
 
     val response = fetchResponse(throttledData ++ Map(new TopicPartition("nonThrottledData", 0) -> "nonThrottledData"))
 
@@ -3313,7 +3380,7 @@ class KafkaApisTest {
     Mockito.when(quota.isThrottled(ArgumentMatchers.any(classOf[TopicPartition])))
       .thenAnswer(invocation => throttledPartition == invocation.getArgument(0).asInstanceOf[TopicPartition])
 
-    assertEquals(expectedSize, KafkaApis.sizeOfThrottledPartitions(FetchResponseData.HIGHEST_SUPPORTED_VERSION, response, quota, topicIds))
+    assertEquals(expectedSize, KafkaApis.sizeOfThrottledPartitions(FetchResponseData.HIGHEST_SUPPORTED_VERSION, response, quota))
   }
 
   @Test
@@ -3321,6 +3388,7 @@ class KafkaApisTest {
     val tp1 = new TopicPartition("foo", 0)
     val tp2 = new TopicPartition("bar", 3)
     val tp3 = new TopicPartition("baz", 1)
+    val tp4 = new TopicPartition("invalid;topic", 1)
 
     val authorizer: Authorizer = EasyMock.niceMock(classOf[Authorizer])
     val data = new DescribeProducersRequestData().setTopics(List(
@@ -3332,8 +3400,10 @@ class KafkaApisTest {
         .setPartitionIndexes(List(Int.box(tp2.partition)).asJava),
       new DescribeProducersRequestData.TopicRequest()
         .setName(tp3.topic)
-        .setPartitionIndexes(List(Int.box(tp3.partition)).asJava)
-
+        .setPartitionIndexes(List(Int.box(tp3.partition)).asJava),
+      new DescribeProducersRequestData.TopicRequest()
+        .setName(tp4.topic)
+        .setPartitionIndexes(List(Int.box(tp4.partition)).asJava)
     ).asJava)
 
     def buildExpectedActions(topic: String): util.List[Action] = {
@@ -3380,11 +3450,19 @@ class KafkaApisTest {
     createKafkaApis(authorizer = Some(authorizer)).handleDescribeProducersRequest(request)
 
     val response = capturedResponse.getValue.asInstanceOf[DescribeProducersResponse]
-    assertEquals(3, response.data.topics.size())
-    assertEquals(Set("foo", "bar", "baz"), response.data.topics.asScala.map(_.name).toSet)
+    assertEquals(Set("foo", "bar", "baz", "invalid;topic"), response.data.topics.asScala.map(_.name).toSet)
 
-    val fooTopic = response.data.topics.asScala.find(_.name == tp1.topic).get
-    val fooPartition = fooTopic.partitions.asScala.find(_.partitionIndex == tp1.partition).get
+    def assertPartitionError(
+      topicPartition: TopicPartition,
+      error: Errors
+    ): DescribeProducersResponseData.PartitionResponse = {
+      val topicData = response.data.topics.asScala.find(_.name == topicPartition.topic).get
+      val partitionData = topicData.partitions.asScala.find(_.partitionIndex == topicPartition.partition).get
+      assertEquals(error, Errors.forCode(partitionData.errorCode))
+      partitionData
+    }
+
+    val fooPartition = assertPartitionError(tp1, Errors.NONE)
     assertEquals(Errors.NONE, Errors.forCode(fooPartition.errorCode))
     assertEquals(1, fooPartition.activeProducers.size)
     val fooProducer = fooPartition.activeProducers.get(0)
@@ -3395,13 +3473,9 @@ class KafkaApisTest {
     assertEquals(-1, fooProducer.currentTxnStartOffset)
     assertEquals(200, fooProducer.coordinatorEpoch)
 
-    val barTopic = response.data.topics.asScala.find(_.name == tp2.topic).get
-    val barPartition = barTopic.partitions.asScala.find(_.partitionIndex == tp2.partition).get
-    assertEquals(Errors.TOPIC_AUTHORIZATION_FAILED, Errors.forCode(barPartition.errorCode))
-
-    val bazTopic = response.data.topics.asScala.find(_.name == tp3.topic).get
-    val bazPartition = bazTopic.partitions.asScala.find(_.partitionIndex == tp3.partition).get
-    assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, Errors.forCode(bazPartition.errorCode))
+    assertPartitionError(tp2, Errors.TOPIC_AUTHORIZATION_FAILED)
+    assertPartitionError(tp3, Errors.UNKNOWN_TOPIC_OR_PARTITION)
+    assertPartitionError(tp4, Errors.INVALID_TOPIC_EXCEPTION)
   }
 
   @Test

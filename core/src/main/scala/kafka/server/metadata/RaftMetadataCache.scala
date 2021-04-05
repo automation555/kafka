@@ -197,6 +197,10 @@ class RaftMetadataCache(val brokerId: Int) extends MetadataCache with Logging {
     }.toSet
   }
 
+  override def getTopicId(topicName: String): Uuid = _currentImage.topicNameToId(topicName).getOrElse(Uuid.ZERO_UUID)
+
+  override def getTopicName(topicId: Uuid): Option[String] = _currentImage.topicIdToName(topicId)
+
   override def getNonExistingTopics(topics: Set[String]): Set[String] = {
     topics.diff(_currentImage.partitions.allTopicNames())
   }
@@ -224,19 +228,6 @@ class RaftMetadataCache(val brokerId: Int) extends MetadataCache with Logging {
 
   override def numPartitions(topic: String): Option[Int] = {
     _currentImage.partitions.numTopicPartitions(topic)
-  }
-
-  // TODO: optimize (maybe make all return types java)
-  override def topicNamesToIds(): util.Map[String, Uuid] = {
-    _currentImage.partitions.copyReverseIdMap()
-  }
-
-  override def topicIdsToNames(): util.Map[Uuid, String] = {
-    _currentImage.partitions.copyIdMap()
-  }
-
-  override def topicIdInfo(): (util.Map[String, Uuid], util.Map[Uuid, String]) = {
-    (topicNamesToIds(), topicIdsToNames())
   }
 
   // if the leader is not known, return None;

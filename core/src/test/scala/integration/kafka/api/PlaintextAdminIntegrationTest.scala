@@ -40,17 +40,17 @@ import org.apache.kafka.common.errors._
 import org.apache.kafka.common.requests.{DeleteRecordsRequest, MetadataResponse}
 import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
 import org.apache.kafka.common.utils.{Time, Utils}
-import org.apache.kafka.common.{ConsumerGroupState, ElectionType, TopicPartition, TopicPartitionInfo, TopicPartitionReplica}
+import org.apache.kafka.common.{ConsumerGroupState, ElectionType, TopicPartition, TopicPartitionInfo, TopicPartitionReplica, Uuid}
 import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Disabled, Test}
 import org.slf4j.LoggerFactory
 
 import scala.annotation.nowarn
-import scala.jdk.CollectionConverters._
 import scala.collection.Seq
 import scala.compat.java8.OptionConverters._
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 /**
@@ -168,6 +168,22 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   }
 
   @Test
+  def testDescribeTopicsWithIds(): Unit = {
+    client = Admin.create(createConfig)
+
+    val existingTopic = "existing-topic"
+    client.createTopics(Seq(existingTopic).map(new NewTopic(_, 1, 1.toShort)).asJava).all.get()
+    waitForTopics(client, Seq(existingTopic), List())
+    val existingTopicId = zkClient.getTopicIdsForTopics(Set(existingTopic)).values.head
+
+    val nonExistingTopicId = Uuid.randomUuid()
+
+    val results = client.describeTopicsWithIds(Seq(existingTopicId, nonExistingTopicId).asJava).values
+    assertEquals(existingTopicId, results.get(existingTopicId).get.topicId())
+    assertThrows(classOf[ExecutionException], () => results.get(nonExistingTopicId).get).getCause.isInstanceOf[UnknownTopicIdException]
+  }
+
+  @Test
   def testDescribeCluster(): Unit = {
     client = Admin.create(createConfig)
     val result = client.describeCluster
@@ -189,7 +205,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   def testDescribeLogDirs(): Unit = {
     client = Admin.create(createConfig)
     val topic = "topic"
-    val leaderByPartition = createTopic(topic, numPartitions = 10, replicationFactor = 1)
+    val leaderByPartition = createTopic(topic, numPartitions = 10)
     val partitionsByBroker = leaderByPartition.groupBy { case (_, leaderId) => leaderId }.map { case (k, v) =>
       k -> v.keys.toSeq
     }
@@ -217,7 +233,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   def testDescribeReplicaLogDirs(): Unit = {
     client = Admin.create(createConfig)
     val topic = "topic"
-    val leaderByPartition = createTopic(topic, numPartitions = 10, replicationFactor = 1)
+    val leaderByPartition = createTopic(topic, numPartitions = 10)
     val replicas = leaderByPartition.map { case (partition, brokerId) =>
       new TopicPartitionReplica(topic, partition, brokerId)
     }.toSeq
@@ -255,7 +271,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
       assertTrue(exception.getCause.isInstanceOf[UnknownTopicOrPartitionException])
     }
 
-    createTopic(topic, numPartitions = 1, replicationFactor = brokerCount)
+    createTopic(topic, replicationFactor = brokerCount)
     servers.foreach { server =>
       val logDir = server.logManager.getLog(tp).get.dir.getParent
       assertEquals(firstReplicaAssignment(new TopicPartitionReplica(topic, 0, server.config.brokerId)), logDir)
@@ -332,7 +348,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
     val topic2 = "describe-alter-configs-topic-2"
     val topicResource2 = new ConfigResource(ConfigResource.Type.TOPIC, topic2)
-    createTopic(topic2, numPartitions = 1, replicationFactor = 1)
+    createTopic(topic2)
 
     // Describe topics and broker
     val brokerResource1 = new ConfigResource(ConfigResource.Type.BROKER, servers(1).config.brokerId.toString)
@@ -395,10 +411,10 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
     // Create topics
     val topic1 = "create-partitions-topic-1"
-    createTopic(topic1, numPartitions = 1, replicationFactor = 1)
+    createTopic(topic1)
 
     val topic2 = "create-partitions-topic-2"
-    createTopic(topic2, numPartitions = 1, replicationFactor = 2)
+    createTopic(topic2, replicationFactor = 2)
 
     // assert that both the topics have 1 partition
     val topic1_metadata = getTopicMetadata(client, topic1)
@@ -683,7 +699,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
   @Test
   def testReplicaCanFetchFromLogStartOffsetAfterDeleteRecords(): Unit = {
-    val leaders = createTopic(topic, numPartitions = 1, replicationFactor = brokerCount)
+    val leaders = createTopic(topic, replicationFactor = brokerCount)
     val followerIndex = if (leaders(0) != servers(0).config.brokerId) 0 else 1
 
     def waitForFollowerLog(expectedStartOffset: Long, expectedEndOffset: Long): Unit = {
@@ -731,7 +747,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   @Test
   def testAlterLogDirsAfterDeleteRecords(): Unit = {
     client = Admin.create(createConfig)
-    createTopic(topic, numPartitions = 1, replicationFactor = brokerCount)
+    createTopic(topic, replicationFactor = brokerCount)
     val expectedLEO = 100
     val producer = createProducer()
     sendRecords(producer, expectedLEO, topicPartition)
@@ -948,6 +964,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   def testCallInFlightTimeouts(): Unit = {
     val config = createConfig
     config.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "100000000")
+    config.put(AdminClientConfig.RETRIES_CONFIG, "0")
     val factory = new KafkaAdminClientTest.FailureInjectingTimeoutProcessorFactory()
     client = KafkaAdminClientTest.createInternal(new AdminClientConfig(config), factory)
     val future = client.createTopics(Seq("mytopic", "mytopic2").map(new NewTopic(_, 1, 1.toShort)).asJava,
@@ -1628,7 +1645,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
 
     // Create topics
     val topic = "list-reassignments-no-reassignments"
-    createTopic(topic, numPartitions = 1, replicationFactor = 3)
+    createTopic(topic, replicationFactor = 3)
     val tp = new TopicPartition(topic, 0)
 
     val reassignmentsMap = client.listPartitionReassignments(Set(tp).asJava).reassignments().get()
@@ -2018,7 +2035,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   }
 
   @Test
-  def testDescribeConfigsForLog4jLogLevels(): Unit = withLogReset {
+  def testDescribeConfigsForLog4jLogLevels(): Unit = {
     client = Admin.create(createConfig)
     LoggerFactory.getLogger("kafka.cluster.Replica").trace("Message to create the logger")
     val loggerConfig = describeBrokerLoggers()
@@ -2034,37 +2051,37 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   }
 
   @Test
-  def testIncrementalAlterConfigsForLog4jLogLevels(): Unit = withLogReset {
+  @Disabled // To be re-enabled once KAFKA-8779 is resolved
+  def testIncrementalAlterConfigsForLog4jLogLevels(): Unit = {
     client = Admin.create(createConfig)
 
-    val ancestorLogger = "kafka";
     val initialLoggerConfig = describeBrokerLoggers()
-    val initialAncestorLogLevel = "ERROR"
-    assertEquals(initialAncestorLogLevel, initialLoggerConfig.get("kafka.controller.KafkaController").value())
-    assertEquals(initialAncestorLogLevel, initialLoggerConfig.get("kafka.log.LogCleaner").value())
-    assertEquals(initialAncestorLogLevel, initialLoggerConfig.get("kafka.server.ReplicaManager").value())
+    val initialRootLogLevel = initialLoggerConfig.get(Log4jController.ROOT_LOGGER).value()
+    assertEquals(initialRootLogLevel, initialLoggerConfig.get("kafka.controller.KafkaController").value())
+    assertEquals(initialRootLogLevel, initialLoggerConfig.get("kafka.log.LogCleaner").value())
+    assertEquals(initialRootLogLevel, initialLoggerConfig.get("kafka.server.ReplicaManager").value())
 
-    val newAncestorLogLevel = LogLevelConfig.DEBUG_LOG_LEVEL
-    val alterAncestorLoggerEntry = Seq(
-      new AlterConfigOp(new ConfigEntry(ancestorLogger, newAncestorLogLevel), AlterConfigOp.OpType.SET)
+    val newRootLogLevel = LogLevelConfig.DEBUG_LOG_LEVEL
+    val alterRootLoggerEntry = Seq(
+      new AlterConfigOp(new ConfigEntry(Log4jController.ROOT_LOGGER, newRootLogLevel), AlterConfigOp.OpType.SET)
     ).asJavaCollection
     // Test validateOnly does not change anything
-    alterBrokerLoggers(alterAncestorLoggerEntry, validateOnly = true)
+    alterBrokerLoggers(alterRootLoggerEntry, validateOnly = true)
     val validatedLoggerConfig = describeBrokerLoggers()
-    assertEquals(initialAncestorLogLevel, validatedLoggerConfig.get(ancestorLogger).value())
-    assertEquals(initialAncestorLogLevel, validatedLoggerConfig.get("kafka.controller.KafkaController").value())
-    assertEquals(initialAncestorLogLevel, validatedLoggerConfig.get("kafka.log.LogCleaner").value())
-    assertEquals(initialAncestorLogLevel, validatedLoggerConfig.get("kafka.server.ReplicaManager").value())
-    assertEquals(initialAncestorLogLevel, validatedLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
+    assertEquals(initialRootLogLevel, validatedLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
+    assertEquals(initialRootLogLevel, validatedLoggerConfig.get("kafka.controller.KafkaController").value())
+    assertEquals(initialRootLogLevel, validatedLoggerConfig.get("kafka.log.LogCleaner").value())
+    assertEquals(initialRootLogLevel, validatedLoggerConfig.get("kafka.server.ReplicaManager").value())
+    assertEquals(initialRootLogLevel, validatedLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
 
     // test that we can change them and unset loggers still use the root's log level
-    alterBrokerLoggers(alterAncestorLoggerEntry)
-    val changedAncestorLoggerConfig = describeBrokerLoggers()
-    assertEquals(newAncestorLogLevel, changedAncestorLoggerConfig.get(ancestorLogger).value())
-    assertEquals(newAncestorLogLevel, changedAncestorLoggerConfig.get("kafka.controller.KafkaController").value())
-    assertEquals(newAncestorLogLevel, changedAncestorLoggerConfig.get("kafka.log.LogCleaner").value())
-    assertEquals(newAncestorLogLevel, changedAncestorLoggerConfig.get("kafka.server.ReplicaManager").value())
-    assertEquals(newAncestorLogLevel, changedAncestorLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
+    alterBrokerLoggers(alterRootLoggerEntry)
+    val changedRootLoggerConfig = describeBrokerLoggers()
+    assertEquals(newRootLogLevel, changedRootLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
+    assertEquals(newRootLogLevel, changedRootLoggerConfig.get("kafka.controller.KafkaController").value())
+    assertEquals(newRootLogLevel, changedRootLoggerConfig.get("kafka.log.LogCleaner").value())
+    assertEquals(newRootLogLevel, changedRootLoggerConfig.get("kafka.server.ReplicaManager").value())
+    assertEquals(newRootLogLevel, changedRootLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
 
     // alter the ZK client's logger so we can later test resetting it
     val alterZKLoggerEntry = Seq(
@@ -2083,11 +2100,11 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     ).asJavaCollection
     alterBrokerLoggers(alterLogLevelsEntries)
     val alteredLoggerConfig = describeBrokerLoggers()
-    assertEquals(newAncestorLogLevel, alteredLoggerConfig.get(ancestorLogger).value())
+    assertEquals(newRootLogLevel, alteredLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
     assertEquals(LogLevelConfig.INFO_LOG_LEVEL, alteredLoggerConfig.get("kafka.controller.KafkaController").value())
     assertEquals(LogLevelConfig.ERROR_LOG_LEVEL, alteredLoggerConfig.get("kafka.log.LogCleaner").value())
     assertEquals(LogLevelConfig.TRACE_LOG_LEVEL, alteredLoggerConfig.get("kafka.server.ReplicaManager").value())
-    assertEquals(newAncestorLogLevel, alteredLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
+    assertEquals(newRootLogLevel, alteredLoggerConfig.get("kafka.zookeeper.ZooKeeperClient").value())
   }
 
   /**
@@ -2098,18 +2115,18 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     * 5. Ensure the kafka.controller.KafkaController logger's level is ERROR (the curent root logger level)
     */
   @Test
-  def testIncrementalAlterConfigsForLog4jLogLevelsCanResetLoggerToCurrentRoot(): Unit = withLogReset {
+  @Disabled // To be re-enabled once KAFKA-8779 is resolved
+  def testIncrementalAlterConfigsForLog4jLogLevelsCanResetLoggerToCurrentRoot(): Unit = {
     client = Admin.create(createConfig)
-    val ancestorLogger = "kafka"
     // step 1 - configure root logger
-    val initialAncestorLogLevel = LogLevelConfig.TRACE_LOG_LEVEL
-    val alterAncestorLoggerEntry = Seq(
-      new AlterConfigOp(new ConfigEntry(ancestorLogger, initialAncestorLogLevel), AlterConfigOp.OpType.SET)
+    val initialRootLogLevel = LogLevelConfig.TRACE_LOG_LEVEL
+    val alterRootLoggerEntry = Seq(
+      new AlterConfigOp(new ConfigEntry(Log4jController.ROOT_LOGGER, initialRootLogLevel), AlterConfigOp.OpType.SET)
     ).asJavaCollection
-    alterBrokerLoggers(alterAncestorLoggerEntry)
+    alterBrokerLoggers(alterRootLoggerEntry)
     val initialLoggerConfig = describeBrokerLoggers()
-    assertEquals(initialAncestorLogLevel, initialLoggerConfig.get(ancestorLogger).value())
-    assertEquals(initialAncestorLogLevel, initialLoggerConfig.get("kafka.controller.KafkaController").value())
+    assertEquals(initialRootLogLevel, initialLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
+    assertEquals(initialRootLogLevel, initialLoggerConfig.get("kafka.controller.KafkaController").value())
 
     // step 2 - change KafkaController logger to INFO
     val alterControllerLoggerEntry = Seq(
@@ -2117,7 +2134,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     ).asJavaCollection
     alterBrokerLoggers(alterControllerLoggerEntry)
     val changedControllerLoggerConfig = describeBrokerLoggers()
-    assertEquals(initialAncestorLogLevel, changedControllerLoggerConfig.get(ancestorLogger).value())
+    assertEquals(initialRootLogLevel, changedControllerLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
     assertEquals(LogLevelConfig.INFO_LOG_LEVEL, changedControllerLoggerConfig.get("kafka.controller.KafkaController").value())
 
     // step 3 - unset KafkaController logger
@@ -2126,20 +2143,21 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     ).asJavaCollection
     alterBrokerLoggers(deleteControllerLoggerEntry)
     val deletedControllerLoggerConfig = describeBrokerLoggers()
-    assertEquals(initialAncestorLogLevel, deletedControllerLoggerConfig.get(ancestorLogger).value())
-    assertEquals(initialAncestorLogLevel, deletedControllerLoggerConfig.get("kafka.controller.KafkaController").value())
+    assertEquals(initialRootLogLevel, deletedControllerLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
+    assertEquals(initialRootLogLevel, deletedControllerLoggerConfig.get("kafka.controller.KafkaController").value())
 
-    val newAncestorLogLevel = LogLevelConfig.ERROR_LOG_LEVEL
-    val newAlterAncestorLoggerEntry = Seq(
-      new AlterConfigOp(new ConfigEntry(ancestorLogger, newAncestorLogLevel), AlterConfigOp.OpType.SET)
+    val newRootLogLevel = LogLevelConfig.ERROR_LOG_LEVEL
+    val newAlterRootLoggerEntry = Seq(
+      new AlterConfigOp(new ConfigEntry(Log4jController.ROOT_LOGGER, newRootLogLevel), AlterConfigOp.OpType.SET)
     ).asJavaCollection
-    alterBrokerLoggers(newAlterAncestorLoggerEntry)
-    val newAncestorLoggerConfig = describeBrokerLoggers()
-    assertEquals(newAncestorLogLevel, newAncestorLoggerConfig.get(ancestorLogger).value())
-    assertEquals(newAncestorLogLevel, newAncestorLoggerConfig.get("kafka.controller.KafkaController").value())
+    alterBrokerLoggers(newAlterRootLoggerEntry)
+    val newRootLoggerConfig = describeBrokerLoggers()
+    assertEquals(newRootLogLevel, newRootLoggerConfig.get(Log4jController.ROOT_LOGGER).value())
+    assertEquals(newRootLogLevel, newRootLoggerConfig.get("kafka.controller.KafkaController").value())
   }
 
   @Test
+  @Disabled // To be re-enabled once KAFKA-8779 is resolved
   def testIncrementalAlterConfigsForLog4jLogLevelsCannotResetRootLogger(): Unit = {
     client = Admin.create(createConfig)
     val deleteRootLoggerEntry = Seq(
@@ -2150,7 +2168,8 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
   }
 
   @Test
-  def testIncrementalAlterConfigsForLog4jLogLevelsDoesNotWorkWithInvalidConfigs(): Unit = withLogReset {
+  @Disabled // To be re-enabled once KAFKA-8779 is resolved
+  def testIncrementalAlterConfigsForLog4jLogLevelsDoesNotWorkWithInvalidConfigs(): Unit = {
     client = Admin.create(createConfig)
     val validLoggerName = "kafka.server.KafkaRequestHandler"
     val expectedValidLoggerLogLevel = describeBrokerLoggers().get(validLoggerName)
@@ -2193,6 +2212,7 @@ class PlaintextAdminIntegrationTest extends BaseAdminIntegrationTest {
     */
   @nowarn("cat=deprecation")
   @Test
+  @Disabled // To be re-enabled once KAFKA-8779 is resolved
   def testAlterConfigsForLog4jLogLevelsDoesNotWork(): Unit = {
     client = Admin.create(createConfig)
 

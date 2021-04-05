@@ -397,23 +397,28 @@ public final class RecordAccumulator {
             //
             // Since we reenqueue exactly one batch a time and ensure that the queue is ordered by sequence always, it
             // is a simple linear scan of a subset of the in flight batches to find the right place in the queue each time.
-            List<ProducerBatch> orderedBatches = new ArrayList<>();
-            while (deque.peekFirst() != null && deque.peekFirst().hasSequence() && deque.peekFirst().baseSequence() < batch.baseSequence())
-                orderedBatches.add(deque.pollFirst());
+            ProducerBatch lastBatchInQueue = deque.peekLast();
+            if(lastBatchInQueue !=null && lastBatchInQueue.hasSequence() && lastBatchInQueue.baseSequence() <= batch.baseSequence()){
+                deque.addLast(batch);
+            } else {
+                List<ProducerBatch> orderedBatches = new ArrayList<>();
+                while (deque.peekFirst() != null && deque.peekFirst().hasSequence() && deque.peekFirst().baseSequence() < batch.baseSequence())
+                    orderedBatches.add(deque.pollFirst());
 
-            log.debug("Reordered incoming batch with sequence {} for partition {}. It was placed in the queue at " +
-                "position {}", batch.baseSequence(), batch.topicPartition, orderedBatches.size());
-            // Either we have reached a point where there are batches without a sequence (ie. never been drained
-            // and are hence in order by default), or the batch at the front of the queue has a sequence greater
-            // than the incoming batch. This is the right place to add the incoming batch.
-            deque.addFirst(batch);
+                log.debug("Reordered incoming batch with sequence {} for partition {}. It was placed in the queue at " +
+                        "position {}", batch.baseSequence(), batch.topicPartition, orderedBatches.size());
+                // Either we have reached a point where there are batches without a sequence (ie. never been drained
+                // and are hence in order by default), or the batch at the front of the queue has a sequence greater
+                // than the incoming batch. This is the right place to add the incoming batch.
+                deque.addFirst(batch);
 
-            // Now we have to re insert the previously queued batches in the right order.
-            for (int i = orderedBatches.size() - 1; i >= 0; --i) {
-                deque.addFirst(orderedBatches.get(i));
+                // Now we have to re insert the previously queued batches in the right order.
+                for (int i = orderedBatches.size() - 1; i >= 0; --i) {
+                    deque.addFirst(orderedBatches.get(i));
+                }
+
+                // At this point, the incoming batch has been queued in the correct place according to its sequence.
             }
-
-            // At this point, the incoming batch has been queued in the correct place according to its sequence.
         } else {
             deque.addFirst(batch);
         }
@@ -508,11 +513,15 @@ public final class RecordAccumulator {
                 return true;
 
             if (!first.hasSequence()) {
-                if (transactionManager.hasInflightBatches(tp) && transactionManager.hasStaleProducerIdAndEpoch(tp)) {
+                if (transactionManager.hasInflightBatches(tp)) {
                     // Don't drain any new batches while the partition has in-flight batches with a different epoch
                     // and/or producer ID. Otherwise, a batch with a new epoch and sequence number
                     // 0 could be written before earlier batches complete, which would cause out of sequence errors
-                    return true;
+                    ProducerBatch firstInFlightBatch = transactionManager.nextBatchBySequence(tp);
+
+                    if (firstInFlightBatch != null && transactionManager.producerIdOrEpochNotMatch(firstInFlightBatch)) {
+                        return true;
+                    }
                 }
 
                 if (transactionManager.hasUnresolvedSequence(first.topicPartition))
@@ -578,12 +587,6 @@ public final class RecordAccumulator {
                         transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
                     ProducerBatch batch = deque.pollFirst();
                     if (producerIdAndEpoch != null && !batch.hasSequence()) {
-                        // If the producer id/epoch of the partition do not match the latest one
-                        // of the producer, we update it and reset the sequence. This should be
-                        // only done when all its in-flight batches have completed. This is guarantee
-                        // in `shouldStopDrainBatchesForPartition`.
-                        transactionManager.maybeUpdateProducerIdAndEpoch(batch.topicPartition);
-
                         // If the batch already has an assigned sequence, then we should not change the producer id and
                         // sequence number, since this may introduce duplicates. In particular, the previous attempt
                         // may actually have been accepted, and if we change the producer id and sequence here, this

@@ -79,6 +79,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.{ArgumentMatchers, Mockito}
 
+import scala.annotation.nowarn
 import scala.collection.{Map, Seq, mutable}
 import scala.jdk.CollectionConverters._
 
@@ -892,7 +893,7 @@ class KafkaApisTest {
 
     val capturedResponse = expectNoThrottling(request)
 
-    val capturedRequest = verifyTopicCreation(topicName, true, true, request)
+    verifyTopicCreation(topicName, true, true, request)
 
     EasyMock.replay(replicaManager, clientRequestQuotaManager, requestChannel, authorizer,
       autoTopicCreationManager, forwardingManager, controller, clientControllerQuotaManager, groupCoordinator, txnCoordinator)
@@ -902,8 +903,6 @@ class KafkaApisTest {
 
     val response = capturedResponse.getValue.asInstanceOf[FindCoordinatorResponse]
     assertEquals(Errors.COORDINATOR_NOT_AVAILABLE, response.error())
-
-    assertTrue(capturedRequest.getValue.isEmpty)
 
     verify(authorizer, autoTopicCreationManager)
   }
@@ -995,7 +994,7 @@ class KafkaApisTest {
 
     val capturedResponse = expectNoThrottling(request)
 
-    val capturedRequest = verifyTopicCreation(topicName, enableAutoTopicCreation, isInternal, request)
+    verifyTopicCreation(topicName, enableAutoTopicCreation, isInternal, request)
 
     EasyMock.replay(replicaManager, clientRequestQuotaManager, requestChannel, authorizer,
       autoTopicCreationManager, forwardingManager, clientControllerQuotaManager, groupCoordinator, txnCoordinator)
@@ -1013,34 +1012,26 @@ class KafkaApisTest {
 
     assertEquals(expectedMetadataResponse, response.topicMetadata())
 
-    if (enableAutoTopicCreation) {
-      assertTrue(capturedRequest.getValue.isDefined)
-      assertEquals(request.context, capturedRequest.getValue.get)
-    }
-
     verify(authorizer, autoTopicCreationManager)
   }
 
   private def verifyTopicCreation(topicName: String,
                                   enableAutoTopicCreation: Boolean,
                                   isInternal: Boolean,
-                                  request: RequestChannel.Request): Capture[Option[RequestContext]] = {
-    val capturedRequest = EasyMock.newCapture[Option[RequestContext]]()
+                                  request: RequestChannel.Request) = {
     if (enableAutoTopicCreation) {
       EasyMock.expect(clientControllerQuotaManager.newPermissiveQuotaFor(EasyMock.eq(request)))
         .andReturn(UnboundedControllerMutationQuota)
 
       EasyMock.expect(autoTopicCreationManager.createTopics(
         EasyMock.eq(Set(topicName)),
-        EasyMock.eq(UnboundedControllerMutationQuota),
-        EasyMock.capture(capturedRequest))).andReturn(
+        EasyMock.eq(UnboundedControllerMutationQuota))).andReturn(
         Seq(new MetadataResponseTopic()
         .setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code())
         .setIsInternal(isInternal)
         .setName(topicName))
       ).once()
     }
-    capturedRequest
   }
 
   private def setupBrokerMetadata(hasEnoughLiveBrokers: Boolean, numBrokersNeeded: Int): Unit = {
@@ -1417,6 +1408,7 @@ class KafkaApisTest {
     }
   }
 
+  @nowarn("cat=deprecation")
   @Test
   def shouldReplaceProducerFencedWithInvalidProducerEpochInProduceResponse(): Unit = {
     val topic = "topic"
@@ -1463,11 +1455,10 @@ class KafkaApisTest {
 
       val response = capturedResponse.getValue.asInstanceOf[ProduceResponse]
 
-      assertEquals(1, response.data.responses.size)
-      val topicProduceResponse = response.data.responses.asScala.head
-      assertEquals(1, topicProduceResponse.partitionResponses.size)   
-      val partitionProduceResponse = topicProduceResponse.partitionResponses.asScala.head
-      assertEquals(Errors.INVALID_PRODUCER_EPOCH, Errors.forCode(partitionProduceResponse.errorCode))
+      assertEquals(1, response.responses().size())
+      for (partitionResponse <- response.responses().asScala) {
+        assertEquals(Errors.INVALID_PRODUCER_EPOCH, partitionResponse._2.error)
+      }
     }
   }
 
@@ -1636,24 +1627,42 @@ class KafkaApisTest {
     val brokerEpoch = 230498320L
 
     val fooPartition = new TopicPartition("foo", 0)
+    val fooTopicId = Uuid.randomUuid()
     val groupMetadataPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, 0)
+    val groupMetadataTopicId = Uuid.randomUuid()
     val txnStatePartition = new TopicPartition(Topic.TRANSACTION_STATE_TOPIC_NAME, 0)
+    val txnStateTopicId = Uuid.randomUuid()
+    val topicIds = Map("foo" -> fooTopicId, Topic.GROUP_METADATA_TOPIC_NAME -> groupMetadataTopicId, Topic.TRANSACTION_STATE_TOPIC_NAME -> txnStateTopicId)
+    val topicNames = topicIds.map{case(topicName, topicId) => (topicId, topicName)}
+
+    val updateMetadataPartitionStates = Seq(
+      new UpdateMetadataPartitionState().setTopicName("foo"),
+      new UpdateMetadataPartitionState().setTopicName(Topic.GROUP_METADATA_TOPIC_NAME),
+      new UpdateMetadataPartitionState().setTopicName(Topic.TRANSACTION_STATE_TOPIC_NAME)
+    )
+
+    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, controllerId,
+      controllerEpoch, brokerEpoch, updateMetadataPartitionStates.asJava, Seq.empty[UpdateMetadataBroker].asJava, topicIds.asJava).build()
+    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
 
     val topicStates = Seq(
       new StopReplicaTopicState()
         .setTopicName(groupMetadataPartition.topic)
+        .setTopicId(groupMetadataTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(groupMetadataPartition.partition)
           .setLeaderEpoch(leaderEpoch)
           .setDeletePartition(deletePartition)).asJava),
       new StopReplicaTopicState()
         .setTopicName(txnStatePartition.topic)
+        .setTopicId(txnStateTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(txnStatePartition.partition)
           .setLeaderEpoch(leaderEpoch)
           .setDeletePartition(deletePartition)).asJava),
       new StopReplicaTopicState()
         .setTopicName(fooPartition.topic)
+        .setTopicId(fooTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(fooPartition.partition)
           .setLeaderEpoch(leaderEpoch)
@@ -1675,8 +1684,8 @@ class KafkaApisTest {
       EasyMock.eq(controllerId),
       EasyMock.eq(controllerEpoch),
       EasyMock.eq(brokerEpoch),
-      EasyMock.eq(stopReplicaRequest.partitionStates().asScala)
-    )).andReturn(
+      EasyMock.eq(stopReplicaRequest.partitionStates(topicNames.asJava).asScala))
+    ).andReturn(
       (mutable.Map(
         groupMetadataPartition -> Errors.NONE,
         txnStatePartition -> Errors.NONE,
@@ -2877,9 +2886,17 @@ class KafkaApisTest {
     val controllerEpoch = 5
     val capturedResponse: Capture[AbstractResponse] = EasyMock.newCapture()
     val fooPartition = new TopicPartition("foo", 0)
+    val fooTopicId = Uuid.randomUuid()
+
+    val updateMetadataRequest = new UpdateMetadataRequest.Builder(ApiKeys.UPDATE_METADATA.latestVersion, controllerId,
+      controllerEpoch, controllerEpoch, Seq(new UpdateMetadataPartitionState().setTopicName("foo")).asJava,
+      Seq.empty[UpdateMetadataBroker].asJava, Map("foo" -> fooTopicId).asJava).build()
+    metadataCache.updateMetadata(correlationId = 0, updateMetadataRequest)
+
     val topicStates = Seq(
       new StopReplicaTopicState()
         .setTopicName(fooPartition.topic)
+        .setTopicId(fooTopicId)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(fooPartition.partition)
           .setLeaderEpoch(1)
@@ -2901,7 +2918,7 @@ class KafkaApisTest {
       EasyMock.eq(controllerId),
       EasyMock.eq(controllerEpoch),
       EasyMock.eq(brokerEpochInRequest),
-      EasyMock.eq(stopReplicaRequest.partitionStates().asScala)
+      EasyMock.eq(stopReplicaRequest.partitionStates(Map(fooTopicId -> "foo").asJava).asScala)
     )).andStubReturn(
       (mutable.Map(
         fooPartition -> Errors.NONE
@@ -3287,7 +3304,6 @@ class KafkaApisTest {
     val tp1 = new TopicPartition("foo", 0)
     val tp2 = new TopicPartition("bar", 3)
     val tp3 = new TopicPartition("baz", 1)
-    val tp4 = new TopicPartition("invalid;topic", 1)
 
     val authorizer: Authorizer = EasyMock.niceMock(classOf[Authorizer])
     val data = new DescribeProducersRequestData().setTopics(List(
@@ -3299,10 +3315,8 @@ class KafkaApisTest {
         .setPartitionIndexes(List(Int.box(tp2.partition)).asJava),
       new DescribeProducersRequestData.TopicRequest()
         .setName(tp3.topic)
-        .setPartitionIndexes(List(Int.box(tp3.partition)).asJava),
-      new DescribeProducersRequestData.TopicRequest()
-        .setName(tp4.topic)
-        .setPartitionIndexes(List(Int.box(tp4.partition)).asJava)
+        .setPartitionIndexes(List(Int.box(tp3.partition)).asJava)
+
     ).asJava)
 
     def buildExpectedActions(topic: String): util.List[Action] = {
@@ -3349,19 +3363,11 @@ class KafkaApisTest {
     createKafkaApis(authorizer = Some(authorizer)).handleDescribeProducersRequest(request)
 
     val response = capturedResponse.getValue.asInstanceOf[DescribeProducersResponse]
-    assertEquals(Set("foo", "bar", "baz", "invalid;topic"), response.data.topics.asScala.map(_.name).toSet)
+    assertEquals(3, response.data.topics.size())
+    assertEquals(Set("foo", "bar", "baz"), response.data.topics.asScala.map(_.name).toSet)
 
-    def assertPartitionError(
-      topicPartition: TopicPartition,
-      error: Errors
-    ): DescribeProducersResponseData.PartitionResponse = {
-      val topicData = response.data.topics.asScala.find(_.name == topicPartition.topic).get
-      val partitionData = topicData.partitions.asScala.find(_.partitionIndex == topicPartition.partition).get
-      assertEquals(error, Errors.forCode(partitionData.errorCode))
-      partitionData
-    }
-
-    val fooPartition = assertPartitionError(tp1, Errors.NONE)
+    val fooTopic = response.data.topics.asScala.find(_.name == tp1.topic).get
+    val fooPartition = fooTopic.partitions.asScala.find(_.partitionIndex == tp1.partition).get
     assertEquals(Errors.NONE, Errors.forCode(fooPartition.errorCode))
     assertEquals(1, fooPartition.activeProducers.size)
     val fooProducer = fooPartition.activeProducers.get(0)
@@ -3372,9 +3378,13 @@ class KafkaApisTest {
     assertEquals(-1, fooProducer.currentTxnStartOffset)
     assertEquals(200, fooProducer.coordinatorEpoch)
 
-    assertPartitionError(tp2, Errors.TOPIC_AUTHORIZATION_FAILED)
-    assertPartitionError(tp3, Errors.UNKNOWN_TOPIC_OR_PARTITION)
-    assertPartitionError(tp4, Errors.INVALID_TOPIC_EXCEPTION)
+    val barTopic = response.data.topics.asScala.find(_.name == tp2.topic).get
+    val barPartition = barTopic.partitions.asScala.find(_.partitionIndex == tp2.partition).get
+    assertEquals(Errors.TOPIC_AUTHORIZATION_FAILED, Errors.forCode(barPartition.errorCode))
+
+    val bazTopic = response.data.topics.asScala.find(_.name == tp3.topic).get
+    val bazPartition = bazTopic.partitions.asScala.find(_.partitionIndex == tp3.partition).get
+    assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, Errors.forCode(bazPartition.errorCode))
   }
 
   @Test

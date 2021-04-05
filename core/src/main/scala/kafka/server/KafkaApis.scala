@@ -18,10 +18,14 @@
 package kafka.server
 
 import kafka.admin.AdminUtils
-import kafka.api.{ApiVersion, ElectLeadersRequestOps, KAFKA_0_11_0_IV0, KAFKA_2_3_IV0}
+import kafka.api.{ApiVersion, ElectLeadersRequestOps, KAFKA_0_11_0_IV0, KAFKA_2_3_IV0, KAFKA_2_8_IV2}
 import kafka.common.OffsetAndMetadata
 import kafka.controller.ReplicaAssignment
+<<<<<<< HEAD
 import kafka.coordinator.group._
+=======
+import kafka.coordinator.group.{GroupCoordinator, GroupOverview, JoinGroupResult, LeaveGroupResult, SyncGroupResult}
+>>>>>>> 8c0036c324... Add topicId and remove topic name in stopReplicaRep and stopReplicaResp
 import kafka.coordinator.transaction.{InitProducerIdResult, TransactionCoordinator}
 import kafka.log.AppendOrigin
 import kafka.message.ZStdCompressionCodec
@@ -277,14 +281,34 @@ class KafkaApis(val requestChannel: RequestChannel,
         s"${stopReplicaRequest.brokerEpoch} smaller than the current broker epoch ${zkSupport.controller.brokerEpoch}")
       requestHelper.sendResponseExemptThrottle(request, new StopReplicaResponse(
         new StopReplicaResponseData().setErrorCode(Errors.STALE_BROKER_EPOCH.code)))
+    } else if (stopReplicaRequest.version() >= 4 && config.interBrokerProtocolVersion < KAFKA_2_8_IV2) {
+      // Only support topicId when from KAFKA_2_8_IV2
+      requestHelper.sendResponseExemptThrottle(request, new StopReplicaResponse(
+        new StopReplicaResponseData().setErrorCode(Errors.UNSUPPORTED_VERSION.code)))
+    } else if (stopReplicaRequest.version() >= 4 &&
+      stopReplicaRequest.topicStates().asScala.exists(topic => metadataCache.getTopicName(topic.topicId()).isEmpty)) {
+      // If one topicId is unknown, then the topic may have been deleted from MetadataCache,
+      // we should fail and make the controller try again
+      requestHelper.sendResponseExemptThrottle(request, new StopReplicaResponse(
+        new StopReplicaResponseData().setErrorCode(Errors.UNKNOWN_TOPIC_ID.code)))
     } else {
-      val partitionStates = stopReplicaRequest.partitionStates().asScala
-      val (result, error) = replicaManager.stopReplicas(
-        request.context.correlationId,
-        stopReplicaRequest.controllerId,
-        stopReplicaRequest.controllerEpoch,
-        stopReplicaRequest.brokerEpoch,
-        partitionStates)
+      val partitionStates = if (stopReplicaRequest.version() >= 4) {
+        val topicStats = stopReplicaRequest.topicStates().asScala.toArray
+
+        val topicNames = topicStats.map(_.topicId()).map(topicId => topicId -> metadataCache.getTopicName(topicId).get).toMap
+        stopReplicaRequest.partitionStates(topicNames.asJava).asScala
+      } else {
+        stopReplicaRequest.partitionStates(Collections.emptyMap()).asScala
+      }
+      val (result, error) = if (partitionStates.nonEmpty)
+        replicaManager.stopReplicas(
+          request.context.correlationId,
+          stopReplicaRequest.controllerId,
+          stopReplicaRequest.controllerEpoch,
+          stopReplicaRequest.brokerEpoch,
+          partitionStates)
+      else
+        (mutable.Map.empty[TopicPartition, Errors], Errors.NONE)
       // Clear the coordinator caches in case we were the leader. In the case of a reassignment, we
       // cannot rely on the LeaderAndIsr API for this since it is only sent to active replicas.
       result.forKeyValue { (topicPartition, error) =>
@@ -304,17 +328,24 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
-      def toStopReplicaPartition(tp: TopicPartition, error: Errors) =
-        new StopReplicaResponseData.StopReplicaPartitionError()
-          .setTopicName(tp.topic)
-          .setPartitionIndex(tp.partition)
+      def toStopReplicaPartition(topic: String, topicId: Uuid, partition: Int, error: Errors) = {
+        val data = new StopReplicaResponseData.StopReplicaPartitionError()
+          .setPartitionIndex(partition)
           .setErrorCode(error.code)
+        if (stopReplicaRequest.version() >= 4)
+          data.setTopicId(topicId)
+        else
+          data.setTopicName(topic)
+      }
+
+      val stopReplicaErrors = result.map {
+        case (tp, error) => toStopReplicaPartition(tp.topic(), metadataCache.getTopicId(tp.topic()), tp.partition(), error)
+      }.toSeq
 
       requestHelper.sendResponseExemptThrottle(request, new StopReplicaResponse(new StopReplicaResponseData()
         .setErrorCode(error.code)
-        .setPartitionErrors(result.map {
-          case (tp, error) => toStopReplicaPartition(tp, error)
-        }.toBuffer.asJava)))
+        .setPartitionErrors(stopReplicaErrors.asJava)
+      ))
     }
 
     CoreUtils.swallow(replicaManager.replicaFetcherManager.shutdownIdleFetcherThreads(), this)
@@ -1113,7 +1144,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       val nonExistingTopics = topics.diff(topicResponses.map(_.name).toSet)
       val nonExistingTopicResponses = if (allowAutoTopicCreation) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
-        autoTopicCreationManager.createTopics(nonExistingTopics, controllerMutationQuota, Some(request.context))
+        autoTopicCreationManager.createTopics(nonExistingTopics, controllerMutationQuota)
       } else {
         nonExistingTopics.map { topic =>
           val error = try {
@@ -1341,7 +1372,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       if (topicMetadata.headOption.isEmpty) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
-        autoTopicCreationManager.createTopics(Seq(internalTopicName).toSet, controllerMutationQuota, None)
+        autoTopicCreationManager.createTopics(Seq(internalTopicName).toSet, controllerMutationQuota)
         requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs => createFindCoordinatorResponse(
           Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode, requestThrottleMs))
       } else {
@@ -1849,7 +1880,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     val deleteTopicRequest = request.body[DeleteTopicsRequest]
-    val results = new DeletableTopicResultCollection(deleteTopicRequest.numberOfTopics())
+    val results = new DeletableTopicResultCollection(deleteTopicRequest.data.topicNames.size)
     val toDelete = mutable.Set[String]()
     if (!zkSupport.controller.isActive) {
       deleteTopicRequest.topics().forEach { topic =>
@@ -3241,32 +3272,22 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleDescribeProducersRequest(request: RequestChannel.Request): Unit = {
     val describeProducersRequest = request.body[DescribeProducersRequest]
 
-    def partitionError(
-      topicPartition: TopicPartition,
-      apiError: ApiError
-    ): DescribeProducersResponseData.PartitionResponse = {
+    def partitionError(topicPartition: TopicPartition, error: Errors): DescribeProducersResponseData.PartitionResponse = {
       new DescribeProducersResponseData.PartitionResponse()
         .setPartitionIndex(topicPartition.partition)
-        .setErrorCode(apiError.error.code)
-        .setErrorMessage(apiError.message)
+        .setErrorCode(error.code)
     }
 
     val response = new DescribeProducersResponseData()
     describeProducersRequest.data.topics.forEach { topicRequest =>
       val topicResponse = new DescribeProducersResponseData.TopicResponse()
         .setName(topicRequest.name)
-
-      val invalidTopicError = checkValidTopic(topicRequest.name)
-
-      val topicError = invalidTopicError.orElse {
-        if (!authHelper.authorize(request.context, READ, TOPIC, topicRequest.name)) {
-          Some(new ApiError(Errors.TOPIC_AUTHORIZATION_FAILED))
-        } else if (!metadataCache.contains(topicRequest.name))
-          Some(new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION))
-        else {
-          None
-        }
-      }
+      val topicError = if (!authHelper.authorize(request.context, READ, TOPIC, topicRequest.name))
+        Some(Errors.TOPIC_AUTHORIZATION_FAILED)
+      else if (!metadataCache.contains(topicRequest.name))
+        Some(Errors.UNKNOWN_TOPIC_OR_PARTITION)
+      else
+        None
 
       topicRequest.partitionIndexes.forEach { partitionId =>
         val topicPartition = new TopicPartition(topicRequest.name, partitionId)
@@ -3282,15 +3303,6 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs =>
       new DescribeProducersResponse(response.setThrottleTimeMs(requestThrottleMs)))
-  }
-
-  private def checkValidTopic(topic: String): Option[ApiError] = {
-    try {
-      Topic.validate(topic)
-      None
-    } catch {
-      case e: Throwable => Some(ApiError.fromThrowable(e))
-    }
   }
 
   def handleUnregisterBrokerRequest(request: RequestChannel.Request): Unit = {

@@ -71,7 +71,6 @@ import org.apache.kafka.common.message.CreatePartitionsResponseData.CreatePartit
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableReplicaAssignment;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
-import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopicCollection;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreateableTopicConfig;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.CreateTopicsResponseData.CreatableTopicConfigs;
@@ -159,7 +158,6 @@ import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.OffsetForLeaderTopicResult;
 import org.apache.kafka.common.message.ProduceRequestData;
-import org.apache.kafka.common.message.ProduceResponseData;
 import org.apache.kafka.common.message.RenewDelegationTokenRequestData;
 import org.apache.kafka.common.message.RenewDelegationTokenResponseData;
 import org.apache.kafka.common.message.SaslAuthenticateRequestData;
@@ -212,6 +210,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -248,7 +247,7 @@ public class RequestResponseTest {
     private final UnknownServerException unknownServerException = new UnknownServerException("secret");
 
     @Test
-    public void testSerialization() throws Exception {
+    public void testSerialization() {
         checkRequest(createFindCoordinatorRequest(0), true);
         checkRequest(createFindCoordinatorRequest(1), true);
         checkErrorResponse(createFindCoordinatorRequest(0), unknownServerException, true);
@@ -342,7 +341,7 @@ public class RequestResponseTest {
             checkRequest(createStopReplicaRequest(version, false), true);
             checkErrorResponse(createStopReplicaRequest(version, true), unknownServerException, true);
             checkErrorResponse(createStopReplicaRequest(version, false), unknownServerException, true);
-            checkResponse(createStopReplicaResponse(), version, true);
+            checkResponse(createStopReplicaResponse(version), version, true);
         }
 
         for (short version : LEADER_AND_ISR.allVersions()) {
@@ -785,25 +784,24 @@ public class RequestResponseTest {
     @Test
     public void produceRequestGetErrorResponseTest() {
         ProduceRequest request = createProduceRequest(ApiKeys.PRODUCE.latestVersion());
+        Set<TopicPartition> partitions = new HashSet<>(request.partitionSizes().keySet());
 
         ProduceResponse errorResponse = (ProduceResponse) request.getErrorResponse(new NotEnoughReplicasException());
-        ProduceResponseData.TopicProduceResponse topicProduceResponse = errorResponse.data().responses().iterator().next();
-        ProduceResponseData.PartitionProduceResponse partitionProduceResponse = topicProduceResponse.partitionResponses().iterator().next();
-
-        assertEquals(Errors.NOT_ENOUGH_REPLICAS, Errors.forCode(partitionProduceResponse.errorCode()));
-        assertEquals(ProduceResponse.INVALID_OFFSET, partitionProduceResponse.baseOffset());
-        assertEquals(RecordBatch.NO_TIMESTAMP, partitionProduceResponse.logAppendTimeMs());
+        assertEquals(partitions, errorResponse.responses().keySet());
+        ProduceResponse.PartitionResponse partitionResponse = errorResponse.responses().values().iterator().next();
+        assertEquals(Errors.NOT_ENOUGH_REPLICAS, partitionResponse.error);
+        assertEquals(ProduceResponse.INVALID_OFFSET, partitionResponse.baseOffset);
+        assertEquals(RecordBatch.NO_TIMESTAMP, partitionResponse.logAppendTime);
 
         request.clearPartitionRecords();
 
         // `getErrorResponse` should behave the same after `clearPartitionRecords`
         errorResponse = (ProduceResponse) request.getErrorResponse(new NotEnoughReplicasException());
-        topicProduceResponse = errorResponse.data().responses().iterator().next();
-        partitionProduceResponse = topicProduceResponse.partitionResponses().iterator().next();
-
-        assertEquals(Errors.NOT_ENOUGH_REPLICAS, Errors.forCode(partitionProduceResponse.errorCode()));
-        assertEquals(ProduceResponse.INVALID_OFFSET, partitionProduceResponse.baseOffset());
-        assertEquals(RecordBatch.NO_TIMESTAMP, partitionProduceResponse.logAppendTimeMs());
+        assertEquals(partitions, errorResponse.responses().keySet());
+        partitionResponse = errorResponse.responses().values().iterator().next();
+        assertEquals(Errors.NOT_ENOUGH_REPLICAS, partitionResponse.error);
+        assertEquals(ProduceResponse.INVALID_OFFSET, partitionResponse.baseOffset);
+        assertEquals(RecordBatch.NO_TIMESTAMP, partitionResponse.logAppendTime);
     }
 
     @Test
@@ -982,52 +980,6 @@ public class RequestResponseTest {
 
         ByteBufferAccessor writer = new ByteBufferAccessor(ByteBuffer.allocate(size));
         data.write(writer, cache, (short) 2);
-    }
-
-    @Test
-    public void testSerializeWithHeader() {
-        CreatableTopicCollection topicsToCreate = new CreatableTopicCollection(1);
-        topicsToCreate.add(new CreatableTopic()
-                               .setName("topic")
-                               .setNumPartitions(3)
-                               .setReplicationFactor((short) 2));
-
-        CreateTopicsRequest createTopicsRequest = new CreateTopicsRequest.Builder(
-            new CreateTopicsRequestData()
-                .setTimeoutMs(10)
-                .setTopics(topicsToCreate)
-        ).build();
-
-        short requestVersion = ApiKeys.CREATE_TOPICS.latestVersion();
-        RequestHeader requestHeader = new RequestHeader(ApiKeys.CREATE_TOPICS, requestVersion, "client", 2);
-        ByteBuffer serializedRequest = createTopicsRequest.serializeWithHeader(requestHeader);
-
-        RequestHeader parsedHeader = RequestHeader.parse(serializedRequest);
-        assertEquals(requestHeader, parsedHeader);
-
-        RequestAndSize parsedRequest = AbstractRequest.parseRequest(
-            ApiKeys.CREATE_TOPICS, requestVersion, serializedRequest);
-
-        assertEquals(createTopicsRequest.data(), parsedRequest.request.data());
-    }
-
-    @Test
-    public void testSerializeWithInconsistentHeaderApiKey() {
-        CreateTopicsRequest createTopicsRequest = new CreateTopicsRequest.Builder(
-            new CreateTopicsRequestData()
-        ).build();
-        short requestVersion = ApiKeys.CREATE_TOPICS.latestVersion();
-        RequestHeader requestHeader = new RequestHeader(DELETE_TOPICS, requestVersion, "client", 2);
-        assertThrows(IllegalArgumentException.class, () -> createTopicsRequest.serializeWithHeader(requestHeader));
-    }
-
-    @Test
-    public void testSerializeWithInconsistentHeaderVersion() {
-        CreateTopicsRequest createTopicsRequest = new CreateTopicsRequest.Builder(
-            new CreateTopicsRequestData()
-        ).build((short) 2);
-        RequestHeader requestHeader = new RequestHeader(CREATE_TOPICS, (short) 1, "client", 2);
-        assertThrows(IllegalArgumentException.class, () -> createTopicsRequest.serializeWithHeader(requestHeader));
     }
 
     @Test
@@ -1655,12 +1607,17 @@ public class RequestResponseTest {
             deletePartitions, topicStates).build((short) version);
     }
 
-    private StopReplicaResponse createStopReplicaResponse() {
+    private StopReplicaResponse createStopReplicaResponse(int version) {
         List<StopReplicaResponseData.StopReplicaPartitionError> partitions = new ArrayList<>();
-        partitions.add(new StopReplicaResponseData.StopReplicaPartitionError()
-            .setTopicName("test")
+        StopReplicaResponseData.StopReplicaPartitionError error = new StopReplicaResponseData.StopReplicaPartitionError()
             .setPartitionIndex(0)
-            .setErrorCode(Errors.NONE.code()));
+            .setErrorCode(Errors.NONE.code());
+        if (version < 4) {
+            error.setTopicName("test");
+        } else {
+            error.setTopicId(Uuid.randomUuid());
+        }
+        partitions.add(error);
         return new StopReplicaResponse(new StopReplicaResponseData()
             .setErrorCode(Errors.NONE.code())
             .setPartitionErrors(partitions));
@@ -2772,7 +2729,7 @@ public class RequestResponseTest {
     private BrokerRegistrationRequest createBrokerRegistrationRequest(short v) {
         BrokerRegistrationRequestData data = new BrokerRegistrationRequestData()
                 .setBrokerId(1)
-                .setClusterId(Uuid.randomUuid().toString())
+                .setClusterId(Uuid.randomUuid())
                 .setRack("1")
                 .setFeatures(new BrokerRegistrationRequestData.FeatureCollection(singletonList(
                         new BrokerRegistrationRequestData.Feature()).iterator()))
@@ -2848,7 +2805,7 @@ public class RequestResponseTest {
         assertEquals(Integer.valueOf(1), createRenewTokenResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSaslAuthenticateResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSaslHandshakeResponse().errorCounts().get(Errors.NONE));
-        assertEquals(Integer.valueOf(2), createStopReplicaResponse().errorCounts().get(Errors.NONE));
+        assertEquals(Integer.valueOf(2), createStopReplicaResponse(STOP_REPLICA.latestVersion()).errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSyncGroupResponse(SYNC_GROUP.latestVersion()).errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createTxnOffsetCommitResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createUpdateMetadataResponse().errorCounts().get(Errors.NONE));

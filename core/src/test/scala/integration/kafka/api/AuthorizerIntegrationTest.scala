@@ -18,9 +18,10 @@ import java.util
 import java.util.concurrent.ExecutionException
 import java.util.regex.Pattern
 import java.util.{Collections, Optional, Properties}
+
 import kafka.admin.ConsumerGroupCommand.{ConsumerGroupCommandOptions, ConsumerGroupService}
 import kafka.log.LogConfig
-import kafka.security.authorizer.{AclAuthorizer, AclEntry}
+import kafka.security.authorizer.AclEntry
 import kafka.security.authorizer.AclEntry.WildcardHost
 import kafka.server.{BaseRequestTest, KafkaConfig}
 import kafka.utils.TestUtils
@@ -143,7 +144,7 @@ class AuthorizerIntegrationTest extends BaseRequestTest {
   consumerConfig.setProperty(ConsumerConfig.GROUP_ID_CONFIG, group)
 
   override def brokerPropertyOverrides(properties: Properties): Unit = {
-    properties.put(KafkaConfig.AuthorizerClassNameProp, classOf[AclAuthorizer].getName)
+    properties.put(KafkaConfig.AuthorizerClassNameProp, "kafka.security.auth.SimpleAclAuthorizer")
     properties.put(KafkaConfig.BrokerIdProp, brokerId.toString)
     properties.put(KafkaConfig.OffsetsTopicPartitionsProp, "1")
     properties.put(KafkaConfig.OffsetsTopicReplicationFactorProp, "1")
@@ -154,16 +155,10 @@ class AuthorizerIntegrationTest extends BaseRequestTest {
       classOf[PrincipalBuilder].getName)
   }
 
+  @nowarn("cat=deprecation")
   val requestKeyToError = (topicNames: Map[Uuid, String]) => Map[ApiKeys, Nothing => Errors](
     ApiKeys.METADATA -> ((resp: requests.MetadataResponse) => resp.errors.asScala.find(_._1 == topic).getOrElse(("test", Errors.NONE))._2),
-    ApiKeys.PRODUCE -> ((resp: requests.ProduceResponse) => {
-      Errors.forCode(
-        resp.data
-          .responses.find(topic)
-          .partitionResponses.asScala.find(_.index == part).get
-          .errorCode
-      )      
-    }),
+    ApiKeys.PRODUCE -> ((resp: requests.ProduceResponse) => resp.responses.asScala.find(_._1 == tp).get._2.error),
     ApiKeys.FETCH -> ((resp: requests.FetchResponse) => Errors.forCode(resp.responseData.asScala.find(_._1 == tp).get._2.errorCode)),
     ApiKeys.LIST_OFFSETS -> ((resp: ListOffsetsResponse) => {
       Errors.forCode(
@@ -190,7 +185,7 @@ class AuthorizerIntegrationTest extends BaseRequestTest {
       resp.topics.asScala.find(t => topicNames(t.topicId) == tp.topic).get.partitionErrors.asScala.find(
         p => p.partitionIndex == tp.partition).get.errorCode)),
     ApiKeys.STOP_REPLICA -> ((resp: requests.StopReplicaResponse) => Errors.forCode(
-      resp.partitionErrors.asScala.find(pe => pe.topicName == tp.topic && pe.partitionIndex == tp.partition).get.errorCode)),
+      resp.partitionErrors.asScala.find(pe => topicNames(pe.topicId) == tp.topic && pe.partitionIndex == tp.partition).get.errorCode)),
     ApiKeys.CONTROLLED_SHUTDOWN -> ((resp: requests.ControlledShutdownResponse) => resp.error),
     ApiKeys.CREATE_TOPICS -> ((resp: CreateTopicsResponse) => Errors.forCode(resp.data.topics.find(topic).errorCode)),
     ApiKeys.DELETE_TOPICS -> ((resp: requests.DeleteTopicsResponse) => Errors.forCode(resp.data.responses.find(topic).errorCode)),
@@ -511,10 +506,11 @@ class AuthorizerIntegrationTest extends BaseRequestTest {
       Set(new Node(brokerId, "localhost", 0)).asJava).build()
   }
 
-  private def stopReplicaRequest: StopReplicaRequest = {
+  private def stopReplicaRequest(id: Uuid = getTopicIds()(topic)): StopReplicaRequest = {
     val topicStates = Seq(
       new StopReplicaTopicState()
         .setTopicName(tp.topic)
+        .setTopicId(id)
         .setPartitionStates(Seq(new StopReplicaPartitionState()
           .setPartitionIndex(tp.partition)
           .setLeaderEpoch(LeaderAndIsr.initialLeaderEpoch + 2)
@@ -739,7 +735,7 @@ class AuthorizerIntegrationTest extends BaseRequestTest {
       // Inter-broker APIs use an invalid broker epoch, so does not affect the test case
       ApiKeys.UPDATE_METADATA -> createUpdateMetadataRequest,
       ApiKeys.LEADER_AND_ISR -> leaderAndIsrRequest,
-      ApiKeys.STOP_REPLICA -> stopReplicaRequest,
+      ApiKeys.STOP_REPLICA -> stopReplicaRequest(),
       ApiKeys.CONTROLLED_SHUTDOWN -> controlledShutdownRequest,
 
       // Delete the topic last

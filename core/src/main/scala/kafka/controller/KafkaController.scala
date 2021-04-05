@@ -33,9 +33,7 @@ import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zk.{FeatureZNodeStatus, _}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler, ZNodeChildChangeHandler}
-import org.apache.kafka.common.ElectionType
-import org.apache.kafka.common.KafkaException
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{ElectionType, KafkaException, TopicPartition}
 import org.apache.kafka.common.errors.{BrokerNotAvailableException, ControllerMovedException, StaleBrokerEpochException}
 import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData}
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange}
@@ -1677,61 +1675,42 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
-  /**
-    * Process the event of partition modification due to the TopicZnode.path(topic) is modified.
-    *
-    * 1.When the topic is being deleted, regardless of whether new partitions are added,
-    * it will skip adding partitions and restore existing partitions assignments in zk or ignore partition modification events.
-    *
-    * 2.Otherwise, when existing partitions assignments are modified, it will restore existing partitions assignments to zk,
-    * if new partitions are added, new partitions assignments will be restored in zk together with the existing partition
-    * to trigger the partition modification event again to complete the addition of the new partitions.
-    *
-    * 3.In addition to the above cases, we only need to add new partitions directly or there is no new partitions to add.
-    *
-    * @param topic Maybe add new partitions for the topic.
-    */
   private def processPartitionModifications(topic: String): Unit = {
     def restorePartitionReplicaAssignment(
       topic: String,
-      restorePartitionReplicaAssignment: Map[TopicPartition, ReplicaAssignment]
+      newPartitionReplicaAssignment: Map[TopicPartition, ReplicaAssignment]
     ): Unit = {
       info("Restoring the partition replica assignment for topic %s".format(topic))
 
+      val existingPartitions = zkClient.getChildren(TopicPartitionsZNode.path(topic))
+      val existingPartitionReplicaAssignment = newPartitionReplicaAssignment
+        .filter(p => existingPartitions.contains(p._1.partition.toString))
+        .map { case (tp, _) =>
+          tp -> controllerContext.partitionFullReplicaAssignment(tp)
+      }.toMap
+
       zkClient.setTopicAssignment(topic,
         controllerContext.topicIds.get(topic),
-        restorePartitionReplicaAssignment,
+        existingPartitionReplicaAssignment,
         controllerContext.epochZkVersion)
     }
 
     if (!isActive) return
     val partitionReplicaAssignment = zkClient.getFullReplicaAssignmentForTopics(immutable.Set(topic))
-    val existingPartitionsInContext = controllerContext.partitionFullReplicaAssignmentForTopic(topic)
     val partitionsToBeAdded = partitionReplicaAssignment.filter { case (topicPartition, _) =>
-      existingPartitionsInContext.getOrElse(topicPartition, ReplicaAssignment.empty).replicas.isEmpty
-    }
-
-    val partitionsToBeModified = existingPartitionsInContext.filter{ case (topicPartition, existingAssignment) =>
-      val partitionReplicasInContext = existingAssignment.replicas.toSet
-      val partitionReplicasInZk = partitionReplicaAssignment.getOrElse(topicPartition, ReplicaAssignment.empty).replicas.toSet
-      partitionReplicasInContext.size != partitionReplicasInZk.size || partitionReplicasInContext.diff(partitionReplicasInZk).nonEmpty
+      controllerContext.partitionReplicaAssignment(topicPartition).isEmpty
     }
 
     if (topicDeletionManager.isTopicQueuedUpForDeletion(topic)) {
       if (partitionsToBeAdded.nonEmpty) {
         warn("Skipping adding partitions %s for topic %s since it is currently being deleted"
-          .format(partitionsToBeAdded.map{ case (topicPartition, _) => topicPartition }.mkString(","), topic))
+          .format(partitionsToBeAdded.map(_._1.partition).mkString(","), topic))
 
-        restorePartitionReplicaAssignment(topic, existingPartitionsInContext)
+        restorePartitionReplicaAssignment(topic, partitionReplicaAssignment)
       } else {
         // This can happen if existing partition replica assignment are restored to prevent increasing partition count during topic deletion
         info("Ignoring partition change during topic deletion as no new partitions are added")
       }
-    } else if (partitionsToBeModified.nonEmpty) {
-      warn("Existing partitions %s assignments for topic %s modified unexpectedly.Restore their replicas assignments by cache in controllerContext"
-        .format(partitionsToBeModified.map{ case (topicPartition, _) => topicPartition }.mkString(","), topic))
-      restorePartitionReplicaAssignment(topic, partitionsToBeAdded.++(existingPartitionsInContext)
-        .toSeq.sortBy { case (topicPartition: TopicPartition, _) => topicPartition.partition()}.toMap)
     } else if (partitionsToBeAdded.nonEmpty) {
       info(s"New partitions to be added $partitionsToBeAdded")
       partitionsToBeAdded.forKeyValue { (topicPartition, assignedReplicas) =>

@@ -25,7 +25,7 @@ import kafka.controller.{ControllerChannelManager, ControllerContext, StateChang
 import kafka.utils.TestUtils
 import kafka.utils.TestUtils.createTopic
 import kafka.zk.ZooKeeperTestHarness
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrPartitionState
 import org.apache.kafka.common.message.StopReplicaRequestData.{StopReplicaPartitionState, StopReplicaTopicState}
 import org.apache.kafka.common.message.UpdateMetadataRequestData.{UpdateMetadataBroker, UpdateMetadataEndpoint, UpdateMetadataPartitionState}
@@ -112,10 +112,10 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
 
   private def testControlRequestWithBrokerEpoch(epochInRequestDiffFromCurrentEpoch: Long): Unit = {
     val tp = new TopicPartition("new-topic", 0)
+    val topicIds = Collections.singletonMap("new-topic", Uuid.randomUuid)
 
     // create topic with 1 partition, 2 replicas, one on each broker
     createTopic(zkClient, tp.topic(), partitionReplicaAssignment = Map(0 -> Seq(brokerId1, brokerId2)), servers = servers)
-    val topicIds = getController.kafkaController.controllerContext.topicIds.toMap.asJava
 
     val controllerId = 2
     val controllerEpoch = zkClient.getControllerEpoch.get._1
@@ -198,7 +198,7 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
         val requestBuilder = new UpdateMetadataRequest.Builder(
           ApiKeys.UPDATE_METADATA.latestVersion, controllerId, controllerEpoch,
           epochInRequest,
-          partitionStates.asJava, liveBrokers.asJava, Collections.emptyMap())
+          partitionStates.asJava, liveBrokers.asJava, topicIds)
 
         if (epochInRequestDiffFromCurrentEpoch < 0) {
           // stale broker epoch in UPDATE_METADATA
@@ -218,6 +218,7 @@ class BrokerEpochIntegrationTest extends ZooKeeperTestHarness {
         val topicStates = Seq(
           new StopReplicaTopicState()
             .setTopicName(tp.topic())
+            .setTopicId(topicIds.getOrDefault(tp.topic(), Uuid.ZERO_UUID))
             .setPartitionStates(Seq(new StopReplicaPartitionState()
               .setPartitionIndex(tp.partition())
               .setLeaderEpoch(LeaderAndIsr.initialLeaderEpoch + 2)

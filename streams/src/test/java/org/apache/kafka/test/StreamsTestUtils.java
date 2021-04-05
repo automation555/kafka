@@ -28,10 +28,8 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.kstream.Windowed;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -39,7 +37,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 import static org.apache.kafka.common.metrics.Sensor.RecordingLevel.DEBUG;
 import static org.apache.kafka.test.TestUtils.DEFAULT_MAX_WAIT_MS;
@@ -66,8 +63,8 @@ public final class StreamsTestUtils {
         return props;
     }
 
-    public static Properties getStreamsConfig(final Serde<?> keyDeserializer,
-                                              final Serde<?> valueDeserializer) {
+    public static Properties getStreamsConfig(final Serde keyDeserializer,
+                                              final Serde valueDeserializer) {
         return getStreamsConfig(
                 UUID.randomUUID().toString(),
                 "localhost:9091",
@@ -109,9 +106,7 @@ public final class StreamsTestUtils {
         kafkaStreams.start();
         assertThat(
             "KafkaStreams did not transit to RUNNING state within " + timeoutMs + " milli seconds.",
-            countDownLatch.await(timeoutMs, TimeUnit.MILLISECONDS),
-            equalTo(true)
-        );
+            countDownLatch.await(timeoutMs, TimeUnit.MILLISECONDS), equalTo(true));
     }
 
     public static <K, V> List<KeyValue<K, V>> toList(final Iterator<KeyValue<K, V>> iterator) {
@@ -124,7 +119,7 @@ public final class StreamsTestUtils {
     }
 
     public static <K, V> Set<KeyValue<K, V>> toSet(final Iterator<KeyValue<K, V>> iterator) {
-        final Set<KeyValue<K, V>> results = new LinkedHashSet<>();
+        final Set<KeyValue<K, V>> results = new HashSet<>();
 
         while (iterator.hasNext()) {
             results.add(iterator.next());
@@ -226,12 +221,11 @@ public final class StreamsTestUtils {
         return metrics.metric(metricName) != null;
     }
 
-    /**
-     * Used to keep tests simple, and ignore calls from {@link org.apache.kafka.streams.internals.ApiUtils#checkSupplier(Supplier)} )}.
-     * @return true if the stack context is within a {@link org.apache.kafka.streams.internals.ApiUtils#checkSupplier(Supplier)} )} call
-     */
-    public static boolean isCheckSupplierCall() {
-        return Arrays.stream(Thread.currentThread().getStackTrace())
-                .anyMatch(caller -> "org.apache.kafka.streams.internals.ApiUtils".equals(caller.getClassName()) && "checkSupplier".equals(caller.getMethodName()));
+    public static boolean containsMetric(final Map<MetricName, ? extends Metric> metrics,
+                                         final String name,
+                                         final String group,
+                                         final Map<String, String> tags) {
+        final MetricName metricName = new MetricName(name, group, "", tags);
+        return metrics.containsKey(metricName);
     }
 }

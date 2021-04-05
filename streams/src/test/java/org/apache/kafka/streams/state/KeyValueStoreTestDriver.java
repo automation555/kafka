@@ -28,7 +28,6 @@ import org.apache.kafka.streams.errors.DefaultProductionExceptionHandler;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
 import org.apache.kafka.streams.processor.StateStore;
-import org.apache.kafka.streams.processor.StateStoreContext;
 import org.apache.kafka.streams.processor.StreamPartitioner;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
@@ -36,10 +35,10 @@ import org.apache.kafka.streams.processor.internals.RecordCollector;
 import org.apache.kafka.streams.processor.internals.RecordCollectorImpl;
 import org.apache.kafka.streams.processor.internals.StreamsProducer;
 import org.apache.kafka.streams.state.internals.MeteredKeyValueStore;
+import org.apache.kafka.streams.state.internals.RocksDBKeyValueStoreTest;
 import org.apache.kafka.streams.state.internals.ThreadCache;
-import org.apache.kafka.test.InternalMockProcessorContext;
 import org.apache.kafka.test.MockClientSupplier;
-import org.apache.kafka.test.MockRocksDbConfigSetter;
+import org.apache.kafka.test.MockInternalProcessorContext;
 import org.apache.kafka.test.MockTimestampExtractor;
 import org.apache.kafka.test.TestUtils;
 
@@ -52,6 +51,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+
+import static org.apache.kafka.test.MockInternalProcessorContext.DEFAULT_MAX_CACHE_SIZE_BYTES;
+import static org.apache.kafka.test.MockInternalProcessorContext.DEFAULT_THREAD_CACHE_PREFIX;
 
 /**
  * A component that provides a {@link #context() ProcessingContext} that can be supplied to a {@link KeyValueStore} so that
@@ -90,7 +92,7 @@ import java.util.Set;
  * assertEquals("one", driver.flushedEntryStored(1));
  * assertEquals("two", driver.flushedEntryStored(2));
  * assertEquals("four", driver.flushedEntryStored(4));
- * assertNull(driver.flushedEntryStored(5));
+ * assertEquals(null, driver.flushedEntryStored(5));
  *
  * assertEquals(false, driver.flushedEntryRemoved(0));
  * assertEquals(false, driver.flushedEntryRemoved(1));
@@ -184,7 +186,7 @@ public class KeyValueStoreTestDriver<K, V> {
     private final Set<K> flushedRemovals = new HashSet<>();
     private final List<KeyValue<byte[], byte[]>> restorableEntries = new LinkedList<>();
 
-    private final InternalMockProcessorContext context;
+    private final MockInternalProcessorContext context;
     private final StateSerdes<K, V> stateSerdes;
 
     private KeyValueStoreTestDriver(final StateSerdes<K, V> serdes) {
@@ -194,7 +196,7 @@ public class KeyValueStoreTestDriver<K, V> {
         props.put(StreamsConfig.DEFAULT_TIMESTAMP_EXTRACTOR_CLASS_CONFIG, MockTimestampExtractor.class);
         props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, serdes.keySerde().getClass());
         props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, serdes.valueSerde().getClass());
-        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, RocksDBKeyValueStoreTest.TheRocksDbConfigSetter.class);
         props.put(StreamsConfig.METRICS_RECORDING_LEVEL_CONFIG, "DEBUG");
 
         final LogContext logContext = new LogContext("KeyValueStoreTestDriver ");
@@ -246,11 +248,12 @@ public class KeyValueStoreTestDriver<K, V> {
         stateDir.mkdirs();
         stateSerdes = serdes;
 
-        context = new InternalMockProcessorContext(stateDir, serdes.keySerde(), serdes.valueSerde(), recordCollector, null) {
-            final ThreadCache cache = new ThreadCache(new LogContext("testCache "), 1024 * 1024L, metrics());
+        final ThreadCache cache = new ThreadCache(new LogContext(DEFAULT_THREAD_CACHE_PREFIX), DEFAULT_MAX_CACHE_SIZE_BYTES, new MockStreamsMetrics(new Metrics()));
+        context = new MockInternalProcessorContext(props, stateDir, cache) {
+            ThreadCache cache = new ThreadCache(new LogContext("testCache "), 1024 * 1024L, metrics());
 
             @Override
-            public ThreadCache cache() {
+            public ThreadCache getCache() {
                 return cache;
             }
 
@@ -264,6 +267,7 @@ public class KeyValueStoreTestDriver<K, V> {
                 return new StreamsConfig(props).originalsWithPrefix(prefix);
             }
         };
+        context.setRecordCollector(recordCollector);
     }
 
     private void recordFlushed(final K key, final V value) {
@@ -332,7 +336,7 @@ public class KeyValueStoreTestDriver<K, V> {
      * @return the processing context; never null
      * @see #addEntryToRestoreLog(Object, Object)
      */
-    public StateStoreContext context() {
+    public ProcessorContext<Object, Object> context() {
         return context;
     }
 

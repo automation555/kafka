@@ -29,7 +29,6 @@ import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.processor.StateStoreContext;
 import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
 import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowStore;
@@ -390,9 +389,9 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
 
         windowStore = buildWindowStore(RETENTION_PERIOD, WINDOW_SIZE, true, Serdes.Integer(),
             Serdes.String());
-        windowStore.init((StateStoreContext) context, windowStore);
+        windowStore.init(context, windowStore);
 
-        context.setTime(0L);
+        context.setTimestamp(0L);
         setCurrentTime(0);
         windowStore.put(0, "v");
         assertEquals(
@@ -480,7 +479,7 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
         windowStore.close();
 
         windowStore = buildWindowStore(RETENTION_PERIOD, WINDOW_SIZE, false, Serdes.Integer(), Serdes.String());
-        windowStore.init((StateStoreContext) context, windowStore);
+        windowStore.init(context, windowStore);
 
         // put something in the store to advance its stream time and expire the old segments
         windowStore.put(1, "v", 6L * SEGMENT_INTERVAL);
@@ -547,7 +546,7 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
                                        false,
                                        Serdes.Integer(),
                                        Serdes.String());
-        windowStore.init((StateStoreContext) context, windowStore);
+        windowStore.init(context, windowStore);
 
         assertEquals(
             new HashSet<>(Collections.emptyList()),

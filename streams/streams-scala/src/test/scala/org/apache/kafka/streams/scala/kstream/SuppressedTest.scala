@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2018 Joan Goyeau.
+ *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -16,51 +18,54 @@
  */
 package org.apache.kafka.streams.scala.kstream
 
-import org.apache.kafka.streams.kstream.internals.suppress._
-import org.apache.kafka.streams.scala.kstream.Suppressed.BufferConfig
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Test
-
 import java.time.Duration
 
-@deprecated(message = "org.apache.kafka.streams.scala.kstream.Suppressed has been deprecated", since = "2.5")
-class SuppressedTest {
+import org.apache.kafka.streams.kstream.internals.suppress.{
+  BufferFullStrategy,
+  EagerBufferConfigImpl,
+  FinalResultsSuppressionBuilder,
+  StrictBufferConfigImpl,
+  SuppressedInternal
+}
+import org.apache.kafka.streams.scala.kstream.Suppressed.BufferConfig
+import org.junit.runner.RunWith
+import org.scalatest.{FlatSpec, Matchers}
+import org.scalatestplus.junit.JUnitRunner
 
-  @Test
-  def testProduceCorrectSuppressionUntilWindowCloses(): Unit = {
+@deprecated(message = "org.apache.kafka.streams.scala.kstream.Suppressed has been deprecated", since = "2.5")
+@RunWith(classOf[JUnitRunner])
+class SuppressedTest extends FlatSpec with Matchers {
+
+  "Suppressed.untilWindowCloses" should "produce the correct suppression" in {
     val bufferConfig = BufferConfig.unbounded()
     val suppression = Suppressed.untilWindowCloses[String](bufferConfig)
-    assertEquals(suppression, new FinalResultsSuppressionBuilder(null, bufferConfig))
-    assertEquals(suppression.withName("soup"), new FinalResultsSuppressionBuilder("soup", bufferConfig))
+    suppression shouldEqual new FinalResultsSuppressionBuilder(null, bufferConfig, false)
+    suppression.withName("soup") shouldEqual new FinalResultsSuppressionBuilder("soup", bufferConfig, false)
   }
 
-  @Test
-  def testProduceCorrectSuppressionUntilTimeLimit(): Unit = {
+  "Suppressed.untilTimeLimit" should "produce the correct suppression" in {
     val bufferConfig = BufferConfig.unbounded()
     val duration = Duration.ofMillis(1)
-    assertEquals(Suppressed.untilTimeLimit[String](duration, bufferConfig),
-                 new SuppressedInternal[String](null, duration, bufferConfig, null, false))
+    Suppressed.untilTimeLimit[String](duration, bufferConfig) shouldEqual
+      new SuppressedInternal[String](null, duration, bufferConfig, null, false, false)
   }
 
-  @Test
-  def testProduceCorrectBufferConfigWithMaxRecords(): Unit = {
-    assertEquals(BufferConfig.maxRecords(4), new EagerBufferConfigImpl(4, Long.MaxValue))
-    assertEquals(BufferConfig.maxRecords(4).withMaxBytes(5), new EagerBufferConfigImpl(4, 5))
+  "BufferConfig.maxRecords" should "produce the correct buffer config" in {
+    BufferConfig.maxRecords(4) shouldEqual new EagerBufferConfigImpl(4, Long.MaxValue)
+    BufferConfig.maxRecords(4).withMaxBytes(5) shouldEqual new EagerBufferConfigImpl(4, 5)
   }
 
-  @Test
-  def testProduceCorrectBufferConfigWithMaxBytes(): Unit = {
-    assertEquals(BufferConfig.maxBytes(4), new EagerBufferConfigImpl(Long.MaxValue, 4))
-    assertEquals(BufferConfig.maxBytes(4).withMaxRecords(5), new EagerBufferConfigImpl(5, 4))
+  "BufferConfig.maxBytes" should "produce the correct buffer config" in {
+    BufferConfig.maxBytes(4) shouldEqual new EagerBufferConfigImpl(Long.MaxValue, 4)
+    BufferConfig.maxBytes(4).withMaxRecords(5) shouldEqual new EagerBufferConfigImpl(5, 4)
   }
 
-  @Test
-  def testProduceCorrectBufferConfigWithUnbounded(): Unit =
-    assertEquals(BufferConfig.unbounded(),
-                 new StrictBufferConfigImpl(Long.MaxValue, Long.MaxValue, BufferFullStrategy.SHUT_DOWN))
+  "BufferConfig.unbounded" should "produce the correct buffer config" in {
+    BufferConfig.unbounded() shouldEqual
+      new StrictBufferConfigImpl(Long.MaxValue, Long.MaxValue, BufferFullStrategy.SHUT_DOWN)
+  }
 
-  @Test
-  def testSupportLongChainsOfFactoryMethods(): Unit = {
+  "BufferConfig" should "support very long chains of factory methods" in {
     val bc1 = BufferConfig
       .unbounded()
       .emitEarlyWhenFull()
@@ -68,8 +73,8 @@ class SuppressedTest {
       .withMaxBytes(4L)
       .withMaxRecords(5L)
       .withMaxBytes(6L)
-    assertEquals(new EagerBufferConfigImpl(5L, 6L), bc1)
-    assertEquals(new StrictBufferConfigImpl(5L, 6L, BufferFullStrategy.SHUT_DOWN), bc1.shutDownWhenFull())
+    bc1 shouldEqual new EagerBufferConfigImpl(5L, 6L)
+    bc1.shutDownWhenFull() shouldEqual new StrictBufferConfigImpl(5L, 6L, BufferFullStrategy.SHUT_DOWN)
 
     val bc2 = BufferConfig
       .maxBytes(4)
@@ -79,8 +84,8 @@ class SuppressedTest {
       .withMaxBytes(7)
       .withMaxRecords(8)
 
-    assertEquals(new StrictBufferConfigImpl(8L, 7L, BufferFullStrategy.SHUT_DOWN), bc2)
-    assertEquals(BufferConfig.unbounded(), bc2.withNoBound())
+    bc2 shouldEqual new StrictBufferConfigImpl(8L, 7L, BufferFullStrategy.SHUT_DOWN)
+    bc2.withNoBound() shouldEqual BufferConfig.unbounded()
 
     val bc3 = BufferConfig
       .maxRecords(5L)
@@ -88,6 +93,6 @@ class SuppressedTest {
       .emitEarlyWhenFull()
       .withMaxRecords(11L)
 
-    assertEquals(new EagerBufferConfigImpl(11L, 10L), bc3)
+    bc3 shouldEqual new EagerBufferConfigImpl(11L, 10L)
   }
 }

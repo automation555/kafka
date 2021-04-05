@@ -1,4 +1,7 @@
 /*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2017-2018 Alexis Seigneurin.
+ *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -306,7 +309,8 @@ class KTable[K, V](val inner: KTableJ[K, V]) {
   /**
    * Suppress some updates from this changelog stream, determined by the supplied [[Suppressed]] configuration.
    *
-   * This controls what updates downstream table and stream operations will receive.
+   * This controls what updates downstream table and stream operations will receive. You can query the current (prior) values
+   * with the [[org.apache.kafka.streams.kstream.Suppressed]] instance's name iff [[org.apache.kafka.streams.kstream.Suppressed#enableQuery]] is true.
    *
    * @param suppressed Configuration object determining what, if any, updates to suppress.
    * @return A new KTable with the desired suppression characteristics.

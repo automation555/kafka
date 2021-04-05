@@ -64,6 +64,16 @@ public class ByteBufferAccessor implements Readable, Writable {
     }
 
     @Override
+    public int readVarint() {
+        return ByteUtils.readVarint(buf);
+    }
+
+    @Override
+    public long readVarlong() {
+        return ByteUtils.readVarlong(buf);
+    }
+
+    @Override
     public ByteBuffer readByteBuffer(int length) {
         ByteBuffer res = buf.slice();
         res.limit(length);
@@ -109,11 +119,6 @@ public class ByteBufferAccessor implements Readable, Writable {
     }
 
     @Override
-    public void writeByteBuffer(ByteBuffer src) {
-        buf.put(src.duplicate());
-    }
-
-    @Override
     public void writeVarint(int i) {
         ByteUtils.writeVarint(i, buf);
     }
@@ -124,20 +129,7 @@ public class ByteBufferAccessor implements Readable, Writable {
     }
 
     @Override
-    public int readVarint() {
-        return ByteUtils.readVarint(buf);
-    }
-
-    @Override
-    public long readVarlong() {
-        return ByteUtils.readVarlong(buf);
-    }
-
-    public void flip() {
-        buf.flip();
-    }
-
-    public ByteBuffer buffer() {
-        return buf;
+    public void writeByteBuffer(ByteBuffer src) {
+        buf.put(src);
     }
 }

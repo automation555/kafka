@@ -40,11 +40,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 
 import static org.apache.kafka.clients.admin.AlterConfigOp.OpType.APPEND;
-
 
 public class ConfigurationControlManager {
     private final Logger log;
@@ -85,7 +83,7 @@ public class ConfigurationControlManager {
                 outputRecords,
                 outputResults);
         }
-        return ControllerResult.atomicOf(outputRecords, outputResults);
+        return new ControllerResult<>(outputRecords, outputResults);
     }
 
     private void incrementalAlterConfigResource(ConfigResource configResource,
@@ -173,7 +171,7 @@ public class ConfigurationControlManager {
                 outputRecords,
                 outputResults);
         }
-        return ControllerResult.atomicOf(outputRecords, outputResults);
+        return new ControllerResult<>(outputRecords, outputResults);
     }
 
     private void legacyAlterConfigResource(ConfigResource configResource,
@@ -261,6 +259,9 @@ public class ConfigurationControlManager {
                 }
                 return ApiError.NONE;
             case TOPIC:
+                if (configResource.name().isEmpty()) {
+                    return new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION, "Default configs are not supported for topic entities.");
+                }
                 try {
                     Topic.validate(configResource.name());
                 } catch (Exception e) {
@@ -305,7 +306,7 @@ public class ConfigurationControlManager {
      *
      * @param record            The ConfigRecord.
      */
-    public void replay(ConfigRecord record) {
+    void replay(ConfigRecord record) {
         Type type = Type.forId(record.resourceType());
         ConfigResource configResource = new ConfigResource(type, record.resourceName());
         TimelineHashMap<String, String> configs = configData.get(configResource);
@@ -317,9 +318,6 @@ public class ConfigurationControlManager {
             configs.remove(record.name());
         } else {
             configs.put(record.name(), record.value());
-        }
-        if (configs.isEmpty()) {
-            configData.remove(configResource);
         }
         log.info("{}: set configuration {} to {}", configResource, record.name(), record.value());
     }
@@ -368,44 +366,5 @@ public class ConfigurationControlManager {
             results.put(resource, new ResultOrError<>(foundConfigs));
         }
         return results;
-    }
-
-    void deleteTopicConfigs(String name) {
-        configData.remove(new ConfigResource(Type.TOPIC, name));
-    }
-
-    class ConfigurationControlIterator implements Iterator<List<ApiMessageAndVersion>> {
-        private final long epoch;
-        private final Iterator<Entry<ConfigResource, TimelineHashMap<String, String>>> iterator;
-
-        ConfigurationControlIterator(long epoch) {
-            this.epoch = epoch;
-            this.iterator = configData.entrySet(epoch).iterator();
-        }
-
-        @Override
-        public boolean hasNext() {
-            return iterator.hasNext();
-        }
-
-        @Override
-        public List<ApiMessageAndVersion> next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            List<ApiMessageAndVersion> records = new ArrayList<>();
-            Entry<ConfigResource, TimelineHashMap<String, String>> entry = iterator.next();
-            ConfigResource resource = entry.getKey();
-            for (Entry<String, String> configEntry : entry.getValue().entrySet(epoch)) {
-                records.add(new ApiMessageAndVersion(new ConfigRecord().
-                    setResourceName(resource.name()).
-                    setResourceType(resource.type().id()).
-                    setName(configEntry.getKey()).
-                    setValue(configEntry.getValue()), (short) 0));
-            }
-            return records;
-        }
-    }
-
-    ConfigurationControlIterator iterator(long epoch) {
-        return new ConfigurationControlIterator(epoch);
     }
 }

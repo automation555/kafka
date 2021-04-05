@@ -17,22 +17,21 @@
 
 package kafka.admin
 
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.{Collections, Properties}
 
 import joptsimple._
 import kafka.common.Config
 import kafka.log.LogConfig
-import kafka.server.DynamicConfig.Client
-import kafka.server.DynamicConfig.ClientConfigs
 import kafka.server.DynamicConfig.QuotaConfigs
 import kafka.server.{ConfigEntityName, ConfigType, Defaults, DynamicBrokerConfig, DynamicConfig, KafkaConfig}
 import kafka.utils.{CommandDefaultOptions, CommandLineUtils, Exit, PasswordEncoder}
 import kafka.utils.Implicits._
 import kafka.zk.{AdminZkClient, KafkaZkClient}
+import org.apache.kafka.clients.admin.{Admin, AlterClientQuotasOptions, AlterConfigOp, AlterConfigsOptions, ConfigEntry, DescribeClusterOptions, DescribeConfigsOptions, ListTopicsOptions, ScramCredentialInfo, UserScramCredentialDeletion, UserScramCredentialUpsertion, Config => JConfig, ScramMechanism => PublicScramMechanism}
 import org.apache.kafka.clients.CommonClientConfigs
-import org.apache.kafka.clients.admin.{Admin, AlterClientQuotasOptions, AlterConfigOp, AlterConfigsOptions, ConfigEntry, DescribeClusterOptions, DescribeConfigsOptions, ListTopicsOptions, Config => JConfig}
-import org.apache.kafka.common.config.{ConfigResource, ClientConfigAlteration}
+import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.config.types.Password
 import org.apache.kafka.common.errors.InvalidConfigurationException
 import org.apache.kafka.common.internals.Topic
@@ -58,9 +57,10 @@ import scala.collection._
  *     <li> broker: --broker <broker-id> OR --entity-type brokers --entity-name <broker-id>
  *     <li> broker-logger: --broker-logger <broker-id> OR --entity-type broker-loggers --entity-name <broker-id>
  * </ul>
- * --user-defaults, --client-defaults, or --broker-defaults may be when describing or altering default configuration for users,
- * clients, and brokers, respectively. Alternatively, --entity-default may be used instead of --entity-name.
- *
+ * --entity-type <users|clients|brokers> --entity-default may be specified in place of --entity-type <users|clients|brokers> --entity-name <entityName>
+ * when describing or altering default configuration for users, clients, or brokers, respectively.
+ * Alternatively, --user-defaults, --client-defaults, or --broker-defaults may be specified in place of
+ * --entity-type <users|clients|brokers> --entity-default, respectively.
  */
 object ConfigCommand extends Config {
 
@@ -153,6 +153,8 @@ object ConfigCommand extends Config {
         }
         preProcessBrokerConfigs(configsToBeAdded, perBrokerConfig)
       }
+    } else if (entityType == ConfigType.Topic) {
+      preProcessTopicConfigs(configsToBeAdded)
     }
 
     // compile the final set of configs
@@ -189,6 +191,18 @@ object ConfigCommand extends Config {
         case value =>
           configsToBeAdded.setProperty(mechanism.mechanismName, scramCredential(mechanism, value))
       }
+    }
+  }
+
+  private[admin] def preProcessTopicConfigs(configsToBeAdded: Properties): Unit = {
+    val originalValueForCleanupPolicyOpt = Option(configsToBeAdded.getProperty(LogConfig.CleanupPolicyProp))
+    LogConfig.processValues(configsToBeAdded)
+    Option(configsToBeAdded.getProperty(LogConfig.CleanupPolicyProp)) match {
+      case Some(value) if value.contains(",") =>
+        if (value != originalValueForCleanupPolicyOpt.getOrElse(value))
+          println(s"WARNING: The configuration ${LogConfig.CleanupPolicyProp}=${originalValueForCleanupPolicyOpt.get} which contains duplicate items is specified. " +
+            "The de-duplicated value will be applied.")
+      case _ => // do nothing
     }
   }
 
@@ -312,7 +326,7 @@ object ConfigCommand extends Config {
     val entityNames = opts.entityNames
     val entityTypeHead = entityTypes.head
     val entityNameHead = entityNames.head
-    val configsToBeAddedMap = parseConfigsToBeAdded(opts).asScala
+    val configsToBeAddedMap = parseConfigsToBeAdded(opts).asScala.toMap // no need for mutability
     val configsToBeAdded = configsToBeAddedMap.map { case (k, v) => (k, new ConfigEntry(k, v)) }
     val configsToBeDeleted = parseConfigsToBeDeleted(opts)
 
@@ -367,64 +381,40 @@ object ConfigCommand extends Config {
         adminClient.incrementalAlterConfigs(Map(configResource -> alterLogLevelEntries).asJava, alterOptions).all().get(60, TimeUnit.SECONDS)
 
       case ConfigType.User | ConfigType.Client =>
-        val nonQuotaAndClientConfigsToAdd = configsToBeAdded.keys.filterNot(Client.isQuotaOrDynamicConfig)
-        if (nonQuotaAndClientConfigsToAdd.nonEmpty)
-          throw new IllegalArgumentException(s"Only quota and dynamic configs can be added for '$entityTypeHead' using --bootstrap-server. Unexpected config names: $nonQuotaAndClientConfigsToAdd")
-        val nonQuotaAndClientConfigsToDelete = configsToBeDeleted.filterNot(Client.isQuotaOrDynamicConfig)
-        if (nonQuotaAndClientConfigsToDelete.nonEmpty)
-          throw new IllegalArgumentException(s"Only quota and dynamic configs can be deleted for '$entityTypeHead' using --bootstrap-server. Unexpected config names: $nonQuotaAndClientConfigsToDelete")
-        
-        val quotaConfigsToBeAddedMap = configsToBeAddedMap.filter{ case (key, _) => QuotaConfigs.isQuotaConfig(key)}
-        val quotaConfigsToBeDeleted = configsToBeDeleted.filter(QuotaConfigs.isQuotaConfig)
-        val clientConfigsToBeAddedMap = configsToBeAddedMap.filter{ case (key, _) => ClientConfigs.isClientConfig(key)}
-        val clientConfigsToBeDeleted = configsToBeDeleted.filter(ClientConfigs.isClientConfig)
-
-        val oldQuotaConfig = getClientQuotasConfig(adminClient, entityTypes, entityNames)
-        val oldClientConfig = getClientConfig(adminClient, entityTypes, entityNames)
-
-        val invalidQuotaConfigs = quotaConfigsToBeDeleted.filterNot(oldQuotaConfig.contains)
-        val invalidClientConfigs = clientConfigsToBeDeleted.filterNot(oldClientConfig.contains)
-        if (invalidQuotaConfigs.nonEmpty || invalidClientConfigs.nonEmpty)
-          throw new InvalidConfigurationException(s"Invalid config(s): ${(invalidQuotaConfigs ++ invalidClientConfigs).mkString(",")}")
-
-        val alterEntityTypes = entityTypes.map { entType =>
-          entType match {
-            case ConfigType.User => ClientQuotaEntity.USER
-            case ConfigType.Client => ClientQuotaEntity.CLIENT_ID
-            case _ => throw new IllegalArgumentException(s"Unexpected entity type: ${entType}")
+        val hasQuotaConfigsToAdd = configsToBeAdded.keys.exists(QuotaConfigs.isQuotaConfig)
+        val scramConfigsToAddMap = configsToBeAdded.filter(entry => ScramMechanism.isScram(entry._1))
+        val unknownConfigsToAdd = configsToBeAdded.keys.filterNot(key => ScramMechanism.isScram(key) || QuotaConfigs.isQuotaConfig(key))
+        val hasQuotaConfigsToDelete = configsToBeDeleted.exists(QuotaConfigs.isQuotaConfig)
+        val scramConfigsToDelete = configsToBeDeleted.filter(ScramMechanism.isScram)
+        val unknownConfigsToDelete = configsToBeDeleted.filterNot(key => ScramMechanism.isScram(key) || QuotaConfigs.isQuotaConfig(key))
+        if (entityTypeHead == ConfigType.Client || entityTypes.size == 2) { // size==2 for case where users is specified first on the command line, before clients
+          // either just a client or both a user and a client
+          if (unknownConfigsToAdd.nonEmpty || scramConfigsToAddMap.nonEmpty)
+            throw new IllegalArgumentException(s"Only quota configs can be added for '${ConfigType.Client}' using --bootstrap-server. Unexpected config names: ${unknownConfigsToAdd ++ scramConfigsToAddMap.keys}")
+          if (unknownConfigsToDelete.nonEmpty || scramConfigsToDelete.nonEmpty)
+            throw new IllegalArgumentException(s"Only quota configs can be deleted for '${ConfigType.Client}' using --bootstrap-server. Unexpected config names: ${unknownConfigsToDelete ++ scramConfigsToDelete}")
+        } else { // ConfigType.User
+          if (unknownConfigsToAdd.nonEmpty)
+            throw new IllegalArgumentException(s"Only quota and SCRAM credential configs can be added for '${ConfigType.User}' using --bootstrap-server. Unexpected config names: $unknownConfigsToAdd")
+          if (unknownConfigsToDelete.nonEmpty)
+            throw new IllegalArgumentException(s"Only quota and SCRAM credential configs can be deleted for '${ConfigType.User}' using --bootstrap-server. Unexpected config names: $unknownConfigsToDelete")
+          if (scramConfigsToAddMap.nonEmpty || scramConfigsToDelete.nonEmpty) {
+            if (entityNames.exists(_.isEmpty)) // either --entity-type users --entity-default or --user-defaults
+              throw new IllegalArgumentException("The use of --entity-default or --user-defaults is not allowed with User SCRAM Credentials using --bootstrap-server.")
+            if (hasQuotaConfigsToAdd || hasQuotaConfigsToDelete)
+              throw new IllegalArgumentException(s"Cannot alter both quota and SCRAM credential configs simultaneously for '${ConfigType.User}' using --bootstrap-server.")
           }
         }
-        val alterEntityNames = entityNames.map(en => if (en.nonEmpty) en else null)
 
-        // Explicitly populate a HashMap to ensure nulls are recorded properly.
-        val alterEntityMap = new java.util.HashMap[String, String]
-        alterEntityTypes.zip(alterEntityNames).foreach { case (k, v) => alterEntityMap.put(k, v) }
-        val entity = new ClientQuotaEntity(alterEntityMap)
-
-        val alterOptions = new AlterClientQuotasOptions().validateOnly(false)
-        val alterQuotaOps = (quotaConfigsToBeAddedMap.map { case (key, value) =>
-          val doubleValue = try value.toDouble catch {
-            case _: NumberFormatException =>
-              throw new IllegalArgumentException(s"Cannot parse quota configuration value for ${key}: ${value}")
-          }
-          new ClientQuotaAlteration.Op(key, doubleValue)
-        } ++ quotaConfigsToBeDeleted.map(key => new ClientQuotaAlteration.Op(key, null))).asJavaCollection
-
-        val alterConfigOps = (clientConfigsToBeAddedMap.map { case (key, value) =>
-          new ClientConfigAlteration.Op(key, value)
-        } ++ clientConfigsToBeDeleted.map(key => new ClientConfigAlteration.Op(key, null))).asJavaCollection
-
-
-        if (!alterQuotaOps.isEmpty) {
-          adminClient.alterClientQuotas(Collections.singleton(new ClientQuotaAlteration(entity, alterQuotaOps)), alterOptions)
-            .all().get(60, TimeUnit.SECONDS)
+        if (hasQuotaConfigsToAdd || hasQuotaConfigsToDelete) {
+          alterQuotaConfigs(adminClient, entityTypes, entityNames, configsToBeAddedMap, configsToBeDeleted)
+        } else {
+          // handle altering user SCRAM credential configs
+          if (entityNames.size != 1)
+            // should never happen, if we get here then it is a bug
+            throw new IllegalStateException(s"Altering user SCRAM credentials should never occur for more zero or multiple users: $entityNames")
+          alterUserScramCredentialConfigs(adminClient, entityNames.head, scramConfigsToAddMap, scramConfigsToDelete)
         }
-
-        if (!alterConfigOps.isEmpty) {
-          adminClient.alterClientConfigs(Collections.singleton(new ClientConfigAlteration(entity, alterConfigOps)), alterOptions)
-            .all().get(60, TimeUnit.SECONDS)
-        }
-
 
       case _ => throw new IllegalArgumentException(s"Unsupported entity type: $entityTypeHead")
     }
@@ -433,6 +423,65 @@ object ConfigCommand extends Config {
       println(s"Completed updating config for ${entityTypeHead.dropRight(1)} $entityNameHead.")
     else
       println(s"Completed updating default config for $entityTypeHead in the cluster.")
+  }
+
+  private def alterUserScramCredentialConfigs(adminClient: Admin, user: String, scramConfigsToAddMap: Map[String, ConfigEntry], scramConfigsToDelete: Seq[String]) = {
+    val deletions = scramConfigsToDelete.map(mechanismName =>
+      new UserScramCredentialDeletion(user, PublicScramMechanism.fromMechanismName(mechanismName)))
+
+    def iterationsAndPasswordBytes(mechanism: ScramMechanism, credentialStr: String): (Integer, Array[Byte]) = {
+      val pattern = "(?:iterations=(\\-?[0-9]*),)?password=(.*)".r
+      val (iterations, password) = credentialStr match {
+        case pattern(iterations, password) => (if (iterations != null && iterations != "-1") iterations.toInt else DefaultScramIterations, password)
+        case _ => throw new IllegalArgumentException(s"Invalid credential property $mechanism=$credentialStr")
+      }
+      if (iterations < mechanism.minIterations)
+        throw new IllegalArgumentException(s"Iterations $iterations is less than the minimum ${mechanism.minIterations} required for ${mechanism.mechanismName}")
+      (iterations, password.getBytes(StandardCharsets.UTF_8))
+    }
+
+    val upsertions = scramConfigsToAddMap.map { case (mechanismName, configEntry) =>
+      val (iterations, passwordBytes) = iterationsAndPasswordBytes(ScramMechanism.forMechanismName(mechanismName), configEntry.value)
+      new UserScramCredentialUpsertion(user, new ScramCredentialInfo(PublicScramMechanism.fromMechanismName(mechanismName), iterations), passwordBytes)
+    }
+    // we are altering only a single user by definition, so we don't have to worry about one user succeeding and another
+    // failing; therefore just check the success of all the futures (since there will only be 1)
+    adminClient.alterUserScramCredentials((deletions ++ upsertions).toList.asJava).all.get(60, TimeUnit.SECONDS)
+  }
+
+  private def alterQuotaConfigs(adminClient: Admin, entityTypes: List[String], entityNames: List[String], configsToBeAddedMap: Map[String, String], configsToBeDeleted: Seq[String]) = {
+    // handle altering client/user quota configs
+    val oldConfig = getClientQuotasConfig(adminClient, entityTypes, entityNames)
+
+    val invalidConfigs = configsToBeDeleted.filterNot(oldConfig.contains)
+    if (invalidConfigs.nonEmpty)
+      throw new InvalidConfigurationException(s"Invalid config(s): ${invalidConfigs.mkString(",")}")
+
+    val alterEntityTypes = entityTypes.map { entType =>
+      entType match {
+        case ConfigType.User => ClientQuotaEntity.USER
+        case ConfigType.Client => ClientQuotaEntity.CLIENT_ID
+        case _ => throw new IllegalArgumentException(s"Unexpected entity type: ${entType}")
+      }
+    }
+    val alterEntityNames = entityNames.map(en => if (en.nonEmpty) en else null)
+
+    // Explicitly populate a HashMap to ensure nulls are recorded properly.
+    val alterEntityMap = new java.util.HashMap[String, String]
+    alterEntityTypes.zip(alterEntityNames).foreach { case (k, v) => alterEntityMap.put(k, v) }
+    val entity = new ClientQuotaEntity(alterEntityMap)
+
+    val alterOptions = new AlterClientQuotasOptions().validateOnly(false)
+    val alterOps = (configsToBeAddedMap.map { case (key, value) =>
+      val doubleValue = try value.toDouble catch {
+        case _: NumberFormatException =>
+          throw new IllegalArgumentException(s"Cannot parse quota configuration value for ${key}: ${value}")
+      }
+      new ClientQuotaAlteration.Op(key, doubleValue)
+    } ++ configsToBeDeleted.map(key => new ClientQuotaAlteration.Op(key, null))).asJavaCollection
+
+    adminClient.alterClientQuotas(Collections.singleton(new ClientQuotaAlteration(entity, alterOps)), alterOptions)
+      .all().get(60, TimeUnit.SECONDS)
   }
 
   private[admin] def describeConfig(adminClient: Admin, opts: ConfigCommandOptions): Unit = {
@@ -444,8 +493,7 @@ object ConfigCommand extends Config {
       case ConfigType.Topic | ConfigType.Broker | BrokerLoggerConfigType =>
         describeResourceConfig(adminClient, entityTypes.head, entityNames.headOption, describeAll)
       case ConfigType.User | ConfigType.Client =>
-        describeClientQuotasConfig(adminClient, entityTypes, entityNames)
-        describeClientConfig(adminClient, entityTypes, entityNames)
+        describeClientQuotaAndUserScramCredentialConfigs(adminClient, entityTypes, entityNames)
     }
   }
 
@@ -457,8 +505,6 @@ object ConfigCommand extends Config {
           adminClient.listTopics(new ListTopicsOptions().listInternal(true)).names().get().asScala.toSeq
         case ConfigType.Broker | BrokerLoggerConfigType =>
           adminClient.describeCluster(new DescribeClusterOptions()).nodes().get().asScala.map(_.idString).toSeq :+ BrokerDefaultEntityName
-        case ConfigType.User =>
-          List("")
       })
 
     entities.foreach { entity =>
@@ -516,37 +562,38 @@ object ConfigCommand extends Config {
       }).toSeq
   }
 
-  private def formatEntity(entity: ClientQuotaEntity): String = {
-    val entityEntries = entity.entries.asScala
+  private def describeClientQuotaAndUserScramCredentialConfigs(adminClient: Admin, entityTypes: List[String], entityNames: List[String]) = {
+    val quotaConfigs = getAllClientQuotasConfigs(adminClient, entityTypes, entityNames)
+    quotaConfigs.forKeyValue { (entity, entries) =>
+      val entityEntries = entity.entries.asScala
 
-    def entitySubstr(entityType: String): Option[String] =
-      entityEntries.get(entityType).map { name =>
-        val typeStr = entityType match {
-          case ClientQuotaEntity.USER => "user-principal"
-          case ClientQuotaEntity.CLIENT_ID => "client-id"
+      def entitySubstr(entityType: String): Option[String] =
+        entityEntries.get(entityType).map { name =>
+          val typeStr = entityType match {
+            case ClientQuotaEntity.USER => "user-principal"
+            case ClientQuotaEntity.CLIENT_ID => "client-id"
+          }
+          if (name != null) s"${typeStr} '${name}'"
+          else s"the default ${typeStr}"
         }
-        if (name != null) s"${typeStr} '${name}'"
-        else s"the default ${typeStr}"
-      }
 
-    (entitySubstr(ClientQuotaEntity.USER) ++ entitySubstr(ClientQuotaEntity.CLIENT_ID)).mkString(", ")
-  }
-
-  private def describeClientQuotasConfig(adminClient: Admin, entityTypes: List[String], entityNames: List[String]) = {
-    def formatQuotaEntries(entries: java.util.Map[String, java.lang.Double]): String = {
-      entries.asScala.map(e => s"${e._1}=${e._2}").mkString(", ")
+      val entityStr = (entitySubstr(ClientQuotaEntity.USER) ++ entitySubstr(ClientQuotaEntity.CLIENT_ID)).mkString(", ")
+      val entriesStr = entries.asScala.map(e => s"${e._1}=${e._2}").mkString(", ")
+      println(s"Quota configs for ${entityStr} are ${entriesStr}")
     }
-    getAllClientQuotasConfigs(adminClient, entityTypes, entityNames).foreach { case (entity, entries) =>
-      println(s"Quota configs for ${formatEntity(entity)} are ${formatQuotaEntries(entries)}")
-    }
-  }
-
-  private def describeClientConfig(adminClient: Admin, entityTypes: List[String], entityNames: List[String]) = {
-    def formatConfigEntries(entries: java.util.Map[String, String]): String = {
-      entries.asScala.map(e => s"${e._1}=${e._2}").mkString(", ")
-    }
-    getAllClientConfigs(adminClient, entityTypes, entityNames).foreach { case (entity, entries) =>
-      println(s"Dynamic configs for ${formatEntity(entity)} are ${formatConfigEntries(entries)}")
+    // we describe user SCRAM credentials only when we are not describing client information
+    // and we are not given either --entity-default or --user-defaults
+    if (!entityTypes.contains(ConfigType.Client) && !entityNames.contains("")) {
+      val result = adminClient.describeUserScramCredentials(entityNames.asJava)
+      result.users.get(30, TimeUnit.SECONDS).asScala.foreach(user => {
+        try {
+          val description = result.description(user).get(30, TimeUnit.SECONDS)
+          val descriptionText = description.credentialInfos.asScala.map(info => s"${info.mechanism.mechanismName}=iterations=${info.iterations}").mkString(", ")
+          println(s"SCRAM credential configs for user-principal '$user' are $descriptionText")
+        } catch {
+          case e: Exception => println(s"Error retrieving SCRAM credential configs for user-principal '$user': ${e.getClass.getSimpleName}: ${e.getMessage}")
+        }
+      })
     }
   }
 
@@ -556,27 +603,8 @@ object ConfigCommand extends Config {
     getAllClientQuotasConfigs(adminClient, entityTypes, entityNames).headOption.map(_._2.asScala).getOrElse(Map.empty)
   }
 
-  private def getClientConfig(adminClient: Admin, entityTypes: List[String], entityNames: List[String]): Map[String, String] = {
-    getAllClientConfigs(adminClient, entityTypes, entityNames).headOption.map(_._2.asScala).getOrElse(Map.empty)
-  }
-
   private def getAllClientQuotasConfigs(adminClient: Admin, entityTypes: List[String], entityNames: List[String]) = {
-    val components = getFilterComponents(entityTypes, entityNames)
-    adminClient.describeClientQuotas(ClientQuotaFilter.containsOnly(components.asJava)).entities.get(30, TimeUnit.SECONDS).asScala
-  }
-
-  private def getAllClientConfigs(adminClient: Admin, entityTypes: List[String], entityNames: List[String]) = {
-    val components = getFilterComponents(entityTypes, entityNames)
-    // Should only describe client configs if a user component was inputted
-    if (components.exists( component => component.entityType ==  ClientQuotaEntity.USER)) {
-      adminClient.describeClientConfigs(ClientQuotaFilter.containsOnly(components.asJava)).entities.get(30, TimeUnit.SECONDS).asScala
-    } else {
-      throw new IllegalArgumentException("A user must be specified for dynamic client configs. Optionally, client-id may be specified.")
-    }
-  }
-
-  private def getFilterComponents(entityTypes: List[String], entityNames: List[String]) = {
-    entityTypes.map(Some(_)).zipAll(entityNames.map(Some(_)), None, None).map { case (entityTypeOpt, entityNameOpt) =>
+    val components = entityTypes.map(Some(_)).zipAll(entityNames.map(Some(_)), None, None).map { case (entityTypeOpt, entityNameOpt) =>
       val entityType = entityTypeOpt match {
         case Some(ConfigType.User) => ClientQuotaEntity.USER
         case Some(ConfigType.Client) => ClientQuotaEntity.CLIENT_ID
@@ -589,6 +617,8 @@ object ConfigCommand extends Config {
         case None => ClientQuotaFilterComponent.ofEntityType(entityType)
       }
     }
+
+    adminClient.describeClientQuotas(ClientQuotaFilter.containsOnly(components.asJava)).entities.get(30, TimeUnit.SECONDS).asScala
   }
 
   case class Entity(entityType: String, sanitizedName: Option[String]) {
@@ -714,7 +744,7 @@ object ConfigCommand extends Config {
       .ofType(classOf[String])
     val alterOpt = parser.accepts("alter", "Alter the configuration for the entity.")
     val describeOpt = parser.accepts("describe", "List configs for the given entity.")
-    val allOpt = parser.accepts("all", "List all configs for the given entity (includes static configuration when the entity type is brokers)")
+    val allOpt = parser.accepts("all", "List all configs for the given topic, broker, or broker-logger entity (includes static configuration when the entity type is brokers)")
 
     val entityType = parser.accepts("entity-type", "Type of entity (topics/clients/users/brokers/broker-loggers)")
             .withRequiredArg

@@ -84,12 +84,6 @@ public class ConsumerConfig extends AbstractConfig {
     private static final String HEARTBEAT_INTERVAL_MS_DOC = CommonClientConfigs.HEARTBEAT_INTERVAL_MS_DOC;
 
     /**
-     * <code>enable.dynamic.config</code>
-     */
-    public static final String ENABLE_DYNAMIC_CONFIG_CONFIG = CommonClientConfigs.ENABLE_DYNAMIC_CONFIG_CONFIG;
-    public static final String ENABLE_DYNAMIC_CONFIG_DOC = CommonClientConfigs.ENABLE_DYNAMIC_CONFIG_DOC;
-
-    /**
      * <code>bootstrap.servers</code>
      */
     public static final String BOOTSTRAP_SERVERS_CONFIG = CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
@@ -131,6 +125,13 @@ public class ConsumerConfig extends AbstractConfig {
      */
     public static final String AUTO_OFFSET_RESET_CONFIG = "auto.offset.reset";
     public static final String AUTO_OFFSET_RESET_DOC = "What to do when there is no initial offset in Kafka or if the current offset does not exist any more on the server (e.g. because that data has been deleted): <ul><li>earliest: automatically reset the offset to the earliest offset<li>latest: automatically reset the offset to the latest offset</li><li>none: throw exception to the consumer if no previous offset is found for the consumer's group</li><li>anything else: throw exception to the consumer.</li></ul>";
+
+    /**
+     * <code>nearest.offset.reset</code>
+     */
+    public static final String NEAREST_OFFSET_RESET = "nearest.offset.reset";
+    private static final String NEAREST_OFFSET_RESET_DOC = "If true, then out of range errors will reset the consumer's offset to the nearest offset. to the earliest end of the broker range if it was under the range, or to the latest end of the broker range if it was over the range";
+    public static final boolean DEFAULT_NEAREST_OFFSET_RESET = false;
 
     /**
      * <code>fetch.min.bytes</code>
@@ -348,11 +349,6 @@ public class ConsumerConfig extends AbstractConfig {
                                         3000,
                                         Importance.HIGH,
                                         HEARTBEAT_INTERVAL_MS_DOC)
-                                .define(ENABLE_DYNAMIC_CONFIG_CONFIG,
-                                        Type.BOOLEAN,
-                                        true,
-                                        Importance.MEDIUM,
-                                        ENABLE_DYNAMIC_CONFIG_DOC)
                                 .define(PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
                                         Type.LIST,
                                         Collections.singletonList(RangeAssignor.class),
@@ -446,6 +442,11 @@ public class ConsumerConfig extends AbstractConfig {
                                         in("latest", "earliest", "none"),
                                         Importance.MEDIUM,
                                         AUTO_OFFSET_RESET_DOC)
+                                .define(NEAREST_OFFSET_RESET,
+                                        Type.BOOLEAN,
+                                        DEFAULT_NEAREST_OFFSET_RESET,
+                                        Importance.MEDIUM,
+                                        NEAREST_OFFSET_RESET_DOC)
                                 .define(CHECK_CRCS_CONFIG,
                                         Type.BOOLEAN,
                                         true,
@@ -590,19 +591,9 @@ public class ConsumerConfig extends AbstractConfig {
         }
     }
 
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Map<String, Object> addDeserializerToConfig(Map<String, Object> configs,
                                                               Deserializer<?> keyDeserializer,
                                                               Deserializer<?> valueDeserializer) {
-        return appendDeserializerToConfig(configs, keyDeserializer, valueDeserializer);
-    }
-
-    static Map<String, Object> appendDeserializerToConfig(Map<String, Object> configs,
-            Deserializer<?> keyDeserializer,
-            Deserializer<?> valueDeserializer) {
         Map<String, Object> newConfigs = new HashMap<>(configs);
         if (keyDeserializer != null)
             newConfigs.put(KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass());
@@ -611,10 +602,6 @@ public class ConsumerConfig extends AbstractConfig {
         return newConfigs;
     }
 
-    /**
-     * @deprecated Since 2.7.0. This will be removed in a future major release.
-     */
-    @Deprecated
     public static Properties addDeserializerToConfig(Properties properties,
                                                      Deserializer<?> keyDeserializer,
                                                      Deserializer<?> valueDeserializer) {

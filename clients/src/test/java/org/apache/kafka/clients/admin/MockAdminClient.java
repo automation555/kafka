@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 
 public class MockAdminClient extends AdminClient {
     public static final String DEFAULT_CLUSTER_ID = "I4ZmrWqfT2e-upky_4fdPA";
@@ -169,10 +170,8 @@ public class MockAdminClient extends AdminClient {
             }
         }
         ArrayList<String> logDirs = new ArrayList<>();
-        for (TopicPartitionInfo partition : partitions) {
-            if (partition.leader() != null) {
-                logDirs.add(brokerLogDirs.get(partition.leader().id()).get(0));
-            }
+        for (int i = 0; i < partitions.size(); i++) {
+            logDirs.add(brokerLogDirs.get(partitions.get(i).leader().id()).get(0));
         }
         allTopics.put(name, new TopicMetadata(internal, partitions, logDirs, configs));
     }
@@ -238,7 +237,7 @@ public class MockAdminClient extends AdminClient {
                 createTopicResult.put(topicName, future);
                 continue;
             }
-            int replicationFactor = Math.max(newTopic.replicationFactor(), 0);
+            int replicationFactor = newTopic.replicationFactor();
             if (replicationFactor > brokers.size())
                 throw new IllegalArgumentException(
                     String.format("NewTopic %s cannot have a replication factor of %d that is larger than the number of brokers %s",
@@ -249,7 +248,7 @@ public class MockAdminClient extends AdminClient {
                 replicas.add(brokers.get(i));
             }
 
-            int numberOfPartitions = Math.max(newTopic.numPartitions(), 0);
+            int numberOfPartitions = newTopic.numPartitions();
             List<TopicPartitionInfo> partitions = new ArrayList<>(numberOfPartitions);
             // Partitions start off on the first log directory of each broker, for now.
             List<String> logDirs = new ArrayList<>(numberOfPartitions);
@@ -473,12 +472,13 @@ public class MockAdminClient extends AdminClient {
     synchronized private Config getResourceDescription(ConfigResource resource) {
         switch (resource.type()) {
             case BROKER: {
-                int brokerId = Integer.valueOf(resource.name());
-                if (brokerId >= brokerConfigs.size()) {
+                Map<String, String> map =
+                    brokerConfigs.get(Integer.parseInt(resource.name()));
+                if (map == null) {
                     throw new InvalidRequestException("Broker " + resource.name() +
                         " not found.");
                 }
-                return toConfigObject(brokerConfigs.get(brokerId));
+                return toConfigObject(map);
             }
             case TOPIC: {
                 TopicMetadata topicMetadata = allTopics.get(resource.name());
@@ -533,14 +533,15 @@ public class MockAdminClient extends AdminClient {
             case BROKER: {
                 int brokerId;
                 try {
-                    brokerId = Integer.valueOf(resource.name());
+                    brokerId = Integer.parseInt(resource.name());
                 } catch (NumberFormatException e) {
                     return e;
                 }
-                if (brokerId >= brokerConfigs.size()) {
+                Map<String, String> map = brokerConfigs.get(brokerId);
+                if (map == null) {
                     return new InvalidRequestException("no such broker as " + brokerId);
                 }
-                HashMap<String, String> newMap = new HashMap<>(brokerConfigs.get(brokerId));
+                HashMap<String, String> newMap = new HashMap<>(map);
                 for (AlterConfigOp op : ops) {
                     switch (op.opType()) {
                         case SET:
@@ -619,6 +620,11 @@ public class MockAdminClient extends AdminClient {
     }
 
     @Override
+    public boolean topicExists(String topic) {
+        return false;
+    }
+
+    @Override
     synchronized public DescribeLogDirsResult describeLogDirs(Collection<Integer> brokers,
                                                               DescribeLogDirsOptions options) {
         throw new UnsupportedOperationException("Not implemented yet");
@@ -672,7 +678,7 @@ public class MockAdminClient extends AdminClient {
                 newReassignments.entrySet()) {
             TopicPartition partition = entry.getKey();
             Optional<NewPartitionReassignment> newReassignment = entry.getValue();
-            KafkaFutureImpl<Void> future = new KafkaFutureImpl<Void>();
+            KafkaFutureImpl<Void> future = new KafkaFutureImpl<>();
             futures.put(partition, future);
             TopicMetadata topicMetadata = allTopics.get(partition.topic());
             if (partition.partition() < 0 ||

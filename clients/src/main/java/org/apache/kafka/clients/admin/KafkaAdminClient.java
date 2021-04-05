@@ -231,6 +231,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1464,7 +1465,7 @@ public class KafkaAdminClient extends AdminClient {
                                 List<CreatableTopicConfigs> configs = result.configs();
                                 Config topicConfig = new Config(configs.stream()
                                         .map(config -> new ConfigEntry(config.name(),
-                                                Optional.ofNullable(config.value()),
+                                                config.value(),
                                                 configSource(DescribeConfigsResponse.ConfigSource.forId(config.configSource())),
                                                 config.isSensitive(),
                                                 config.readOnly(),
@@ -1954,7 +1955,7 @@ public class KafkaAdminClient extends AdminClient {
                         List<ConfigEntry> configEntries = new ArrayList<>();
                         for (DescribeConfigsResponse.ConfigEntry configEntry : config.entries()) {
                             configEntries.add(new ConfigEntry(configEntry.name(),
-                                    Optional.ofNullable(configEntry.value()), configSource(configEntry.source()),
+                                    configEntry.value(), configSource(configEntry.source()),
                                     configEntry.isSensitive(), configEntry.isReadOnly(),
                                     configSynonyms(configEntry)));
                         }
@@ -1997,7 +1998,7 @@ public class KafkaAdminClient extends AdminClient {
                     else {
                         List<ConfigEntry> configEntries = new ArrayList<>();
                         for (DescribeConfigsResponse.ConfigEntry configEntry : config.entries()) {
-                            configEntries.add(new ConfigEntry(configEntry.name(), Optional.ofNullable(configEntry.value()),
+                            configEntries.add(new ConfigEntry(configEntry.name(), configEntry.value(),
                                 configSource(configEntry.source()), configEntry.isSensitive(), configEntry.isReadOnly(),
                                 configSynonyms(configEntry)));
                         }
@@ -2082,8 +2083,7 @@ public class KafkaAdminClient extends AdminClient {
         for (ConfigResource resource : resources) {
             List<AlterConfigsRequest.ConfigEntry> configEntries = new ArrayList<>();
             for (ConfigEntry configEntry: configs.get(resource).entries())
-                configEntries.add(new AlterConfigsRequest.ConfigEntry(configEntry.name(),
-                        configEntry.value().orElseThrow(() -> new NullPointerException(""))));
+                configEntries.add(new AlterConfigsRequest.ConfigEntry(configEntry.name(), configEntry.value()));
             requestMap.put(resource, new AlterConfigsRequest.Config(configEntries));
             futures.put(resource, new KafkaFutureImpl<>());
         }
@@ -2190,7 +2190,7 @@ public class KafkaAdminClient extends AdminClient {
             for (AlterConfigOp configEntry : configs.get(resource))
                 alterableConfigSet.add(new AlterableConfig().
                         setName(configEntry.configEntry().name()).
-                        setValue(configEntry.configEntry().value().orElseThrow(() -> new NullPointerException(""))).
+                        setValue(configEntry.configEntry().value()).
                         setConfigOperation(configEntry.opType().id()));
 
             AlterConfigsResource alterConfigsResource = new AlterConfigsResource();
@@ -2258,6 +2258,13 @@ public class KafkaAdminClient extends AdminClient {
         }
 
         return new AlterReplicaLogDirsResult(new HashMap<>(futures));
+    }
+
+    @Override
+    synchronized public boolean topicExists(String topic) throws ExecutionException, InterruptedException {
+        ListTopicsResult listTopics = this.listTopics();
+        Set<String> topics = listTopics.names().get();
+        return topics.contains(topic);
     }
 
     @Override

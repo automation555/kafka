@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -35,7 +36,6 @@ import org.apache.kafka.common.TopicPartitionReplica;
 import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.annotation.InterfaceStability;
-import org.apache.kafka.common.config.ClientConfigAlteration;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.quota.ClientQuotaAlteration;
 import org.apache.kafka.common.quota.ClientQuotaFilter;
@@ -424,8 +424,6 @@ public interface Admin extends AutoCloseable {
      * if the authenticated user didn't have alter access to the cluster.</li>
      * <li>{@link org.apache.kafka.common.errors.TopicAuthorizationException}
      * if the authenticated user didn't have alter access to the Topic.</li>
-     * <li>{@link org.apache.kafka.common.errors.UnknownTopicOrPartitionException}
-     * if the Topic doesn't exist.</li>
      * <li>{@link org.apache.kafka.common.errors.InvalidRequestException}
      * if the request details are invalid. e.g., a configuration key was specified more than once for a resource</li>
      * </ul>
@@ -492,6 +490,13 @@ public interface Admin extends AutoCloseable {
     default DescribeLogDirsResult describeLogDirs(Collection<Integer> brokers) {
         return describeLogDirs(brokers, new DescribeLogDirsOptions());
     }
+
+
+    /**
+     * Get boolean value topic exists from Kafka Cluster
+     * @topic Name of topic
+     */
+    boolean topicExists(String topic) throws ExecutionException, InterruptedException;
 
     /**
      * Query the information of all log directories on the given set of brokers
@@ -1214,18 +1219,6 @@ public interface Admin extends AutoCloseable {
      * @return the AlterClientQuotasResult containing the result
      */
     AlterClientQuotasResult alterClientQuotas(Collection<ClientQuotaAlteration> entries, AlterClientQuotasOptions options);
-
-    default DescribeClientConfigsResult describeClientConfigs(ClientQuotaFilter filter) {
-        return describeClientConfigs(filter, new DescribeClientQuotasOptions());
-    }
-
-    DescribeClientConfigsResult describeClientConfigs(ClientQuotaFilter filter, DescribeClientQuotasOptions options);
-
-    default AlterClientConfigsResult alterClientConfigs(Collection<ClientConfigAlteration> entries) {
-        return alterClientConfigs(entries, new AlterClientQuotasOptions());
-    }
-
-    AlterClientConfigsResult alterClientConfigs(Collection<ClientConfigAlteration> entries, AlterClientQuotasOptions options);
 
     /**
      * Get the metrics kept by the adminClient

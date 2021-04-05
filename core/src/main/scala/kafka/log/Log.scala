@@ -249,12 +249,11 @@ class Log(@volatile private var _dir: File,
           val topicPartition: TopicPartition,
           val producerStateManager: ProducerStateManager,
           logDirFailureChannel: LogDirFailureChannel,
-          private val hadCleanShutdown: Boolean = true,
-          @volatile var latestDeleteHorizon: Long = RecordBatch.NO_TIMESTAMP) extends Logging with KafkaMetricsGroup {
+          private val hadCleanShutdown: Boolean = true) extends KafkaMetricsGroup {
 
   import kafka.log.Log._
 
-  this.logIdent = s"[Log partition=$topicPartition, dir=${dir.getParent}] "
+  private[log] implicit val logIdent = Some(LogIdent(s"[Log partition=$topicPartition, dir=${dir.getParent}] "))
 
   /* A lock that guards all modifications to the log */
   private val lock = new Object
@@ -1649,6 +1648,9 @@ class Log(@volatile private var _dir: File,
           s"for partition $topicPartition is ${config.messageFormatVersion} which is earlier than the minimum " +
           s"required version $KAFKA_0_10_0_IV0")
 
+      // Cache to avoid race conditions. `toBuffer` is faster than most alternatives and provides
+      // constant time access while being safe to use with concurrent collections unlike `toArray`.
+      val segmentsCopy = logSegments.toBuffer
       // For the earliest and latest, we do not need to return the timestamp.
       if (targetTimestamp == ListOffsetsRequest.EARLIEST_TIMESTAMP) {
         // The first cached epoch usually corresponds to the log start offset, but we have to verify this since
@@ -1665,9 +1667,6 @@ class Log(@volatile private var _dir: File,
         val epochOptional = Optional.ofNullable(latestEpochOpt.orNull)
         Some(new TimestampAndOffset(RecordBatch.NO_TIMESTAMP, logEndOffset, epochOptional))
       } else {
-        // Cache to avoid race conditions. `toBuffer` is faster than most alternatives and provides
-        // constant time access while being safe to use with concurrent collections unlike `toArray`.
-        val segmentsCopy = logSegments.toBuffer
         // We need to search the first segment whose largest timestamp is >= the target timestamp if there is one.
         val targetSeg = segmentsCopy.find(_.largestTimestamp >= targetTimestamp)
         targetSeg.flatMap(_.findOffsetByTimestamp(targetTimestamp, logStartOffset))
@@ -1998,7 +1997,7 @@ class Log(@volatile private var _dir: File,
   /**
    * The number of messages appended to the log since the last flush
    */
-  private def unflushedMessages: Long = this.logEndOffset - this.recoveryPoint
+  def unflushedMessages: Long = this.logEndOffset - this.recoveryPoint
 
   /**
    * Flush all log segments
@@ -2373,7 +2372,7 @@ class Log(@volatile private var _dir: File,
    * @param segment The segment to add
    */
   @threadsafe
-  private[log] def addSegment(segment: LogSegment): LogSegment = this.segments.put(segment.baseOffset, segment)
+  def addSegment(segment: LogSegment): LogSegment = this.segments.put(segment.baseOffset, segment)
 
   private def maybeHandleIOException[T](msg: => String)(fun: => T): T = {
     try {
@@ -2467,7 +2466,7 @@ class Log(@volatile private var _dir: File,
 /**
  * Helper functions for logs
  */
-object Log {
+object Log extends Logging {
 
   /** a log file */
   val LogFileSuffix = ".log"
@@ -2733,62 +2732,63 @@ object LogMetricNames {
 }
 
 sealed trait SegmentDeletionReason {
-  def logReason(log: Log, toDelete: List[LogSegment]): Unit
+  def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit
 }
 
 case object RetentionMsBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
+
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
     val retentionMs = log.config.retentionMs
     toDelete.foreach { segment =>
       segment.largestRecordTimestamp match {
         case Some(_) =>
-          log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the largest " +
+          Log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the largest " +
             s"record timestamp in the segment")
         case None =>
-          log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the " +
+          Log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the " +
             s"last modified time of the segment")
       }
     }
   }
 }
 
-case object RetentionSizeBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
+case object RetentionSizeBreach extends SegmentDeletionReason with Logging {
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
     var size = log.size
     toDelete.foreach { segment =>
       size -= segment.size
-      log.info(s"Deleting segment $segment due to retention size ${log.config.retentionSize} breach. Log size " +
+      Log.info(s"Deleting segment $segment due to retention size ${log.config.retentionSize} breach. Log size " +
         s"after deletion will be $size.")
     }
   }
 }
 
 case object StartOffsetBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments due to log start offset ${log.logStartOffset} breach: ${toDelete.mkString(",")}")
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
+    Log.info(s"Deleting segments due to log start offset ${log.logStartOffset} breach: ${toDelete.mkString(",")}")
   }
 }
 
 case object LogRecovery extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log recovery: ${toDelete.mkString(",")}")
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
+    Log.info(s"Deleting segments as part of log recovery: ${toDelete.mkString(",")}")
   }
 }
 
 case object LogTruncation extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log truncation: ${toDelete.mkString(",")}")
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
+    Log.info(s"Deleting segments as part of log truncation: ${toDelete.mkString(",")}")
   }
 }
 
 case object LogRoll extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log roll: ${toDelete.mkString(",")}")
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
+    Log.info(s"Deleting segments as part of log roll: ${toDelete.mkString(",")}")
   }
 }
 
 case object LogDeletion extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as the log has been deleted: ${toDelete.mkString(",")}")
+  override def logReason(log: Log, toDelete: List[LogSegment])(implicit logIdent : Option[LogIdent]): Unit = {
+    Log.info(s"Deleting segments as the log has been deleted: ${toDelete.mkString(",")}")
   }
 }

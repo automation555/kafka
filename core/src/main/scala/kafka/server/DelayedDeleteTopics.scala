@@ -38,9 +38,11 @@ object DeleteTopicMetadata {
   */
 class DelayedDeleteTopics(delayMs: Long,
                           deleteMetadata: Seq[DeleteTopicMetadata],
-                          adminManager: ZkAdminManager,
+                          adminManager: AdminManager,
                           responseCallback: Map[String, Errors] => Unit)
   extends DelayedOperation(delayMs) {
+
+  import DelayedOperation._
 
   /**
     * The operation can be completed if all of the topics not in error have been removed

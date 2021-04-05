@@ -69,6 +69,8 @@ class DelayedFetch(delayMs: Long,
                    responseCallback: Seq[(TopicPartition, FetchPartitionData)] => Unit)
   extends DelayedOperation(delayMs) {
 
+  import DelayedOperation._
+
   /**
    * The operation can be completed if:
    *
@@ -186,7 +188,16 @@ class DelayedFetch(delayMs: Long,
       val isReassignmentFetch = fetchMetadata.isFromFollower &&
         replicaManager.isAddingReplica(tp, fetchMetadata.replicaId)
 
-      tp -> result.toFetchPartitionData(isReassignmentFetch)
+      tp -> FetchPartitionData(
+        result.error,
+        result.highWatermark,
+        result.leaderLogStartOffset,
+        result.info.records,
+        result.divergingEpoch,
+        result.lastStableOffset,
+        result.info.abortedTransactions,
+        result.preferredReadReplica,
+        isReassignmentFetch)
     }
 
     responseCallback(fetchPartitionData)

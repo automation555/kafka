@@ -17,20 +17,20 @@
 package kafka.server
 
 import java.util
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
-
 import kafka.api.LeaderAndIsr
 import kafka.metrics.KafkaMetricsGroup
-import kafka.utils.{Logging, Scheduler}
+import kafka.utils.{KafkaScheduler, Logging, Scheduler}
 import kafka.zk.KafkaZkClient
 import org.apache.kafka.clients.ClientResponse
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData}
+import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{AlterIsrRequest, AlterIsrResponse}
 import org.apache.kafka.common.utils.Time
 
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -64,17 +64,28 @@ object AlterIsrManager {
    * Factory to AlterIsr based implementation, used when IBP >= 2.7-IV2
    */
   def apply(
-    channelManager: BrokerToControllerChannelManager,
-    scheduler: Scheduler,
+    config: KafkaConfig,
+    metadataCache: MetadataCache,
+    scheduler: KafkaScheduler,
     time: Time,
-    brokerId: Int,
+    metrics: Metrics,
+    threadNamePrefix: Option[String],
     brokerEpochSupplier: () => Long
   ): AlterIsrManager = {
+    val channelManager = new BrokerToControllerChannelManager(
+      metadataCache = metadataCache,
+      time = time,
+      metrics = metrics,
+      config = config,
+      channelName = "alterIsrChannel",
+      threadNamePrefix = threadNamePrefix,
+      retryTimeoutMs = Long.MaxValue
+    )
     new DefaultAlterIsrManager(
       controllerChannelManager = channelManager,
       scheduler = scheduler,
       time = time,
-      brokerId = brokerId,
+      brokerId = config.brokerId,
       brokerEpochSupplier = brokerEpochSupplier
     )
   }
@@ -92,23 +103,31 @@ object AlterIsrManager {
 
 }
 
+object DefaultAlterIsrManager extends Logging {
+
+}
+
 class DefaultAlterIsrManager(
   val controllerChannelManager: BrokerToControllerChannelManager,
   val scheduler: Scheduler,
   val time: Time,
   val brokerId: Int,
   val brokerEpochSupplier: () => Long
-) extends AlterIsrManager with Logging with KafkaMetricsGroup {
-
+) extends AlterIsrManager with KafkaMetricsGroup {
+  import DefaultAlterIsrManager._
   // Used to allow only one pending ISR update per partition (visible for testing)
   private[server] val unsentIsrUpdates: util.Map[TopicPartition, AlterIsrItem] = new ConcurrentHashMap[TopicPartition, AlterIsrItem]()
 
   // Used to allow only one in-flight request at a time
   private val inflightRequest: AtomicBoolean = new AtomicBoolean(false)
 
-  override def start(): Unit = {}
+  override def start(): Unit = {
+    controllerChannelManager.start()
+  }
 
-  override def shutdown(): Unit = {}
+  override def shutdown(): Unit = {
+    controllerChannelManager.shutdown()
+  }
 
   override def submit(alterIsrItem: AlterIsrItem): Boolean = {
     val enqueued = unsentIsrUpdates.putIfAbsent(alterIsrItem.topicPartition, alterIsrItem) == null
@@ -147,19 +166,9 @@ class DefaultAlterIsrManager(
       new ControllerRequestCompletionHandler {
         override def onComplete(response: ClientResponse): Unit = {
           debug(s"Received AlterIsr response $response")
+          val body = response.responseBody().asInstanceOf[AlterIsrResponse]
           val error = try {
-            if (response.authenticationException != null) {
-              // For now we treat authentication errors as retriable. We use the
-              // `NETWORK_EXCEPTION` error code for lack of a good alternative.
-              // Note that `BrokerToControllerChannelManager` will still log the
-              // authentication errors so that users have a chance to fix the problem.
-              Errors.NETWORK_EXCEPTION
-            } else if (response.versionMismatch != null) {
-              Errors.UNSUPPORTED_VERSION
-            } else {
-              val body = response.responseBody().asInstanceOf[AlterIsrResponse]
-              handleAlterIsrResponse(body, message.brokerEpoch, inflightAlterIsrItems)
-            }
+            handleAlterIsrResponse(body, message.brokerEpoch, inflightAlterIsrItems)
           } finally {
             // clear the flag so future requests can proceed
             clearInFlightRequest()

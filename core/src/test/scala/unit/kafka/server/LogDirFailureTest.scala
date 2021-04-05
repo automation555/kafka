@@ -29,8 +29,8 @@ import org.apache.kafka.clients.producer.{ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{KafkaStorageException, NotLeaderOrFollowerException}
 import org.apache.kafka.common.utils.Utils
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.Assert.{assertEquals, assertFalse, assertTrue, fail}
+import org.junit.{Before, Test}
 
 import scala.jdk.CollectionConverters._
 
@@ -49,7 +49,7 @@ class LogDirFailureTest extends IntegrationTestHarness {
   this.serverConfig.setProperty(KafkaConfig.ReplicaHighWatermarkCheckpointIntervalMsProp, "60000")
   this.serverConfig.setProperty(KafkaConfig.NumReplicaFetchersProp, "1")
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     createTopic(topic, partitionNum, brokerCount)
@@ -82,7 +82,7 @@ class LogDirFailureTest extends IntegrationTestHarness {
       val kafkaConfig = KafkaConfig.fromProps(props)
       val logDir = new File(kafkaConfig.logDirs.head)
       // Make log directory of the partition on the leader broker inaccessible by replacing it with a file
-      CoreUtils.swallow(Utils.delete(logDir), this)
+      CoreUtils.swallow(Utils.delete(logDir), IntegrationTestHarness)
       logDir.createNewFile()
       assertTrue(logDir.isFile)
 
@@ -121,7 +121,7 @@ class LogDirFailureTest extends IntegrationTestHarness {
     // Send a message to another partition whose leader is the same as partition 0
     // so that ReplicaFetcherThread on the follower will get response from leader immediately
     val anotherPartitionWithTheSameLeader = (1 until partitionNum).find { i =>
-      leaderServer.replicaManager.onlinePartition(new TopicPartition(topic, i))
+      leaderServer.replicaManager.nonOfflinePartition(new TopicPartition(topic, i))
         .flatMap(_.leaderLogIfLocal).isDefined
     }.get
     val record = new ProducerRecord[Array[Byte], Array[Byte]](topic, anotherPartitionWithTheSameLeader, topic.getBytes, "message".getBytes)
@@ -129,10 +129,10 @@ class LogDirFailureTest extends IntegrationTestHarness {
     // has fetched from the leader and attempts to append to the offline replica.
     producer.send(record).get
 
-    assertEquals(brokerCount, leaderServer.replicaManager.onlinePartition(new TopicPartition(topic, anotherPartitionWithTheSameLeader))
+    assertEquals(brokerCount, leaderServer.replicaManager.nonOfflinePartition(new TopicPartition(topic, anotherPartitionWithTheSameLeader))
       .get.inSyncReplicaIds.size)
     followerServer.replicaManager.replicaFetcherManager.fetcherThreadMap.values.foreach { thread =>
-      assertFalse(thread.isShutdownComplete, "ReplicaFetcherThread should still be working if its partition count > 0")
+      assertFalse("ReplicaFetcherThread should still be working if its partition count > 0", thread.isShutdownComplete)
     }
   }
 
@@ -150,10 +150,17 @@ class LogDirFailureTest extends IntegrationTestHarness {
     TestUtils.causeLogDirFailure(failureType, leaderServer, partition)
 
     // send() should fail due to either KafkaStorageException or NotLeaderOrFollowerException
-    val e = assertThrows(classOf[ExecutionException], () => producer.send(record).get(6000, TimeUnit.MILLISECONDS))
-    assertTrue(e.getCause.isInstanceOf[KafkaStorageException] ||
-      // This may happen if ProduceRequest version <= 3
-      e.getCause.isInstanceOf[NotLeaderOrFollowerException])
+    try {
+      producer.send(record).get(6000, TimeUnit.MILLISECONDS)
+      fail("send() should fail with either KafkaStorageException or NotLeaderOrFollowerException")
+    } catch {
+      case e: ExecutionException =>
+        e.getCause match {
+          case t: KafkaStorageException =>
+          case t: NotLeaderOrFollowerException => // This may happen if ProduceRequest version <= 3
+          case t: Throwable => fail(s"send() should fail with either KafkaStorageException or NotLeaderOrFollowerException instead of ${t.toString}")
+        }
+    }
   }
 
   def testProduceAfterLogDirFailureOnLeader(failureType: LogDirFailureType): Unit = {

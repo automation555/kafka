@@ -17,7 +17,7 @@
 package kafka.controller
 
 import kafka.server.KafkaConfig
-import kafka.utils.Logging
+import kafka.utils.{LogIdent, Logging}
 import kafka.zk.KafkaZkClient
 import org.apache.kafka.common.TopicPartition
 
@@ -51,6 +51,10 @@ class ControllerDeletionClient(controller: KafkaController, zkClient: KafkaZkCli
   }
 }
 
+object TopicDeletionManager extends Logging {
+
+}
+
 /**
  * This manages the state machine for topic deletion.
  * 1. TopicCommand issues topic deletion by creating a new admin path /admin/delete_topics/<topic>
@@ -82,13 +86,16 @@ class ControllerDeletionClient(controller: KafkaController, zkClient: KafkaZkCli
  *    as well as from zookeeper. This is the only time the /brokers/topics/<topic> path gets deleted. On the other hand,
  *    if no replica is in TopicDeletionStarted state and at least one replica is in TopicDeletionFailed state, then
  *    it marks the topic for deletion retry.
+ * @param controller
  */
 class TopicDeletionManager(config: KafkaConfig,
                            controllerContext: ControllerContext,
                            replicaStateMachine: ReplicaStateMachine,
                            partitionStateMachine: PartitionStateMachine,
-                           client: DeletionClient) extends Logging {
-  this.logIdent = s"[Topic Deletion Manager ${config.brokerId}] "
+                           client: DeletionClient) {
+  import TopicDeletionManager._
+
+  protected implicit val logIndent = Some(LogIdent(s"[Topic Deletion Manager ${config.brokerId}] "))
   val isDeleteTopicEnabled: Boolean = config.deleteTopicEnable
 
   def init(initialTopicsToBeDeleted: Set[String], initialTopicsIneligibleForDeletion: Set[String]): Unit = {

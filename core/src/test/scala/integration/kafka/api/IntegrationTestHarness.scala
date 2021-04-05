@@ -18,22 +18,25 @@
 package kafka.api
 
 import java.time.Duration
-
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
-import kafka.utils.TestUtils
+import kafka.utils.{Logging, TestUtils}
 import kafka.utils.Implicits._
-import java.util.Properties
 
+import java.util.Properties
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig}
 import kafka.server.KafkaConfig
 import kafka.integration.KafkaServerTestHarness
 import org.apache.kafka.clients.admin.{Admin, AdminClientConfig}
 import org.apache.kafka.common.network.{ListenerName, Mode}
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, Deserializer, Serializer}
-import org.junit.jupiter.api.{AfterEach, BeforeEach}
+import org.junit.{After, Before}
 
 import scala.collection.mutable
 import scala.collection.Seq
+
+object IntegrationTestHarness extends Logging {
+
+}
 
 /**
  * A helper class for writing integration tests that involve producers, consumers, and servers
@@ -79,7 +82,7 @@ abstract class IntegrationTestHarness extends KafkaServerTestHarness {
     }
   }
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     doSetup(createOffsetsTopic = true)
   }
@@ -147,7 +150,7 @@ abstract class IntegrationTestHarness extends KafkaServerTestHarness {
     adminClient
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     producers.foreach(_.close(Duration.ZERO))
     consumers.foreach(_.wakeup())

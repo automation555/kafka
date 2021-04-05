@@ -35,6 +35,7 @@ import kafka.server.{FetchLogEnd, ReplicaManager}
 import kafka.utils.CoreUtils.inLock
 import kafka.utils.Implicits._
 import kafka.utils._
+import kafka.zk.KafkaZkClient
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
 import org.apache.kafka.common.internals.Topic
@@ -56,8 +57,9 @@ class GroupMetadataManager(brokerId: Int,
                            interBrokerProtocolVersion: ApiVersion,
                            config: OffsetConfig,
                            val replicaManager: ReplicaManager,
+                           zkClient: KafkaZkClient,
                            time: Time,
-                           metrics: Metrics) extends Logging with KafkaMetricsGroup {
+                           metrics: Metrics) extends KafkaMetricsGroup with Logging {
 
   private val compressionType: CompressionType = CompressionType.forId(config.offsetsTopicCompressionCodec.codec)
 
@@ -76,7 +78,7 @@ class GroupMetadataManager(brokerId: Int,
   private val shuttingDown = new AtomicBoolean(false)
 
   /* number of partitions for the consumer metadata topic */
-  @volatile private var groupMetadataTopicPartitionCount: Int = _
+  private val groupMetadataTopicPartitionCount = getGroupMetadataTopicPartitionCount
 
   /* single-thread scheduler to handle offset/group metadata cache loading and unloading */
   private val scheduler = new KafkaScheduler(threads = 1, threadNamePrefix = "group-metadata-manager-")
@@ -116,7 +118,7 @@ class GroupMetadataManager(brokerId: Int,
       "group-coordinator-metrics",
       "The total number of expired offsets")))
 
-  this.logIdent = s"[GroupMetadataManager brokerId=$brokerId] "
+  protected implicit val logIdent = Some(LogIdent(s"[GroupMetadataManager brokerId=$brokerId] "))
 
   private def recreateGauge[T](name: String, gauge: Gauge[T]): Gauge[T] = {
     removeMetric(name)
@@ -168,8 +170,7 @@ class GroupMetadataManager(brokerId: Int,
       }
     })
 
-  def startup(retrieveGroupMetadataTopicPartitionCount: () => Int, enableMetadataExpiration: Boolean): Unit = {
-    groupMetadataTopicPartitionCount = retrieveGroupMetadataTopicPartitionCount()
+  def startup(enableMetadataExpiration: Boolean): Unit = {
     scheduler.startup()
     if (enableMetadataExpiration) {
       scheduler.schedule(name = "delete-expired-group-metadata",
@@ -818,7 +819,7 @@ class GroupMetadataManager(brokerId: Int,
         val timestampType = TimestampType.CREATE_TIME
         val timestamp = time.milliseconds()
 
-          replicaManager.onlinePartition(appendPartition).foreach { partition =>
+          replicaManager.nonOfflinePartition(appendPartition).foreach { partition =>
             val tombstones = ArrayBuffer.empty[SimpleRecord]
             removedOffsets.forKeyValue { (topicPartition, offsetAndMetadata) =>
               trace(s"Removing expired/deleted offset and metadata for $groupId, $topicPartition: $offsetAndMetadata")
@@ -934,7 +935,15 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
-   * Check if the replica is local and return the message format version
+   * Gets the partition count of the group metadata topic from ZooKeeper.
+   * If the topic does not exist, the configured partition count is returned.
+   */
+  private def getGroupMetadataTopicPartitionCount: Int = {
+    zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicNumPartitions)
+  }
+
+  /**
+   * Check if the replica is local and return the message format version and timestamp
    *
    * @param   partition  Partition of GroupMetadataTopic
    * @return  Some(MessageFormatVersion) if replica is local, None otherwise
@@ -1138,6 +1147,7 @@ object GroupMetadataManager {
         val members = value.members.asScala.map { memberMetadata =>
           new MemberMetadata(
             memberId = memberMetadata.memberId,
+            groupId = groupId,
             groupInstanceId = Option(memberMetadata.groupInstanceId),
             clientId = memberMetadata.clientId,
             clientHost = memberMetadata.clientHost,

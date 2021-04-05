@@ -19,7 +19,7 @@ package kafka.server
 
 import java.io.{BufferedReader, BufferedWriter, File, FileOutputStream, IOException, OutputStreamWriter}
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Paths}
+import java.nio.file.{FileAlreadyExistsException, Files, Paths}
 import java.util.regex.Pattern
 
 import kafka.utils.Logging
@@ -29,7 +29,7 @@ import org.apache.kafka.common.utils.Utils
 
 
 
-object PartitionMetadataFile {
+object PartitionMetadataFile extends Logging {
   private val PartitionMetadataFilename = "partition.metadata"
   private val WhiteSpacesPattern = Pattern.compile(":\\s+")
   private val CurrentVersion = 0
@@ -43,9 +43,13 @@ object PartitionMetadataFile {
 
   }
 
+  object PartitionMetadataReadBuffer extends Logging {
+
+  }
+
   class PartitionMetadataReadBuffer[T](location: String,
                                        reader: BufferedReader,
-                                       version: Int) extends Logging {
+                                       version: Int) {
     def read(): PartitionMetadata = {
       def malformedLineException(line: String) =
         new IOException(s"Malformed line in checkpoint file ($location): '$line'")
@@ -81,15 +85,18 @@ object PartitionMetadataFile {
 
 class PartitionMetadata(val version: Int, val topicId: Uuid)
 
-
 class PartitionMetadataFile(val file: File,
-                            logDirFailureChannel: LogDirFailureChannel) extends Logging {
+                            logDirFailureChannel: LogDirFailureChannel) {
   import kafka.server.PartitionMetadataFile.{CurrentVersion, PartitionMetadataFileFormatter, PartitionMetadataReadBuffer}
 
   private val path = file.toPath.toAbsolutePath
   private val tempPath = Paths.get(path.toString + ".tmp")
   private val lock = new Object()
   private val logDir = file.getParentFile.getParent
+
+
+  try Files.createFile(file.toPath) // create the file if it doesn't exist
+  catch { case _: FileAlreadyExistsException => }
 
   def write(topicId: Uuid): Unit = {
     lock synchronized {
@@ -134,11 +141,7 @@ class PartitionMetadataFile(val file: File,
     }
   }
 
-  def exists(): Boolean = {
-    file.exists()
-  }
-
-  def delete(): Boolean = {
-    file.delete()
+  def isEmpty(): Boolean = {
+    file.length() == 0
   }
 }

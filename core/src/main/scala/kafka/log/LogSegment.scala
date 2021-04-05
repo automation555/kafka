@@ -20,6 +20,7 @@ import java.io.{File, IOException}
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.TimeUnit
+
 import kafka.common.LogSegmentOffsetOverflowException
 import kafka.metrics.{KafkaMetricsGroup, KafkaTimer}
 import kafka.server.epoch.LeaderEpochFileCache
@@ -29,7 +30,7 @@ import org.apache.kafka.common.InvalidRecordException
 import org.apache.kafka.common.errors.CorruptRecordException
 import org.apache.kafka.common.record.FileRecords.{LogOffsetPosition, TimestampAndOffset}
 import org.apache.kafka.common.record._
-import org.apache.kafka.common.utils.{BufferSupplier, Time}
+import org.apache.kafka.common.utils.Time
 
 import scala.jdk.CollectionConverters._
 import scala.math._
@@ -59,7 +60,9 @@ class LogSegment private[log] (val log: FileRecords,
                                val baseOffset: Long,
                                val indexIntervalBytes: Int,
                                val rollJitterMs: Long,
-                               val time: Time) extends Logging {
+                               val time: Time) {
+
+  import LogSegment._
 
   def offsetIndex: OffsetIndex = lazyOffsetIndex.get
 
@@ -155,7 +158,7 @@ class LogSegment private[log] (val log: FileRecords,
 
       // append the messages
       val appendedBytes = log.append(records)
-      trace(s"Appended $appendedBytes bytes to ${log.file} at end offset $largestOffset")
+      trace(s"Appended $appendedBytes to ${log.file} at end offset $largestOffset")
       // Update the in memory max timestamp and corresponding offset.
       if (largestTimestamp > maxTimestampSoFar) {
         maxTimestampSoFar = largestTimestamp
@@ -586,21 +589,21 @@ class LogSegment private[log] (val log: FileRecords,
   def close(): Unit = {
     if (_maxTimestampSoFar.nonEmpty || _offsetOfMaxTimestampSoFar.nonEmpty)
       CoreUtils.swallow(timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestampSoFar,
-        skipFullCheck = true), this)
-    CoreUtils.swallow(lazyOffsetIndex.close(), this)
-    CoreUtils.swallow(lazyTimeIndex.close(), this)
-    CoreUtils.swallow(log.close(), this)
-    CoreUtils.swallow(txnIndex.close(), this)
+        skipFullCheck = true), LogSegment)
+    CoreUtils.swallow(lazyOffsetIndex.close(), LogSegment)
+    CoreUtils.swallow(lazyTimeIndex.close(), LogSegment)
+    CoreUtils.swallow(log.close(), LogSegment)
+    CoreUtils.swallow(txnIndex.close(), LogSegment)
   }
 
   /**
     * Close file handlers used by the log segment but don't write to disk. This is used when the disk may have failed
     */
   def closeHandlers(): Unit = {
-    CoreUtils.swallow(lazyOffsetIndex.closeHandler(), this)
-    CoreUtils.swallow(lazyTimeIndex.closeHandler(), this)
-    CoreUtils.swallow(log.closeHandlers(), this)
-    CoreUtils.swallow(txnIndex.close(), this)
+    CoreUtils.swallow(lazyOffsetIndex.closeHandler(), LogSegment)
+    CoreUtils.swallow(lazyTimeIndex.closeHandler(), LogSegment)
+    CoreUtils.swallow(log.closeHandlers(), LogSegment)
+    CoreUtils.swallow(txnIndex.close(), LogSegment)
   }
 
   /**
@@ -654,7 +657,7 @@ class LogSegment private[log] (val log: FileRecords,
 
 }
 
-object LogSegment {
+object LogSegment extends Logging {
 
   def open(dir: File, baseOffset: Long, config: LogConfig, time: Time, fileAlreadyExists: Boolean = false,
            initFileSize: Int = 0, preallocate: Boolean = false, fileSuffix: String = ""): LogSegment = {

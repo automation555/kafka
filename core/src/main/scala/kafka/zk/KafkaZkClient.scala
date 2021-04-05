@@ -51,8 +51,8 @@ import scala.collection.{Map, Seq, mutable}
  * easier to migrate away from `ZkUtils` (since removed). We should revisit this. We should also consider whether a
  * monolithic [[kafka.zk.ZkData]] is the way to go.
  */
-class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boolean, time: Time) extends AutoCloseable with
-  Logging with KafkaMetricsGroup {
+class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boolean, time: Time) extends AutoCloseable
+  with KafkaMetricsGroup {
 
   override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
     explicitMetricName("kafka.server", "ZooKeeperClientMetrics", name, metricTags)
@@ -497,7 +497,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     }.toSet
 
     val setDataRequests = updatedAssignments.map { case TopicIdReplicaAssignment(topic, topicIdOpt, assignments) =>
-      SetDataRequest(TopicZNode.path(topic), TopicZNode.encode(topicIdOpt, assignments), ZkVersion.MatchAnyVersion)
+      SetDataRequest(TopicZNode.path(topic), TopicZNode.encode(topicIdOpt.get, assignments), ZkVersion.MatchAnyVersion)
     }.toSeq
 
     retryRequestsUntilConnected(setDataRequests, expectedControllerEpochZkVersion)
@@ -507,13 +507,13 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   /**
    * Sets the topic znode with the given assignment.
    * @param topic the topic whose assignment is being set.
-   * @param topicId unique topic ID for the topic if the version supports it
+   * @param topicId unique topic ID for the topic
    * @param assignment the partition to replica mapping to set for the given topic
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    * @return SetDataResponse
    */
   def setTopicAssignmentRaw(topic: String,
-                            topicId: Option[Uuid],
+                            topicId: Uuid,
                             assignment: collection.Map[TopicPartition, ReplicaAssignment],
                             expectedControllerEpochZkVersion: Int): SetDataResponse = {
     val setDataRequest = SetDataRequest(TopicZNode.path(topic), TopicZNode.encode(topicId, assignment), ZkVersion.MatchAnyVersion)
@@ -523,13 +523,13 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   /**
    * Sets the topic znode with the given assignment.
    * @param topic the topic whose assignment is being set.
-   * @param topicId unique topic ID for the topic if the version supports it
+   * @param topicId unique topic ID for the topic
    * @param assignment the partition to replica mapping to set for the given topic
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    * @throws KeeperException if there is an error while setting assignment
    */
   def setTopicAssignment(topic: String,
-                         topicId: Option[Uuid],
+                         topicId: Uuid,
                          assignment: Map[TopicPartition, ReplicaAssignment],
                          expectedControllerEpochZkVersion: Int = ZkVersion.MatchAnyVersion) = {
     val setDataResponse = setTopicAssignmentRaw(topic, topicId, assignment, expectedControllerEpochZkVersion)
@@ -539,11 +539,11 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   /**
    * Create the topic znode with the given assignment.
    * @param topic the topic whose assignment is being set.
-   * @param topicId unique topic ID for the topic if the version supports it
+   * @param topicId unique topic ID for the topic
    * @param assignment the partition to replica mapping to set for the given topic
    * @throws KeeperException if there is an error while creating assignment
    */
-  def createTopicAssignment(topic: String, topicId: Option[Uuid], assignment: Map[TopicPartition, Seq[Int]]): Unit = {
+  def createTopicAssignment(topic: String, topicId: Uuid, assignment: Map[TopicPartition, Seq[Int]]): Unit = {
     val persistedAssignments = assignment.map { case (k, v) => k -> ReplicaAssignment(v) }
     createRecursive(TopicZNode.path(topic), TopicZNode.encode(topicId, persistedAssignments))
   }
@@ -609,6 +609,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * Gets the topic IDs for the given topics.
    * @param topics the topics we wish to retrieve the Topic IDs for
    * @return the Topic IDs
+   * @throws IllegalStateException if a topic in topics does not have a Topic ID
    */
   def getTopicIdsForTopics(topics: Set[String]): Map[String, Uuid] = {
     val getDataRequests = topics.map(topic => GetDataRequest(TopicZNode.path(topic), ctx = Some(topic)))
@@ -620,9 +621,10 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
         case Code.NONODE => None
         case _ => throw getDataResponse.resultException.get
       }
-    }.filter(_.flatMap(_.topicId).isDefined)
-      .map(_.get)
-      .map(topicIdAssignment => (topicIdAssignment.topic, topicIdAssignment.topicId.get))
+    }.map(_.get)
+      .map(topicIdAssignment => (topicIdAssignment.topic,
+        topicIdAssignment.topicId.getOrElse(
+          throw new IllegalStateException("Topic " + topicIdAssignment.topic + " does not have a topic ID."))))
       .toMap
   }
 
@@ -885,7 +887,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       case Code.OK =>
         ReassignPartitionsZNode.decode(getDataResponse.data) match {
           case Left(e) =>
-            logger.warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
+            warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
             Map.empty[TopicPartition, Seq[Int]]
           case Right(assignments) => assignments
         }
@@ -1827,7 +1829,12 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     currentZooKeeperSessionId = newSessionId
   }
 
-  private class CheckedEphemeral(path: String, data: Array[Byte]) extends Logging {
+  object CheckedEphemeral extends Logging {
+
+  }
+
+  private class CheckedEphemeral(path: String, data: Array[Byte]) {
+    import CheckedEphemeral._
     def create(): Stat = {
       val response = retryRequestUntilConnected(
         MultiRequest(Seq(
@@ -1915,7 +1922,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   }
 }
 
-object KafkaZkClient {
+object KafkaZkClient extends Logging {
 
   /**
    * @param finishedPartitions Partitions that finished either in successfully

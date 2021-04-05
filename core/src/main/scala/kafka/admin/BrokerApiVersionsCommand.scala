@@ -40,7 +40,7 @@ import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.utils.LogContext
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 import org.apache.kafka.common.Node
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionCollection
+import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKeyCollection
 import org.apache.kafka.common.requests.{AbstractRequest, AbstractResponse, ApiVersionsRequest, ApiVersionsResponse, MetadataRequest, MetadataResponse}
 
 import scala.jdk.CollectionConverters._
@@ -106,7 +106,9 @@ object BrokerApiVersionsCommand {
                             val requestTimeoutMs: Int,
                             val retryBackoffMs: Long,
                             val client: ConsumerNetworkClient,
-                            val bootstrapBrokers: List[Node]) extends Logging {
+                            val bootstrapBrokers: List[Node]) {
+
+    import AdminClient._
 
     @volatile var running: Boolean = true
     val pendingFutures = new ConcurrentLinkedQueue[RequestFuture[ClientResponse]]()
@@ -159,7 +161,7 @@ object BrokerApiVersionsCommand {
       throw new RuntimeException(s"Request $api failed on brokers $bootstrapBrokers")
     }
 
-    private def getApiVersions(node: Node): ApiVersionCollection = {
+    private def getApiVersions(node: Node): ApiVersionsResponseKeyCollection = {
       val response = send(node, ApiKeys.API_VERSIONS, new ApiVersionsRequest.Builder()).asInstanceOf[ApiVersionsResponse]
       Errors.forCode(response.data.errorCode).maybeThrow()
       response.data.apiKeys
@@ -203,7 +205,7 @@ object BrokerApiVersionsCommand {
 
   }
 
-  private object AdminClient {
+  private object AdminClient extends Logging {
     val DefaultConnectionMaxIdleMs = 9 * 60 * 1000
     val DefaultRequestTimeoutMs = 5000
     val DefaultSocketConnectionSetupMs = CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG
@@ -255,11 +257,6 @@ object BrokerApiVersionsCommand {
           CommonClientConfigs.DEFAULT_SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS,
           ConfigDef.Importance.MEDIUM,
           CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_DOC)
-        .define(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG,
-          ConfigDef.Type.BOOLEAN,
-          CommonClientConfigs.DEFAULT_SOCKET_TCP_NODELAY,
-          ConfigDef.Importance.LOW,
-          CommonClientConfigs.SOCKET_TCP_NODELAY_DOC)
         .define(
           CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG,
           ConfigDef.Type.LONG,
@@ -293,7 +290,6 @@ object BrokerApiVersionsCommand {
       val requestTimeoutMs = config.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG)
       val connectionSetupTimeoutMs = config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG)
       val connectionSetupTimeoutMaxMs = config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG)
-      val tcpNoDelay = config.getBoolean(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG)
       val retryBackoffMs = config.getLong(CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG)
 
       val brokerUrls = config.getList(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
@@ -303,7 +299,6 @@ object BrokerApiVersionsCommand {
 
       val selector = new Selector(
         DefaultConnectionMaxIdleMs,
-        tcpNoDelay,
         metrics,
         time,
         "admin",

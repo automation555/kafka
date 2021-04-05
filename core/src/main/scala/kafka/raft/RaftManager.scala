@@ -16,39 +16,33 @@
  */
 package kafka.raft
 
-import java.io.File
-import java.nio.file.Files
-import java.util
-import java.util.OptionalInt
-import java.util.concurrent.CompletableFuture
-
-import kafka.log.Log
-import kafka.raft.KafkaRaftManager.RaftIoThread
-import kafka.server.{KafkaConfig, MetaProperties}
+import kafka.log.{Log, LogConfig, LogManager}
+import kafka.server.{BrokerTopicStats, KafkaConfig, KafkaServer, LogDirFailureChannel}
 import kafka.utils.timer.SystemTimer
-import kafka.utils.{KafkaScheduler, Logging, ShutdownableThread}
+import kafka.utils.{KafkaScheduler, Logging, LogIdent, ShutdownableThread}
 import org.apache.kafka.clients.{ApiVersions, ClientDnsLookup, ManualMetadataUpdater, NetworkClient}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.Metrics
-import org.apache.kafka.common.network.{ChannelBuilders, ListenerName, NetworkReceive, Selectable, Selector}
+import org.apache.kafka.common.network.{ChannelBuilders, NetworkReceive, Selectable, Selector}
 import org.apache.kafka.common.protocol.ApiMessage
 import org.apache.kafka.common.requests.RequestHeader
 import org.apache.kafka.common.security.JaasContext
-import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.raft.RaftConfig.{AddressSpec, InetAddressSpec, NON_ROUTABLE_ADDRESS, UnknownAddressSpec}
 import org.apache.kafka.raft.{FileBasedStateStore, KafkaRaftClient, RaftClient, RaftConfig, RaftRequest, RecordSerde}
 
+import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.CompletableFuture
 import scala.jdk.CollectionConverters._
 
-object KafkaRaftManager {
+object KafkaRaftManager extends Logging {
   class RaftIoThread(
-    client: KafkaRaftClient[_],
-    threadNamePrefix: String
+    client: KafkaRaftClient[_]
   ) extends ShutdownableThread(
-    name = threadNamePrefix + "-io-thread",
+    name = "raft-io-thread",
     isInterruptible = false
   ) {
+
     override def doWork(): Unit = {
       client.poll()
     }
@@ -57,9 +51,9 @@ object KafkaRaftManager {
       if (super.initiateShutdown()) {
         client.shutdown(5000).whenComplete { (_, exception) =>
           if (exception != null) {
-            error("Graceful shutdown of RaftClient failed", exception)
+            ShutdownableThread.error("Graceful shutdown of RaftClient failed", exception)
           } else {
-            info("Completed graceful shutdown of RaftClient")
+            ShutdownableThread.info("Completed graceful shutdown of RaftClient")
           }
         }
         true
@@ -92,11 +86,6 @@ trait RaftManager[T] {
     listener: RaftClient.Listener[T]
   ): Unit
 
-  def scheduleAtomicAppend(
-    epoch: Int,
-    records: Seq[T]
-  ): Option[Long]
-
   def scheduleAppend(
     epoch: Int,
     records: Seq[T]
@@ -104,48 +93,35 @@ trait RaftManager[T] {
 }
 
 class KafkaRaftManager[T](
-  metaProperties: MetaProperties,
-  config: KafkaConfig,
+  nodeId: Int,
+  baseLogDir: String,
   recordSerde: RecordSerde[T],
   topicPartition: TopicPartition,
+  config: KafkaConfig,
   time: Time,
-  metrics: Metrics,
-  threadNamePrefixOpt: Option[String]
-) extends RaftManager[T] with Logging {
+  metrics: Metrics
+) extends RaftManager[T]  {
 
-  private val raftConfig = new RaftConfig(config)
-  private val threadNamePrefix = threadNamePrefixOpt.getOrElse("kafka-raft")
-  private val logContext = new LogContext(s"[RaftManager nodeId=${config.nodeId}] ")
-  this.logIdent = logContext.logPrefix()
+  import KafkaRaftManager._
 
-  private val scheduler = new KafkaScheduler(threads = 1, threadNamePrefix + "-scheduler")
+  private val raftConfig = new RaftConfig(config.originals)
+  private val logContext = new LogContext(s"[RaftManager $nodeId] ")
+  protected implicit val logIdent  = Some(LogIdent(logContext.logPrefix()))
+
+  private val scheduler = new KafkaScheduler(threads = 1)
   scheduler.startup()
 
   private val dataDir = createDataDir()
   private val metadataLog = buildMetadataLog()
   private val netChannel = buildNetworkChannel()
   private val raftClient = buildRaftClient()
-  private val raftIoThread = new RaftIoThread(raftClient, threadNamePrefix)
-
-  def kafkaRaftClient: KafkaRaftClient[T] = raftClient
+  private val raftIoThread = new RaftIoThread(raftClient)
 
   def startup(): Unit = {
-    // Update the voter endpoints (if valid) with what's in RaftConfig
-    val voterAddresses: util.Map[Integer, AddressSpec] = raftConfig.quorumVoterConnections
-    for (voterAddressEntry <- voterAddresses.entrySet.asScala) {
-      voterAddressEntry.getValue match {
-        case spec: InetAddressSpec =>
-          netChannel.updateEndpoint(voterAddressEntry.getKey, spec)
-        case _: UnknownAddressSpec =>
-          logger.info(s"Skipping channel update for destination ID: ${voterAddressEntry.getKey} " +
-            s"because of non-routable endpoint: ${NON_ROUTABLE_ADDRESS.toString}")
-        case invalid: AddressSpec =>
-          logger.warn(s"Unexpected address spec (type: ${invalid.getClass}) for channel update for " +
-            s"destination ID: ${voterAddressEntry.getKey}")
-      }
-    }
     netChannel.start()
+    raftClient.initialize(raftConfig)
     raftIoThread.start()
+    debug("RaftManager started")
   }
 
   def shutdown(): Unit = {
@@ -162,32 +138,16 @@ class KafkaRaftManager[T](
     raftClient.register(listener)
   }
 
-  override def scheduleAtomicAppend(
-    epoch: Int,
-    records: Seq[T]
-  ): Option[Long] = {
-    append(epoch, records, true)
-  }
-
   override def scheduleAppend(
     epoch: Int,
     records: Seq[T]
   ): Option[Long] = {
-    append(epoch, records, false)
-  }
-
-  private def append(
-    epoch: Int,
-    records: Seq[T],
-    isAtomic: Boolean
-  ): Option[Long] = {
-    val offset = if (isAtomic) {
-      raftClient.scheduleAtomicAppend(epoch, records.asJava)
+    val offset: java.lang.Long = raftClient.scheduleAppend(epoch, records.asJava)
+    if (offset == null) {
+      None
     } else {
-      raftClient.scheduleAppend(epoch, records.asJava)
+      Some(Long.unbox(offset))
     }
-
-    Option(offset).map(Long.unbox)
   }
 
   override def handleRequest(
@@ -209,57 +169,60 @@ class KafkaRaftManager[T](
   }
 
   private def buildRaftClient(): KafkaRaftClient[T] = {
+
     val expirationTimer = new SystemTimer("raft-expiration-executor")
     val expirationService = new TimingWheelExpirationService(expirationTimer)
-    val quorumStateStore = new FileBasedStateStore(new File(dataDir, "quorum-state"))
 
-    val client = new KafkaRaftClient(
+    new KafkaRaftClient(
       recordSerde,
       netChannel,
       metadataLog,
-      quorumStateStore,
+      new FileBasedStateStore(new File(dataDir, "quorum-state")),
       time,
       metrics,
       expirationService,
       logContext,
-      metaProperties.clusterId.toString,
-      OptionalInt.of(config.nodeId),
-      raftConfig
+      nodeId
     )
-    client.initialize()
-    client
   }
 
   private def buildNetworkChannel(): KafkaNetworkChannel = {
     val netClient = buildNetworkClient()
-    new KafkaNetworkChannel(time, netClient, config.quorumRequestTimeoutMs, threadNamePrefix)
+    new KafkaNetworkChannel(time, netClient, raftConfig.requestTimeoutMs)
   }
 
   private def createDataDir(): File = {
     val logDirName = Log.logDirName(topicPartition)
-    KafkaRaftManager.createLogDirectory(new File(config.metadataLogDir), logDirName)
+    KafkaRaftManager.createLogDirectory(new File(baseLogDir), logDirName)
   }
 
   private def buildMetadataLog(): KafkaMetadataLog = {
-    KafkaMetadataLog(
-      topicPartition,
-      dataDir,
-      time,
-      scheduler,
-      maxBatchSizeInBytes = KafkaRaftClient.MAX_BATCH_SIZE_BYTES,
-      maxFetchSizeInBytes = KafkaRaftClient.MAX_FETCH_SIZE_BYTES
+    val defaultProps = KafkaServer.copyKafkaConfigToLog(config)
+    LogConfig.validateValues(defaultProps)
+    val defaultLogConfig = LogConfig(defaultProps)
+
+    val log = Log(
+      dir = dataDir,
+      config = defaultLogConfig,
+      logStartOffset = 0L,
+      recoveryPoint = 0L,
+      scheduler = scheduler,
+      brokerTopicStats = new BrokerTopicStats,
+      time = time,
+      maxProducerIdExpirationMs = config.transactionalIdExpirationMs,
+      producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
+      logDirFailureChannel = new LogDirFailureChannel(5)
     )
+    new KafkaMetadataLog(log, topicPartition)
   }
 
   private def buildNetworkClient(): NetworkClient = {
-    val controllerListenerName = new ListenerName(config.controllerListenerNames.head)
-    val controllerSecurityProtocol = config.listenerSecurityProtocolMap.getOrElse(controllerListenerName, SecurityProtocol.forName(controllerListenerName.value()))
     val channelBuilder = ChannelBuilders.clientChannelBuilder(
-      controllerSecurityProtocol,
+      config.interBrokerSecurityProtocol,
       JaasContext.Type.SERVER,
       config,
-      controllerListenerName,
-      config.saslMechanismControllerProtocol,
+      config.interBrokerListenerName,
+      config.saslMechanismInterBrokerProtocol,
       time,
       config.saslInterBrokerHandshakeRequestEnable,
       logContext
@@ -271,7 +234,6 @@ class KafkaRaftManager[T](
     val selector = new Selector(
       NetworkReceive.UNLIMITED,
       config.connectionsMaxIdleMs,
-      config.socketTcpNoDelay,
       metrics,
       time,
       metricGroupPrefix,
@@ -281,11 +243,11 @@ class KafkaRaftManager[T](
       logContext
     )
 
-    val clientId = s"raft-client-${config.nodeId}"
+    val clientId = s"raft-client-$nodeId"
     val maxInflightRequestsPerConnection = 1
     val reconnectBackoffMs = 50
     val reconnectBackoffMsMs = 500
-    val discoverBrokerVersions = true
+    val discoverBrokerVersions = false
 
     new NetworkClient(
       selector,
@@ -296,7 +258,7 @@ class KafkaRaftManager[T](
       reconnectBackoffMsMs,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       config.socketReceiveBufferBytes,
-      config.quorumRequestTimeoutMs,
+      raftConfig.requestTimeoutMs,
       config.connectionSetupTimeoutMs,
       config.connectionSetupTimeoutMaxMs,
       ClientDnsLookup.USE_ALL_DNS_IPS,
@@ -306,5 +268,4 @@ class KafkaRaftManager[T](
       logContext
     )
   }
-
 }

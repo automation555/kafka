@@ -25,103 +25,29 @@ import scala.jdk.CollectionConverters._
 import kafka.cluster.{Broker, EndPoint}
 import kafka.api._
 import kafka.controller.StateChangeLogger
-import kafka.server.metadata.{MetadataBroker, RaftMetadataCache}
 import kafka.utils.CoreUtils._
-import kafka.utils.Logging
+import kafka.utils.{LogIdent, Logging}
 import kafka.utils.Implicits._
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.message.UpdateMetadataRequestData.UpdateMetadataPartitionState
 import org.apache.kafka.common.{Cluster, Node, PartitionInfo, TopicPartition, Uuid}
 import org.apache.kafka.common.message.MetadataResponseData.MetadataResponseTopic
 import org.apache.kafka.common.message.MetadataResponseData.MetadataResponsePartition
-import org.apache.kafka.common.message.{MetadataResponseData, UpdateMetadataRequestData}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{MetadataResponse, UpdateMetadataRequest}
 import org.apache.kafka.common.security.auth.SecurityProtocol
 
-trait MetadataCache {
+object MetadataCache extends Logging {
 
-  /**
-   * Return topic metadata for a given set of topics and listener. See KafkaApis#handleTopicMetadataRequest for details
-   * on the use of the two boolean flags.
-   *
-   * @param topics                      The set of topics.
-   * @param listenerName                The listener name.
-   * @param errorUnavailableEndpoints   If true, we return an error on unavailable brokers. This is used to support
-   *                                    MetadataResponse version 0.
-   * @param errorUnavailableListeners   If true, return LEADER_NOT_AVAILABLE if the listener is not found on the leader.
-   *                                    This is used for MetadataResponse versions 0-5.
-   * @return                            A collection of topic metadata.
-   */
-  def getTopicMetadata(
-    topics: collection.Set[String],
-    listenerName: ListenerName,
-    errorUnavailableEndpoints: Boolean = false,
-    errorUnavailableListeners: Boolean = false): collection.Seq[MetadataResponseData.MetadataResponseTopic]
-
-  def getAllTopics(): collection.Set[String]
-
-  def getAllPartitions(): collection.Set[TopicPartition]
-
-  def getNonExistingTopics(topics: collection.Set[String]): collection.Set[String]
-
-  def getAliveBroker(brokerId: Int): Option[MetadataBroker]
-
-  def getAliveBrokers: collection.Seq[MetadataBroker]
-
-  def getPartitionInfo(topic: String, partitionId: Int): Option[UpdateMetadataRequestData.UpdateMetadataPartitionState]
-
-  def numPartitions(topic: String): Option[Int]
-
-  def topicNamesToIds(): util.Map[String, Uuid]
-
-  def topicIdsToNames(): util.Map[Uuid, String]
-
-  def topicIdInfo(): (util.Map[String, Uuid], util.Map[Uuid, String])
-
-  /**
-   * Get a partition leader's endpoint
-   *
-   * @return  If the leader is known, and the listener name is available, return Some(node). If the the leader is known,
-   *          but the listener is unavailable, return Some(Node.NO_NODE). Otherwise, if the leader is not known,
-   *          return None
-   */
-  def getPartitionLeaderEndpoint(topic: String, partitionId: Int, listenerName: ListenerName): Option[Node]
-
-  def getPartitionReplicaEndpoints(tp: TopicPartition, listenerName: ListenerName): Map[Int, Node]
-
-  def getControllerId: Option[Int]
-
-  def getClusterMetadata(clusterId: String, listenerName: ListenerName): Cluster
-
-  /**
-   * Update the metadata cache with a given UpdateMetadataRequest.
-   *
-   * @return  The deleted topics from the given UpdateMetadataRequest.
-   */
-  def updateMetadata(correlationId: Int, request: UpdateMetadataRequest): collection.Seq[TopicPartition]
-
-  def contains(topic: String): Boolean
-
-  def contains(tp: TopicPartition): Boolean
-}
-
-object MetadataCache {
-  def zkMetadataCache(brokerId: Int): ZkMetadataCache = {
-    new ZkMetadataCache(brokerId)
-  }
-
-  def raftMetadataCache(brokerId: Int): RaftMetadataCache = {
-    new RaftMetadataCache(brokerId)
-  }
 }
 
 /**
  *  A cache for the state (e.g., current leader) of each partition. This cache is updated through
  *  UpdateMetadataRequest from the controller. Every broker maintains the same cache, asynchronously.
  */
-class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
+class MetadataCache(brokerId: Int) {
+  import MetadataCache._
 
   private val partitionMetadataLock = new ReentrantReadWriteLock()
   //this is the cache state. every MetadataSnapshot instance is immutable, and updates (performed under a lock)
@@ -131,7 +57,7 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
   @volatile private var metadataSnapshot: MetadataSnapshot = MetadataSnapshot(partitionStates = mutable.AnyRefMap.empty,
     topicIds = Map.empty, controllerId = None, aliveBrokers = mutable.LongMap.empty, aliveNodes = mutable.LongMap.empty)
 
-  this.logIdent = s"[MetadataCache brokerId=$brokerId] "
+  protected implicit val logIdent = Some(LogIdent(s"[MetadataCache brokerId=$brokerId] "))
   private val stateChangeLogger = new StateChangeLogger(brokerId, inControllerContext = false, None)
 
   // This method is the main hotspot when it comes to the performance of metadata requests,
@@ -267,21 +193,6 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
     }.toSet
   }
 
-  def topicNamesToIds(): util.Map[String, Uuid] = {
-    metadataSnapshot.topicIds.asJava
-  }
-
-  def topicIdsToNames(): util.Map[Uuid, String] = {
-    metadataSnapshot.topicNames.asJava
-  }
-
-  /**
-   * This method returns a map from topic names to IDs and a map from topic IDs to names
-   */
-  def topicIdInfo(): (util.Map[String, Uuid], util.Map[Uuid, String]) = {
-    (topicNamesToIds(), topicIdsToNames())
-  }
-
   private def getAllTopics(snapshot: MetadataSnapshot): Set[String] = {
     snapshot.partitionStates.keySet
   }
@@ -296,12 +207,12 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
     topics.diff(metadataSnapshot.partitionStates.keySet)
   }
 
-  def getAliveBroker(brokerId: Int): Option[MetadataBroker] = {
-    metadataSnapshot.aliveBrokers.get(brokerId).map(MetadataBroker.apply)
+  def getAliveBroker(brokerId: Int): Option[Broker] = {
+    metadataSnapshot.aliveBrokers.get(brokerId)
   }
 
-  def getAliveBrokers: Seq[MetadataBroker] = {
-    metadataSnapshot.aliveBrokers.values.map(MetadataBroker.apply).toBuffer
+  def getAliveBrokers: Seq[Broker] = {
+    metadataSnapshot.aliveBrokers.values.toBuffer
   }
 
   private def addOrUpdatePartitionInfo(partitionStates: mutable.AnyRefMap[String, mutable.LongMap[UpdateMetadataPartitionState]],
@@ -392,9 +303,9 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
       val aliveBrokers = new mutable.LongMap[Broker](metadataSnapshot.aliveBrokers.size)
       val aliveNodes = new mutable.LongMap[collection.Map[ListenerName, Node]](metadataSnapshot.aliveNodes.size)
       val controllerIdOpt = updateMetadataRequest.controllerId match {
-        case id if id < 0 => None
-        case id => Some(id)
-      }
+          case id if id < 0 => None
+          case id => Some(id)
+        }
 
       updateMetadataRequest.liveBrokers.forEach { broker =>
         // `aliveNodes` is a hot path for metadata requests for large clusters, so we use java.util.HashMap which
@@ -487,8 +398,6 @@ class ZkMetadataCache(brokerId: Int) extends MetadataCache with Logging {
                               topicIds: Map[String, Uuid],
                               controllerId: Option[Int],
                               aliveBrokers: mutable.LongMap[Broker],
-                              aliveNodes: mutable.LongMap[collection.Map[ListenerName, Node]]) {
-    val topicNames = topicIds.map { case (topicName, topicId) => (topicId, topicName) }
-  }
+                              aliveNodes: mutable.LongMap[collection.Map[ListenerName, Node]])
 
 }

@@ -18,26 +18,24 @@
 package kafka.tools
 
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
-import java.util.concurrent.{CompletableFuture, CountDownLatch, LinkedBlockingDeque, TimeUnit}
+import java.util.concurrent.{CountDownLatch, LinkedBlockingDeque, TimeUnit}
+
 import joptsimple.OptionException
 import kafka.network.SocketServer
 import kafka.raft.{KafkaRaftManager, RaftManager}
 import kafka.security.CredentialProvider
-import kafka.server.{KafkaConfig, KafkaRequestHandlerPool, MetaProperties, SimpleApiVersionManager}
+import kafka.server.{KafkaConfig, KafkaRequestHandlerPool}
 import kafka.utils.{CommandDefaultOptions, CommandLineUtils, CoreUtils, Exit, Logging, ShutdownableThread}
-import org.apache.kafka.common.errors.InvalidConfigurationException
-import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.metrics.stats.Percentiles.BucketSizing
 import org.apache.kafka.common.metrics.stats.{Meter, Percentile, Percentiles}
-import org.apache.kafka.common.protocol.{ObjectSerializationCache, Writable}
+import org.apache.kafka.common.protocol.Writable
 import org.apache.kafka.common.security.scram.internals.ScramMechanism
 import org.apache.kafka.common.security.token.delegation.internals.DelegationTokenCache
 import org.apache.kafka.common.utils.{Time, Utils}
-import org.apache.kafka.common.{TopicPartition, Uuid, protocol}
+import org.apache.kafka.common.{TopicPartition, protocol}
 import org.apache.kafka.raft.BatchReader.Batch
-import org.apache.kafka.raft.{BatchReader, RaftClient, RaftConfig, RecordSerde}
-import org.apache.kafka.snapshot.SnapshotReader
+import org.apache.kafka.raft.{BatchReader, RaftClient, RecordSerde}
 
 import scala.jdk.CollectionConverters._
 
@@ -49,14 +47,13 @@ class TestRaftServer(
   val config: KafkaConfig,
   val throughput: Int,
   val recordSize: Int
-) extends Logging {
+)  {
   import kafka.tools.TestRaftServer._
 
   private val partition = new TopicPartition("__cluster_metadata", 0)
   private val time = Time.SYSTEM
   private val metrics = new Metrics(time)
   private val shutdownLatch = new CountDownLatch(1)
-  private val threadNamePrefix = "test-raft"
 
   var socketServer: SocketServer = _
   var credentialProvider: CredentialProvider = _
@@ -69,24 +66,17 @@ class TestRaftServer(
     tokenCache = new DelegationTokenCache(ScramMechanism.mechanismNames)
     credentialProvider = new CredentialProvider(ScramMechanism.mechanismNames, tokenCache)
 
-    val apiVersionManager = new SimpleApiVersionManager(ListenerType.CONTROLLER)
-    socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
+    socketServer = new SocketServer(config, metrics, time, credentialProvider, allowDisabledApis = true)
     socketServer.startup(startProcessingRequests = false)
 
-    val metaProperties = MetaProperties(
-      clusterId = Uuid.ZERO_UUID.toString,
-      nodeId = config.nodeId
-    )
-
     raftManager = new KafkaRaftManager[Array[Byte]](
-      metaProperties,
-      config,
+      config.brokerId,
+      config.logDirs.head,
       new ByteArraySerde,
       partition,
+      config,
       time,
-      metrics,
-      Some(threadNamePrefix),
-      CompletableFuture.completedFuture(RaftConfig.parseVoterConnections(config.quorumVoters))
+      metrics
     )
 
     workloadGenerator = new RaftWorkloadGenerator(
@@ -99,8 +89,7 @@ class TestRaftServer(
     val requestHandler = new TestRaftRequestHandler(
       raftManager,
       socketServer.dataPlaneRequestChannel,
-      time,
-      apiVersionManager
+      time
     )
 
     dataPlaneRequestHandlerPool = new KafkaRequestHandlerPool(
@@ -120,15 +109,15 @@ class TestRaftServer(
 
   def shutdown(): Unit = {
     if (raftManager != null)
-      CoreUtils.swallow(raftManager.shutdown(), this)
+      CoreUtils.swallow(raftManager.shutdown(), kafka.tools.TestRaftServer)
     if (workloadGenerator != null)
-      CoreUtils.swallow(workloadGenerator.shutdown(), this)
+      CoreUtils.swallow(workloadGenerator.shutdown(), TestRaftServer)
     if (dataPlaneRequestHandlerPool != null)
-      CoreUtils.swallow(dataPlaneRequestHandlerPool.shutdown(), this)
+      CoreUtils.swallow(dataPlaneRequestHandlerPool.shutdown(), TestRaftServer)
     if (socketServer != null)
-      CoreUtils.swallow(socketServer.shutdown(), this)
+      CoreUtils.swallow(socketServer.shutdown(), kafka.tools.TestRaftServer)
     if (metrics != null)
-      CoreUtils.swallow(metrics.close(), this)
+      CoreUtils.swallow(metrics.close(), kafka.tools.TestRaftServer)
     shutdownLatch.countDown()
   }
 
@@ -148,7 +137,6 @@ class TestRaftServer(
     case class HandleClaim(epoch: Int) extends RaftEvent
     case object HandleResign extends RaftEvent
     case class HandleCommit(reader: BatchReader[Array[Byte]]) extends RaftEvent
-    case class HandleSnapshot(reader: SnapshotReader[Array[Byte]]) extends RaftEvent
     case object Shutdown extends RaftEvent
 
     private val eventQueue = new LinkedBlockingDeque[RaftEvent]()
@@ -166,16 +154,12 @@ class TestRaftServer(
       eventQueue.offer(HandleClaim(epoch))
     }
 
-    override def handleResign(epoch: Int): Unit = {
+    override def handleResign(): Unit = {
       eventQueue.offer(HandleResign)
     }
 
     override def handleCommit(reader: BatchReader[Array[Byte]]): Unit = {
       eventQueue.offer(HandleCommit(reader))
-    }
-
-    override def handleSnapshot(reader: SnapshotReader[Array[Byte]]): Unit = {
-      eventQueue.offer(HandleSnapshot(reader))
     }
 
     override def initiateShutdown(): Boolean = {
@@ -229,11 +213,7 @@ class TestRaftServer(
             reader.close()
           }
 
-        case HandleSnapshot(reader) =>
-          // Ignore snapshots; only interested on records appended by this leader
-          reader.close()
-
-        case Shutdown => // Ignore shutdown command
+        case _ =>
       }
     }
 
@@ -271,7 +251,6 @@ class TestRaftServer(
 }
 
 object TestRaftServer extends Logging {
-
   case class PendingAppend(
     offset: Long,
     appendTimeMs: Long
@@ -282,11 +261,11 @@ object TestRaftServer extends Logging {
   }
 
   private class ByteArraySerde extends RecordSerde[Array[Byte]] {
-    override def recordSize(data: Array[Byte], serializationCache: ObjectSerializationCache): Int = {
+    override def recordSize(data: Array[Byte], context: Any): Int = {
       data.length
     }
 
-    override def write(data: Array[Byte], serializationCache: ObjectSerializationCache, out: Writable): Unit = {
+    override def write(data: Array[Byte], context: Any, out: Writable): Unit = {
       out.writeByteArray(data)
     }
 
@@ -433,15 +412,7 @@ object TestRaftServer extends Logging {
         "Standalone raft server for performance testing")
 
       val configFile = opts.options.valueOf(opts.configOpt)
-      if (configFile == null) {
-        throw new InvalidConfigurationException("Missing configuration file. Should specify with '--config'")
-      }
       val serverProps = Utils.loadProps(configFile)
-
-      // KafkaConfig requires either `process.roles` or `zookeeper.connect`. Neither are
-      // actually used by the test server, so we fill in `process.roles` with an arbitrary value.
-      serverProps.put(KafkaConfig.ProcessRolesProp, "controller")
-
       val config = KafkaConfig.fromProps(serverProps, doLog = false)
       val throughput = opts.options.valueOf(opts.throughputOpt)
       val recordSize = opts.options.valueOf(opts.recordSizeOpt)

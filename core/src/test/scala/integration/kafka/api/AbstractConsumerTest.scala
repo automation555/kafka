@@ -19,15 +19,14 @@ package kafka.api
 import java.time.Duration
 import java.util
 import java.util.Properties
-
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.producer.{ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.TopicPartition
-import kafka.utils.{ShutdownableThread, TestUtils}
+import kafka.utils.{Logging, ShutdownableThread, TestUtils}
 import kafka.server.{BaseRequestTest, KafkaConfig}
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.BeforeEach
+import org.junit.Assert._
+import org.junit.Before
 
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.{ArrayBuffer, Buffer}
@@ -36,10 +35,16 @@ import org.apache.kafka.common.errors.WakeupException
 
 import scala.collection.mutable
 
+object AbstractConsumerTest extends Logging {
+
+}
+
 /**
  * Extension point for consumer integration tests.
  */
 abstract class AbstractConsumerTest extends BaseRequestTest {
+
+  import AbstractConsumerTest._
 
   val epsilon = 0.1
   override def brokerCount: Int = 3
@@ -73,7 +78,7 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
     properties.setProperty(KafkaConfig.GroupInitialRebalanceDelayMsProp, "10")
   }
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
 
@@ -103,11 +108,9 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
   }
 
   protected def sendRecords(producer: KafkaProducer[Array[Byte], Array[Byte]], numRecords: Int,
-                            tp: TopicPartition,
-                            startingTimestamp: Long = System.currentTimeMillis()): Seq[ProducerRecord[Array[Byte], Array[Byte]]] = {
+                            tp: TopicPartition): Seq[ProducerRecord[Array[Byte], Array[Byte]]] = {
     val records = (0 until numRecords).map { i =>
-      val timestamp = startingTimestamp + i.toLong
-      val record = new ProducerRecord(tp.topic(), tp.partition(), timestamp, s"key $i".getBytes, s"value $i".getBytes)
+      val record = new ProducerRecord(tp.topic(), tp.partition(), i.toLong, s"key $i".getBytes, s"value $i".getBytes)
       producer.send(record)
       record
     }
@@ -136,8 +139,8 @@ abstract class AbstractConsumerTest extends BaseRequestTest {
         val timestamp = startingTimestamp + i
         assertEquals(timestamp.toLong, record.timestamp)
       } else
-        assertTrue(record.timestamp >= startingTimestamp && record.timestamp <= now,
-          s"Got unexpected timestamp ${record.timestamp}. Timestamp should be between [$startingTimestamp, $now}]")
+        assertTrue(s"Got unexpected timestamp ${record.timestamp}. Timestamp should be between [$startingTimestamp, $now}]",
+          record.timestamp >= startingTimestamp && record.timestamp <= now)
       assertEquals(offset.toLong, record.offset)
       val keyAndValueIndex = startingKeyAndValueIndex + i
       assertEquals(s"key $keyAndValueIndex", new String(record.key))

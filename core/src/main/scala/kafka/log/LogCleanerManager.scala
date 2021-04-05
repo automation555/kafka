@@ -30,7 +30,6 @@ import kafka.utils.{Logging, Pool}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.KafkaStorageException
-import org.apache.kafka.common.record.RecordBatch
 
 import scala.collection.{Iterable, Seq, mutable}
 
@@ -61,11 +60,8 @@ private[log] class LogCleaningException(val log: Log,
   */
 private[log] class LogCleanerManager(val logDirs: Seq[File],
                                      val logs: Pool[TopicPartition, Log],
-                                     val logDirFailureChannel: LogDirFailureChannel) extends Logging with KafkaMetricsGroup {
+                                     val logDirFailureChannel: LogDirFailureChannel) extends KafkaMetricsGroup {
   import LogCleanerManager._
-
-
-  protected override def loggerName = classOf[LogCleaner].getName
 
   // package-private for testing
   private[log] val offsetCheckpointFile = "cleaner-offset-checkpoint"
@@ -170,11 +166,11 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
       val now = time.milliseconds
       this.timeOfLastRun = now
       val lastClean = allCleanerCheckpoints
-
       val dirtyLogs = logs.filter {
-        case (_, log) => log.config.compact
+        case (_, log) => log.config.compact  // match logs that are marked as compacted
       }.filterNot {
         case (topicPartition, log) =>
+          // skip any logs already in-progress and uncleanable partitions
           inProgress.contains(topicPartition) || isUncleanablePartition(log, topicPartition)
       }.map {
         case (topicPartition, log) => // create a LogToClean instance for each
@@ -199,23 +195,8 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
       val cleanableLogs = dirtyLogs.filter { ltc =>
         (ltc.needCompactionNow && ltc.cleanableBytes > 0) || ltc.cleanableRatio > ltc.log.config.minCleanableRatio
       }
-
       if(cleanableLogs.isEmpty) {
-        val logsWithTombstonesExpired = dirtyLogs.filter {
-          case ltc => 
-            // in this case, we are probably in a low throughput situation
-            // therefore, we should take advantage of this fact and remove tombstones if we can
-            // under the condition that the log's latest delete horizon is less than the current time
-            // tracked
-            ltc.log.latestDeleteHorizon != RecordBatch.NO_TIMESTAMP && ltc.log.latestDeleteHorizon <= time.milliseconds()
-        }
-        if (!logsWithTombstonesExpired.isEmpty) {
-          val filthiest = logsWithTombstonesExpired.max
-          inProgress.put(filthiest.topicPartition, LogCleaningInProgress)
-          Some(filthiest)
-        } else {
-          None
-        }
+        None
       } else {
         preCleanStats.recordCleanablePartitions(cleanableLogs.size)
         val filthiest = cleanableLogs.max
@@ -544,6 +525,8 @@ private case class OffsetsToClean(firstDirtyOffset: Long,
 }
 
 private[log] object LogCleanerManager extends Logging {
+
+  override protected def loggerName = classOf[LogCleaner].getName
 
   def isCompactAndDelete(log: Log): Boolean = {
     log.config.compact && log.config.delete

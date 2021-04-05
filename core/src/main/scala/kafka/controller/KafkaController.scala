@@ -33,7 +33,9 @@ import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zk.{FeatureZNodeStatus, _}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler, ZNodeChildChangeHandler}
-import org.apache.kafka.common.{ElectionType, KafkaException, TopicPartition}
+import org.apache.kafka.common.ElectionType
+import org.apache.kafka.common.KafkaException
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{BrokerNotAvailableException, ControllerMovedException, StaleBrokerEpochException}
 import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData}
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange}
@@ -76,9 +78,11 @@ class KafkaController(val config: KafkaConfig,
                       brokerFeatures: BrokerFeatures,
                       featureCache: FinalizedFeatureCache,
                       threadNamePrefix: Option[String] = None)
-  extends ControllerEventProcessor with Logging with KafkaMetricsGroup {
+  extends ControllerEventProcessor with KafkaMetricsGroup {
 
-  this.logIdent = s"[Controller id=${config.brokerId}] "
+  import KafkaController._
+
+  protected implicit val logIdent = Some(LogIdent(s"[Controller id=${config.brokerId}] "))
 
   @volatile private var brokerInfo = initialBrokerInfo
   @volatile private var _brokerEpoch = initialBrokerEpoch
@@ -1031,7 +1035,7 @@ class KafkaController(val config: KafkaConfig,
       (topicPartition -> assignment)
 
     val setDataResponse = zkClient.setTopicAssignmentRaw(topicPartition.topic,
-      controllerContext.topicIds.get(topicPartition.topic),
+      controllerContext.topicIds(topicPartition.topic),
       topicAssignment, controllerContext.epochZkVersion)
     setDataResponse.resultCode match {
       case Code.OK =>
@@ -1656,11 +1660,9 @@ class KafkaController(val config: KafkaConfig,
   }
 
   private def processTopicIds(topicIdAssignments: Set[TopicIdReplicaAssignment]): Unit = {
-    if (config.usesTopicId) {
-      val updated = zkClient.setTopicIds(topicIdAssignments.filter(_.topicId.isEmpty), controllerContext.epochZkVersion)
-      val allTopicIdAssignments = updated ++ topicIdAssignments.filter(_.topicId.isDefined)
-      allTopicIdAssignments.foreach(topicIdAssignment => controllerContext.addTopicId(topicIdAssignment.topic, topicIdAssignment.topicId.get))
-    }
+    val updated = zkClient.setTopicIds(topicIdAssignments.filter(_.topicId.isEmpty), controllerContext.epochZkVersion)
+    val allTopicIdAssignments = updated ++ topicIdAssignments.filter(_.topicId.isDefined)
+    allTopicIdAssignments.foreach(topicIdAssignment => controllerContext.addTopicId(topicIdAssignment.topic, topicIdAssignment.topicId.get))
   }
 
   private def processLogDirEventNotification(): Unit = {
@@ -1690,7 +1692,7 @@ class KafkaController(val config: KafkaConfig,
       }.toMap
 
       zkClient.setTopicAssignment(topic,
-        controllerContext.topicIds.get(topic),
+        controllerContext.topicIds(topic),
         existingPartitionReplicaAssignment,
         controllerContext.epochZkVersion)
     }

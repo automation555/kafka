@@ -19,6 +19,7 @@ package kafka.server
 
 import java.net.{InetAddress, UnknownHostException}
 import java.util.Properties
+
 import DynamicConfig.Broker._
 import kafka.api.ApiVersion
 import kafka.controller.KafkaController
@@ -31,7 +32,6 @@ import kafka.utils.Implicits._
 import kafka.utils.Logging
 import org.apache.kafka.common.config.ConfigDef.Validator
 import org.apache.kafka.common.config.ConfigException
-import org.apache.kafka.common.config.internals.QuotaConfigs
 import org.apache.kafka.common.metrics.Quota
 import org.apache.kafka.common.metrics.Quota._
 import org.apache.kafka.common.utils.Sanitizer
@@ -47,11 +47,16 @@ trait ConfigHandler {
   def processConfigChanges(entityName: String, value: Properties): Unit
 }
 
+object TopicConfigHandler extends Logging {
+
+}
+
 /**
   * The TopicConfigHandler will process topic config changes in ZK.
   * The callback provides the topic name and the full properties set read from ZK
   */
-class TopicConfigHandler(private val logManager: LogManager, kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController) extends ConfigHandler with Logging  {
+class TopicConfigHandler(private val logManager: LogManager, kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController) extends ConfigHandler {
+  import TopicConfigHandler._
 
   private def updateLogConfig(topic: String,
                               topicConfig: Properties,
@@ -130,26 +135,26 @@ class QuotaConfigHandler(private val quotaManagers: QuotaManagers) {
   def updateQuotaConfig(sanitizedUser: Option[String], sanitizedClientId: Option[String], config: Properties): Unit = {
     val clientId = sanitizedClientId.map(Sanitizer.desanitize)
     val producerQuota =
-      if (config.containsKey(QuotaConfigs.PRODUCER_BYTE_RATE_OVERRIDE_CONFIG))
-        Some(new Quota(config.getProperty(QuotaConfigs.PRODUCER_BYTE_RATE_OVERRIDE_CONFIG).toLong.toDouble, true))
+      if (config.containsKey(DynamicConfig.Client.ProducerByteRateOverrideProp))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.ProducerByteRateOverrideProp).toLong.toDouble, true))
       else
         None
     quotaManagers.produce.updateQuota(sanitizedUser, clientId, sanitizedClientId, producerQuota)
     val consumerQuota =
-      if (config.containsKey(QuotaConfigs.CONSUMER_BYTE_RATE_OVERRIDE_CONFIG))
-        Some(new Quota(config.getProperty(QuotaConfigs.CONSUMER_BYTE_RATE_OVERRIDE_CONFIG).toLong.toDouble, true))
+      if (config.containsKey(DynamicConfig.Client.ConsumerByteRateOverrideProp))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.ConsumerByteRateOverrideProp).toLong.toDouble, true))
       else
         None
     quotaManagers.fetch.updateQuota(sanitizedUser, clientId, sanitizedClientId, consumerQuota)
     val requestQuota =
-      if (config.containsKey(QuotaConfigs.REQUEST_PERCENTAGE_OVERRIDE_CONFIG))
-        Some(new Quota(config.getProperty(QuotaConfigs.REQUEST_PERCENTAGE_OVERRIDE_CONFIG).toDouble, true))
+      if (config.containsKey(DynamicConfig.Client.RequestPercentageOverrideProp))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.RequestPercentageOverrideProp).toDouble, true))
       else
         None
     quotaManagers.request.updateQuota(sanitizedUser, clientId, sanitizedClientId, requestQuota)
     val controllerMutationQuota =
-      if (config.containsKey(QuotaConfigs.CONTROLLER_MUTATION_RATE_OVERRIDE_CONFIG))
-        Some(new Quota(config.getProperty(QuotaConfigs.CONTROLLER_MUTATION_RATE_OVERRIDE_CONFIG).toDouble, true))
+      if (config.containsKey(DynamicConfig.Client.ControllerMutationOverrideProp))
+        Some(new Quota(config.getProperty(DynamicConfig.Client.ControllerMutationOverrideProp).toDouble, true))
       else
         None
     quotaManagers.controllerMutation.updateQuota(sanitizedUser, clientId, sanitizedClientId, controllerMutationQuota)
@@ -187,10 +192,10 @@ class UserConfigHandler(private val quotaManagers: QuotaManagers, val credential
   }
 }
 
-class IpConfigHandler(private val connectionQuotas: ConnectionQuotas) extends ConfigHandler with Logging {
+class IpConfigHandler(private val connectionQuotas: ConnectionQuotas) extends ConfigHandler {
 
   def processConfigChanges(ip: String, config: Properties): Unit = {
-    val ipConnectionRateQuota = Option(config.getProperty(QuotaConfigs.IP_CONNECTION_RATE_OVERRIDE_CONFIG)).map(_.toInt)
+    val ipConnectionRateQuota = Option(config.getProperty(DynamicConfig.Ip.IpConnectionRateOverrideProp)).map(_.toInt)
     val updatedIp = {
       if (ip != ConfigEntityName.Default) {
         try {
@@ -211,7 +216,7 @@ class IpConfigHandler(private val connectionQuotas: ConnectionQuotas) extends Co
   * This implementation reports the overrides to the respective ReplicationQuotaManager objects
   */
 class BrokerConfigHandler(private val brokerConfig: KafkaConfig,
-                          private val quotaManagers: QuotaManagers) extends ConfigHandler with Logging {
+                          private val quotaManagers: QuotaManagers) extends ConfigHandler {
 
   def processConfigChanges(brokerId: String, properties: Properties): Unit = {
     def getOrDefault(prop: String): Long = {

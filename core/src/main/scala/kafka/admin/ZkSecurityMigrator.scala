@@ -91,7 +91,7 @@ object ZkSecurityMigrator extends Logging {
       throw new IllegalArgumentException("Incorrect configuration")
     }
 
-    val zkAcl = opts.options.valueOf(opts.zkAclOpt) match {
+    val zkAcl: Boolean = opts.options.valueOf(opts.zkAclOpt) match {
       case "secure" =>
         info("zookeeper.acl option is secure")
         true
@@ -162,7 +162,8 @@ object ZkSecurityMigrator extends Logging {
   }
 }
 
-class ZkSecurityMigrator(zkClient: KafkaZkClient) extends Logging {
+class ZkSecurityMigrator(zkClient: KafkaZkClient) {
+  import ZkSecurityMigrator._
   private val zkSecurityMigratorUtils = new ZkSecurityMigratorUtils(zkClient)
   private val futures = new Queue[Future[String]]
 

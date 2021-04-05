@@ -54,13 +54,16 @@ object ReplicationQuotaManagerConfig {
 
 trait ReplicaQuota {
   def record(value: Long): Unit
-  def isThrottled(topicName: String, partition: Int): Boolean
-  def isThrottled(topicPartition: TopicPartition): Boolean = isThrottled(topicPartition.topic, topicPartition.partition)
+  def isThrottled(topicPartition: TopicPartition): Boolean
   def isQuotaExceeded: Boolean
 }
 
 object Constants {
   val AllReplicas = Seq[Int](-1)
+}
+
+object ReplicationQuotaManager extends Logging {
+
 }
 
 /**
@@ -74,7 +77,9 @@ object Constants {
 class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
                               private val metrics: Metrics,
                               private val replicationType: QuotaType,
-                              private val time: Time) extends Logging with ReplicaQuota {
+                              private val time: Time) extends ReplicaQuota {
+  import ReplicationQuotaManager._
+
   private val lock = new ReentrantReadWriteLock()
   private val throttledPartitions = new ConcurrentHashMap[String, Seq[Int]]()
   private var quota: Quota = null
@@ -121,10 +126,10 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param topicPartition the partition to check
     * @return
     */
-  override def isThrottled(topicName: String, partition: Int): Boolean = {
-    val partitions = throttledPartitions.get(topicName)
+  override def isThrottled(topicPartition: TopicPartition): Boolean = {
+    val partitions = throttledPartitions.get(topicPartition.topic)
     if (partitions != null)
-      (partitions eq AllReplicas) || partitions.contains(partition)
+      (partitions eq AllReplicas) || partitions.contains(topicPartition.partition)
     else false
   }
 

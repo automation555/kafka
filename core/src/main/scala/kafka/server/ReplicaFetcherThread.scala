@@ -19,15 +19,13 @@ package kafka.server
 
 import java.util.Collections
 import java.util.Optional
-
 import kafka.api._
 import kafka.cluster.BrokerEndPoint
 import kafka.log.{LeaderOffsetIncremented, LogAppendInfo}
-import kafka.server.AbstractFetcherThread.ReplicaFetch
-import kafka.server.AbstractFetcherThread.ResultWithPartitions
 import kafka.utils.Implicits._
+import kafka.utils.LogIdent
 import org.apache.kafka.clients.FetchSessionHandler
-import org.apache.kafka.common.{TopicPartition, Uuid}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.KafkaStorageException
 import org.apache.kafka.common.message.ListOffsetsRequestData.{ListOffsetsPartition, ListOffsetsTopic}
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetForLeaderTopic
@@ -35,7 +33,7 @@ import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetFor
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.MemoryRecords
+import org.apache.kafka.common.record.{MemoryRecords, Records}
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.utils.{LogContext, Time}
 
@@ -61,10 +59,11 @@ class ReplicaFetcherThread(name: String,
                                 isInterruptible = false,
                                 replicaMgr.brokerTopicStats) {
 
+  import AbstractFetcherThread._
   private val replicaId = brokerConfig.brokerId
   private val logContext = new LogContext(s"[ReplicaFetcher replicaId=$replicaId, leaderId=${sourceBroker.id}, " +
     s"fetcherId=$fetcherId] ")
-  this.logIdent = logContext.logPrefix
+  override protected implicit val logIdent = Some(LogIdent(logContext.logPrefix))
 
   private val leaderEndpoint = leaderEndpointBlockingSend.getOrElse(
     new ReplicaFetcherBlockingSend(sourceBroker, brokerConfig, metrics, time, fetcherId,
@@ -72,8 +71,7 @@ class ReplicaFetcherThread(name: String,
 
   // Visible for testing
   private[server] val fetchRequestVersion: Short =
-    if (brokerConfig.interBrokerProtocolVersion >= KAFKA_3_0_IV0) 13
-    else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_7_IV1) 12
+    if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_7_IV1) 12
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_3_IV1) 11
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_1_IV2) 10
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_0_IV1) 8
@@ -161,9 +159,9 @@ class ReplicaFetcherThread(name: String,
                                     fetchOffset: Long,
                                     partitionData: FetchData): Option[LogAppendInfo] = {
     val logTrace = isTraceEnabled
-    val partition = replicaMgr.getPartitionOrException(topicPartition)
+    val partition = replicaMgr.nonOfflinePartition(topicPartition).get
     val log = partition.localLogOrException
-    val records = toMemoryRecords(FetchResponse.recordsOrFail(partitionData))
+    val records = toMemoryRecords(partitionData.records)
 
     maybeWarnIfOversizedRecords(records, topicPartition)
 
@@ -216,11 +214,11 @@ class ReplicaFetcherThread(name: String,
   override protected def fetchFromLeader(fetchRequest: FetchRequest.Builder): Map[TopicPartition, FetchData] = {
     try {
       val clientResponse = leaderEndpoint.sendRequest(fetchRequest)
-      val fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse]
-      if (!fetchSessionHandler.handleResponse(fetchResponse, clientResponse.requestHeader().apiVersion())) {
+      val fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse[Records]]
+      if (!fetchSessionHandler.handleResponse(fetchResponse)) {
         Map.empty
       } else {
-        fetchResponse.responseData(fetchSessionHandler.sessionTopicNames, clientResponse.requestHeader().apiVersion()).asScala
+        fetchResponse.responseData.asScala
       }
     } catch {
       case t: Throwable =>
@@ -265,7 +263,6 @@ class ReplicaFetcherThread(name: String,
 
   override def buildFetch(partitionMap: Map[TopicPartition, PartitionFetchState]): ResultWithPartitions[Option[ReplicaFetch]] = {
     val partitionsWithError = mutable.Set[TopicPartition]()
-    val topicIds = replicaMgr.metadataCache.topicNamesToIds()
 
     val builder = fetchSessionHandler.newBuilder(partitionMap.size, false)
     partitionMap.forKeyValue { (topicPartition, fetchState) =>
@@ -277,7 +274,7 @@ class ReplicaFetcherThread(name: String,
             fetchState.lastFetchedEpoch.map(_.asInstanceOf[Integer]).asJava
           else
             Optional.empty[Integer]
-          builder.add(topicPartition, topicIds.getOrDefault(topicPartition.topic(), Uuid.ZERO_UUID), new FetchRequest.PartitionData(
+          builder.add(topicPartition, new FetchRequest.PartitionData(
             fetchState.fetchOffset,
             logStartOffset,
             fetchSize,
@@ -296,9 +293,8 @@ class ReplicaFetcherThread(name: String,
     val fetchRequestOpt = if (fetchData.sessionPartitions.isEmpty && fetchData.toForget.isEmpty) {
       None
     } else {
-      val version: Short = if (fetchRequestVersion >= 13 && !fetchData.canUseTopicIds) 12 else fetchRequestVersion
       val requestBuilder = FetchRequest.Builder
-        .forReplica(version, replicaId, maxWait, minBytes, fetchData.toSend, topicIds)
+        .forReplica(fetchRequestVersion, replicaId, maxWait, minBytes, fetchData.toSend)
         .setMaxBytes(maxBytes)
         .toForget(fetchData.toForget)
         .metadata(fetchData.metadata)
@@ -313,7 +309,7 @@ class ReplicaFetcherThread(name: String,
    * The logic for finding the truncation offset is implemented in AbstractFetcherThread.getOffsetTruncationState
    */
   override def truncate(tp: TopicPartition, offsetTruncationState: OffsetTruncationState): Unit = {
-    val partition = replicaMgr.getPartitionOrException(tp)
+    val partition = replicaMgr.nonOfflinePartition(tp).get
     val log = partition.localLogOrException
 
     partition.truncateTo(offsetTruncationState.offset, isFuture = false)
@@ -329,7 +325,7 @@ class ReplicaFetcherThread(name: String,
   }
 
   override protected def truncateFullyAndStartAt(topicPartition: TopicPartition, offset: Long): Unit = {
-    val partition = replicaMgr.getPartitionOrException(topicPartition)
+    val partition = replicaMgr.nonOfflinePartition(topicPartition).get
     partition.truncateFullyAndStartAt(offset, isFuture = false)
   }
 

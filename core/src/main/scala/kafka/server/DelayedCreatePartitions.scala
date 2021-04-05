@@ -47,9 +47,11 @@ object CreatePartitionsMetadata {
   */
 class DelayedCreatePartitions(delayMs: Long,
                               createMetadata: Seq[CreatePartitionsMetadata],
-                              adminManager: ZkAdminManager,
+                              adminManager: AdminManager,
                               responseCallback: Map[String, ApiError] => Unit)
   extends DelayedOperation(delayMs) {
+
+  import DelayedOperation._
 
   /**
     * The operation can be completed if all of the topics that do not have an error exist and every partition has a

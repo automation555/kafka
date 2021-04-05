@@ -45,7 +45,7 @@ import org.easymock.EasyMock
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
 
-import scala.collection.{Iterable, Map, mutable}
+import scala.collection.{Iterable, Map, Set, mutable}
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -110,12 +110,12 @@ class LogTest {
 
           val producerStateManager = new ProducerStateManager(topicPartition, logDir, maxPidExpirationMs)
           val log = new Log(logDir, config, logStartOffset, logRecoveryPoint, time.scheduler, brokerTopicStats, time, maxPidExpirationMs,
-            LogManager.ProducerIdExpirationCheckIntervalMs, topicPartition, producerStateManager, logDirFailureChannel, hadCleanShutdown, None, true) {
-            override def recoverLog(): Long = {
+            LogManager.ProducerIdExpirationCheckIntervalMs, topicPartition, producerStateManager, logDirFailureChannel, hadCleanShutdown) {
+            override def recoverLog(segmentsWithFailedSanityCheck: Set[LogSegment]): Long = {
               if (simulateError)
                 throw new RuntimeException
               cleanShutdownInterceptedValue = hadCleanShutdown
-              super.recoverLog()
+              super.recoverLog(segmentsWithFailedSanityCheck)
             }
           }
           log
@@ -127,7 +127,7 @@ class LogTest {
 
     val cleanShutdownFile = new File(logDir, Log.CleanShutdownFile)
     val logManager: LogManager = interceptedLogManager(logConfig, logDirs)
-    log = logManager.getOrCreateLog(topicPartition, isNew = true, topicId = None)
+    log = logManager.getOrCreateLog(topicPartition, isNew = true)
 
     // Load logs after a clean shutdown
     Files.createFile(cleanShutdownFile.toPath)
@@ -1025,7 +1025,7 @@ class LogTest {
       // Intercept all segment read calls
       new Log(logDir, logConfig, logStartOffset = 0, recoveryPoint = recoveryPoint, mockTime.scheduler,
         brokerTopicStats, mockTime, maxProducerIdExpirationMs, LogManager.ProducerIdExpirationCheckIntervalMs,
-        topicPartition, producerStateManager, new LogDirFailureChannel(10), hadCleanShutdown = false, topicId = None, keepPartitionMetadataFile = true) {
+        topicPartition, producerStateManager, new LogDirFailureChannel(10), hadCleanShutdown = false) {
 
         override def addSegment(segment: LogSegment): LogSegment = {
           val wrapper = new LogSegment(segment.log, segment.lazyOffsetIndex, segment.lazyTimeIndex, segment.txnIndex, segment.baseOffset,
@@ -1128,9 +1128,7 @@ class LogTest {
       topicPartition = Log.parseTopicPartitionName(logDir),
       producerStateManager = stateManager,
       logDirFailureChannel = new LogDirFailureChannel(1),
-      hadCleanShutdown = false,
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      hadCleanShutdown = false)
 
     EasyMock.verify(stateManager)
 
@@ -1208,9 +1206,7 @@ class LogTest {
       producerIdExpirationCheckIntervalMs = 30000,
       topicPartition = Log.parseTopicPartitionName(logDir),
       producerStateManager = stateManager,
-      logDirFailureChannel = null,
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      logDirFailureChannel = null)
 
     EasyMock.verify(stateManager)
   }
@@ -1248,9 +1244,7 @@ class LogTest {
       producerIdExpirationCheckIntervalMs = 30000,
       topicPartition = Log.parseTopicPartitionName(logDir),
       producerStateManager = stateManager,
-      logDirFailureChannel = null,
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      logDirFailureChannel = null)
 
     EasyMock.verify(stateManager)
   }
@@ -1290,9 +1284,7 @@ class LogTest {
       producerIdExpirationCheckIntervalMs = 30000,
       topicPartition = Log.parseTopicPartitionName(logDir),
       producerStateManager = stateManager,
-      logDirFailureChannel = null,
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      logDirFailureChannel = null)
 
     EasyMock.verify(stateManager)
   }
@@ -2567,27 +2559,8 @@ class LogTest {
 
     // test recovery case
     log = createLog(logDir, logConfig)
-    assertTrue(log.topicId.isDefined)
-    assertTrue(log.topicId.get == topicId)
+    assertTrue(log.topicId == topicId)
     log.close()
-  }
-
-  @Test
-  def testLogFailsWhenInconsistentTopicIdSet(): Unit = {
-    val logConfig = LogTest.createLogConfig()
-    var log = createLog(logDir, logConfig)
-
-    val topicId = Uuid.randomUuid()
-    log.partitionMetadataFile.write(topicId)
-    log.close()
-
-    // test creating a log with a new ID
-    try {
-      log = createLog(logDir, logConfig, topicId = Some(Uuid.randomUuid()))
-      log.close()
-    } catch {
-      case e: Throwable => assertTrue(e.isInstanceOf[InconsistentTopicIdException])
-    }
   }
 
   /**
@@ -2618,7 +2591,7 @@ class LogTest {
     val numMessages = 200
     val logConfig = LogTest.createLogConfig(segmentBytes = 200, indexIntervalBytes = 1)
     var log = createLog(logDir, logConfig)
-    for(i <- 0 until numMessages)
+    for (i <- 0 until numMessages)
       log.appendAsLeader(TestUtils.singletonRecords(value = TestUtils.randomBytes(10), timestamp = mockTime.milliseconds + i * 10), leaderEpoch = 0)
     val indexFiles = log.logSegments.map(_.lazyOffsetIndex.file)
     val timeIndexFiles = log.logSegments.map(_.lazyTimeIndex.file)
@@ -2633,7 +2606,7 @@ class LogTest {
     assertEquals(numMessages, log.logEndOffset, "Should have %d messages when log is reopened".format(numMessages))
     assertTrue(log.logSegments.head.offsetIndex.entries > 0, "The index should have been rebuilt")
     assertTrue(log.logSegments.head.timeIndex.entries > 0, "The time index should have been rebuilt")
-    for(i <- 0 until numMessages) {
+    for (i <- 0 until numMessages) {
       assertEquals(i, readLog(log, i, 100).records.batches.iterator.next().lastOffset)
       if (i == 0)
         assertEquals(log.logSegments.head.baseOffset, log.fetchOffsetByTimestamp(mockTime.milliseconds + i * 10).get.offset)
@@ -2641,6 +2614,32 @@ class LogTest {
         assertEquals(i, log.fetchOffsetByTimestamp(mockTime.milliseconds + i * 10).get.offset)
     }
     log.close()
+  }
+
+  @Test
+  def testMissingIndexWithCorruptedFlushedSegmentThrows(): Unit = {
+    // publish the messages and close the log
+    val numMessages = 200
+    val logConfig = LogTest.createLogConfig(segmentBytes = 200, indexIntervalBytes = 1)
+    val log = createLog(logDir, logConfig)
+    for (i <- 0 until numMessages)
+      log.appendAsLeader(TestUtils.singletonRecords(value = TestUtils.randomBytes(10), timestamp = mockTime.milliseconds + i * 10), leaderEpoch = 0)
+    log.flush(log.logEndOffset)
+    val recoveryPoint = log.recoveryPoint
+    val segment = log.logSegments.take(2).last
+    val segmentFile = segment.log.file
+    val indexFile = segment.lazyOffsetIndex.file
+    log.close()
+
+    // write garbage to the segment file and delete corresponding index
+    val bw = new BufferedWriter(new FileWriter(segmentFile))
+    bw.write("corruptRecord")
+    bw.close()
+    indexFile.delete()
+
+    // reopening the log should now fail, regardless of whether the shutdown was clean or not
+    assertThrows(classOf[KafkaStorageException], () => createLog(logDir, logConfig, recoveryPoint = recoveryPoint))
+    assertThrows(classOf[KafkaStorageException], () => createLog(logDir, logConfig, recoveryPoint = recoveryPoint, lastShutdownClean = false))
   }
 
   @Test
@@ -3150,7 +3149,7 @@ class LogTest {
 
     // Write a topic ID to the partition metadata file to ensure it is transferred correctly.
     val id = Uuid.randomUuid()
-    log.topicId = Some(id)
+    log.topicId = id
     log.partitionMetadataFile.write(id)
 
     log.appendAsLeader(TestUtils.records(List(new SimpleRecord("foo".getBytes()))), leaderEpoch = 5)
@@ -3165,8 +3164,7 @@ class LogTest {
     assertFalse(PartitionMetadataFile.newFile(this.logDir).exists())
 
     // Check the topic ID remains in memory and was copied correctly.
-    assertTrue(log.topicId.isDefined)
-    assertEquals(id, log.topicId.get)
+    assertEquals(id, log.topicId)
     assertEquals(id, log.partitionMetadataFile.read().topicId)
   }
 
@@ -3431,7 +3429,7 @@ class LogTest {
       segment.truncateTo(0)
     })
     for (file <- logDir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix))
-      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")), false)
+      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")))
 
     val recoveredLog = recoverAndCheck(logConfig, expectedKeys)
     assertEquals(expectedKeys, LogTest.keysInLog(recoveredLog))
@@ -3459,7 +3457,7 @@ class LogTest {
       segment.truncateTo(0)
     }
     for (file <- logDir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix))
-      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")), false)
+      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")))
 
     val recoveredLog = recoverAndCheck(logConfig, expectedKeys)
     assertEquals(expectedKeys, LogTest.keysInLog(recoveredLog))
@@ -3483,7 +3481,7 @@ class LogTest {
         segment.changeFileSuffixes("", Log.SwapFileSuffix)
     })
     for (file <- logDir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix))
-      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")), false)
+      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")))
 
     // Truncate the old segment
     segmentWithOverflow.truncateTo(0)
@@ -4881,10 +4879,9 @@ class LogTest {
                         time: Time = mockTime,
                         maxProducerIdExpirationMs: Int = 60 * 60 * 1000,
                         producerIdExpirationCheckIntervalMs: Int = LogManager.ProducerIdExpirationCheckIntervalMs,
-                        lastShutdownClean: Boolean = true,
-                        topicId: Option[Uuid] = None): Log = {
+                        lastShutdownClean: Boolean = true): Log = {
     LogTest.createLog(dir, config, brokerTopicStats, scheduler, time, logStartOffset, recoveryPoint,
-      maxProducerIdExpirationMs, producerIdExpirationCheckIntervalMs, lastShutdownClean, topicId = topicId)
+      maxProducerIdExpirationMs, producerIdExpirationCheckIntervalMs, lastShutdownClean)
   }
 
   private def createLogWithOffsetOverflow(logConfig: LogConfig): (Log, LogSegment) = {
@@ -4950,8 +4947,7 @@ object LogTest {
                 recoveryPoint: Long = 0L,
                 maxProducerIdExpirationMs: Int = 60 * 60 * 1000,
                 producerIdExpirationCheckIntervalMs: Int = LogManager.ProducerIdExpirationCheckIntervalMs,
-                lastShutdownClean: Boolean = true,
-                topicId: Option[Uuid] = None): Log = {
+                lastShutdownClean: Boolean = true): Log = {
     Log(dir = dir,
       config = config,
       logStartOffset = logStartOffset,
@@ -4962,9 +4958,7 @@ object LogTest {
       maxProducerIdExpirationMs = maxProducerIdExpirationMs,
       producerIdExpirationCheckIntervalMs = producerIdExpirationCheckIntervalMs,
       logDirFailureChannel = new LogDirFailureChannel(10),
-      lastShutdownClean = lastShutdownClean,
-      topicId = topicId,
-      keepPartitionMetadataFile = true)
+      lastShutdownClean = lastShutdownClean)
   }
 
   /**

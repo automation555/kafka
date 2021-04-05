@@ -21,8 +21,9 @@ import java.io.File
 
 import kafka.utils.TestUtils
 import org.apache.kafka.common.errors.InvalidOffsetException
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
+import org.junit.{After, Before, Test}
+import org.junit.Assert.assertEquals
+import org.scalatest.Assertions.intercept
 
 /**
  * Unit test for time index.
@@ -32,12 +33,12 @@ class TimeIndexTest {
   val maxEntries = 30
   val baseOffset = 45L
 
-  @BeforeEach
+  @Before
   def setup(): Unit = {
     this.idx = new TimeIndex(nonExistantTempFile(), baseOffset = baseOffset, maxIndexSize = maxEntries * 12)
   }
 
-  @AfterEach
+  @After
   def teardown(): Unit = {
     if(this.idx != null)
       this.idx.file.delete()
@@ -68,9 +69,9 @@ class TimeIndexTest {
     assertEquals(TimestampOffset(40L, 85L), idx.entry(3))
   }
 
-  @Test
+  @Test(expected = classOf[IllegalArgumentException])
   def testEntryOverflow(): Unit = {
-    assertThrows(classOf[IllegalArgumentException], () => idx.entry(0))
+    idx.entry(0)
   }
 
   @Test
@@ -87,8 +88,12 @@ class TimeIndexTest {
   @Test
   def testAppend(): Unit = {
     appendEntries(maxEntries - 1)
-    assertThrows(classOf[IllegalArgumentException], () => idx.maybeAppend(10000L, 1000L))
-    assertThrows(classOf[InvalidOffsetException], () => idx.maybeAppend(10000L, (maxEntries - 2) * 10, true))
+    intercept[IllegalArgumentException] {
+      idx.maybeAppend(10000L, 1000L)
+    }
+    intercept[InvalidOffsetException] {
+      idx.maybeAppend(10000L, (maxEntries - 2) * 10, true)
+    }
     idx.maybeAppend(10000L, 1000L, true)
   }
 
@@ -128,20 +133,54 @@ class TimeIndexTest {
     }
 
     shouldCorruptOffset = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptOffset = false
 
     shouldCorruptTimestamp = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptTimestamp = false
 
     shouldCorruptLength = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptLength = false
 
     idx.sanityCheck()
     idx.close()
   }
 
-}
 
+  /**
+   * In certain cases, index files fail to have their pre-allocated 0 bytes trimmed from the tail
+   * when a new segment is rolled. This causes a silent failure at the next startup where all retention
+   * windows are breached purging out data whether or not the window was really breached.
+   * KAFKA-10207
+   */
+  @Test
+  def testLoadingUntrimmedIndex(): Unit = {
+    // A larger index size must be specified or the starting offset will round down
+    // preventing this issue from being reproduced. Configs default to 10mb.
+    val max1MbEntryCount = 100000
+    // Create a file that will exist on disk and be removed when we are done
+    val file = nonExistantTempFile()
+    file.deleteOnExit()
+    // create an index that can have up to 100000 entries, about 1mb
+    var idx2 = new TimeIndex(file, baseOffset = 0, max1MbEntryCount * 12)
+    // Append less than the maximum number of entries, leaving 0 bytes padding the end
+    for (i <- 1 until max1MbEntryCount)
+      idx2.maybeAppend(i, i)
+
+    idx2.flush()
+    // jvm 1.8.0_191 fails to always flush shrinking resize to zfs disk
+    // jvm=1.8.0_191 zfs=0.6.5.6 kernel=4.4.0-1013-aws
+    //Explicitly call close handler to unmap the file and avoid the index from being trimmed when saved
+    idx2.closeHandler()
+    // The next read of the index data from disk will have 12 0 bytes at the tail, when reading
+    // the buffer position starts at the end and the index is assumed to be full because it was
+    // supposed to be trimmed before the last save.
+    idx2 = new TimeIndex(file, baseOffset = 0, maxIndexSize = max1MbEntryCount * 12)
+    // This index should fail the sanity check as the last timestamp in the file is 0 which is
+    // less than the first timestamp in the file.
+    intercept[CorruptIndexException](idx2.sanityCheck())
+    idx2.close()
+  }
+}

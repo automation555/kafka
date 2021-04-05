@@ -39,7 +39,6 @@ import org.mockito.Mockito;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -850,6 +849,63 @@ public class KafkaRaftClientTest {
         context.pollUntilResponse();
         context.assertSentFetchPartitionResponse(Errors.NONE, epoch, OptionalInt.of(localId));
         assertEquals(OptionalLong.of(1L), context.client.highWatermark());
+        System.out.println(context.log.lastFlushedOffset());
+        assertEquals(OptionalLong.empty(), context.listener.lastCommitOffset());
+
+        // Let the follower send another fetch from offset 4
+        context.deliverRequest(context.fetchRequest(epoch, otherNodeId, 4L, epoch, 500));
+        context.pollUntil(() -> context.client.highWatermark().equals(OptionalLong.of(4L)));
+        assertEquals(records, context.listener.commitWithLastOffset(offset));
+    }
+
+    @Test
+    public void testFlushDeferralOnLeaderUntilHWMUpdated() throws Exception {
+        int localId = 0;
+        int otherNodeId = 1;
+        int epoch = 5;
+        Set<Integer> voters = Utils.mkSet(localId, otherNodeId);
+
+        RaftClientTestContext context = RaftClientTestContext.initializeAsLeader(localId, voters, epoch);
+
+        // First poll has no high watermark advance
+        context.client.poll();
+        assertEquals(OptionalLong.empty(), context.client.highWatermark());
+        // The control message should get flushed and get reflected on both
+        // the log and the flush end offset on the leader.
+        assertEquals(1L, context.log.lastFlushedOffset());
+        assertEquals(1L, context.client.quorum().leaderStateOrThrow().getFlushEndOffset().get().offset);
+
+        // Let follower send a fetch to initialize the high watermark,
+        // note the offset 0 would be a control message for becoming the leader
+        context.deliverRequest(context.fetchRequest(epoch, otherNodeId, 0L, epoch, 500));
+        context.pollUntilResponse();
+        context.assertSentFetchPartitionResponse(Errors.NONE, epoch, OptionalInt.of(localId));
+        assertEquals(OptionalLong.of(0L), context.client.highWatermark());
+        assertEquals(1L, context.log.lastFlushedOffset());
+        assertEquals(1L, context.client.quorum().leaderStateOrThrow().getFlushEndOffset().get().offset);
+
+        List<String> records = Arrays.asList("a", "b", "c");
+        long offset = context.client.scheduleAppend(epoch, records);
+        context.client.poll();
+        assertEquals(OptionalLong.empty(), context.listener.lastCommitOffset());
+        assertEquals(4L, context.log.endOffset().offset);
+        // Last Flushed offset should be at 1 as offset 0 has the control message
+        // for LeaderChange message which always gets flushed, while the appended messages
+        // haven't yet been fetched by the followers, so HWM won't move. This, in effect, is the
+        // fsync deferral.
+        assertEquals(1L, context.log.lastFlushedOffset());
+        assertEquals(1L, context.client.quorum().leaderStateOrThrow().getFlushEndOffset().get().offset);
+        assertEquals(OptionalLong.of(0L), context.client.highWatermark());
+
+        // Let the follower send a fetch, it should advance the high watermark
+        context.deliverRequest(context.fetchRequest(epoch, otherNodeId, 1L, epoch, 500));
+        context.pollUntilResponse();
+        context.assertSentFetchPartitionResponse(Errors.NONE, epoch, OptionalInt.of(localId));
+        assertEquals(OptionalLong.of(1L), context.client.highWatermark());
+        // Since the HWM advanced and the leader had records to flush, the
+        // flushed offset goes upto 4.
+        assertEquals(4L, context.log.lastFlushedOffset());
+        assertEquals(4L, context.client.quorum().leaderStateOrThrow().getFlushEndOffset().get().offset);
         assertEquals(OptionalLong.empty(), context.listener.lastCommitOffset());
 
         // Let the follower send another fetch from offset 4
@@ -1871,29 +1927,11 @@ public class KafkaRaftClientTest {
 
         // Now try reading it
         int otherNodeId = 1;
-        List<MutableRecordBatch> batches = new ArrayList<>(2);
-        boolean appended = true;
+        context.deliverRequest(context.fetchRequest(1, otherNodeId, 0L, 0, 500));
+        context.pollUntilResponse();
 
-        // Continue to fetch until the leader returns an empty response
-        while (appended) {
-            long fetchOffset = 0;
-            int lastFetchedEpoch = 0;
-            if (!batches.isEmpty()) {
-                MutableRecordBatch lastBatch = batches.get(batches.size() - 1);
-                fetchOffset = lastBatch.lastOffset() + 1;
-                lastFetchedEpoch = lastBatch.partitionLeaderEpoch();
-            }
-
-            context.deliverRequest(context.fetchRequest(1, otherNodeId, fetchOffset, lastFetchedEpoch, 0));
-            context.pollUntilResponse();
-
-            MemoryRecords fetchedRecords = context.assertSentFetchPartitionResponse(Errors.NONE, 1, OptionalInt.of(localId));
-            List<MutableRecordBatch> fetchedBatch = Utils.toList(fetchedRecords.batchIterator());
-            batches.addAll(fetchedBatch);
-
-            appended = !fetchedBatch.isEmpty();
-        }
-
+        MemoryRecords fetchedRecords = context.assertSentFetchPartitionResponse(Errors.NONE, 1, OptionalInt.of(localId));
+        List<MutableRecordBatch> batches = Utils.toList(fetchedRecords.batchIterator());
         assertEquals(2, batches.size());
 
         MutableRecordBatch leaderChangeBatch = batches.get(0);
@@ -2135,24 +2173,18 @@ public class KafkaRaftClientTest {
         // watermark advances and we can start sending committed data to the
         // listener.
         context.deliverRequest(context.fetchRequest(epoch, otherNodeId, 9L, 2, 500));
-
         context.client.poll();
         assertEquals(OptionalInt.empty(), context.listener.currentClaimedEpoch());
-        assertEquals(1, context.listener.numCommittedBatches());
+        assertEquals(3, context.listener.numCommittedBatches());
         assertEquals(batch1, context.listener.commitWithBaseOffset(0L));
-
-        context.client.poll();
-        assertEquals(OptionalInt.empty(), context.listener.currentClaimedEpoch());
-        assertEquals(2, context.listener.numCommittedBatches());
         assertEquals(batch2, context.listener.commitWithBaseOffset(3L));
+        assertEquals(batch3, context.listener.commitWithBaseOffset(6L));
+        assertEquals(OptionalLong.of(8L), context.listener.lastCommitOffset());
 
         // Now that the listener has caught up to the start of the leader epoch,
         // we expect the `handleClaim` callback.
         context.client.poll();
         assertEquals(OptionalInt.of(epoch), context.listener.currentClaimedEpoch());
-        assertEquals(3, context.listener.numCommittedBatches());
-        assertEquals(batch3, context.listener.commitWithBaseOffset(6L));
-        assertEquals(OptionalLong.of(8L), context.listener.lastCommitOffset());
     }
 
     @Test
@@ -2178,21 +2210,20 @@ public class KafkaRaftClientTest {
 
         // Let the initial listener catch up
         context.deliverRequest(context.fetchRequest(epoch, otherNodeId, 9L, 2, 500));
-        context.pollUntil(() -> OptionalInt.of(epoch).equals(context.listener.currentClaimedEpoch()));
+        context.client.poll();
         assertEquals(OptionalLong.of(9L), context.client.highWatermark());
-        assertEquals(OptionalLong.of(8L), context.listener.lastCommitOffset());
+        context.client.poll();
         assertEquals(OptionalInt.of(epoch), context.listener.currentClaimedEpoch());
-        // Ensure that the `handleClaim` callback was not fired early
-        assertEquals(9L, context.listener.claimedEpochStartOffset(epoch));
 
         // Register a second listener and allow it to catch up to the high watermark
         RaftClientTestContext.MockListener secondListener = new RaftClientTestContext.MockListener();
         context.client.register(secondListener);
-        context.pollUntil(() -> OptionalInt.of(epoch).equals(secondListener.currentClaimedEpoch()));
+        context.client.poll();
         assertEquals(OptionalLong.of(8L), secondListener.lastCommitOffset());
         assertEquals(OptionalInt.of(epoch), context.listener.currentClaimedEpoch());
+
         // Ensure that the `handleClaim` callback was not fired early
-        assertEquals(9L, secondListener.claimedEpochStartOffset(epoch));
+        assertEquals(9L, context.listener.claimedEpochStartOffset(epoch));
     }
 
     @Test
@@ -2283,7 +2314,6 @@ public class KafkaRaftClientTest {
         context.assertVotedCandidate(candidateEpoch, otherNodeId);
 
         // Note the offset is 8 because the record at offset 9 is a control record
-        context.pollUntil(() -> secondListener.lastCommitOffset().equals(OptionalLong.of(8L)));
         assertEquals(OptionalLong.of(8L), secondListener.lastCommitOffset());
         assertEquals(OptionalInt.empty(), secondListener.currentClaimedEpoch());
     }
@@ -2331,7 +2361,6 @@ public class KafkaRaftClientTest {
         context.assertVotedCandidate(candidateEpoch, localId);
 
         // Note the offset is 8 because the record at offset 9 is a control record
-        context.pollUntil(() -> secondListener.lastCommitOffset().equals(OptionalLong.of(8L)));
         assertEquals(OptionalLong.of(8L), secondListener.lastCommitOffset());
         assertEquals(OptionalInt.empty(), secondListener.currentClaimedEpoch());
     }

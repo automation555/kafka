@@ -36,11 +36,11 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.FencedInstanceIdException;
 import org.apache.kafka.common.errors.GroupAuthorizationException;
 import org.apache.kafka.common.errors.InterruptException;
+import org.apache.kafka.common.errors.UnstableOffsetCommitException;
 import org.apache.kafka.common.errors.RebalanceInProgressException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
-import org.apache.kafka.common.errors.UnstableOffsetCommitException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.message.JoinGroupRequestData;
 import org.apache.kafka.common.message.JoinGroupResponseData;
@@ -95,7 +95,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     private final boolean autoCommitEnabled;
     private final int autoCommitIntervalMs;
     private final ConsumerInterceptors<?, ?> interceptors;
-    private final AtomicInteger inFlightAsyncCommits;
     private final AtomicInteger pendingAsyncCommits;
 
     // this collection must be thread-safe because it is modified from the response handler
@@ -168,7 +167,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.completedOffsetCommits = new ConcurrentLinkedQueue<>();
         this.sensors = new ConsumerCoordinatorMetrics(metrics, metricGrpPrefix);
         this.interceptors = interceptors;
-        this.inFlightAsyncCommits = new AtomicInteger();
         this.pendingAsyncCommits = new AtomicInteger();
         this.asyncCommitFenced = new AtomicBoolean(false);
         this.groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId,
@@ -730,7 +728,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         subscriptions.resetGroupSubscription();
 
         if (exception != null) {
-            throw new KafkaException("User rebalance callback throws an error", exception);
+            if (exception instanceof KafkaException) {
+                throw (KafkaException) exception;
+            } else {
+                throw new KafkaException("User rebalance callback throws an error", exception);
+            }
         }
     }
 
@@ -746,17 +748,21 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         Set<TopicPartition> droppedPartitions = new HashSet<>(subscriptions.assignedPartitions());
 
         if (subscriptions.hasAutoAssignedPartitions() && !droppedPartitions.isEmpty()) {
-            final Exception e;
+            final Exception exception;
             if (generation() == Generation.NO_GENERATION || rebalanceInProgress()) {
-                e = invokePartitionsLost(droppedPartitions);
+                exception = invokePartitionsLost(droppedPartitions);
             } else {
-                e = invokePartitionsRevoked(droppedPartitions);
+                exception = invokePartitionsRevoked(droppedPartitions);
             }
 
             subscriptions.assignFromSubscribed(Collections.emptySet());
 
-            if (e != null) {
-                throw new KafkaException("User rebalance callback throws an error", e);
+            if (exception != null) {
+                if (exception instanceof KafkaException) {
+                    throw (KafkaException) exception;
+                } else {
+                    throw new KafkaException("User rebalance callback throws an error", exception);
+                }
             }
         }
     }
@@ -923,7 +929,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     public void commitOffsetsAsync(final Map<TopicPartition, OffsetAndMetadata> offsets, final OffsetCommitCallback callback) {
         invokeCompletedOffsetCommitCallbacks();
 
-        inFlightAsyncCommits.incrementAndGet();
         if (!coordinatorUnknown()) {
             doCommitOffsetsAsync(offsets, callback);
         } else {
@@ -947,7 +952,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     pendingAsyncCommits.decrementAndGet();
                     completedOffsetCommits.add(new OffsetCommitCompletion(callback, offsets,
                             new RetriableCommitFailedException(e)));
-                    inFlightAsyncCommits.decrementAndGet();
                 }
             });
         }
@@ -967,7 +971,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 if (interceptors != null)
                     interceptors.onCommit(offsets);
                 completedOffsetCommits.add(new OffsetCommitCompletion(cb, offsets, null));
-                inFlightAsyncCommits.decrementAndGet();
             }
 
             @Override
@@ -981,7 +984,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 if (commitException instanceof FencedInstanceIdException) {
                     asyncCommitFenced.set(true);
                 }
-                inFlightAsyncCommits.decrementAndGet();
             }
         });
     }
@@ -1000,12 +1002,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     public boolean commitOffsetsSync(Map<TopicPartition, OffsetAndMetadata> offsets, Timer timer) {
         invokeCompletedOffsetCommitCallbacks();
 
-        if (offsets.isEmpty()) {
-            // The KafkaConsumer API guarantees that the callbacks for all commitAsync()
-            // calls will be invoked when commitSync() returns. This should be true even
-            // if no offsets are committed by commitSync().
-            return waitForPendingAsyncCommits(timer);
-        }
+        if (offsets.isEmpty())
+            return true;
 
         do {
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
@@ -1043,26 +1041,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 doAutoCommitOffsetsAsync();
             }
         }
-    }
-
-    private boolean waitForPendingAsyncCommits(Timer timer) {
-        if (inFlightAsyncCommits.get() == 0) {
-            return true;
-        }
-
-        do {
-            ensureCoordinatorReady(timer);
-            client.poll(timer);
-            invokeCompletedOffsetCommitCallbacks();
-
-            if (inFlightAsyncCommits.get() == 0) {
-                return true;
-            }
-
-            timer.sleep(rebalanceConfig.retryBackoffMs);
-        } while (timer.notExpired());
-
-        return false;
     }
 
     private void doAutoCommitOffsetsAsync() {

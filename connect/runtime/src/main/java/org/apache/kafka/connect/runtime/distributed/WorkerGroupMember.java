@@ -17,6 +17,7 @@
 package org.apache.kafka.connect.runtime.distributed;
 
 import org.apache.kafka.clients.ApiVersions;
+import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.Metadata;
@@ -112,8 +113,15 @@ public class WorkerGroupMember {
             this.metadata.bootstrap(addresses);
             String metricGrpPrefix = "connect";
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config, time, logContext);
+            Selector.Builder selectorBuilder = new Selector.Builder();
+            selectorBuilder.withConnectionMaxIdleMs(config.getLong(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG))
+                    .withMetrics(metrics)
+                    .withTime(time)
+                    .withMetricGrpPrefix(metricGrpPrefix)
+                    .withChannelBuilder(channelBuilder)
+                    .withLogContext(logContext);
             NetworkClient netClient = new NetworkClient(
-                    new Selector(config.getLong(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext),
+                    selectorBuilder.build(),
                     this.metadata,
                     clientId,
                     100, // a fixed large enough value will suffice
@@ -124,6 +132,7 @@ public class WorkerGroupMember {
                     config.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG),
                     config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG),
                     config.getLong(CommonClientConfigs.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG),
+                    ClientDnsLookup.forConfig(config.getString(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG)),
                     time,
                     true,
                     new ApiVersions(),

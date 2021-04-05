@@ -27,7 +27,7 @@ import kafka.raft.KafkaRaftManager.RaftIoThread
 import kafka.server.{KafkaConfig, MetaProperties}
 import kafka.utils.timer.SystemTimer
 import kafka.utils.{KafkaScheduler, Logging, ShutdownableThread}
-import org.apache.kafka.clients.{ApiVersions, ManualMetadataUpdater, NetworkClient}
+import org.apache.kafka.clients.{ApiVersions, ClientDnsLookup, ManualMetadataUpdater, NetworkClient}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network.{ChannelBuilders, ListenerName, NetworkReceive, Selectable, Selector}
@@ -110,8 +110,7 @@ class KafkaRaftManager[T](
   topicPartition: TopicPartition,
   time: Time,
   metrics: Metrics,
-  threadNamePrefixOpt: Option[String],
-  val controllerQuorumVotersFuture: CompletableFuture[util.Map[Integer, AddressSpec]]
+  threadNamePrefixOpt: Option[String]
 ) extends RaftManager[T] with Logging {
 
   private val raftConfig = new RaftConfig(config)
@@ -132,7 +131,7 @@ class KafkaRaftManager[T](
 
   def startup(): Unit = {
     // Update the voter endpoints (if valid) with what's in RaftConfig
-    val voterAddresses: util.Map[Integer, AddressSpec] = controllerQuorumVotersFuture.get()
+    val voterAddresses: util.Map[Integer, AddressSpec] = raftConfig.quorumVoterConnections
     for (voterAddressEntry <- voterAddresses.entrySet.asScala) {
       voterAddressEntry.getValue match {
         case spec: InetAddressSpec =>
@@ -269,17 +268,17 @@ class KafkaRaftManager[T](
     val metricGroupPrefix = "raft-channel"
     val collectPerConnectionMetrics = false
 
-    val selector = new Selector(
-      NetworkReceive.UNLIMITED,
-      config.connectionsMaxIdleMs,
-      metrics,
-      time,
-      metricGroupPrefix,
-      Map.empty[String, String].asJava,
-      collectPerConnectionMetrics,
-      channelBuilder,
-      logContext
-    )
+    val selectorBuilder = new Selector.Builder()
+    selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                                  .withConnectionMaxIdleMs(config.connectionsMaxIdleMs)
+                                  .withMetrics(metrics)
+                                  .withTime(time)
+                                  .withMetricGrpPrefix(metricGroupPrefix)
+                                  .withMetricsPerConnection(collectPerConnectionMetrics)
+                                  .withChannelBuilder(channelBuilder)
+                                  .withLogContext(logContext);
+
+    val selector = selectorBuilder.build()
 
     val clientId = s"raft-client-${config.nodeId}"
     val maxInflightRequestsPerConnection = 1
@@ -299,6 +298,7 @@ class KafkaRaftManager[T](
       config.quorumRequestTimeoutMs,
       config.connectionSetupTimeoutMs,
       config.connectionSetupTimeoutMaxMs,
+      ClientDnsLookup.USE_ALL_DNS_IPS,
       time,
       discoverBrokerVersions,
       new ApiVersions,

@@ -455,17 +455,17 @@ private class ReplicaFetcherBlockingSend(sourceNode: Node,
   private val networkClient = {
     val logContext = new LogContext()
     val channelBuilder = org.apache.kafka.clients.ClientUtils.createChannelBuilder(consumerConfig, time, logContext)
-    val selector = new Selector(
-      NetworkReceive.UNLIMITED,
-      consumerConfig.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
-      metrics,
-      time,
-      "replica-fetcher",
-      Map("broker-id" -> sourceNode.id.toString, "fetcher-id" -> fetcherId.toString).asJava,
-      false,
-      channelBuilder,
-      logContext
-    )
+    val selectorBuilder = new Selector.Builder()
+    selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                                .withConnectionMaxIdleMs(consumerConfig.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG))
+                                .withMetrics(metrics)
+                                .withTime(time)
+                                .withMetricGrpPrefix("replica-fetcher")
+                                .withMetricTags(Map("broker-id" -> sourceNode.id.toString, "fetcher-id" -> fetcherId.toString).asJava)
+                                .withMetricsPerConnection(false)
+                                .withChannelBuilder(channelBuilder)
+                                .withLogContext(logContext);
+    val selector = selectorBuilder.build()
     new NetworkClient(
       selector,
       new ManualMetadataUpdater(),
@@ -478,6 +478,7 @@ private class ReplicaFetcherBlockingSend(sourceNode: Node,
       consumerConfig.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG),
       consumerConfig.getLong(ConsumerConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG),
       consumerConfig.getLong(ConsumerConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG),
+      ClientDnsLookup.USE_ALL_DNS_IPS,
       time,
       false,
       new ApiVersions,

@@ -195,17 +195,18 @@ class BrokerToControllerChannelManagerImpl(
         config.saslInterBrokerHandshakeRequestEnable,
         logContext
       )
-      val selector = new Selector(
-        NetworkReceive.UNLIMITED,
-        Selector.NO_IDLE_TIMEOUT_MS,
-        metrics,
-        time,
-        channelName,
-        Map("BrokerId" -> config.brokerId.toString).asJava,
-        false,
-        channelBuilder,
-        logContext
-      )
+      val selectorBuilder = new Selector.Builder()
+      selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                                    .withConnectionMaxIdleMs(Selector.NO_IDLE_TIMEOUT_MS)
+                                    .withMetrics(metrics)
+                                    .withTime(time)
+                                    .withMetricGrpPrefix(channelName)
+                                    .withMetricTags(Map("BrokerId" -> config.brokerId.toString).asJava)
+                                    .withMetricsPerConnection(false)
+                                    .withChannelBuilder(channelBuilder)
+                                    .withLogContext(logContext);
+
+      val selector = selectorBuilder.build()
       new NetworkClient(
         selector,
         manualMetadataUpdater,
@@ -218,6 +219,7 @@ class BrokerToControllerChannelManagerImpl(
         config.requestTimeoutMs,
         config.connectionSetupTimeoutMs,
         config.connectionSetupTimeoutMaxMs,
+        ClientDnsLookup.USE_ALL_DNS_IPS,
         time,
         true,
         apiVersions,

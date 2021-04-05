@@ -60,17 +60,17 @@ object TransactionMarkerChannelManager {
       case reconfigurable: Reconfigurable => config.addReconfigurable(reconfigurable)
       case _ =>
     }
-    val selector = new Selector(
-      NetworkReceive.UNLIMITED,
-      config.connectionsMaxIdleMs,
-      metrics,
-      time,
-      "txn-marker-channel",
-      Map.empty[String, String].asJava,
-      false,
-      channelBuilder,
-      logContext
-    )
+    val selectorBuilder = new Selector.Builder()
+    selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                                  .withConnectionMaxIdleMs(config.connectionsMaxIdleMs)
+                                  .withMetrics(metrics)
+                                  .withTime(time)
+                                  .withMetricGrpPrefix("txn-marker-channel")
+                                  .withMetricsPerConnection(false)
+                                  .withChannelBuilder(channelBuilder)
+                                  .withLogContext(logContext);
+
+    val selector = selectorBuilder.build()
     val networkClient = new NetworkClient(
       selector,
       new ManualMetadataUpdater(),
@@ -83,6 +83,7 @@ object TransactionMarkerChannelManager {
       config.requestTimeoutMs,
       config.connectionSetupTimeoutMs,
       config.connectionSetupTimeoutMaxMs,
+      ClientDnsLookup.USE_ALL_DNS_IPS,
       time,
       false,
       new ApiVersions,

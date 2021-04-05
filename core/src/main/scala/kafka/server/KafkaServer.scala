@@ -34,7 +34,7 @@ import kafka.security.CredentialProvider
 import kafka.server.metadata.{MetadataBroker, ZkConfigRepository}
 import kafka.utils._
 import kafka.zk.{AdminZkClient, BrokerInfo, KafkaZkClient}
-import org.apache.kafka.clients.{ApiVersions, ManualMetadataUpdater, NetworkClient, NetworkClientUtils}
+import org.apache.kafka.clients.{ApiVersions, ClientDnsLookup, ManualMetadataUpdater, NetworkClient, NetworkClientUtils}
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.message.ControlledShutdownRequestData
@@ -284,7 +284,7 @@ class KafkaServer(
         // Delay starting processors until the end of the initialization sequence to ensure
         // that credentials have been loaded before processing authentications.
         //
-        // Note that we allow the use of KRaft mode controller APIs when forwarding is enabled
+        // Note that we allow the use of self-managed mode controller APIs when forwarding is enabled
         // so that the Envelope request is exposed. This is only used in testing currently.
         socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
         socketServer.startup(startProcessingRequests = false)
@@ -513,17 +513,16 @@ class KafkaServer(
           time,
           config.saslInterBrokerHandshakeRequestEnable,
           logContext)
-        val selector = new Selector(
-          NetworkReceive.UNLIMITED,
-          config.connectionsMaxIdleMs,
-          metrics,
-          time,
-          "kafka-server-controlled-shutdown",
-          Map.empty.asJava,
-          false,
-          channelBuilder,
-          logContext
-        )
+          val selectorBuilder = new Selector.Builder()
+          selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                                      .withConnectionMaxIdleMs(config.connectionsMaxIdleMs)
+                                      .withMetrics(metrics)
+                                      .withTime(time)
+                                      .withMetricGrpPrefix("kafka-server-controlled-shutdown")
+                                      .withMetricsPerConnection(false)
+                                      .withChannelBuilder(channelBuilder)
+                                      .withLogContext(logContext);
+        val selector = selectorBuilder.build();
         new NetworkClient(
           selector,
           metadataUpdater,
@@ -536,6 +535,7 @@ class KafkaServer(
           config.requestTimeoutMs,
           config.connectionSetupTimeoutMs,
           config.connectionSetupTimeoutMaxMs,
+          ClientDnsLookup.USE_ALL_DNS_IPS,
           time,
           false,
           new ApiVersions,

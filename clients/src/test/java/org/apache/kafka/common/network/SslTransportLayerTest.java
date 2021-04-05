@@ -128,10 +128,10 @@ public class SslTransportLayerTest {
         public Stream<? extends Arguments> provideArguments(ExtensionContext context) throws Exception {
             List<Arguments> parameters = new ArrayList<>();
             parameters.add(Arguments.of(new Args("TLSv1.2", false)));
-//            parameters.add(Arguments.of(new Args("TLSv1.2", true)));
-//            if (Java.IS_JAVA11_COMPATIBLE) {
-//                parameters.add(Arguments.of(new Args("TLSv1.3", false)));
-//            }
+            parameters.add(Arguments.of(new Args("TLSv1.2", true)));
+            if (Java.IS_JAVA11_COMPATIBLE) {
+                parameters.add(Arguments.of(new Args("TLSv1.3", false)));
+            }
             return parameters.stream();
         }
     }
@@ -591,7 +591,7 @@ public class SslTransportLayerTest {
     }
 
     /**
-     * Tests that connection succeeds with the default TLS version.
+     * Tests that connection success with the default TLS version.
      */
     @ParameterizedTest
     @ArgumentsSource(SslTransportLayerArgumentsProvider.class)
@@ -611,6 +611,12 @@ public class SslTransportLayerTest {
         NetworkTestUtils.checkClientConnection(selector, "0", 10, 100);
         server.verifyAuthenticationMetrics(1, 0);
         selector.close();
+
+        checkAuthenticationFailed(args, "1", "TLSv1.1");
+        server.verifyAuthenticationMetrics(1, 1);
+
+        checkAuthenticationFailed(args, "2", "TLSv1");
+        server.verifyAuthenticationMetrics(1, 2);
     }
 
     /** Checks connection failed using the specified {@code tlsVersion}. */
@@ -630,14 +636,12 @@ public class SslTransportLayerTest {
      */
     @ParameterizedTest
     @ArgumentsSource(SslTransportLayerArgumentsProvider.class)
-    public void testUnsupportedTlsVersion(Args args) throws Exception {
+    public void testUnsupportedTLSVersion(Args args) throws Exception {
+        args.sslServerConfigs.put(SslConfigs.SSL_ENABLED_PROTOCOLS_CONFIG, Arrays.asList("TLSv1.2"));
         server = createEchoServer(args, SecurityProtocol.SSL);
 
         checkAuthenticationFailed(args, "0", "TLSv1.1");
         server.verifyAuthenticationMetrics(0, 1);
-//
-//        checkAuthenticationFailed(args, "0", "TLSv1");
-//        server.verifyAuthenticationMetrics(0, 2);
     }
 
     /**
@@ -775,8 +779,19 @@ public class SslTransportLayerTest {
         LogContext logContext = new LogContext();
         ChannelBuilder channelBuilder = new SslChannelBuilder(Mode.CLIENT, null, false, logContext);
         channelBuilder.configure(args.sslClientConfigs);
-        try (Selector selector = new Selector(NetworkReceive.UNLIMITED, Selector.NO_IDLE_TIMEOUT_MS, new Metrics(), Time.SYSTEM,
-                "MetricGroup", new HashMap<>(), false, true, channelBuilder, MemoryPool.NONE, logContext)) {
+        Selector.Builder selectorBuilder = new Selector.Builder();
+        selectorBuilder.withMaxReceiveSize(NetworkReceive.UNLIMITED)
+                .withConnectionMaxIdleMs(Selector.NO_IDLE_TIMEOUT_MS)
+                .withMetrics(new Metrics())
+                .withTime(Time.SYSTEM)
+                .withMetricGrpPrefix("MetricGroup")
+                .withMetricTags(new HashMap<>())
+                .withMetricsPerConnection(false)
+                .withRecordTimePerConnection(true)
+                .withMemoryPool(MemoryPool.NONE)
+                .withChannelBuilder(channelBuilder)
+                .withLogContext(new LogContext());
+        try (Selector selector = selectorBuilder.build()) {
 
             String node = "0";
             server = createEchoServer(args, SecurityProtocol.SSL);
@@ -892,7 +907,14 @@ public class SslTransportLayerTest {
             channelBuilder.flushFailureAction = flushFailureAction;
             channelBuilder.failureIndex = i;
             channelBuilder.configure(args.sslClientConfigs);
-            this.selector = new Selector(5000, new Metrics(), time, "MetricGroup", channelBuilder, new LogContext());
+            Selector.Builder selectorBuilder = new Selector.Builder();
+            selectorBuilder.withConnectionMaxIdleMs(5000)
+                    .withMetrics(new Metrics())
+                    .withTime(time)
+                    .withMetricGrpPrefix("MetricGroup")
+                    .withChannelBuilder(channelBuilder)
+                    .withLogContext(new LogContext());
+            this.selector = selectorBuilder.build();
 
             InetSocketAddress addr = new InetSocketAddress("localhost", server.port());
             selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
@@ -971,7 +993,14 @@ public class SslTransportLayerTest {
         String node = "0";
         server = createEchoServer(args, securityProtocol);
         clientChannelBuilder.configure(args.sslClientConfigs);
-        this.selector = new Selector(5000, new Metrics(), time, "MetricGroup", clientChannelBuilder, new LogContext());
+        Selector.Builder selectorBuilder = new Selector.Builder();
+        selectorBuilder.withConnectionMaxIdleMs(5000)
+                .withMetrics(new Metrics())
+                .withTime(time)
+                .withMetricGrpPrefix("MetricGroup")
+                .withChannelBuilder(clientChannelBuilder)
+                .withLogContext(new LogContext());
+        this.selector = selectorBuilder.build();
         InetSocketAddress addr = new InetSocketAddress("localhost", server.port());
         selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
 
@@ -1284,7 +1313,14 @@ public class SslTransportLayerTest {
         TestSslChannelBuilder channelBuilder = new TestSslChannelBuilder(Mode.CLIENT);
         channelBuilder.configureBufferSizes(netReadBufSize, netWriteBufSize, appBufSize);
         channelBuilder.configure(sslClientConfigs);
-        this.selector = new Selector(100 * 5000, new Metrics(), time, "MetricGroup", channelBuilder, new LogContext());
+        Selector.Builder selectorBuilder = new Selector.Builder();
+        selectorBuilder.withConnectionMaxIdleMs(100 * 5000)
+                .withMetrics(new Metrics())
+                .withTime(time)
+                .withMetricGrpPrefix("MetricGroup")
+                .withChannelBuilder(channelBuilder)
+                .withLogContext(new LogContext());
+        this.selector = selectorBuilder.build();
         return selector;
     }
 
@@ -1300,7 +1336,14 @@ public class SslTransportLayerTest {
         LogContext logContext = new LogContext();
         ChannelBuilder channelBuilder = new SslChannelBuilder(Mode.CLIENT, null, false, logContext);
         channelBuilder.configure(args.sslClientConfigs);
-        selector = new Selector(5000, new Metrics(), time, "MetricGroup", channelBuilder, logContext);
+        Selector.Builder selectorBuilder = new Selector.Builder();
+        selectorBuilder.withConnectionMaxIdleMs(5000)
+                .withMetrics(new Metrics())
+                .withTime(time)
+                .withMetricGrpPrefix("MetricGroup")
+                .withChannelBuilder(channelBuilder)
+                .withLogContext(logContext);
+        selector = selectorBuilder.build();
         return selector;
     }
 

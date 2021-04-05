@@ -226,6 +226,7 @@ public class Worker {
 
         offsetBackingStore.stop();
         metrics.stop();
+        stopExecutor();
 
         log.info("Worker stopped");
 
@@ -374,6 +375,12 @@ public class Worker {
         }
 
         return result;
+    }
+
+    private void stopExecutor() {
+        if (executor != null) {
+            executor.shutdownNow();
+        }
     }
 
     /**

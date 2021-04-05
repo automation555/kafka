@@ -128,10 +128,10 @@ public class SslTransportLayerTest {
         public Stream<? extends Arguments> provideArguments(ExtensionContext context) throws Exception {
             List<Arguments> parameters = new ArrayList<>();
             parameters.add(Arguments.of(new Args("TLSv1.2", false)));
-            parameters.add(Arguments.of(new Args("TLSv1.2", true)));
-            if (Java.IS_JAVA11_COMPATIBLE) {
-                parameters.add(Arguments.of(new Args("TLSv1.3", false)));
-            }
+//            parameters.add(Arguments.of(new Args("TLSv1.2", true)));
+//            if (Java.IS_JAVA11_COMPATIBLE) {
+//                parameters.add(Arguments.of(new Args("TLSv1.3", false)));
+//            }
             return parameters.stream();
         }
     }
@@ -591,7 +591,7 @@ public class SslTransportLayerTest {
     }
 
     /**
-     * Tests that connection success with the default TLS version.
+     * Tests that connection succeeds with the default TLS version.
      */
     @ParameterizedTest
     @ArgumentsSource(SslTransportLayerArgumentsProvider.class)
@@ -611,12 +611,6 @@ public class SslTransportLayerTest {
         NetworkTestUtils.checkClientConnection(selector, "0", 10, 100);
         server.verifyAuthenticationMetrics(1, 0);
         selector.close();
-
-        checkAuthenticationFailed(args, "1", "TLSv1.1");
-        server.verifyAuthenticationMetrics(1, 1);
-
-        checkAuthenticationFailed(args, "2", "TLSv1");
-        server.verifyAuthenticationMetrics(1, 2);
     }
 
     /** Checks connection failed using the specified {@code tlsVersion}. */
@@ -636,12 +630,14 @@ public class SslTransportLayerTest {
      */
     @ParameterizedTest
     @ArgumentsSource(SslTransportLayerArgumentsProvider.class)
-    public void testUnsupportedTLSVersion(Args args) throws Exception {
-        args.sslServerConfigs.put(SslConfigs.SSL_ENABLED_PROTOCOLS_CONFIG, Arrays.asList("TLSv1.2"));
+    public void testUnsupportedTlsVersion(Args args) throws Exception {
         server = createEchoServer(args, SecurityProtocol.SSL);
 
         checkAuthenticationFailed(args, "0", "TLSv1.1");
         server.verifyAuthenticationMetrics(0, 1);
+//
+//        checkAuthenticationFailed(args, "0", "TLSv1");
+//        server.verifyAuthenticationMetrics(0, 2);
     }
 
     /**

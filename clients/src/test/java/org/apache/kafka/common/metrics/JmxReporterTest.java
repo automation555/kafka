@@ -20,25 +20,30 @@ import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.stats.Avg;
 import org.apache.kafka.common.metrics.stats.CumulativeSum;
 import org.apache.kafka.common.utils.Time;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import javax.management.MBeanAttributeInfo;
-import javax.management.MBeanFeatureInfo;
-import javax.management.MBeanInfo;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class JmxReporterTest {
+    private static final Logger log = LoggerFactory.getLogger(JmxReporterTest.class);
+
+    @Rule
+    final public Timeout globalTimeout = Timeout.millis(1200);
 
     @Test
     public void testJmxRegistration() throws Exception {
@@ -121,106 +126,107 @@ public class JmxReporterTest {
         }
     }
 
-    @Test
-    public void testPredicateAndDynamicReload() throws Exception {
-        Metrics metrics = new Metrics();
-        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+    private static void assertExceptionContains(Throwable e, String substring) {
+        assertTrue("Expected exception message to contain substring '" + substring +
+                "', but it was " + e.getMessage(),
+            e.getMessage().contains(substring));
+    }
 
-        Map<String, String> configs = new HashMap<>();
+    private static class MultipleReportersTestContext {
+        private final JmxReporter.Registry registry;
+        private final MockMBeanServer server;
+        private final List<JmxReporter> reporters;
 
-        configs.put(JmxReporter.BLACKLIST_CONFIG,
-                    JmxReporter.getMBeanName("", metrics.metricName("pack.bean2.total", "grp2")));
+        MultipleReportersTestContext() {
+            this.registry = new JmxReporter.Registry();
+            this.server = new MockMBeanServer();
+            this.reporters = new ArrayList<>();
+        }
 
-        try {
-            JmxReporter reporter = new JmxReporter();
-            reporter.configure(configs);
-            metrics.addReporter(reporter);
+        MultipleReportersTestContext addReporter(String prefix) {
+            this.reporters.add(new JmxReporter(prefix, registry, server));
+            return this;
+        }
 
-            Sensor sensor = metrics.sensor("kafka.requests");
-            sensor.add(metrics.metricName("pack.bean2.avg", "grp1"), new Avg());
-            sensor.add(metrics.metricName("pack.bean2.total", "grp2"), new CumulativeSum());
-            sensor.record();
-
-            assertTrue(server.isRegistered(new ObjectName(":type=grp1")));
-            assertEquals(1.0, server.getAttribute(new ObjectName(":type=grp1"), "pack.bean2.avg"));
-            assertFalse(server.isRegistered(new ObjectName(":type=grp2")));
-
-            sensor.record();
-
-            configs.put(JmxReporter.BLACKLIST_CONFIG,
-                        JmxReporter.getMBeanName("", metrics.metricName("pack.bean2.avg", "grp1")));
-
-            reporter.reconfigure(configs);
-
-            assertFalse(server.isRegistered(new ObjectName(":type=grp1")));
-            assertTrue(server.isRegistered(new ObjectName(":type=grp2")));
-            assertEquals(2.0, server.getAttribute(new ObjectName(":type=grp2"), "pack.bean2.total"));
-
-            metrics.removeMetric(metrics.metricName("pack.bean2.total", "grp2"));
-            assertFalse(server.isRegistered(new ObjectName(":type=grp2")));
-        } finally {
-            metrics.close();
+        static KafkaMetric newMetric(String name) {
+            MetricName metricName = new MetricName(name, "network", "", Collections.emptyMap());
+            return new KafkaMetric(new Object(), metricName, new Gauge<Integer>() {
+                @Override
+                public Integer value(MetricConfig config, long now) {
+                    return 1;
+                }
+            }, new MetricConfig(), Time.SYSTEM);
         }
     }
 
+    /**
+     * Test the case where two separate JmxReporter instances try to use the same mbean.
+     */
     @Test
-    public void testJmxPrefix() throws Exception {
-        JmxReporter reporter = new JmxReporter();
-        MetricsContext metricsContext = new KafkaMetricsContext("kafka.server");
-        MetricConfig metricConfig = new MetricConfig();
-        Metrics metrics = new Metrics(metricConfig, new ArrayList<>(Arrays.asList(reporter)), Time.SYSTEM, metricsContext);
+    public void testMultipleReportersUsingTheSameMbean() throws Exception {
+        final String prefix = "kafka.mock.client";
+        MultipleReportersTestContext context = new MultipleReportersTestContext().
+            addReporter(prefix).addReporter(prefix);
+        KafkaMetric foo = MultipleReportersTestContext.newMetric("foo");
 
-        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
-        try {
-            Sensor sensor = metrics.sensor("kafka.requests");
-            sensor.add(metrics.metricName("pack.bean1.avg", "grp1"), new Avg());
-            assertEquals("kafka.server", server.getObjectInstance(new ObjectName("kafka.server:type=grp1")).getObjectName().getDomain());
-        } finally {
-            metrics.close();
-        }
+        // The first reporter claims the bean.
+        context.reporters.get(0).addMetrics(Collections.singletonList(foo));
+        assertEquals(context.reporters.get(0), context.registry.
+            findMBeanOwner(JmxReporter.getMBeanName(prefix, foo.metricName())));
+
+        // The second reporter does not own the bean.
+        context.reporters.get(1).addMetrics(Collections.singletonList(foo));
+        assertEquals(context.reporters.get(0), context.registry.
+            findMBeanOwner(JmxReporter.getMBeanName(prefix, foo.metricName())));
+        context.reporters.get(1).removeMetrics(Collections.singletonList(foo));
+        assertEquals(context.reporters.get(0), context.registry.
+            findMBeanOwner(JmxReporter.getMBeanName(prefix, foo.metricName())));
+
+        // Remove the bean.
+        context.reporters.get(0).removeMetrics(Collections.singletonList(foo));
+        assertEquals(null, context.registry.
+            findMBeanOwner(JmxReporter.getMBeanName(prefix, foo.metricName())));
     }
 
+    /**
+     * Test removing MBeans from the registry.
+     */
     @Test
-    public void testDeprecatedJmxPrefixWithDefaultMetrics() throws Exception {
-        @SuppressWarnings("deprecation")
-        JmxReporter reporter = new JmxReporter("my-prefix");
-
-        // for backwards compatibility, ensure prefix does not get overridden by the default empty namespace in metricscontext
-        MetricConfig metricConfig = new MetricConfig();
-        Metrics metrics = new Metrics(metricConfig, new ArrayList<>(Arrays.asList(reporter)), Time.SYSTEM);
-
-        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+    public void testRemovingBeans() throws Exception {
+        MockMBeanServer server = new MockMBeanServer();
+        MultipleReportersTestContext context = new MultipleReportersTestContext().
+            addReporter("kafka.mock.client");
+        KafkaMetric foo = MultipleReportersTestContext.newMetric("foo");
+        KafkaMetric bar = MultipleReportersTestContext.newMetric("bar");
+        context.reporters.get(0).metricChange(foo);
+        server.unregisterMbeanLatch = new CountDownLatch(1);
+        final AtomicBoolean addMetricThreadDone = new AtomicBoolean(false);
+        // Adding a new attribute to a bean should be blocked by the removal of
+        // that same bean.
+        Thread checkThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long startNs = Time.SYSTEM.nanoseconds();
+                do {
+                    assertTrue(!addMetricThreadDone.get());
+                } while (Time.SYSTEM.nanoseconds() < startNs + 10000);
+                server.unregisterMbeanLatch.countDown();
+            }
+        });
+        Thread addMetricThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                context.reporters.get(0).metricChange(bar);
+                addMetricThreadDone.set(true);
+            }
+        });
         try {
-            Sensor sensor = metrics.sensor("my-sensor");
-            sensor.add(metrics.metricName("pack.bean1.avg", "grp1"), new Avg());
-            assertEquals("my-prefix", server.getObjectInstance(new ObjectName("my-prefix:type=grp1")).getObjectName().getDomain());
+            checkThread.start();
+            addMetricThread.start();
+            context.reporters.get(0).metricRemoval(foo);
         } finally {
-            metrics.close();
-        }
-    }
-
-    @Test
-    public void testJmxRegistrationWithDifferentAttributeValueTypes() throws Exception {
-        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
-        MetricConfig metricConfig = new MetricConfig();
-        JmxReporter reporter = new JmxReporter();
-        Metrics metrics = new Metrics(metricConfig, Time.SYSTEM);
-        metrics.addReporter(reporter);
-        try {
-            Gauge<String> testString = (config, now) -> "testvalue";
-            Gauge<String> nullString = (config, now) -> null;
-            metrics.addMetric(metrics.metricName("test1", "grp1"), testString);
-            metrics.addMetric(metrics.metricName("test2", "grp1"), new Avg());
-            metrics.addMetric(metrics.metricName("test3", "grp1"), nullString);
-            MBeanInfo info = server.getMBeanInfo(new ObjectName(":type=grp1"));
-            MBeanAttributeInfo[] attributes = info.getAttributes();
-            Arrays.sort(attributes, Comparator.comparing(MBeanFeatureInfo::getName));
-            assertEquals(attributes.length, 3);
-            assertEquals(String.class.getName(), attributes[0].getType());
-            assertEquals(Double.class.getName(), attributes[1].getType());
-            assertEquals(double.class.getName(), attributes[2].getType());
-        } finally {
-            metrics.close();
+            checkThread.join();
+            addMetricThread.join();
         }
     }
 }

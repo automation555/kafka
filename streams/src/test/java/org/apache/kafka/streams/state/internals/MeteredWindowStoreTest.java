@@ -31,7 +31,7 @@ import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.test.InternalMockProcessorContext;
-import org.apache.kafka.test.MockRecordCollector;
+import org.apache.kafka.test.NoOpRecordCollector;
 import org.apache.kafka.test.StreamsTestUtils;
 import org.apache.kafka.test.TestUtils;
 import org.junit.Before;
@@ -114,8 +114,8 @@ public class MeteredWindowStoreTest {
             Serdes.Long(),
             streamsMetrics,
             new StreamsConfig(StreamsTestUtils.getStreamsConfig()),
-            MockRecordCollector::new,
-            new ThreadCache(new LogContext("testCache "), 0, streamsMetrics)
+            NoOpRecordCollector::new,
+            new ThreadCache(new LogContext("testCache "), 0, streamsMetrics, false)
         );
         storeLevelGroup =
             StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion) ? STORE_LEVEL_GROUP_FROM_0100_TO_24 : STORE_LEVEL_GROUP;
@@ -128,8 +128,17 @@ public class MeteredWindowStoreTest {
         replay(innerStoreMock);
         store.init(context, store);
         final JmxReporter reporter = new JmxReporter("kafka.streams");
-        try {
-            metrics.addReporter(reporter);
+        metrics.addReporter(reporter);
+        assertTrue(reporter.containsMbean(String.format(
+            "kafka.streams:type=%s,%s=%s,task-id=%s,%s-state-id=%s",
+            storeLevelGroup,
+            threadIdTagKey,
+            threadId,
+            context.taskId().toString(),
+            STORE_TYPE,
+            STORE_NAME
+        )));
+        if (StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion)) {
             assertTrue(reporter.containsMbean(String.format(
                 "kafka.streams:type=%s,%s=%s,task-id=%s,%s-state-id=%s",
                 storeLevelGroup,
@@ -137,21 +146,8 @@ public class MeteredWindowStoreTest {
                 threadId,
                 context.taskId().toString(),
                 STORE_TYPE,
-                STORE_NAME
+                ROLLUP_VALUE
             )));
-            if (StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion)) {
-                assertTrue(reporter.containsMbean(String.format(
-                    "kafka.streams:type=%s,%s=%s,task-id=%s,%s-state-id=%s",
-                    storeLevelGroup,
-                    threadIdTagKey,
-                    threadId,
-                    context.taskId().toString(),
-                    STORE_TYPE,
-                    ROLLUP_VALUE
-                )));
-            }
-        } finally {
-            reporter.close();
         }
     }
 

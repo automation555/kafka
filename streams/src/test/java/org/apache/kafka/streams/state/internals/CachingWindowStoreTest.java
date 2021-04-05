@@ -99,7 +99,7 @@ public class CachingWindowStoreTest {
         cacheListener = new CachingKeyValueStoreTest.CacheFlushListenerStub<>(keyDeserializer, new StringDeserializer());
         cachingStore = new CachingWindowStore(windowStore, WINDOW_SIZE, SEGMENT_INTERVAL);
         cachingStore.setFlushListener(cacheListener, false);
-        cache = new ThreadCache(new LogContext("testCache "), MAX_CACHE_SIZE_BYTES, new MockStreamsMetrics(new Metrics()));
+        cache = new ThreadCache(new LogContext("testCache "), MAX_CACHE_SIZE_BYTES, new MockStreamsMetrics(new Metrics()), false);
         topic = "topic";
         context = new InternalMockProcessorContext(TestUtils.tempDirectory(), null, null, null, cache);
         context.setRecordContext(new ProcessorRecordContext(DEFAULT_TIMESTAMP, 0, 0, topic, null));
@@ -335,7 +335,7 @@ public class CachingWindowStoreTest {
     @Test
     public void shouldFlushEvictedItemsIntoUnderlyingStore() {
         final int added = addItemsToCache();
-        // only the evicted entry should have been flushed
+        // all dirty entries should have been flushed
         final KeyValueIterator<Bytes, byte[]> iter = underlying.fetch(
             Bytes.wrap("0".getBytes(StandardCharsets.UTF_8)),
             DEFAULT_TIMESTAMP,
@@ -421,9 +421,9 @@ public class CachingWindowStoreTest {
     }
 
     @Test
-    public void shouldForwardDirtyEvictedItemToListenerWhenEvicted() {
-        addItemsToCache();
-        assertEquals(1, cacheListener.forwarded.size());
+    public void shouldForwardDirtyItemToListenerWhenEvicted() {
+        final int numRecords = addItemsToCache();
+        assertEquals(numRecords, cacheListener.forwarded.size());
     }
 
     @Test

@@ -16,27 +16,32 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.ValueAndTimestamp;
 import org.apache.kafka.streams.state.WindowStore;
-import org.apache.kafka.test.MockInternalProcessorContext;
+import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.test.NoOpRecordCollector;
 import org.apache.kafka.test.StreamsTestUtils;
+import org.apache.kafka.test.TestUtils;
 import org.easymock.EasyMock;
 import org.junit.Before;
 import org.junit.Test;
-
-import java.util.Properties;
 
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 
 public class MeteredTimestampedWindowStoreTest {
-    private MockInternalProcessorContext context;
+    private InternalMockProcessorContext context;
+    @SuppressWarnings("unchecked")
     private final WindowStore<Bytes, byte[]> innerStoreMock = EasyMock.createNiceMock(WindowStore.class);
     private final MeteredTimestampedWindowStore<String, String> store = new MeteredTimestampedWindowStore<>(
         innerStoreMock,
@@ -46,6 +51,7 @@ public class MeteredTimestampedWindowStoreTest {
         Serdes.String(),
         new ValueAndTimestampSerde<>(new SerdeThatDoesntHandleNull())
     );
+    private final Metrics metrics = new Metrics(new MetricConfig().recordLevel(Sensor.RecordingLevel.DEBUG));
 
     {
         EasyMock.expect(innerStoreMock.name()).andReturn("mocked-store").anyTimes();
@@ -53,11 +59,18 @@ public class MeteredTimestampedWindowStoreTest {
 
     @Before
     public void setUp() {
-        final Properties properties = StreamsTestUtils.getStreamsConfig();
-        properties.put(StreamsConfig.BUILT_IN_METRICS_VERSION_CONFIG, StreamsConfig.METRICS_LATEST);
-        properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
-        properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.LongSerde.class);
-        context = new MockInternalProcessorContext(properties, new Metrics());
+        final StreamsMetricsImpl streamsMetrics =
+            new StreamsMetricsImpl(metrics, "test", StreamsConfig.METRICS_LATEST);
+
+        context = new InternalMockProcessorContext(
+            TestUtils.tempDirectory(),
+            Serdes.String(),
+            Serdes.Long(),
+            streamsMetrics,
+            new StreamsConfig(StreamsTestUtils.getStreamsConfig()),
+            NoOpRecordCollector::new,
+            new ThreadCache(new LogContext("testCache "), 0, streamsMetrics, false)
+        );
     }
 
     @Test

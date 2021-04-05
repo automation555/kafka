@@ -19,12 +19,13 @@ package org.apache.kafka.streams.state.internals;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
+import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
 import org.apache.kafka.streams.state.internals.metrics.RocksDBMetricsRecorder;
-import org.apache.kafka.test.MockInternalProcessorContext;
-import org.apache.kafka.test.StreamsTestUtils;
+import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.test.NoOpRecordCollector;
+import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -33,7 +34,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
-import java.util.Properties;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -53,12 +53,18 @@ public class SegmentIteratorTest {
 
     @Before
     public void before() {
-        final Properties properties = StreamsTestUtils.getStreamsConfig();
-        properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
-        properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
-        final InternalProcessorContext<Object, Object> context = new MockInternalProcessorContext(properties, new Metrics());
-        segmentOne.init(context, segmentOne);
-        segmentTwo.init(context, segmentTwo);
+        final InternalMockProcessorContext context = new InternalMockProcessorContext(
+                TestUtils.tempDirectory(),
+                Serdes.String(),
+                Serdes.String(),
+                new NoOpRecordCollector(),
+                new ThreadCache(
+                    new LogContext("testCache "),
+                    0,
+                    new MockStreamsMetrics(new Metrics()),
+                    false));
+        segmentOne.openDB(context);
+        segmentTwo.openDB(context);
         segmentOne.put(Bytes.wrap("a".getBytes()), "1".getBytes());
         segmentOne.put(Bytes.wrap("b".getBytes()), "2".getBytes());
         segmentTwo.put(Bytes.wrap("c".getBytes()), "3".getBytes());

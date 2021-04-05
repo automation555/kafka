@@ -17,9 +17,9 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.common.utils.CircularIterator;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.KeyValue;
+import org.apache.kafka.streams.errors.CacheFullException;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.slf4j.Logger;
 
@@ -36,9 +36,10 @@ import java.util.NoSuchElementException;
  */
 public class ThreadCache {
     private final Logger log;
-    private volatile long maxCacheSizeBytes;
+    private final long maxCacheSizeBytes;
     private final StreamsMetricsImpl metrics;
     private final Map<String, NamedCache> caches = new HashMap<>();
+    private final boolean bounded;
 
     // internal stats
     private long numPuts = 0;
@@ -50,10 +51,14 @@ public class ThreadCache {
         void apply(final List<DirtyEntry> dirty);
     }
 
-    public ThreadCache(final LogContext logContext, final long maxCacheSizeBytes, final StreamsMetricsImpl metrics) {
+    public ThreadCache(final LogContext logContext,
+                       final long maxCacheSizeBytes,
+                       final StreamsMetricsImpl metrics,
+                       final boolean bounded) {
         this.maxCacheSizeBytes = maxCacheSizeBytes;
         this.metrics = metrics;
         this.log = logContext.logger(getClass());
+        this.bounded = bounded;
     }
 
     public long puts() {
@@ -72,30 +77,12 @@ public class ThreadCache {
         return numFlushes;
     }
 
-    public synchronized void resize(final long newCacheSizeBytes) {
-        final boolean shrink = newCacheSizeBytes < maxCacheSizeBytes;
-        maxCacheSizeBytes = newCacheSizeBytes;
-        if (shrink) {
-            log.debug("Cache size was shrunk to {}", newCacheSizeBytes);
-            if (caches.values().isEmpty()) {
-                return;
-            }
-            final CircularIterator<NamedCache> circularIterator = new CircularIterator<>(caches.values());
-            while (sizeBytes() > maxCacheSizeBytes) {
-                final NamedCache cache = circularIterator.next();
-                cache.evict();
-                numEvicts++;
-            }
-        } else {
-            log.debug("Cache size was expanded to {}", newCacheSizeBytes);
-        }
-    }
-
     /**
      * The thread cache maintains a set of {@link NamedCache}s whose names are a concatenation of the task ID and the
      * underlying store name. This method creates those names.
      * @param taskIDString Task ID
      * @param underlyingStoreName Underlying store name
+     * @return
      */
     public static String nameSpaceFromTaskIdAndStore(final String taskIDString, final String underlyingStoreName) {
         return taskIDString + "-" + underlyingStoreName;
@@ -103,6 +90,8 @@ public class ThreadCache {
 
     /**
      * Given a cache name of the form taskid-storename, return the task ID.
+     * @param cacheName
+     * @return
      */
     public static String taskIDfromCacheName(final String cacheName) {
         final String[] tokens = cacheName.split("-", 2);
@@ -111,6 +100,8 @@ public class ThreadCache {
 
     /**
      * Given a cache name of the form taskid-storename, return the store name.
+     * @param cacheName
+     * @return
      */
     public static String underlyingStoreNamefromCacheName(final String cacheName) {
         final String[] tokens = cacheName.split("-", 2);
@@ -120,6 +111,9 @@ public class ThreadCache {
 
     /**
      * Add a listener that is called each time an entry is evicted from the cache or an explicit flush is called
+     *
+     * @param namespace
+     * @param listener
      */
     public void addDirtyEntryFlushListener(final String namespace, final DirtyEntryFlushListener listener) {
         final NamedCache cache = getOrCreateCache(namespace);
@@ -159,18 +153,21 @@ public class ThreadCache {
 
         final NamedCache cache = getOrCreateCache(namespace);
         cache.put(key, value);
+
         maybeEvict(namespace);
     }
 
     public LRUCacheEntry putIfAbsent(final String namespace, final Bytes key, final LRUCacheEntry value) {
+
         final NamedCache cache = getOrCreateCache(namespace);
 
         final LRUCacheEntry result = cache.putIfAbsent(key, value);
-        maybeEvict(namespace);
-
         if (result == null) {
             numPuts++;
         }
+
+        maybeEvict(namespace);
+
         return result;
     }
 
@@ -190,39 +187,19 @@ public class ThreadCache {
     }
 
     public MemoryLRUCacheBytesIterator range(final String namespace, final Bytes from, final Bytes to) {
-        return range(namespace, from, to, true);
-    }
-
-    public MemoryLRUCacheBytesIterator range(final String namespace, final Bytes from, final Bytes to, final boolean toInclusive) {
         final NamedCache cache = getCache(namespace);
         if (cache == null) {
-            return new MemoryLRUCacheBytesIterator(Collections.emptyIterator(), new NamedCache(namespace, this.metrics));
+            return new MemoryLRUCacheBytesIterator(Collections.<Bytes>emptyIterator(), new NamedCache(namespace, this.metrics));
         }
-        return new MemoryLRUCacheBytesIterator(cache.keyRange(from, to, toInclusive), cache);
-    }
-
-    public MemoryLRUCacheBytesIterator reverseRange(final String namespace, final Bytes from, final Bytes to) {
-        final NamedCache cache = getCache(namespace);
-        if (cache == null) {
-            return new MemoryLRUCacheBytesIterator(Collections.emptyIterator(), new NamedCache(namespace, this.metrics));
-        }
-        return new MemoryLRUCacheBytesIterator(cache.reverseKeyRange(from, to), cache);
+        return new MemoryLRUCacheBytesIterator(cache.keyRange(from, to), cache);
     }
 
     public MemoryLRUCacheBytesIterator all(final String namespace) {
         final NamedCache cache = getCache(namespace);
         if (cache == null) {
-            return new MemoryLRUCacheBytesIterator(Collections.emptyIterator(), new NamedCache(namespace, this.metrics));
+            return new MemoryLRUCacheBytesIterator(Collections.<Bytes>emptyIterator(), new NamedCache(namespace, this.metrics));
         }
         return new MemoryLRUCacheBytesIterator(cache.allKeys(), cache);
-    }
-
-    public MemoryLRUCacheBytesIterator reverseAll(final String namespace) {
-        final NamedCache cache = getCache(namespace);
-        if (cache == null) {
-            return new MemoryLRUCacheBytesIterator(Collections.emptyIterator(), new NamedCache(namespace, this.metrics));
-        }
-        return new MemoryLRUCacheBytesIterator(cache.reverseAllKeys(), cache);
     }
 
     public long size() {
@@ -261,6 +238,10 @@ public class ThreadCache {
     private void maybeEvict(final String namespace) {
         int numEvicted = 0;
         while (sizeBytes() > maxCacheSizeBytes) {
+            if (bounded) {
+                throw new CacheFullException("Cache get saturated within current transaction session: the ongoing task will enforce a txn commit to unblock."
+                                                 + "Consider either reducing the commit interval or increasing the cache size for optimal throughput");
+            }
             final NamedCache cache = getOrCreateCache(namespace);
             // we abort here as the put on this cache may have triggered
             // a put on another cache. So even though the sizeInBytes() is

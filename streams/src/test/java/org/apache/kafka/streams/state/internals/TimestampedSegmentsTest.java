@@ -17,11 +17,11 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.LogContext;
-import org.apache.kafka.streams.processor.internals.InternalProcessorContext;
 import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
-import org.apache.kafka.test.MockInternalProcessorContext;
-import org.apache.kafka.test.StreamsTestUtils;
+import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.test.NoOpRecordCollector;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -33,8 +33,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.SimpleTimeZone;
 
-import static org.apache.kafka.test.MockInternalProcessorContext.DEFAULT_MAX_CACHE_SIZE_BYTES;
-import static org.apache.kafka.test.MockInternalProcessorContext.DEFAULT_THREAD_CACHE_PREFIX;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -49,7 +47,7 @@ public class TimestampedSegmentsTest {
     private static final long SEGMENT_INTERVAL = 100L;
     private static final long RETENTION_PERIOD = 4 * SEGMENT_INTERVAL;
     private static final String METRICS_SCOPE = "test-state-id";
-    private InternalProcessorContext<Object, Object> context;
+    private InternalMockProcessorContext context;
     private TimestampedSegments segments;
     private File stateDirectory;
     private final String storeName = "test";
@@ -57,10 +55,17 @@ public class TimestampedSegmentsTest {
     @Before
     public void createContext() {
         stateDirectory = TestUtils.tempDirectory();
-        final ThreadCache cache = new ThreadCache(new LogContext(DEFAULT_THREAD_CACHE_PREFIX), DEFAULT_MAX_CACHE_SIZE_BYTES, new MockStreamsMetrics(new Metrics()));
-        context = new MockInternalProcessorContext(StreamsTestUtils.getStreamsConfig(), stateDirectory, cache);
+        context = new InternalMockProcessorContext(
+            stateDirectory,
+            Serdes.String(),
+            Serdes.Long(),
+            new NoOpRecordCollector(),
+            new ThreadCache(new LogContext("testCache "),
+                            0,
+                            new MockStreamsMetrics(new Metrics()),
+                            false)
+        );
         segments = new TimestampedSegments(storeName, METRICS_SCOPE, RETENTION_PERIOD, SEGMENT_INTERVAL);
-        segments.openExisting(context, -1L);
     }
 
     @After
@@ -153,7 +158,6 @@ public class TimestampedSegmentsTest {
     @Test
     public void shouldOpenExistingSegments() {
         segments = new TimestampedSegments("test", METRICS_SCOPE, 4, 1);
-        segments.openExisting(context, -1L);
         segments.getOrCreateSegmentIfLive(0, context, -1L);
         segments.getOrCreateSegmentIfLive(1, context, -1L);
         segments.getOrCreateSegmentIfLive(2, context, -1L);

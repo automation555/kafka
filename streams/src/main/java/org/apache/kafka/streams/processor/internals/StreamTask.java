@@ -25,9 +25,7 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.errors.ProducerFencedException;
-import org.apache.kafka.common.errors.RebalanceInProgressException;
 import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.common.errors.UnknownProducerIdException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Time;
@@ -256,7 +254,7 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
                 final long committedTimestamp = decodeTimestamp(metadata.metadata());
                 partitionGroup.setPartitionTime(partition, committedTimestamp);
                 log.debug("A committed timestamp was detected: setting the partition time of partition {}"
-                    + " to {} in stream task {}", partition, committedTimestamp, id);
+                    + " to {} in stream task {}", partition, committedTimestamp, this);
             } else {
                 log.debug("No committed timestamp was found in metadata for partition {}", partition);
             }
@@ -291,8 +289,8 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
         if (eosEnabled) {
             try {
                 this.producer.beginTransaction();
-            } catch (final ProducerFencedException | UnknownProducerIdException e) {
-                throw new TaskMigratedException(this, e);
+            } catch (final ProducerFencedException fatal) {
+                throw new TaskMigratedException(this, fatal);
             }
             transactionInFlight = true;
         }
@@ -335,7 +333,7 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
      * An active task is processable if its buffer contains data for all of its input
      * source topic partitions, or if it is enforced to be processable
      */
-    public boolean isProcessable(final long now) {
+    boolean isProcessable(final long now) {
         if (partitionGroup.allPartitionsBuffered()) {
             idleStartTime = RecordQueue.UNKNOWN;
             return true;
@@ -395,8 +393,8 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
             if (recordInfo.queue().size() == maxBufferedSize) {
                 consumer.resume(singleton(partition));
             }
-        } catch (final RecoverableClientException e) {
-            throw new TaskMigratedException(this, e);
+        } catch (final ProducerFencedException fatal) {
+            throw new TaskMigratedException(this, fatal);
         } catch (final KafkaException e) {
             final String stackTrace = getStacktraceString(e);
             throw new StreamsException(format("Exception caught in process. taskId=%s, " +
@@ -445,8 +443,8 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
 
         try {
             maybeMeasureLatency(() -> node.punctuate(timestamp, punctuator), time, punctuateLatencySensor);
-        } catch (final RecoverableClientException e) {
-            throw new TaskMigratedException(this, e);
+        } catch (final ProducerFencedException fatal) {
+            throw new TaskMigratedException(this, fatal);
         } catch (final KafkaException e) {
             throw new StreamsException(String.format("%sException caught while punctuating processor '%s'", logPrefix, node.name()), e);
         } finally {
@@ -485,63 +483,57 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
      *                               or if the task producer got fenced (EOS)
      */
     // visible for testing
-    void commit(final boolean startNewTransaction, final Map<TopicPartition, Long> partitionTimes) {
+    private void commit(final boolean startNewTransaction, final Map<TopicPartition, Long> partitionTimes) {
         final long startNs = time.nanoseconds();
         log.debug("Committing");
 
-        flushState();
-
-        if (!eosEnabled) {
-            stateMgr.checkpoint(activeTaskCheckpointableOffsets());
-        }
-
         final Map<TopicPartition, OffsetAndMetadata> consumedOffsetsAndMetadata = new HashMap<>(consumedOffsets.size());
-
         for (final Map.Entry<TopicPartition, Long> entry : consumedOffsets.entrySet()) {
             final TopicPartition partition = entry.getKey();
-            Long offset = partitionGroup.headRecordOffset(partition);
-            if (offset == null) {
-                try {
-                    offset = consumer.position(partition);
-                } catch (final TimeoutException error) {
-                    // the `consumer.position()` call should never block, because we know that we did process data
-                    // for the requested partition and thus the consumer should have a valid local position
-                    // that it can return immediately
-
-                    // hence, a `TimeoutException` indicates a bug and thus we rethrow it as fatal `IllegalStateException`
-                    throw new IllegalStateException(error);
-                } catch (final KafkaException fatal) {
-                    throw new StreamsException(fatal);
-                }
-            }
+            final long offset = entry.getValue() + 1;
             final long partitionTime = partitionTimes.get(partition);
             consumedOffsetsAndMetadata.put(partition, new OffsetAndMetadata(offset, encodeTimestamp(partitionTime)));
         }
 
-        try {
-            if (eosEnabled) {
-                producer.sendOffsetsToTransaction(consumedOffsetsAndMetadata, applicationId);
-                producer.commitTransaction();
-                transactionInFlight = false;
-                if (startNewTransaction) {
-                    producer.beginTransaction();
-                    transactionInFlight = true;
-                }
-            } else {
-                consumer.commitSync(consumedOffsetsAndMetadata);
-            }
-        } catch (final CommitFailedException | ProducerFencedException | UnknownProducerIdException error) {
-            throw new TaskMigratedException(this, error);
-        } catch (final RebalanceInProgressException error) {
-            // commitSync throws this error and can be ignored (since EOS is not enabled, even if the task crashed
-            // immediately after this commit, we would just reprocess those records again)
-            log.info("Committing failed with a non-fatal error: {}, " +
-                "we can ignore this since commit may succeed still",  error.toString());
+        if (eosEnabled) {
+            commitEos(startNewTransaction, consumedOffsetsAndMetadata);
+        } else {
+            commitNonEos(consumedOffsetsAndMetadata);
         }
 
         commitNeeded = false;
         commitRequested = false;
         commitSensor.record(time.nanoseconds() - startNs);
+    }
+
+    private void commitNonEos(final Map<TopicPartition, OffsetAndMetadata> consumedOffsetsAndMetadata) {
+        flushState();
+        stateMgr.checkpoint(activeTaskCheckpointableOffsets());
+
+        try {
+            consumer.commitSync(consumedOffsetsAndMetadata);
+        } catch (final CommitFailedException error) {
+            throw new TaskMigratedException(this, error);
+        }
+    }
+
+    // The main difference with non Eos commit is that we choose to flush the state after commit success so that
+    // interactive query will not see uncommitted records.
+    private void commitEos(final boolean startNewTransaction, final Map<TopicPartition, OffsetAndMetadata> consumedOffsetsAndMetadata) {
+        try {
+            producer.sendOffsetsToTransaction(consumedOffsetsAndMetadata, applicationId);
+            producer.commitTransaction();
+            transactionInFlight = false;
+            // We don't need to call flush on producer again as the txn commit process is guaranteed to flush.
+            super.flushState();
+
+            if (startNewTransaction) {
+                producer.beginTransaction();
+                transactionInFlight = true;
+            }
+        } catch (final ProducerFencedException error) {
+            throw new TaskMigratedException(this, error);
+        }
     }
 
     private Map<TopicPartition, Long> activeTaskCheckpointableOffsets() {
@@ -558,8 +550,8 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
         super.flushState();
         try {
             recordCollector.flush();
-        } catch (final RecoverableClientException e) {
-            throw new TaskMigratedException(this, e);
+        } catch (final ProducerFencedException fatal) {
+            throw new TaskMigratedException(this, fatal);
         }
     }
 
@@ -636,14 +628,12 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
             try {
                 commit(false, partitionTimes);
             } finally {
-                partitionGroup.clear();
-
                 if (eosEnabled) {
                     stateMgr.checkpoint(activeTaskCheckpointableOffsets());
 
                     try {
                         recordCollector.close();
-                    } catch (final RecoverableClientException e) {
+                    } catch (final ProducerFencedException e) {
                         taskMigratedException = new TaskMigratedException(this, e);
                     } finally {
                         producer = null;
@@ -655,11 +645,7 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
             }
         } else {
             // In the case of unclean close we still need to make sure all the stores are flushed before closing any
-            try {
-                stateMgr.flush();
-            } catch (final ProcessorStateException e) {
-                // ignore any exceptions while flushing (all stores would have had a chance to flush anyway)
-            }
+            super.flushState();
 
             if (eosEnabled) {
                 maybeAbortTransactionAndCloseRecordCollector(isZombie);
@@ -697,6 +683,8 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
 
     private void closeTopology() {
         log.trace("Closing processor topology");
+
+        partitionGroup.clear();
 
         // close the processors
         // make sure close() is called for each node even when there is a RuntimeException
@@ -980,13 +968,5 @@ public class StreamTask extends AbstractTask implements ProcessorNodePunctuator 
             partitionTimes.put(partition, partitionTime(partition));
         }
         return partitionTimes;
-    }
-
-    public Map<TopicPartition, Long> restoredOffsets() {
-        return stateMgr.changelogReader().restoredOffsets();
-    }
-
-    public boolean hasRecordsQueued() {
-        return numBuffered() > 0;
     }
 }

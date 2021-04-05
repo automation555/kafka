@@ -71,7 +71,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
         cacheFlushListener = new CacheFlushListenerStub<>(new StringDeserializer(), new StringDeserializer());
         store = new CachingKeyValueStore(underlyingStore);
         store.setFlushListener(cacheFlushListener, false);
-        cache = new ThreadCache(new LogContext("testCache "), maxCacheSizeBytes, new MockStreamsMetrics(new Metrics()));
+        cache = new ThreadCache(new LogContext("testCache "), maxCacheSizeBytes, new MockStreamsMetrics(new Metrics()), false);
         context = new InternalMockProcessorContext(null, null, null, null, cache);
         topic = "topic";
         context.setRecordContext(new ProcessorRecordContext(10, 0, 0, topic, null));
@@ -106,8 +106,7 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
     @Test
     public void shouldAvoidFlushingDeletionsWithoutDirtyKeys() {
         final int added = addItemsToCache();
-        store.flush();
-
+        // all dirty entries should have been flushed
         assertEquals(added, underlyingStore.approximateNumEntries());
         assertEquals(added, cacheFlushListener.forwarded.size());
 
@@ -159,16 +158,16 @@ public class CachingKeyValueStoreTest extends AbstractKeyValueStoreTest {
     @Test
     public void shouldFlushEvictedItemsIntoUnderlyingStore() {
         final int added = addItemsToCache();
-        // only the evicted entry should have been flushed
-        assertEquals(1, underlyingStore.approximateNumEntries());
-        assertEquals(1, store.approximateNumEntries()); // this delegates to the underlying store, and not the cache
+        // all dirty entries should have been flushed
+        assertEquals(added, underlyingStore.approximateNumEntries());
+        assertEquals(added, store.approximateNumEntries());
         assertNotNull(underlyingStore.get(Bytes.wrap("0".getBytes())));
     }
 
     @Test
     public void shouldForwardDirtyItemToListenerWhenEvicted() {
-        addItemsToCache();
-        assertEquals(1, cacheFlushListener.forwarded.size());
+        final int numRecords = addItemsToCache();
+        assertEquals(numRecords, cacheFlushListener.forwarded.size());
     }
 
     @Test

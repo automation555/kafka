@@ -26,7 +26,6 @@ import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
 
-import static java.util.Objects.requireNonNull;
 import static org.apache.kafka.streams.processor.internals.ProcessorContextUtils.asInternalProcessorContext;
 
 /**
@@ -37,21 +36,14 @@ class ChangeLoggingWindowBytesStore
     extends WrappedStateStore<WindowStore<Bytes, byte[]>, byte[], byte[]>
     implements WindowStore<Bytes, byte[]> {
 
-    interface ChangeLoggingKeySerializer {
-        Bytes serialize(final Bytes key, final long timestamp, final int seqnum);
-    }
-
     private final boolean retainDuplicates;
     InternalProcessorContext context;
     private int seqnum = 0;
-    private final ChangeLoggingKeySerializer keySerializer;
 
     ChangeLoggingWindowBytesStore(final WindowStore<Bytes, byte[]> bytesStore,
-                                  final boolean retainDuplicates,
-                                  final ChangeLoggingKeySerializer keySerializer) {
+                                  final boolean retainDuplicates) {
         super(bytesStore);
         this.retainDuplicates = retainDuplicates;
-        this.keySerializer = requireNonNull(keySerializer, "keySerializer");
     }
 
     @Deprecated
@@ -75,7 +67,6 @@ class ChangeLoggingWindowBytesStore
         return wrapped().fetch(key, timestamp);
     }
 
-    @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
     @Override
     public WindowStoreIterator<byte[]> fetch(final Bytes key,
                                              final long from,
@@ -90,7 +81,6 @@ class ChangeLoggingWindowBytesStore
         return wrapped().backwardFetch(key, timeFrom, timeTo);
     }
 
-    @SuppressWarnings("deprecation") // note, this method must be kept if super#fetch(...) is removed
     @Override
     public KeyValueIterator<Windowed<Bytes>, byte[]> fetch(final Bytes keyFrom,
                                                            final Bytes keyTo,
@@ -118,7 +108,6 @@ class ChangeLoggingWindowBytesStore
         return wrapped().backwardAll();
     }
 
-    @SuppressWarnings("deprecation") // note, this method must be kept if super#fetchAll(...) is removed
     @Override
     public KeyValueIterator<Windowed<Bytes>, byte[]> fetchAll(final long timeFrom,
                                                               final long timeTo) {
@@ -146,7 +135,7 @@ class ChangeLoggingWindowBytesStore
                     final byte[] value,
                     final long windowStartTimestamp) {
         wrapped().put(key, value, windowStartTimestamp);
-        log(keySerializer.serialize(key, windowStartTimestamp, maybeUpdateSeqnumForDups()), value);
+        log(WindowKeySchema.toStoreKeyBinary(key, windowStartTimestamp, maybeUpdateSeqnumForDups()), value);
     }
 
     void log(final Bytes key,

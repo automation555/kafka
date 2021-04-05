@@ -20,8 +20,6 @@ import java.util.HashSet;
 import java.util.Set;
 
 import java.util.stream.Collectors;
-
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.utils.ExponentialBackoff;
 import org.apache.kafka.common.utils.LogContext;
@@ -45,13 +43,14 @@ final class ClusterConnectionStates {
     final static double CONNECTION_SETUP_TIMEOUT_JITTER = 0.2;
     private final Map<String, NodeConnectionState> nodeState;
     private final Logger log;
+    private final HostResolver hostResolver;
     private Set<String> connectingNodes;
     private ExponentialBackoff reconnectBackoff;
     private ExponentialBackoff connectionSetupTimeout;
 
     public ClusterConnectionStates(long reconnectBackoffMs, long reconnectBackoffMaxMs,
                                    long connectionSetupTimeoutMs, long connectionSetupTimeoutMaxMs,
-                                   LogContext logContext) {
+                                   LogContext logContext, HostResolver hostResolver) {
         this.log = logContext.logger(ClusterConnectionStates.class);
         this.reconnectBackoff = new ExponentialBackoff(
                 reconnectBackoffMs,
@@ -65,6 +64,7 @@ final class ClusterConnectionStates {
                 CONNECTION_SETUP_TIMEOUT_JITTER);
         this.nodeState = new HashMap<>();
         this.connectingNodes = new HashSet<>();
+        this.hostResolver = hostResolver;
     }
 
     /**
@@ -107,6 +107,7 @@ final class ClusterConnectionStates {
         if (state == null) return 0;
         if (state.state.isDisconnected()) {
             long timeWaited = now - state.lastConnectAttemptMs;
+//            System.err.println("!!! timeWait:" + timeWaited + "," + state.lastConnectAttemptMs);
             return Math.max(state.reconnectBackoffMs - timeWaited, 0);
         } else {
             // When connecting or connected, we should be able to delay indefinitely since other events (connection or
@@ -158,7 +159,8 @@ final class ClusterConnectionStates {
         // Create a new NodeConnectionState if nodeState does not already contain one
         // for the specified id or if the hostname associated with the node id changed.
         nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
-            reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host, clientDnsLookup));
+                reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host,
+                clientDnsLookup, hostResolver));
         connectingNodes.add(id);
     }
 
@@ -177,6 +179,15 @@ final class ClusterConnectionStates {
      * @param now the current time in ms
      */
     public void disconnected(String id, long now) {
+//        if (Integer.parseInt(id) < 5) {
+//            System.err.println("disconnected:" + id);
+////            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+////            for (int i = 1; i < elements.length; i++) {
+////                final StackTraceElement s = elements[i];
+////                System.err.print(" - at " + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+////            }
+//        }
+        
         NodeConnectionState nodeState = nodeState(id);
         nodeState.lastConnectAttemptMs = now;
         updateReconnectBackoff(nodeState);
@@ -185,6 +196,11 @@ final class ClusterConnectionStates {
             connectingNodes.remove(id);
         } else {
             resetConnectionSetupTimeout(nodeState);
+            if (nodeState.state.isConnected()) {
+                // If a connection had previously been established, clear the addresses to trigger a new DNS resolution
+                // because the node IPs may have changed
+                nodeState.clearAddresses();
+            }
         }
         nodeState.state = ConnectionState.DISCONNECTED;
     }
@@ -315,6 +331,7 @@ final class ClusterConnectionStates {
      */
     public boolean isDisconnected(String id) {
         NodeConnectionState state = nodeState.get(id);
+//        System.err.println("!!! state:" + state);
         return state != null && state.state.isDisconnected();
     }
 
@@ -408,7 +425,7 @@ final class ClusterConnectionStates {
     /**
      * Get the id set of nodes which are in CONNECTING state
      */
-    @VisibleForTesting
+    // package private for testing only
     Set<String> connectingNodes() {
         return this.connectingNodes;
     }
@@ -472,9 +489,11 @@ final class ClusterConnectionStates {
         private int addressIndex;
         private final String host;
         private final ClientDnsLookup clientDnsLookup;
+        private final HostResolver hostResolver;
 
         private NodeConnectionState(ConnectionState state, long lastConnectAttempt, long reconnectBackoffMs,
-                long connectionSetupTimeoutMs, String host, ClientDnsLookup clientDnsLookup) {
+                long connectionSetupTimeoutMs, String host, ClientDnsLookup clientDnsLookup,
+                HostResolver hostResolver) {
             this.state = state;
             this.addresses = Collections.emptyList();
             this.addressIndex = -1;
@@ -486,6 +505,7 @@ final class ClusterConnectionStates {
             this.throttleUntilTimeMs = 0;
             this.host = host;
             this.clientDnsLookup = clientDnsLookup;
+            this.hostResolver = hostResolver;
         }
 
         public String host() {
@@ -500,7 +520,7 @@ final class ClusterConnectionStates {
         private InetAddress currentAddress() throws UnknownHostException {
             if (addresses.isEmpty()) {
                 // (Re-)initialize list
-                addresses = ClientUtils.resolve(host, clientDnsLookup);
+                addresses = ClientUtils.resolve(host, clientDnsLookup, hostResolver);
                 addressIndex = 0;
             }
 
@@ -518,6 +538,13 @@ final class ClusterConnectionStates {
             addressIndex = (addressIndex + 1) % addresses.size();
             if (addressIndex == 0)
                 addresses = Collections.emptyList(); // Exhausted list. Re-resolve on next currentAddress() call
+        }
+
+        /**
+         * Clears the resolved addresses in order to trigger re-resolving on the next {@link #currentAddress()} call.
+         */
+        private void clearAddresses() {
+            addresses = Collections.emptyList();
         }
 
         public String toString() {

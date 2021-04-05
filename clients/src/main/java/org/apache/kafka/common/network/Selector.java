@@ -18,7 +18,6 @@ package org.apache.kafka.common.network;
 
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.metrics.Metrics;
@@ -506,7 +505,7 @@ public class Selector implements Selectable, AutoCloseable {
      * @param isImmediatelyConnected true if running over a set of keys for just-connected sockets
      * @param currentTimeNanos time at which set of keys was determined
      */
-    @VisibleForTesting
+    // package-private for testing
     void pollSelectionKeys(Set<SelectionKey> selectionKeys,
                            boolean isImmediatelyConnected,
                            long currentTimeNanos) {
@@ -577,7 +576,7 @@ public class Selector implements Selectable, AutoCloseable {
                     attemptRead(channel);
                 }
 
-                if (channel.hasBytesBuffered()) {
+                if (channel.hasBytesBuffered() && !explicitlyMutedChannels.contains(channel)) {
                     //this channel has bytes enqueued in intermediary buffers that we could not read
                     //(possibly because no memory). it may be the case that the underlying socket will
                     //not come up in the next poll() and so we need to remember this channel for the
@@ -619,6 +618,7 @@ public class Selector implements Selectable, AutoCloseable {
                 } else {
                     log.warn("Unexpected error from {}; closing connection", desc, e);
                 }
+//                System.err.println("Connection with " + desc + "," + e);
 
                 if (e instanceof DelayedResponseAuthenticationException)
                     maybeDelayCloseOnAuthenticationFailure(channel);
@@ -639,7 +639,7 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
-    @VisibleForTesting
+    // package-private for testing
     void write(KafkaChannel channel) throws IOException {
         String nodeId = channel.id();
         long bytesSent = channel.write();
@@ -743,6 +743,7 @@ public class Selector implements Selectable, AutoCloseable {
     private void mute(KafkaChannel channel) {
         channel.mute();
         explicitlyMutedChannels.add(channel);
+        keysWithBufferedRead.remove(channel.selectionKey());
     }
 
     @Override
@@ -755,6 +756,9 @@ public class Selector implements Selectable, AutoCloseable {
         // Remove the channel from explicitlyMutedChannels only if the channel has been actually unmuted.
         if (channel.maybeUnmute()) {
             explicitlyMutedChannels.remove(channel);
+            if (channel.hasBytesBuffered()) {
+                keysWithBufferedRead.add(channel.selectionKey());
+            }
         }
     }
 
@@ -770,7 +774,7 @@ public class Selector implements Selectable, AutoCloseable {
             unmute(channel);
     }
 
-    @VisibleForTesting
+    // package-private for testing
     void completeDelayedChannelClose(long currentTimeNanos) {
         if (delayedClosingChannels == null)
             return;
@@ -848,8 +852,16 @@ public class Selector implements Selectable, AutoCloseable {
             }
         }
 
-        for (String channel : this.failedSends)
+        for (String channel : this.failedSends) {
             this.disconnected.put(channel, ChannelState.FAILED_SEND);
+            System.err.println("clear dis:" + channel + "," + ChannelState.FAILED_SEND);
+            
+            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+            for (int i = 1; i < elements.length; i++) {
+                final StackTraceElement s = elements[i];
+                System.err.print(" - at " + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+            }
+        }
         this.failedSends.clear();
         this.madeReadProgressLastPoll = false;
     }
@@ -959,8 +971,17 @@ public class Selector implements Selectable, AutoCloseable {
 
         this.sensors.connectionClosed.record();
         this.explicitlyMutedChannels.remove(channel);
-        if (notifyDisconnect)
+        if (notifyDisconnect) {
             this.disconnected.put(channel.id(), channel.state());
+//            if (channel.id().equals("0") || channel.id().equals("1") || channel.id().equals("2")) {
+//                System.err.println("doClose dis:" + channel.id() + "," + channel.state().state());
+////                final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+////                for (int i = 1; i < elements.length; i++) {
+////                    final StackTraceElement s = elements[i];
+////                    System.err.print(" - at " + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+////                }
+//            }
+        }
     }
 
     /**
@@ -1051,7 +1072,7 @@ public class Selector implements Selectable, AutoCloseable {
         sensors.recordCompletedReceive(channel.id(), networkReceive.size(), currentTimeMs);
     }
 
-    @VisibleForTesting
+    // only for testing
     public Set<SelectionKey> keys() {
         return new HashSet<>(nioSelector.keys());
     }
@@ -1454,17 +1475,17 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
-    @VisibleForTesting
+    //package-private for testing
     boolean isOutOfMemory() {
         return outOfMemory;
     }
 
-    @VisibleForTesting
+    //package-private for testing
     boolean isMadeReadProgressLastPoll() {
         return madeReadProgressLastPoll;
     }
 
-    @VisibleForTesting
+    // package-private for testing
     Map<?, ?> delayedClosingChannels() {
         return delayedClosingChannels;
     }

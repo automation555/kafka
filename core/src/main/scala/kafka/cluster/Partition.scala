@@ -17,7 +17,7 @@
 package kafka.cluster
 
 import java.util.concurrent.locks.ReentrantReadWriteLock
-import java.util.{Optional, Properties}
+import java.util.Optional
 
 import kafka.api.{ApiVersion, LeaderAndIsr}
 import kafka.common.UnexpectedAppendOffsetException
@@ -26,13 +26,12 @@ import kafka.log._
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server._
 import kafka.server.checkpoints.OffsetCheckpoints
+import kafka.server.metadata.ConfigRepository
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils._
-import kafka.zk.{AdminZkClient, KafkaZkClient}
 import kafka.zookeeper.ZooKeeperClientException
-import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors._
-import org.apache.kafka.common.message.FetchResponseData
+import org.apache.kafka.common.message.{DescribeProducersResponseData, FetchResponseData}
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrPartitionState
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset
 import org.apache.kafka.common.protocol.Errors
@@ -41,7 +40,7 @@ import org.apache.kafka.common.record.{MemoryRecords, RecordBatch}
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.{UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET}
 import org.apache.kafka.common.utils.Time
-import org.apache.kafka.common.{IsolationLevel, TopicPartition}
+import org.apache.kafka.common.{IsolationLevel, TopicPartition, Uuid}
 
 import scala.collection.{Map, Seq}
 import scala.jdk.CollectionConverters._
@@ -50,42 +49,6 @@ trait IsrChangeListener {
   def markExpand(): Unit
   def markShrink(): Unit
   def markFailed(): Unit
-}
-
-trait PartitionStateStore {
-  def fetchTopicConfig(): Properties
-  def shrinkIsr(controllerEpoch: Int, leaderAndIsr: LeaderAndIsr): Option[Int]
-  def expandIsr(controllerEpoch: Int, leaderAndIsr: LeaderAndIsr): Option[Int]
-}
-
-class ZkPartitionStateStore(topicPartition: TopicPartition,
-                            zkClient: KafkaZkClient) extends PartitionStateStore {
-
-  override def fetchTopicConfig(): Properties = {
-    val adminZkClient = new AdminZkClient(zkClient)
-    adminZkClient.fetchEntityConfig(ConfigType.Topic, topicPartition.topic)
-  }
-
-  override def shrinkIsr(controllerEpoch: Int, leaderAndIsr: LeaderAndIsr): Option[Int] = {
-    val newVersionOpt = updateIsr(controllerEpoch, leaderAndIsr)
-    newVersionOpt
-  }
-
-  override def expandIsr(controllerEpoch: Int, leaderAndIsr: LeaderAndIsr): Option[Int] = {
-    val newVersionOpt = updateIsr(controllerEpoch, leaderAndIsr)
-    newVersionOpt
-  }
-
-  private def updateIsr(controllerEpoch: Int, leaderAndIsr: LeaderAndIsr): Option[Int] = {
-    val (updateSucceeded, newVersion) = ReplicationUtils.updateLeaderAndIsr(zkClient, topicPartition,
-      leaderAndIsr, controllerEpoch)
-
-    if (updateSucceeded) {
-      Some(newVersion)
-    } else {
-      None
-    }
-  }
 }
 
 class DelayedOperations(topicPartition: TopicPartition,
@@ -106,25 +69,20 @@ class DelayedOperations(topicPartition: TopicPartition,
 object Partition extends KafkaMetricsGroup {
   def apply(topicPartition: TopicPartition,
             time: Time,
+            configRepository: ConfigRepository,
             replicaManager: ReplicaManager): Partition = {
 
     val isrChangeListener = new IsrChangeListener {
       override def markExpand(): Unit = {
-        replicaManager.recordIsrChange(topicPartition)
         replicaManager.isrExpandRate.mark()
       }
 
       override def markShrink(): Unit = {
-        replicaManager.recordIsrChange(topicPartition)
         replicaManager.isrShrinkRate.mark()
       }
 
       override def markFailed(): Unit = replicaManager.failedIsrUpdatesRate.mark()
     }
-
-    val zkIsrBackingStore = new ZkPartitionStateStore(
-      topicPartition,
-      replicaManager.zkClient)
 
     val delayedOperations = new DelayedOperations(
       topicPartition,
@@ -137,7 +95,6 @@ object Partition extends KafkaMetricsGroup {
       interBrokerProtocolVersion = replicaManager.config.interBrokerProtocolVersion,
       localBrokerId = replicaManager.config.brokerId,
       time = time,
-      stateStore = zkIsrBackingStore,
       isrChangeListener = isrChangeListener,
       delayedOperations = delayedOperations,
       metadataCache = replicaManager.metadataCache,
@@ -260,7 +217,6 @@ class Partition(val topicPartition: TopicPartition,
                 interBrokerProtocolVersion: ApiVersion,
                 localBrokerId: Int,
                 time: Time,
-                stateStore: PartitionStateStore,
                 isrChangeListener: IsrChangeListener,
                 delayedOperations: DelayedOperations,
                 metadataCache: MetadataCache,
@@ -285,8 +241,6 @@ class Partition(val topicPartition: TopicPartition,
   @volatile var leaderReplicaIdOpt: Option[Int] = None
   @volatile private[cluster] var isrState: IsrState = CommittedIsr(Set.empty)
   @volatile var assignmentState: AssignmentState = SimpleAssignmentState(Seq.empty)
-
-  private val useAlterIsr: Boolean = interBrokerProtocolVersion.isAlterIsrSupported
 
   // Logs belonging to this partition. Majority of time it will be only one log, but if log directory
   // is getting changed (as a result of ReplicaAlterLogDirs command), we may have two logs until copy
@@ -373,13 +327,8 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
-  @VisibleForTesting
+  // Visible for testing
   private[cluster] def createLog(isNew: Boolean, isFutureReplica: Boolean, offsetCheckpoints: OffsetCheckpoints): Log = {
-    def fetchLogConfig: LogConfig = {
-      val props = stateStore.fetchTopicConfig()
-      LogConfig.fromProps(logManager.currentDefaultConfig.originals, props)
-    }
-
     def updateHighWatermark(log: Log) = {
       val checkpointHighWatermark = offsetCheckpoints.fetch(log.parentDir, topicPartition).getOrElse {
         info(s"No checkpointed highwatermark is found for partition $topicPartition")
@@ -392,20 +341,16 @@ class Partition(val topicPartition: TopicPartition,
     logManager.initializingLog(topicPartition)
     var maybeLog: Option[Log] = None
     try {
-      val log = logManager.getOrCreateLog(topicPartition, () => fetchLogConfig, isNew, isFutureReplica)
+      val log = logManager.getOrCreateLog(topicPartition, isNew, isFutureReplica)
       maybeLog = Some(log)
       updateHighWatermark(log)
       log
     } finally {
-      logManager.finishedInitializingLog(topicPartition, maybeLog, () => fetchLogConfig)
+      logManager.finishedInitializingLog(topicPartition, maybeLog)
     }
   }
 
   def getReplica(replicaId: Int): Option[Replica] = Option(remoteReplicasMap.get(replicaId))
-
-  private def getReplicaOrException(replicaId: Int): Replica = getReplica(replicaId).getOrElse{
-    throw new NotLeaderOrFollowerException(s"Replica with id $replicaId is not available on broker $localBrokerId")
-  }
 
   private def checkCurrentLeaderEpoch(remoteLeaderEpochOpt: Optional[Integer]): Errors = {
     if (!remoteLeaderEpochOpt.isPresent) {
@@ -427,12 +372,14 @@ class Partition(val topicPartition: TopicPartition,
     checkCurrentLeaderEpoch(currentLeaderEpoch) match {
       case Errors.NONE =>
         if (requireLeader && !isLeader) {
+          System.err.println("!!! leader:" + requireLeader + isLeader + currentLeaderEpoch + ", log:" + log)
           Right(Errors.NOT_LEADER_OR_FOLLOWER)
         } else {
           log match {
             case Some(partitionLog) =>
               Left(partitionLog)
             case _ =>
+              System.err.println("!!! leader:" + requireLeader + isLeader + currentLeaderEpoch + ", log:" + log)
               Right(Errors.NOT_LEADER_OR_FOLLOWER)
           }
         }
@@ -465,18 +412,59 @@ class Partition(val topicPartition: TopicPartition,
     getLocalLog(currentLeaderEpoch, requireLeader) match {
       case Left(localLog) => localLog
       case Right(error) =>
+//        System.err.println(s"Failed to find ${if (requireLeader) "leader" else ""} log for " +
+//          s"partition $topicPartition with leader epoch $currentLeaderEpoch. The current leader " +
+//          s"is $leaderReplicaIdOpt and the current epoch $leaderEpoch")
         throw error.exception(s"Failed to find ${if (requireLeader) "leader" else ""} log for " +
           s"partition $topicPartition with leader epoch $currentLeaderEpoch. The current leader " +
           s"is $leaderReplicaIdOpt and the current epoch $leaderEpoch")
     }
   }
 
-  @VisibleForTesting
+  // Visible for testing -- Used by unit tests to set log for this partition
   def setLog(log: Log, isFutureLog: Boolean): Unit = {
     if (isFutureLog)
       futureLog = Some(log)
     else
       this.log = Some(log)
+  }
+
+  /**
+   * Checks if the topic ID provided in the request is consistent with the topic ID in the log.
+   * If a valid topic ID is provided, and the log exists but has no ID set, set the log ID to be the request ID.
+   *
+   * @param requestTopicId the topic ID from the request
+   * @return true if the request topic id is consistent, false otherwise
+   */
+  def checkOrSetTopicId(requestTopicId: Uuid): Boolean = {
+    // If the request had an invalid topic ID, then we assume that topic IDs are not supported.
+    // The topic ID was not inconsistent, so return true.
+    // If the log is empty, then we can not say that topic ID is inconsistent, so return true.
+    if (requestTopicId == null || requestTopicId == Uuid.ZERO_UUID)
+      true
+    else {
+      log match {
+        case None => true
+        case Some(log) => {
+          // Check if topic ID is in memory, if not, it must be new to the broker and does not have a metadata file.
+          // This is because if the broker previously wrote it to file, it would be recovered on restart after failure.
+          // Topic ID is consistent since we are just setting it here.
+          if (log.topicId == Uuid.ZERO_UUID) {
+            log.partitionMetadataFile.write(requestTopicId)
+            log.topicId = requestTopicId
+            true
+          } else if (log.topicId != requestTopicId) {
+            stateChangeLogger.error(s"Topic Id in memory: ${log.topicId} does not" +
+              s" match the topic Id for partition $topicPartition provided in the request: " +
+              s"$requestTopicId.")
+            false
+          } else {
+            // topic ID in log exists and matches request topic ID
+            true
+          }
+        }
+      }
+    }
   }
 
   // remoteReplicas will be called in the hot path, and must be inexpensive
@@ -590,6 +578,11 @@ class Partition(val topicPartition: TopicPartition,
         s"ISR ${isr.mkString("[", ",", "]")} addingReplicas ${addingReplicas.mkString("[", ",", "]")} " +
         s"removingReplicas ${removingReplicas.mkString("[", ",", "]")}. Previous leader epoch was $leaderEpoch.")
 
+//      System.err.println(s"$localBrokerId: Leader $topicPartition starts at leader epoch ${partitionState.leaderEpoch} from " +
+//        s"offset $leaderEpochStartOffset with high watermark ${leaderLog.highWatermark} " +
+//        s"ISR ${isr.mkString("[", ",", "]")} addingReplicas ${addingReplicas.mkString("[", ",", "]")} " +
+//        s"removingReplicas ${removingReplicas.mkString("[", ",", "]")}. Previous leader epoch was $leaderEpoch.")
+
       //We cache the leader epoch here, persisting it only if it's local (hence having a log dir)
       leaderEpoch = partitionState.leaderEpoch
       leaderEpochStartOffsetOpt = Some(leaderEpochStartOffset)
@@ -615,6 +608,14 @@ class Partition(val topicPartition: TopicPartition,
 
       if (isNewLeader) {
         // mark local replica as the leader after converting hw
+//        if (topicPartition.topic().contains("__consumer_offsets")) {
+//          System.err.println(s"$localBrokerId:makeL: newL: $localBrokerId, ori:$leaderReplicaIdOpt, $topicPartition")
+////          val elements = Thread.currentThread.getStackTrace
+////          for (i <- 1 until elements.length) {
+////            val s = elements(i)
+////            System.err.print(" - " + "(" + s.getFileName + ":" + s.getLineNumber + ")")
+////          }
+//        }
         leaderReplicaIdOpt = Some(localBrokerId)
         // reset log end offset for remote replicas
         remoteReplicas.foreach { replica =>
@@ -678,9 +679,19 @@ class Partition(val topicPartition: TopicPartition,
       // Since we might have been a leader previously, still clear any pending AlterIsr requests
       alterIsrManager.clearPending(topicPartition)
 
+      
       if (leaderReplicaIdOpt.contains(newLeaderBrokerId) && leaderEpoch == oldLeaderEpoch) {
         false
       } else {
+//        if (topicPartition.topic().contains("__consumer_offsets")) {
+////          System.err.println(s"$localBrokerId:makeF: newL: $newLeaderBrokerId, ori:$leaderReplicaIdOpt, $topicPartition")
+////          val elements = Thread.currentThread.getStackTrace
+////          for (i <- 1 until elements.length) {
+////            val s = elements(i)
+////            System.err.print(" - " + "(" + s.getFileName + ":" + s.getLineNumber + ")")
+////          }
+//        }
+
         leaderReplicaIdOpt = Some(newLeaderBrokerId)
         true
       }
@@ -747,6 +758,8 @@ class Partition(val topicPartition: TopicPartition,
    * It creates a new Replica object for any new remote broker. The isr parameter is
    * expected to be a subset of the assignment parameter.
    *
+   * Note: public visibility for tests.
+   *
    * @param assignment An ordered sequence of all the broker ids that were assigned to this
    *                   topic partition
    * @param isr The set of broker ids that are known to be insync with the leader
@@ -755,7 +768,6 @@ class Partition(val topicPartition: TopicPartition,
    * @param removingReplicas An ordered sequence of all broker ids that will be removed from
     *                         the assignment
    */
-  @VisibleForTesting
   def updateAssignmentAndIsr(assignment: Seq[Int],
                              isr: Set[Int],
                              addingReplicas: Seq[Int],
@@ -833,20 +845,25 @@ class Partition(val topicPartition: TopicPartition,
         // keep the current immutable replica list reference
         val curMaximalIsr = isrState.maximalIsr
 
-        if (isTraceEnabled) {
-          def logEndOffsetString: ((Int, Long)) => String = {
-            case (brokerId, logEndOffset) => s"broker $brokerId: $logEndOffset"
-          }
-
-          val curInSyncReplicaObjects = (curMaximalIsr - localBrokerId).map(getReplicaOrException)
-          val replicaInfo = curInSyncReplicaObjects.map(replica => (replica.brokerId, replica.logEndOffset))
-          val localLogInfo = (localBrokerId, localLogOrException.logEndOffset)
-          val (ackedReplicas, awaitingReplicas) = (replicaInfo + localLogInfo).partition { _._2 >= requiredOffset}
-
-          trace(s"Progress awaiting ISR acks for offset $requiredOffset: " +
-            s"acked: ${ackedReplicas.map(logEndOffsetString)}, " +
-            s"awaiting ${awaitingReplicas.map(logEndOffsetString)}")
+//        if (isTraceEnabled) {
+        def logEndOffsetString: ((Int, Long)) => String = {
+          case (brokerId, logEndOffset) => s"broker $brokerId: $logEndOffset"
         }
+
+        val curInSyncReplicaObjects = (curMaximalIsr - localBrokerId).flatMap(getReplica)
+        val replicaInfo = curInSyncReplicaObjects.map(replica => (replica.brokerId, replica.logEndOffset))
+        val localLogInfo = (localBrokerId, localLogOrException.logEndOffset)
+        val (ackedReplicas, awaitingReplicas) = (replicaInfo + localLogInfo).partition { _._2 >= requiredOffset}
+
+        trace(s"Progress awaiting ISR acks for offset $requiredOffset: " +
+          s"acked: ${ackedReplicas.map(logEndOffsetString)}, " +
+          s"awaiting ${awaitingReplicas.map(logEndOffsetString)}")
+//        }
+//        if (requiredOffset < 3) {
+//          System.err.println(s"$localBrokerId: Progress awaiting ISR acks for offset $requiredOffset: " +
+//            s"acked: ${ackedReplicas.map(logEndOffsetString)}, " +
+//            s"awaiting ${awaitingReplicas.map(logEndOffsetString)}")
+//        }
 
         val minIsr = leaderLog.config.minInSyncReplicas
         if (leaderLog.highWatermark >= requiredOffset) {
@@ -861,6 +878,7 @@ class Partition(val topicPartition: TopicPartition,
         } else
           (false, Errors.NONE)
       case None =>
+        System.err.println("not leader")
         (false, Errors.NOT_LEADER_OR_FOLLOWER)
     }
   }
@@ -960,11 +978,15 @@ class Partition(val topicPartition: TopicPartition,
         val outOfSyncReplicaIds = getOutOfSyncReplicas(replicaLagTimeMaxMs)
         if (outOfSyncReplicaIds.nonEmpty) {
           val outOfSyncReplicaLog = outOfSyncReplicaIds.map { replicaId =>
-            s"(brokerId: $replicaId, endOffset: ${getReplicaOrException(replicaId).logEndOffset})"
+            val logEndOffsetMessage = getReplica(replicaId)
+              .map(_.logEndOffset.toString)
+              .getOrElse("unknown")
+            s"(brokerId: $replicaId, endOffset: $logEndOffsetMessage)"
           }.mkString(" ")
           val newIsrLog = (isrState.isr -- outOfSyncReplicaIds).mkString(",")
           info(s"Shrinking ISR from ${isrState.isr.mkString(",")} to $newIsrLog. " +
-               s"Leader: (highWatermark: ${leaderLog.highWatermark}, endOffset: ${leaderLog.logEndOffset}). " +
+               s"Leader: (highWatermark: ${leaderLog.highWatermark}, " +
+               s"endOffset: ${leaderLog.logEndOffset}). " +
                s"Out of sync replicas: $outOfSyncReplicaLog.")
 
           shrinkIsr(outOfSyncReplicaIds)
@@ -990,9 +1012,10 @@ class Partition(val topicPartition: TopicPartition,
                                   leaderEndOffset: Long,
                                   currentTimeMs: Long,
                                   maxLagMs: Long): Boolean = {
-    val followerReplica = getReplicaOrException(replicaId)
-    followerReplica.logEndOffset != leaderEndOffset &&
-      (currentTimeMs - followerReplica.lastCaughtUpTimeMs) > maxLagMs
+    getReplica(replicaId).fold(true) { followerReplica =>
+      followerReplica.logEndOffset != leaderEndOffset &&
+        (currentTimeMs - followerReplica.lastCaughtUpTimeMs) > maxLagMs
+    }
   }
 
   /**
@@ -1188,15 +1211,38 @@ class Partition(val topicPartition: TopicPartition,
     // If we're in the lagging HW state after a leader election, throw OffsetNotAvailable for "latest" offset
     // or for a timestamp lookup that is beyond the last fetchable offset.
     timestamp match {
-      case ListOffsetRequest.LATEST_TIMESTAMP =>
+      case ListOffsetsRequest.LATEST_TIMESTAMP => {
+        System.err.println("LATEST:" + maybeOffsetsError)
         maybeOffsetsError.map(e => throw e)
           .orElse(Some(new TimestampAndOffset(RecordBatch.NO_TIMESTAMP, lastFetchableOffset, Optional.of(leaderEpoch))))
-      case ListOffsetRequest.EARLIEST_TIMESTAMP =>
+      }
+      case ListOffsetsRequest.EARLIEST_TIMESTAMP => {
+        System.err.println("EARLIST:" + getOffsetByTimestamp)
         getOffsetByTimestamp
-      case _ =>
+      }
+      case _ => {
+        System.err.println("else:" + getOffsetByTimestamp + "," + lastFetchableOffset + maybeOffsetsError)
         getOffsetByTimestamp.filter(timestampAndOffset => timestampAndOffset.offset < lastFetchableOffset)
           .orElse(maybeOffsetsError.map(e => throw e))
+      }
     }
+  }
+
+  def activeProducerState: DescribeProducersResponseData.PartitionResponse = {
+    val producerState = new DescribeProducersResponseData.PartitionResponse()
+      .setPartitionIndex(topicPartition.partition())
+
+    log.map(_.activeProducers) match {
+      case Some(producers) =>
+        producerState
+          .setErrorCode(Errors.NONE.code)
+          .setActiveProducers(producers.asJava)
+      case None =>
+        producerState
+          .setErrorCode(Errors.NOT_LEADER_OR_FOLLOWER.code)
+    }
+
+    producerState
   }
 
   def fetchOffsetSnapshot(currentLeaderEpoch: Optional[Integer],
@@ -1214,13 +1260,17 @@ class Partition(val topicPartition: TopicPartition,
     val allOffsets = localLog.legacyFetchOffsetsBefore(timestamp, maxNumOffsets)
 
     if (!isFromConsumer) {
+      System.err.println("!isFromConsumer:" + allOffsets)
       allOffsets
     } else {
       val hw = localLog.highWatermark
-      if (allOffsets.exists(_ > hw))
+      if (allOffsets.exists(_ > hw)) {
+        System.err.println("_ > hw:" + hw + "," + allOffsets)
         hw +: allOffsets.dropWhile(_ > hw)
-      else
+      } else {
+        System.err.println("else:" + allOffsets)
         allOffsets
+      }
     }
   }
 
@@ -1325,14 +1375,6 @@ class Partition(val topicPartition: TopicPartition,
   }
 
   private[cluster] def expandIsr(newInSyncReplica: Int): Unit = {
-    if (useAlterIsr) {
-      expandIsrWithAlterIsr(newInSyncReplica)
-    } else {
-      expandIsrWithZk(newInSyncReplica)
-    }
-  }
-
-  private def expandIsrWithAlterIsr(newInSyncReplica: Int): Unit = {
     // This is called from maybeExpandIsr which holds the ISR write lock
     if (!isrState.isInflight) {
       // When expanding the ISR, we can safely assume the new replica will make it into the ISR since this puts us in
@@ -1343,26 +1385,7 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
-  private def expandIsrWithZk(newInSyncReplica: Int): Unit = {
-    val newInSyncReplicaIds = isrState.isr + newInSyncReplica
-    info(s"Expanding ISR from ${isrState.isr.mkString(",")} to ${newInSyncReplicaIds.mkString(",")}")
-    val newLeaderAndIsr = new LeaderAndIsr(localBrokerId, leaderEpoch, newInSyncReplicaIds.toList, zkVersion)
-    val zkVersionOpt = stateStore.expandIsr(controllerEpoch, newLeaderAndIsr)
-    if (zkVersionOpt.isDefined) {
-      isrChangeListener.markExpand()
-    }
-    maybeUpdateIsrAndVersionWithZk(newInSyncReplicaIds, zkVersionOpt)
-  }
-
   private[cluster] def shrinkIsr(outOfSyncReplicas: Set[Int]): Unit = {
-    if (useAlterIsr) {
-      shrinkIsrWithAlterIsr(outOfSyncReplicas)
-    } else {
-      shrinkIsrWithZk(isrState.isr -- outOfSyncReplicas)
-    }
-  }
-
-  private def shrinkIsrWithAlterIsr(outOfSyncReplicas: Set[Int]): Unit = {
     // This is called from maybeShrinkIsr which holds the ISR write lock
     if (!isrState.isInflight) {
       // When shrinking the ISR, we cannot assume that the update will succeed as this could erroneously advance the HW
@@ -1374,47 +1397,29 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
-  private def shrinkIsrWithZk(newIsr: Set[Int]): Unit = {
-    val newLeaderAndIsr = new LeaderAndIsr(localBrokerId, leaderEpoch, newIsr.toList, zkVersion)
-    val zkVersionOpt = stateStore.shrinkIsr(controllerEpoch, newLeaderAndIsr)
-    if (zkVersionOpt.isDefined) {
-      isrChangeListener.markShrink()
-    }
-    maybeUpdateIsrAndVersionWithZk(newIsr, zkVersionOpt)
-  }
-
-  private def maybeUpdateIsrAndVersionWithZk(isr: Set[Int], zkVersionOpt: Option[Int]): Unit = {
-    zkVersionOpt match {
-      case Some(newVersion) =>
-        isrState = CommittedIsr(isr)
-        zkVersion = newVersion
-        info("ISR updated to [%s] and zkVersion updated to [%d]".format(isr.mkString(","), zkVersion))
-
-      case None =>
-        info(s"Cached zkVersion $zkVersion not equal to that in zookeeper, skip updating ISR")
-        isrChangeListener.markFailed()
-    }
-  }
-
   private def sendAlterIsrRequest(proposedIsrState: IsrState): Unit = {
     val isrToSend: Set[Int] = proposedIsrState match {
       case PendingExpandIsr(isr, newInSyncReplicaId) => isr + newInSyncReplicaId
       case PendingShrinkIsr(isr, outOfSyncReplicaIds) => isr -- outOfSyncReplicaIds
       case state =>
-        throw new IllegalStateException(s"Invalid state $state for `AlterIsr` request for partition $topicPartition")
+        isrChangeListener.markFailed()
+        throw new IllegalStateException(s"Invalid state $state for ISR change for partition $topicPartition")
     }
 
     val newLeaderAndIsr = new LeaderAndIsr(localBrokerId, leaderEpoch, isrToSend.toList, zkVersion)
-    val alterIsrItem = AlterIsrItem(topicPartition, newLeaderAndIsr, handleAlterIsrResponse(proposedIsrState))
+    val alterIsrItem = AlterIsrItem(topicPartition, newLeaderAndIsr, handleAlterIsrResponse(proposedIsrState), controllerEpoch)
 
-    if (!alterIsrManager.enqueue(alterIsrItem)) {
+    val oldState = isrState
+    isrState = proposedIsrState
+
+    if (!alterIsrManager.submit(alterIsrItem)) {
+      // If the ISR manager did not accept our update, we need to revert back to previous state
+      isrState = oldState
       isrChangeListener.markFailed()
-      throw new IllegalStateException(s"Failed to enqueue `AlterIsr` request with state " +
-        s"$newLeaderAndIsr for partition $topicPartition")
+      throw new IllegalStateException(s"Failed to enqueue ISR change state $newLeaderAndIsr for partition $topicPartition")
     }
 
-    isrState = proposedIsrState
-    debug(s"Sent `AlterIsr` request to change state to $newLeaderAndIsr after transition to $proposedIsrState")
+    debug(s"Enqueued ISR change to state $newLeaderAndIsr after transition to $proposedIsrState")
   }
 
   /**
@@ -1438,27 +1443,27 @@ class Partition(val topicPartition: TopicPartition,
           isrChangeListener.markFailed()
           error match {
             case Errors.UNKNOWN_TOPIC_OR_PARTITION =>
-              debug(s"Controller failed to update ISR to $proposedIsrState since it doesn't know about this topic or partition. Giving up.")
+              debug(s"Failed to update ISR to $proposedIsrState since it doesn't know about this topic or partition. Giving up.")
             case Errors.FENCED_LEADER_EPOCH =>
-              debug(s"Controller failed to update ISR to $proposedIsrState since we sent an old leader epoch. Giving up.")
+              debug(s"Failed to update ISR to $proposedIsrState since we sent an old leader epoch. Giving up.")
             case Errors.INVALID_UPDATE_VERSION =>
-              debug(s"Controller failed to update ISR to $proposedIsrState due to invalid zk version. Giving up.")
+              debug(s"Failed to update ISR to $proposedIsrState due to invalid version. Giving up.")
             case _ =>
-              warn(s"Controller failed to update ISR to $proposedIsrState due to unexpected $error. Retrying.")
+              warn(s"Failed to update ISR to $proposedIsrState due to unexpected $error. Retrying.")
               sendAlterIsrRequest(proposedIsrState)
           }
         case Right(leaderAndIsr: LeaderAndIsr) =>
           // Success from controller, still need to check a few things
           if (leaderAndIsr.leaderEpoch != leaderEpoch) {
-            debug(s"Ignoring ISR from AlterIsr with ${leaderAndIsr} since we have a stale leader epoch $leaderEpoch.")
+            debug(s"Ignoring new ISR ${leaderAndIsr} since we have a stale leader epoch $leaderEpoch.")
             isrChangeListener.markFailed()
           } else if (leaderAndIsr.zkVersion <= zkVersion) {
-            debug(s"Ignoring ISR from AlterIsr with ${leaderAndIsr} since we have a newer version $zkVersion.")
+            debug(s"Ignoring new ISR ${leaderAndIsr} since we have a newer version $zkVersion.")
             isrChangeListener.markFailed()
           } else {
             isrState = CommittedIsr(leaderAndIsr.isr.toSet)
             zkVersion = leaderAndIsr.zkVersion
-            info(s"ISR updated from AlterIsr to ${isrState.isr.mkString(",")} and version updated to [$zkVersion]")
+            info(s"ISR updated to ${isrState.isr.mkString(",")} and version updated to [$zkVersion]")
             proposedIsrState match {
               case PendingExpandIsr(_, _) => isrChangeListener.markExpand()
               case PendingShrinkIsr(_, _) => isrChangeListener.markShrink()

@@ -57,9 +57,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.function.Function;
 
-import static java.time.Duration.ofSeconds;
 import static java.util.Arrays.asList;
-import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.startApplicationAndWaitUntilRunning;
 import static org.junit.Assert.assertEquals;
 
 @Category({IntegrationTest.class})
@@ -132,7 +130,7 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
 
         //Partitions pre-computed using the default Murmur2 hash, just to ensure that all 3 partitions will be exercised.
         final List<KeyValue<Integer, String>> table3 = Collections.singletonList(
-                new KeyValue<>(10, "waffle")
+            new KeyValue<>(10, "waffle")
         );
 
         IntegrationTestUtils.produceKeyValuesSynchronously(TABLE_1, table1, PRODUCER_CONFIG_1, MOCK_TIME);
@@ -174,7 +172,7 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
             streamsThree.close();
             streamsThree = null;
         }
-        IntegrationTestUtils.purgeLocalStreamsState(asList(streamsConfig, streamsConfigTwo, streamsConfigThree));
+        IntegrationTestUtils.purgeLocalStreamsState(streamsConfig);
     }
 
     private enum JoinType {
@@ -186,20 +184,21 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
         final Set<KeyValue<Integer, String>> expectedOne = new HashSet<>();
         expectedOne.add(new KeyValue<>(1, "value1=1.33,value2=10,value3=waffle"));
 
-        verifyKTableKTableJoin(JoinType.INNER, expectedOne);
+        verifyKTableKTableJoin(JoinType.INNER, expectedOne, true);
     }
 
     private void verifyKTableKTableJoin(final JoinType joinType,
-                                        final Set<KeyValue<Integer, String>> expectedResult) throws Exception {
-        final String queryableName = joinType + "-store1";
-        final String queryableNameTwo = joinType + "-store2";
+                                        final Set<KeyValue<Integer, String>> expectedResult,
+                                        final boolean verifyQueryableState) throws Exception {
+        final String queryableName = verifyQueryableState ? joinType + "-store1" : null;
+        final String queryableNameTwo = verifyQueryableState ? joinType + "-store2" : null;
 
         streams = prepareTopology(queryableName, queryableNameTwo, streamsConfig);
         streamsTwo = prepareTopology(queryableName, queryableNameTwo, streamsConfigTwo);
         streamsThree = prepareTopology(queryableName, queryableNameTwo, streamsConfigThree);
-
-        final List<KafkaStreams> kafkaStreamsList = asList(streams, streamsTwo, streamsThree);
-        startApplicationAndWaitUntilRunning(kafkaStreamsList, ofSeconds(60));
+        streams.start();
+        streamsTwo.start();
+        streamsThree.start();
 
         final Set<KeyValue<Integer, String>> result = new HashSet<>(IntegrationTestUtils.waitUntilMinKeyValueRecordsReceived(
             CONSUMER_CONFIG,
@@ -216,9 +215,6 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
         streamsConfig.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         streamsConfig.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
         streamsConfig.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
-        // increase the heartbeat interval and corresponding session timeout value, to avoid unnecessary rebalance
-        streamsConfig.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 10000);
-        streamsConfig.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 30000);
         return streamsConfig;
     }
 
@@ -232,25 +228,25 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
         final KTable<Integer, Float> table1 = builder.table(
             TABLE_1,
             Consumed.with(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true),
-                          serdeScope.decorateSerde(Serdes.Float(), streamsConfig, false))
+                serdeScope.decorateSerde(Serdes.Float(), streamsConfig, false))
         );
         final KTable<String, Long> table2 = builder.table(
             TABLE_2,
             Consumed.with(serdeScope.decorateSerde(Serdes.String(), streamsConfig, true),
-                          serdeScope.decorateSerde(Serdes.Long(), streamsConfig, false))
+                serdeScope.decorateSerde(Serdes.Long(), streamsConfig, false))
         );
         final KTable<Integer, String> table3 = builder.table(
             TABLE_3,
             Consumed.with(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true),
-                          serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
+                serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
         );
 
         final Materialized<Integer, String, KeyValueStore<Bytes, byte[]>> materialized;
         if (queryableName != null) {
             materialized = Materialized.<Integer, String, KeyValueStore<Bytes, byte[]>>as(queryableName)
-                    .withKeySerde(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true))
-                    .withValueSerde(serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
-                    .withCachingDisabled();
+                .withKeySerde(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true))
+                .withValueSerde(serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
+                .withCachingDisabled();
         } else {
             throw new RuntimeException("Current implementation of joinOnForeignKey requires a materialized store");
         }
@@ -258,9 +254,9 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
         final Materialized<Integer, String, KeyValueStore<Bytes, byte[]>> materializedTwo;
         if (queryableNameTwo != null) {
             materializedTwo = Materialized.<Integer, String, KeyValueStore<Bytes, byte[]>>as(queryableNameTwo)
-                    .withKeySerde(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true))
-                    .withValueSerde(serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
-                    .withCachingDisabled();
+                .withKeySerde(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true))
+                .withValueSerde(serdeScope.decorateSerde(Serdes.String(), streamsConfig, false))
+                .withCachingDisabled();
         } else {
             throw new RuntimeException("Current implementation of joinOnForeignKey requires a materialized store");
         }
@@ -282,7 +278,7 @@ public class KTableKTableForeignKeyInnerJoinMultiIntegrationTest {
             .toStream()
             .to(OUTPUT,
                 Produced.with(serdeScope.decorateSerde(Serdes.Integer(), streamsConfig, true),
-                              serdeScope.decorateSerde(Serdes.String(), streamsConfig, false)));
+                    serdeScope.decorateSerde(Serdes.String(), streamsConfig, false)));
 
         return new KafkaStreams(builder.build(streamsConfig), streamsConfig);
     }

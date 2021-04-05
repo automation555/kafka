@@ -40,7 +40,6 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.errors.AuthenticationException;
@@ -241,7 +240,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     public static final String PRODUCER_METRIC_GROUP_NAME = "producer-metrics";
 
     private final String clientId;
-    @VisibleForTesting
+    // Visible for testing
     final Metrics metrics;
     private final Partitioner partitioner;
     private final int maxRequestSize;
@@ -319,7 +318,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         this(Utils.propsToMap(properties), keySerializer, valueSerializer);
     }
 
-    @VisibleForTesting
+    // visible for testing
     @SuppressWarnings("unchecked")
     KafkaProducer(ProducerConfig config,
                   Serializer<K> keySerializer,
@@ -442,7 +441,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         }
     }
 
-    @VisibleForTesting
+    // visible for testing
     Sender newSender(LogContext logContext, KafkaClient kafkaClient, ProducerMetadata metadata) {
         int maxInflightRequests = configureInflightRequests(producerConfig);
         int requestTimeoutMs = producerConfig.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
@@ -760,6 +759,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         throwIfNoTransactionManager();
         throwIfProducerClosed();
         log.info("Aborting incomplete transaction");
+        System.err.println("Aborting incomplete transaction");
         TransactionalRequestResult result = transactionManager.beginAbort();
         sender.wakeup();
         result.await(maxBlockTimeMs, TimeUnit.MILLISECONDS);
@@ -1295,7 +1295,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     "by setting the " + ProducerConfig.TRANSACTIONAL_ID_CONFIG + " configuration property");
     }
 
-    @VisibleForTesting
+    // Visible for testing
     String getClientId() {
         return clientId;
     }

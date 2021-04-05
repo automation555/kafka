@@ -35,10 +35,8 @@ import kafka.server.{FetchLogEnd, ReplicaManager}
 import kafka.utils.CoreUtils.inLock
 import kafka.utils.Implicits._
 import kafka.utils._
-import kafka.zk.KafkaZkClient
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
-import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.metrics.stats.{Avg, Max, Meter}
@@ -58,7 +56,6 @@ class GroupMetadataManager(brokerId: Int,
                            interBrokerProtocolVersion: ApiVersion,
                            config: OffsetConfig,
                            val replicaManager: ReplicaManager,
-                           zkClient: KafkaZkClient,
                            time: Time,
                            metrics: Metrics) extends Logging with KafkaMetricsGroup {
 
@@ -66,10 +63,10 @@ class GroupMetadataManager(brokerId: Int,
 
   private val groupMetadataCache = new Pool[String, GroupMetadata]
 
-  /* lock protecting access to loading and owned partition sets */
+  /* loack protecting access to loading and owned partition sets */
   private val partitionLock = new ReentrantLock()
 
-  /* partitions of consumer groups that are being loaded, its lock should be always called BEFORE the group lock if needed */
+  /* paritions of conasumer grouaps that are being loaded, its lock should be always called BEFORE the group lock if needed */
   private val loadingPartitions: mutable.Set[Int] = mutable.Set()
 
   /* partitions of consumer groups that are assigned, using the same loading partition lock */
@@ -79,7 +76,7 @@ class GroupMetadataManager(brokerId: Int,
   private val shuttingDown = new AtomicBoolean(false)
 
   /* number of partitions for the consumer metadata topic */
-  private val groupMetadataTopicPartitionCount = getGroupMetadataTopicPartitionCount
+  @volatile private var groupMetadataTopicPartitionCount: Int = _
 
   /* single-thread scheduler to handle offset/group metadata cache loading and unloading */
   private val scheduler = new KafkaScheduler(threads = 1, threadNamePrefix = "group-metadata-manager-")
@@ -171,7 +168,8 @@ class GroupMetadataManager(brokerId: Int,
       }
     })
 
-  def startup(enableMetadataExpiration: Boolean): Unit = {
+  def startup(retrieveGroupMetadataTopicPartitionCount: () => Int, enableMetadataExpiration: Boolean): Unit = {
+    groupMetadataTopicPartitionCount = retrieveGroupMetadataTopicPartitionCount()
     scheduler.startup()
     if (enableMetadataExpiration) {
       scheduler.schedule(name = "delete-expired-group-metadata",
@@ -202,7 +200,7 @@ class GroupMetadataManager(brokerId: Int,
     }
   }
 
-  @VisibleForTesting
+  // visible for testing
   private[group] def isGroupOpenForProducer(producerId: Long, groupId: String) = openGroupsForProducer.get(producerId) match {
     case Some(groups) =>
       groups.contains(groupId)
@@ -272,12 +270,23 @@ class GroupMetadataManager(brokerId: Int,
 
           // construct the error status in the propagated assignment response in the cache
           val status = responseStatus(groupMetadataPartition)
+          System.err.println("responseStatus" + responseStatus)
+//          System.err.println("!!! status" + status)
 
           val responseError = if (status.error == Errors.NONE) {
             Errors.NONE
           } else {
             debug(s"Metadata from group ${group.groupId} with generation $generationId failed when appending to log " +
               s"due to ${status.error.exceptionName}")
+            System.err.println(s"Metadata from group ${group.groupId} with generation $generationId failed when appending to log " +
+              s"due to ${status}")
+
+            // val elements = Thread.currentThread.getStackTrace
+//            for (i <- 1 until elements.length) {
+//              val s = elements(i)
+//              System.err.print(" - " + "(" + s.getFileName + ":" + s.getLineNumber + ")")
+//            }
+            
 
             // transform the log append error code to the corresponding the commit status error code
             status.error match {
@@ -315,6 +324,7 @@ class GroupMetadataManager(brokerId: Int,
         appendForGroup(group, groupMetadataRecords, putCacheCallback)
 
       case None =>
+        System.err.println("no magic value")
         responseCallback(Errors.NOT_COORDINATOR)
         None
     }
@@ -780,7 +790,7 @@ class GroupMetadataManager(brokerId: Int,
     }
   }
 
-  @VisibleForTesting
+  // visible for testing
   private[group] def cleanupGroupMetadata(): Unit = {
     val currentTimestamp = time.milliseconds()
     val numOffsetsRemoved = cleanupGroupMetadata(groupMetadataCache.values, group => {
@@ -820,7 +830,7 @@ class GroupMetadataManager(brokerId: Int,
         val timestampType = TimestampType.CREATE_TIME
         val timestamp = time.milliseconds()
 
-          replicaManager.nonOfflinePartition(appendPartition).foreach { partition =>
+          replicaManager.onlinePartition(appendPartition).foreach { partition =>
             val tombstones = ArrayBuffer.empty[SimpleRecord]
             removedOffsets.forKeyValue { (topicPartition, offsetAndMetadata) =>
               trace(s"Removing expired/deleted offset and metadata for $groupId, $topicPartition: $offsetAndMetadata")
@@ -936,14 +946,6 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
-   * Gets the partition count of the group metadata topic from ZooKeeper.
-   * If the topic does not exist, the configured partition count is returned.
-   */
-  private def getGroupMetadataTopicPartitionCount: Int = {
-    zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicNumPartitions)
-  }
-
-  /**
    * Check if the replica is local and return the message format version and timestamp
    *
    * @param   partition  Partition of GroupMetadataTopic
@@ -954,8 +956,9 @@ class GroupMetadataManager(brokerId: Int,
 
   /**
    * Add the partition into the owned list
+   *
+   * NOTE: this is for test only
    */
-  @VisibleForTesting
   private[group] def addPartitionOwnership(partition: Int): Unit = {
     inLock(partitionLock) {
       ownedPartitions.add(partition)
@@ -965,8 +968,9 @@ class GroupMetadataManager(brokerId: Int,
   /**
    * Add a partition to the loading partitions set. Return true if the partition was not
    * already loading.
+   *
+   * Visible for testing
    */
-  @VisibleForTesting
   private[group] def addLoadingPartition(partition: Int): Boolean = {
     inLock(partitionLock) {
       loadingPartitions.add(partition)
@@ -1146,7 +1150,6 @@ object GroupMetadataManager {
         val members = value.members.asScala.map { memberMetadata =>
           new MemberMetadata(
             memberId = memberMetadata.memberId,
-            groupId = groupId,
             groupInstanceId = Option(memberMetadata.groupInstanceId),
             clientId = memberMetadata.clientId,
             clientHost = memberMetadata.clientHost,

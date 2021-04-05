@@ -24,18 +24,19 @@ import java.nio.file.{Files, StandardOpenOption}
 import java.security.cert.X509Certificate
 import java.time.Duration
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
-import java.util.{Arrays, Collections, Properties}
 import java.util.concurrent.{Callable, ExecutionException, Executors, TimeUnit}
+import java.util.{Arrays, Collections, Properties}
+
+import com.yammer.metrics.core.Meter
 import javax.net.ssl.X509TrustManager
 import kafka.api._
 import kafka.cluster.{Broker, EndPoint, IsrChangeListener}
+import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.log._
+import kafka.metrics.KafkaYammerMetrics
 import kafka.security.auth.{Acl, Resource, Authorizer => LegacyAuthorizer}
 import kafka.server._
 import kafka.server.checkpoints.OffsetCheckpointFile
-import com.yammer.metrics.core.Meter
-import kafka.controller.LeaderIsrAndControllerEpoch
-import kafka.metrics.KafkaYammerMetrics
 import kafka.server.metadata.{CachedConfigRepository, ConfigRepository, MetadataBroker}
 import kafka.utils.Implicits._
 import kafka.zk._
@@ -57,22 +58,22 @@ import org.apache.kafka.common.record._
 import org.apache.kafka.common.resource.ResourcePattern
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, Deserializer, IntegerSerializer, Serializer}
-import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.utils.Utils._
+import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{KafkaFuture, Node, TopicPartition}
 import org.apache.kafka.server.authorizer.{Authorizer => JAuthorizer}
 import org.apache.kafka.test.{TestSslUtils, TestUtils => JTestUtils}
-import org.apache.log4j.PropertyConfigurator
 import org.apache.zookeeper.KeeperException.SessionExpiredException
 import org.apache.zookeeper.ZooDefs._
 import org.apache.zookeeper.data.ACL
 import org.junit.jupiter.api.Assertions._
+import org.opentest4j.AssertionFailedError
 
-import scala.jdk.CollectionConverters._
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.collection.{Map, Seq, mutable}
 import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.jdk.CollectionConverters._
 
 /**
  * Utility functions to help with testing
@@ -1464,9 +1465,26 @@ object TestUtils extends Logging {
       records ++= polledRecords.asScala
       records.size >= numRecords
     }
-    pollRecordsUntilTrue(consumer, pollAction,
-      waitTimeMs = waitTimeMs,
-      msg = s"Consumed ${records.size} records before timeout instead of the expected $numRecords records")
+    
+    var isFail = false
+    try {
+      pollRecordsUntilTrue(consumer, pollAction,
+        waitTimeMs = waitTimeMs,
+        msg = s"Consumed ${records.size} records before timeout instead of the expected $numRecords records")
+    } catch {
+      case e: AssertionFailedError => {
+        isFail = true
+        System.err.println(s"!!! Consumed ${records.size} records before timeout instead of the expected $numRecords records")
+      }
+    }
+
+    if (isFail) {
+      pollRecordsUntilTrue(consumer, pollAction,
+        waitTimeMs = waitTimeMs,
+        msg = s"Consumed ${records.size} records before timeout instead of the expected $numRecords records")
+      fail("failed at 1st try")
+    }
+
     records
   }
 
@@ -1854,27 +1872,18 @@ object TestUtils extends Logging {
       authorizer, resource)
   }
 
-  /**
-   * Convenience function for tests which mutate log levels which resets the logging configuration after the test.
-   */
-  def withLogReset[T](fn: => T): T = {
-    try {
-      fn
-    } finally {
-      resetLogging
-    }
+  def removeAndVerifyAcls(server: KafkaServer, acls: Set[AccessControlEntry], resource: ResourcePattern): Unit = {
+    val authorizer = server.dataPlaneRequestProcessor.authorizer.get
+    val aclBindingFilters = acls.map { acl => new AclBindingFilter(resource.toFilter, acl.toFilter) }
+    authorizer.deleteAcls(null, aclBindingFilters.toList.asJava).asScala
+      .map(_.toCompletableFuture.get)
+      .foreach { result =>
+        result.exception.ifPresent { e => throw e }
+      }
+    val aclFilter = new AclBindingFilter(resource.toFilter, AccessControlEntryFilter.ANY)
+    waitAndVerifyAcls(
+      authorizer.acls(aclFilter).asScala.map(_.entry).toSet -- acls,
+      authorizer, resource)
   }
 
-  /**
-    * Resets the logging configuration after the test.
-    */
-  def resetLogging[T] = {
-    org.apache.log4j.LogManager.resetConfiguration()
-    val stream = this.getClass.getResourceAsStream("/log4j.properties")
-    try {
-      PropertyConfigurator.configure(stream)
-    } finally {
-      stream.close()
-    }
-  }
 }

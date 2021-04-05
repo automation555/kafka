@@ -21,10 +21,10 @@ import org.apache.kafka.connect.runtime.AbstractStatus;
 import org.apache.kafka.connect.runtime.rest.entities.ActiveTopicsInfo;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorStateInfo;
 import org.apache.kafka.connect.runtime.rest.errors.ConnectRestException;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.ws.rs.core.Response;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
@@ -38,15 +38,13 @@ import java.util.stream.Collectors;
 
 import static org.apache.kafka.test.TestUtils.waitForCondition;
 
-import jakarta.ws.rs.core.Response;
-
 /**
  * A set of common assertions that can be applied to a Connect cluster during integration testing
  */
 public class EmbeddedConnectClusterAssertions {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddedConnectClusterAssertions.class);
-    public static final long WORKER_SETUP_DURATION_MS = TimeUnit.SECONDS.toMillis(60);
+    public static final long WORKER_SETUP_DURATION_MS = TimeUnit.SECONDS.toMillis(3);
     public static final long VALIDATION_DURATION_MS = TimeUnit.SECONDS.toMillis(30);
     public static final long CONNECTOR_SETUP_DURATION_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONNECT_INTERNAL_TOPIC_UPDATES_DURATION_MS = TimeUnit.SECONDS.toMillis(60);
@@ -384,7 +382,7 @@ public class EmbeddedConnectClusterAssertions {
         } catch (ConnectRestException e) {
             return e.statusCode() == Response.Status.NOT_FOUND.getStatusCode();
         } catch (Exception e) {
-            log.error("Could not check connector state info.", e);
+//            log.error("Could not check connector state info.", e);
             return false;
         }
         if (info == null) {
@@ -419,7 +417,7 @@ public class EmbeddedConnectClusterAssertions {
                     && info.tasks().stream().allMatch(s -> s.state().equals(tasksState.toString()));
             return Optional.of(result);
         } catch (Exception e) {
-            log.error("Could not check connector state info.", e);
+//            log.error("Could not check connector state info.", e);
             return Optional.empty();
         }
     }

@@ -18,6 +18,8 @@ package org.apache.kafka.common.config;
 
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.utils.Utils;
 
@@ -404,26 +406,11 @@ public class ConfigDef {
      * @param name              The name of the config parameter
      * @param type              The type of the config
      * @param defaultValue      The default value to use if this config isn't present
-     * @param importance        The importance of this config (i.e. is this something you will likely need to change?)
+     * @param importance
      * @return This ConfigDef so you can chain calls
      */
     public ConfigDef defineInternal(final String name, final Type type, final Object defaultValue, final Importance importance) {
         return define(new ConfigKey(name, type, defaultValue, null, importance, "", "", -1, Width.NONE, name, Collections.<String>emptyList(), null, true));
-    }
-
-    /**
-     * Define a new internal configuration. Internal configuration won't show up in the docs and aren't
-     * intended for general use.
-     * @param name              The name of the config parameter
-     * @param type              The type of the config
-     * @param defaultValue      The default value to use if this config isn't present
-     * @param validator         The validator to use in checking the correctness of the config
-     * @param importance        The importance of this config (i.e. is this something you will likely need to change?)
-     * @param documentation     The documentation string for the config
-     * @return This ConfigDef so you can chain calls
-     */
-    public ConfigDef defineInternal(final String name, final Type type, final Object defaultValue, final Validator validator, final Importance importance, final String documentation) {
-        return define(new ConfigKey(name, type, defaultValue, validator, importance, documentation, "", -1, Width.NONE, name, Collections.<String>emptyList(), null, true));
     }
 
     /**
@@ -529,7 +516,7 @@ public class ConfigDef {
         return validate(parsed, configValues);
     }
 
-    // package accessible for testing
+    @VisibleForTesting
     Map<String, Object> parseForValidate(Map<String, String> props, Map<String, ConfigValue> configValues) {
         Map<String, Object> parsed = new HashMap<>();
         Set<String> configsWithNoParent = getConfigsWithNoParent();
@@ -560,7 +547,7 @@ public class ConfigDef {
         return new ArrayList<>(undefinedConfigKeys);
     }
 
-    // package accessible for testing
+    @VisibleForTesting
     Set<String> getConfigsWithNoParent() {
         if (this.configsWithNoParent != null) {
             return this.configsWithNoParent;

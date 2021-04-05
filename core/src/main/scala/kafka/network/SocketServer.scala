@@ -25,6 +25,7 @@ import java.util
 import java.util.Optional
 import java.util.concurrent._
 import java.util.concurrent.atomic._
+
 import kafka.cluster.{BrokerEndPoint, EndPoint}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.network.ConnectionQuotas._
@@ -35,13 +36,14 @@ import kafka.security.CredentialProvider
 import kafka.server.{BrokerReconfigurable, DynamicConfig, KafkaConfig}
 import kafka.utils._
 import kafka.utils.Implicits._
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.errors.InvalidRequestException
 import org.apache.kafka.common.memory.{MemoryPool, SimpleMemoryPool}
 import org.apache.kafka.common.metrics._
 import org.apache.kafka.common.metrics.stats.{Avg, CumulativeSum, Meter, Rate}
 import org.apache.kafka.common.network.KafkaChannel.ChannelMuteEvent
-import org.apache.kafka.common.network.{ChannelBuilder, ChannelBuilders, ClientInformation, NetworkSend, KafkaChannel, ListenerName, ListenerReconfigurable, Selectable, Send, Selector => KSelector}
+import org.apache.kafka.common.network.{ChannelBuilder, ChannelBuilders, ClientInformation, KafkaChannel, ListenerName, ListenerReconfigurable, NetworkSend, Selectable, Send, Selector => KSelector}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{ApiVersionsRequest, EnvelopeRequest, EnvelopeResponse, RequestContext, RequestHeader}
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, KafkaPrincipalSerde, SecurityProtocol}
@@ -71,7 +73,7 @@ import scala.util.control.ControlThrowable
  *    - The threading model is
  *      1 Acceptor thread that handles new connections
  *      Acceptor has 1 Processor thread that has its own selector and read requests from the socket.
- *      1 Handler thread that handles requests and produces responses back to the processor thread for writing.
+ *      1 Handler thread that handles requests and produce responses back to the processor thread for writing.
  */
 class SocketServer(val config: KafkaConfig,
                    val metrics: Metrics,
@@ -260,7 +262,7 @@ class SocketServer(val config: KafkaConfig,
       connectionQuotas.addListener(config, endpoint.listenerName)
       val controlPlaneAcceptor = createAcceptor(endpoint, ControlPlaneMetricPrefix)
       val controlPlaneProcessor = newProcessor(nextProcessorId, controlPlaneRequestChannelOpt.get,
-        connectionQuotas, endpoint.listenerName, endpoint.securityProtocol, memoryPool, isPrivilegedListener = true, isControlPlane = true)
+        connectionQuotas, endpoint.listenerName, endpoint.securityProtocol, memoryPool, isPrivilegedListener = true)
       controlPlaneAcceptorOpt = Some(controlPlaneAcceptor)
       controlPlaneProcessorOpt = Some(controlPlaneProcessor)
       val listenerProcessors = new ArrayBuffer[Processor]()
@@ -287,7 +289,7 @@ class SocketServer(val config: KafkaConfig,
 
     for (_ <- 0 until newProcessorsPerListener) {
       val processor = newProcessor(nextProcessorId, dataPlaneRequestChannel, connectionQuotas,
-        listenerName, securityProtocol, memoryPool, isPrivilegedListener, false)
+        listenerName, securityProtocol, memoryPool, isPrivilegedListener)
       listenerProcessors += processor
       dataPlaneRequestChannel.addProcessor(processor)
       nextProcessorId += 1
@@ -411,35 +413,32 @@ class SocketServer(val config: KafkaConfig,
     }
   }
 
-  // `protected` for test usage
+  @VisibleForTesting
   protected[network] def newProcessor(id: Int, requestChannel: RequestChannel, connectionQuotas: ConnectionQuotas, listenerName: ListenerName,
-                                      securityProtocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean, isControlPlane: Boolean): Processor = {
-    new Processor(id,
-      time,
-      config.socketRequestMaxBytes,
-      requestChannel,
-      connectionQuotas,
-      config.connectionsMaxIdleMs,
-      config.failedAuthenticationDelayMs,
-      listenerName,
-      securityProtocol,
-      config,
-      metrics,
-      credentialProvider,
-      memoryPool,
-      logContext,
-      isPrivilegedListener = isPrivilegedListener,
-      allowDisabledApis = allowDisabledApis,
-      isControlPlane = isControlPlane
-    )
-  }
+                                      securityProtocol: SecurityProtocol, memoryPool: MemoryPool, isPrivilegedListener: Boolean) = new Processor(id,
+                                        time,
+                                        config.socketRequestMaxBytes,
+                                        requestChannel,
+                                        connectionQuotas,
+                                        config.connectionsMaxIdleMs,
+                                        config.failedAuthenticationDelayMs,
+                                        listenerName,
+                                        securityProtocol,
+                                        config,
+                                        metrics,
+                                        credentialProvider,
+                                        memoryPool,
+                                        logContext,
+                                        isPrivilegedListener = isPrivilegedListener,
+                                        allowDisabledApis = allowDisabledApis
+                                      )
 
-  // For test usage
-  private[network] def connectionCount(address: InetAddress): Int =
+  @VisibleForTesting
+  private[network] def connectionCount(address: InetAddress) =
     Option(connectionQuotas).fold(0)(_.get(address))
 
-  // For test usage
-  private[network] def dataPlaneProcessor(index: Int): Processor = dataPlaneProcessors.get(index)
+  @VisibleForTesting
+  private[network] def dataPlaneProcessor(index: Int) = dataPlaneProcessors.get(index)
 
 }
 
@@ -791,8 +790,7 @@ private[kafka] class Processor(val id: Int,
                                logContext: LogContext,
                                connectionQueueSize: Int = ConnectionQueueSize,
                                isPrivilegedListener: Boolean = false,
-                               allowDisabledApis: Boolean = false,
-                               isControlPlane: Boolean = false) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
+                               allowDisabledApis: Boolean = false) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
 
   private object ConnectionId {
     def fromString(s: String): Option[ConnectionId] = s.split("-") match {
@@ -812,7 +810,6 @@ private[kafka] class Processor(val id: Int,
   private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
   private val responseQueue = new LinkedBlockingDeque[RequestChannel.Response]()
-  private val forceControllerRequests = config.controlPlaneForceControllerRequestsEnable
 
   private[kafka] val metricTags = mutable.LinkedHashMap(
     ListenerMetricTag -> listenerName.value,
@@ -841,7 +838,7 @@ private[kafka] class Processor(val id: Int,
       credentialProvider.tokenCache,
       time,
       logContext))
-  // Visible to override for testing
+  @VisibleForTesting
   protected[network] def createSelector(channelBuilder: ChannelBuilder): KSelector = {
     channelBuilder match {
       case reconfigurable: Reconfigurable => config.addReconfigurable(reconfigurable)
@@ -953,7 +950,7 @@ private[kafka] class Processor(val id: Int,
     }
   }
 
-  // `protected` for test usage
+  @VisibleForTesting
   protected[network] def sendResponse(response: RequestChannel.Response, responseSend: Send): Unit = {
     val connectionId = response.request.context.connectionId
     trace(s"Socket server received response to send to $connectionId, registering for write and sending data: $response")
@@ -991,72 +988,60 @@ private[kafka] class Processor(val id: Int,
     }
   }
 
-  private def isControlRequest(header: RequestHeader): Boolean = {
-    header.apiKey() match {
-      case ApiKeys.LEADER_AND_ISR | ApiKeys.STOP_REPLICA | ApiKeys.UPDATE_METADATA | ApiKeys.CONTROLLED_SHUTDOWN => true
-      case _ => false
-    }
-  }
-
   private def processCompletedReceives(): Unit = {
     selector.completedReceives.forEach { receive =>
       try {
         openOrClosingChannel(receive.source) match {
           case Some(channel) =>
             val header = parseRequestHeader(receive.payload)
-            if (isControlPlane && forceControllerRequests && !isControlRequest(header)) {
-              info(s"Current plane is control plane, disconnecting non controller channel: $channel : $header")
-              close(channel.id)
-            } else {
-              if (header.apiKey == ApiKeys.SASL_HANDSHAKE && channel.maybeBeginServerReauthentication(receive,
-                () => time.nanoseconds()))
-                trace(s"Begin re-authentication: $channel")
-              else {
-                val nowNanos = time.nanoseconds()
-                if (channel.serverAuthenticationSessionExpired(nowNanos)) {
-                  // be sure to decrease connection count and drop any in-flight responses
-                  debug(s"Disconnecting expired channel: $channel : $header")
-                  close(channel.id)
-                  expiredConnectionsKilledCount.record(null, 1, 0)
-                } else {
-                  val connectionId = receive.source
-                  val context = new RequestContext(header, connectionId, channel.socketAddress,
-                    channel.principal, listenerName, securityProtocol,
-                    channel.channelMetadataRegistry.clientInformation, isPrivilegedListener, channel.principalSerde)
+            if (header.apiKey == ApiKeys.SASL_HANDSHAKE && channel.maybeBeginServerReauthentication(receive,
+              () => time.nanoseconds()))
+              trace(s"Begin re-authentication: $channel")
+            else {
+              val nowNanos = time.nanoseconds()
+              if (channel.serverAuthenticationSessionExpired(nowNanos)) {
+                // be sure to decrease connection count and drop any in-flight responses
+                debug(s"Disconnecting expired channel: $channel : $header")
+                close(channel.id)
+                expiredConnectionsKilledCount.record(null, 1, 0)
+              } else {
+                val connectionId = receive.source
+                val context = new RequestContext(header, connectionId, channel.socketAddress,
+                  channel.principal, listenerName, securityProtocol,
+                  channel.channelMetadataRegistry.clientInformation, isPrivilegedListener, channel.principalSerde)
 
-                  var req = new RequestChannel.Request(processor = id, context = context,
-                    startTimeNanos = nowNanos, memoryPool, receive.payload, requestChannel.metrics, None)
+                var req = new RequestChannel.Request(processor = id, context = context,
+                  startTimeNanos = nowNanos, memoryPool, receive.payload, requestChannel.metrics, None)
 
-                  if (req.header.apiKey == ApiKeys.ENVELOPE) {
-                    // Override the request context with the forwarded request context.
-                    // The envelope's context will be preserved in the forwarded context
+                if (req.header.apiKey == ApiKeys.ENVELOPE) {
+                  // Override the request context with the forwarded request context.
+                  // The envelope's context will be preserved in the forwarded context
 
-                    req = parseForwardedPrincipal(req, channel.principalSerde.asScala) match {
-                      case Some(forwardedPrincipal) =>
-                        buildForwardedRequestContext(req, forwardedPrincipal)
+                  req = parseForwardedPrincipal(req, channel.principalSerde.asScala) match {
+                    case Some(forwardedPrincipal) =>
+                      buildForwardedRequestContext(req, forwardedPrincipal)
 
-                      case None =>
-                        val envelopeResponse = new EnvelopeResponse(Errors.PRINCIPAL_DESERIALIZATION_FAILURE)
-                        sendEnvelopeResponse(req, envelopeResponse)
-                        null
+                    case None =>
+                      val envelopeResponse = new EnvelopeResponse(Errors.PRINCIPAL_DESERIALIZATION_FAILURE)
+                      sendEnvelopeResponse(req, envelopeResponse)
+                      null
+                  }
+                }
+
+                if (req != null) {
+                  // KIP-511: ApiVersionsRequest is intercepted here to catch the client software name
+                  // and version. It is done here to avoid wiring things up to the api layer.
+                  if (header.apiKey == ApiKeys.API_VERSIONS) {
+                    val apiVersionsRequest = req.body[ApiVersionsRequest]
+                    if (apiVersionsRequest.isValid) {
+                      channel.channelMetadataRegistry.registerClientInformation(new ClientInformation(
+                        apiVersionsRequest.data.clientSoftwareName,
+                        apiVersionsRequest.data.clientSoftwareVersion))
                     }
                   }
-
-                  if (req != null) {
-                    // KIP-511: ApiVersionsRequest is intercepted here to catch the client software name
-                    // and version. It is done here to avoid wiring things up to the api layer.
-                    if (header.apiKey == ApiKeys.API_VERSIONS) {
-                      val apiVersionsRequest = req.body[ApiVersionsRequest]
-                      if (apiVersionsRequest.isValid) {
-                        channel.channelMetadataRegistry.registerClientInformation(new ClientInformation(
-                          apiVersionsRequest.data.clientSoftwareName,
-                          apiVersionsRequest.data.clientSoftwareVersion))
-                      }
-                    }
-                    requestChannel.sendRequest(req)
-                    selector.mute(connectionId)
-                    handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)
-                  }
+                  requestChannel.sendRequest(req)
+                  selector.mute(connectionId)
+                  handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)
                 }
               }
             }
@@ -1266,7 +1251,7 @@ private[kafka] class Processor(val id: Int,
     removeMetric(IdlePercentMetricName, Map(NetworkProcessorMetricTag -> id.toString))
   }
 
-  // 'protected` to allow override for testing
+  @VisibleForTesting
   protected[network] def connectionId(socket: Socket): String = {
     val localHost = socket.getLocalAddress.getHostAddress
     val localPort = socket.getLocalPort
@@ -1291,10 +1276,10 @@ private[kafka] class Processor(val id: Int,
 
   private[network] def responseQueueSize = responseQueue.size
 
-  // Only for testing
+  @VisibleForTesting
   private[network] def inflightResponseCount: Int = inflightResponses.size
 
-  // Visible for testing
+  @VisibleForTesting
   // Only methods that are safe to call on a disconnected channel should be invoked on 'openOrClosingChannel'.
   private[network] def openOrClosingChannel(connectionId: String): Option[KafkaChannel] =
     Option(selector.channel(connectionId)).orElse(Option(selector.closingChannel(connectionId)))
@@ -1309,8 +1294,8 @@ private[kafka] class Processor(val id: Int,
     openOrClosingChannel(connectionId).foreach(c => selector.unmute(c.id))
   }
 
-  /* For test usage */
-  private[network] def channel(connectionId: String): Option[KafkaChannel] =
+  @VisibleForTesting
+  private[network] def channel(connectionId: String) =
     Option(selector.channel(connectionId))
 
   /**
@@ -1474,7 +1459,7 @@ class ConnectionQuotas(config: KafkaConfig, time: Time, metrics: Metrics) extend
     }
   }
 
-  // Visible for testing
+  @VisibleForTesting
   def connectionRateForIp(ip: InetAddress): Int = {
     connectionRatePerIp.getOrDefault(ip, defaultConnectionRatePerIp)
   }

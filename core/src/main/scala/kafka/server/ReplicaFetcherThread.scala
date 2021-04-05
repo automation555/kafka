@@ -19,17 +19,18 @@ package kafka.server
 
 import java.util.Collections
 import java.util.Optional
+
 import kafka.api._
 import kafka.cluster.BrokerEndPoint
 import kafka.log.{LeaderOffsetIncremented, LogAppendInfo}
+import kafka.server.AbstractFetcherThread.ReplicaFetch
+import kafka.server.AbstractFetcherThread.ResultWithPartitions
 import kafka.utils.Implicits._
-import kafka.utils.LogIdent
 import org.apache.kafka.clients.FetchSessionHandler
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors.KafkaStorageException
-import org.apache.kafka.common.message.ListOffsetsRequestData.{ListOffsetsPartition, ListOffsetsTopic}
-import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetForLeaderTopic
-import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData.OffsetForLeaderTopicCollection
+import org.apache.kafka.common.message.ListOffsetRequestData.{ListOffsetPartition, ListOffsetTopic}
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
@@ -59,17 +60,16 @@ class ReplicaFetcherThread(name: String,
                                 isInterruptible = false,
                                 replicaMgr.brokerTopicStats) {
 
-  import AbstractFetcherThread._
   private val replicaId = brokerConfig.brokerId
   private val logContext = new LogContext(s"[ReplicaFetcher replicaId=$replicaId, leaderId=${sourceBroker.id}, " +
     s"fetcherId=$fetcherId] ")
-  override protected implicit val logIdent = Some(LogIdent(logContext.logPrefix))
+  this.logIdent = logContext.logPrefix
 
   private val leaderEndpoint = leaderEndpointBlockingSend.getOrElse(
     new ReplicaFetcherBlockingSend(sourceBroker, brokerConfig, metrics, time, fetcherId,
       s"broker-$replicaId-fetcher-$fetcherId", logContext))
 
-  // Visible for testing
+  @VisibleForTesting
   private[server] val fetchRequestVersion: Short =
     if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_7_IV1) 12
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_3_IV1) 11
@@ -83,7 +83,7 @@ class ReplicaFetcherThread(name: String,
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_0_9_0) 1
     else 0
 
-  // Visible for testing
+  @VisibleForTesting
   private[server] val offsetForLeaderEpochRequestVersion: Short =
     if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_8_IV0) 4
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_3_IV1) 3
@@ -91,7 +91,7 @@ class ReplicaFetcherThread(name: String,
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_0_IV0) 1
     else 0
 
-  // Visible for testing
+  @VisibleForTesting
   private[server] val listOffsetRequestVersion: Short =
     if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_8_IV0) 6
     else if (brokerConfig.interBrokerProtocolVersion >= KAFKA_2_2_IV1) 5
@@ -228,26 +228,26 @@ class ReplicaFetcherThread(name: String,
   }
 
   override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int): Long = {
-    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.EARLIEST_TIMESTAMP)
+    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetRequest.EARLIEST_TIMESTAMP)
   }
 
   override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int): Long = {
-    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetsRequest.LATEST_TIMESTAMP)
+    fetchOffsetFromLeader(topicPartition, currentLeaderEpoch, ListOffsetRequest.LATEST_TIMESTAMP)
   }
 
   private def fetchOffsetFromLeader(topicPartition: TopicPartition, currentLeaderEpoch: Int, earliestOrLatest: Long): Long = {
-    val topic = new ListOffsetsTopic()
+    val topic = new ListOffsetTopic()
       .setName(topicPartition.topic)
       .setPartitions(Collections.singletonList(
-          new ListOffsetsPartition()
+          new ListOffsetPartition()
             .setPartitionIndex(topicPartition.partition)
             .setCurrentLeaderEpoch(currentLeaderEpoch)
             .setTimestamp(earliestOrLatest)))
-    val requestBuilder = ListOffsetsRequest.Builder.forReplica(listOffsetRequestVersion, replicaId)
+    val requestBuilder = ListOffsetRequest.Builder.forReplica(listOffsetRequestVersion, replicaId)
       .setTargetTimes(Collections.singletonList(topic))
 
     val clientResponse = leaderEndpoint.sendRequest(requestBuilder)
-    val response = clientResponse.responseBody.asInstanceOf[ListOffsetsResponse]
+    val response = clientResponse.responseBody.asInstanceOf[ListOffsetResponse]
     val responsePartition = response.topics.asScala.find(_.name == topicPartition.topic).get
       .partitions.asScala.find(_.partitionIndex == topicPartition.partition).get
 
@@ -336,18 +336,7 @@ class ReplicaFetcherThread(name: String,
       return Map.empty
     }
 
-    val topics = new OffsetForLeaderTopicCollection(partitions.size)
-    partitions.forKeyValue { (topicPartition, epochData) =>
-      var topic = topics.find(topicPartition.topic)
-      if (topic == null) {
-        topic = new OffsetForLeaderTopic().setTopic(topicPartition.topic)
-        topics.add(topic)
-      }
-      topic.partitions.add(epochData)
-    }
-
-    val epochRequest = OffsetsForLeaderEpochRequest.Builder.forFollower(
-      offsetForLeaderEpochRequestVersion, topics, brokerConfig.brokerId)
+    val epochRequest = OffsetsForLeaderEpochRequest.Builder.forFollower(offsetForLeaderEpochRequestVersion, partitions.asJava, brokerConfig.brokerId)
     debug(s"Sending offset for leader epoch request $epochRequest")
 
     try {
@@ -355,7 +344,7 @@ class ReplicaFetcherThread(name: String,
       val responseBody = response.responseBody.asInstanceOf[OffsetsForLeaderEpochResponse]
       debug(s"Received leaderEpoch response $response")
       responseBody.data.topics.asScala.flatMap { offsetForLeaderTopicResult =>
-        offsetForLeaderTopicResult.partitions.asScala.map { offsetForLeaderPartitionResult =>
+        offsetForLeaderTopicResult.partitions().asScala.map { offsetForLeaderPartitionResult =>
           val tp = new TopicPartition(offsetForLeaderTopicResult.topic, offsetForLeaderPartitionResult.partition)
           tp -> offsetForLeaderPartitionResult
         }

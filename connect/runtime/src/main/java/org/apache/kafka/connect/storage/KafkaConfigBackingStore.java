@@ -20,6 +20,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -44,7 +45,6 @@ import org.apache.kafka.connect.util.Callback;
 import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.KafkaBasedLog;
-import org.apache.kafka.connect.util.SharedTopicAdmin;
 import org.apache.kafka.connect.util.TopicAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +63,6 @@ import java.util.TreeSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Supplier;
 
 /**
  * <p>
@@ -226,8 +225,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     // Connector and task configs: name or id -> config map
     private final Map<String, Map<String, String>> connectorConfigs = new HashMap<>();
     private final Map<ConnectorTaskId, Map<String, String>> taskConfigs = new HashMap<>();
-    private final Supplier<TopicAdmin> topicAdminSupplier;
-    private SharedTopicAdmin ownTopicAdmin;
 
     // Set of connectors where we saw a task commit with an incomplete set of task config updates, indicating the data
     // is in an inconsistent state and we cannot safely use them until they have been refreshed.
@@ -245,17 +242,11 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
 
     private final WorkerConfigTransformer configTransformer;
 
-    @Deprecated
     public KafkaConfigBackingStore(Converter converter, WorkerConfig config, WorkerConfigTransformer configTransformer) {
-        this(converter, config, configTransformer, null);
-    }
-
-    public KafkaConfigBackingStore(Converter converter, WorkerConfig config, WorkerConfigTransformer configTransformer, Supplier<TopicAdmin> adminSupplier) {
         this.lock = new Object();
         this.started = false;
         this.converter = converter;
         this.offset = -1;
-        this.topicAdminSupplier = adminSupplier;
 
         this.topic = config.getString(DistributedConfig.CONFIG_TOPIC_CONFIG);
         if (this.topic == null || this.topic.trim().length() == 0)
@@ -293,13 +284,7 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     @Override
     public void stop() {
         log.info("Closing KafkaConfigBackingStore");
-        try {
-            configLog.stop();
-        } finally {
-            if (ownTopicAdmin != null) {
-                ownTopicAdmin.close();
-            }
-        }
+        configLog.stop();
         log.info("Closed KafkaConfigBackingStore");
     }
 
@@ -470,7 +455,7 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
         }
     }
 
-    // package private for testing
+    @VisibleForTesting
     KafkaBasedLog<String, byte[]> setupAndCreateKafkaBasedLog(String topic, final WorkerConfig config) {
         String clusterId = ConnectUtils.lookupKafkaClusterId(config);
         Map<String, Object> originals = config.originals();
@@ -487,14 +472,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
 
         Map<String, Object> adminProps = new HashMap<>(originals);
         ConnectUtils.addMetricsContextProperties(adminProps, config, clusterId);
-        Supplier<TopicAdmin> adminSupplier;
-        if (topicAdminSupplier != null) {
-            adminSupplier = topicAdminSupplier;
-        } else {
-            // Create our own topic admin supplier that we'll close when we're stopped
-            ownTopicAdmin = new SharedTopicAdmin(adminProps);
-            adminSupplier = ownTopicAdmin;
-        }
         Map<String, Object> topicSettings = config instanceof DistributedConfig
                                             ? ((DistributedConfig) config).configStorageTopicSettings()
                                             : Collections.emptyMap();
@@ -505,25 +482,30 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
                 .replicationFactor(config.getShort(DistributedConfig.CONFIG_STORAGE_REPLICATION_FACTOR_CONFIG))
                 .build();
 
-        return createKafkaBasedLog(topic, producerProps, consumerProps, new ConsumeCallback(), topicDescription, adminSupplier);
+        return createKafkaBasedLog(topic, producerProps, consumerProps, new ConsumeCallback(), topicDescription, adminProps);
     }
 
     private KafkaBasedLog<String, byte[]> createKafkaBasedLog(String topic, Map<String, Object> producerProps,
                                                               Map<String, Object> consumerProps,
                                                               Callback<ConsumerRecord<String, byte[]>> consumedCallback,
-                                                              final NewTopic topicDescription, Supplier<TopicAdmin> adminSupplier) {
-        java.util.function.Consumer<TopicAdmin> createTopics = admin -> {
-            log.debug("Creating admin client to manage Connect internal config topic");
-            // Create the topic if it doesn't exist
-            Set<String> newTopics = admin.createTopics(topicDescription);
-            if (!newTopics.contains(topic)) {
-                // It already existed, so check that the topic cleanup policy is compact only and not delete
-                log.debug("Using admin client to check cleanup policy of '{}' topic is '{}'", topic, TopicConfig.CLEANUP_POLICY_COMPACT);
-                admin.verifyTopicCleanupPolicyOnlyCompact(topic,
-                        DistributedConfig.CONFIG_TOPIC_CONFIG, "connector configurations");
+                                                              final NewTopic topicDescription, final Map<String, Object> adminProps) {
+        Runnable createTopics = new Runnable() {
+            @Override
+            public void run() {
+                log.debug("Creating admin client to manage Connect internal config topic");
+                try (TopicAdmin admin = new TopicAdmin(adminProps)) {
+                    // Create the topic if it doesn't exist
+                    Set<String> newTopics = admin.createTopics(topicDescription);
+                    if (!newTopics.contains(topic)) {
+                        // It already existed, so check that the topic cleanup policy is compact only and not delete
+                        log.debug("Using admin client to check cleanup policy of '{}' topic is '{}'", topic, TopicConfig.CLEANUP_POLICY_COMPACT);
+                        admin.verifyTopicCleanupPolicyOnlyCompact(topic,
+                                DistributedConfig.CONFIG_TOPIC_CONFIG, "connector configurations");
+                    }
+                }
             }
         };
-        return new KafkaBasedLog<>(topic, producerProps, consumerProps, adminSupplier, consumedCallback, Time.SYSTEM, createTopics);
+        return new KafkaBasedLog<>(topic, producerProps, consumerProps, consumedCallback, Time.SYSTEM, createTopics);
     }
 
     @SuppressWarnings("unchecked")

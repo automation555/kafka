@@ -30,6 +30,7 @@ import kafka.utils._
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.producer.internals.ErrorLoggingCallback
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord, RecordMetadata}
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors.{TimeoutException, WakeupException}
 import org.apache.kafka.common.record.RecordBatch
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer}
@@ -41,7 +42,6 @@ import scala.jdk.CollectionConverters._
 import scala.collection.mutable.HashMap
 import scala.util.control.ControlThrowable
 import scala.util.{Failure, Success, Try}
-
 
 /**
  * The mirror maker has the following architecture:
@@ -183,13 +183,12 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
   }
 
   class MirrorMakerThread(consumerWrapper: ConsumerWrapper,
-                          val threadId: Int) extends Thread with KafkaMetricsGroup {
-
+                          val threadId: Int) extends Thread with Logging with KafkaMetricsGroup {
     private val threadName = "mirrormaker-thread-" + threadId
     private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
     private var lastOffsetCommitMs = System.currentTimeMillis()
     @volatile private var shuttingDown: Boolean = false
-    protected implicit val logIdent = Some(LogIdent("[%s] ".format(threadName)))
+    this.logIdent = "[%s] ".format(threadName)
 
     setName(threadName)
 
@@ -245,11 +244,11 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
           // note that this commit is skipped if flush() fails which ensures that we don't lose messages
           info("Committing consumer offsets.")
           commitOffsets(consumerWrapper)
-        }, MirrorMaker)
+        }, this)
 
         info("Shutting down consumer connectors.")
-        CoreUtils.swallow(consumerWrapper.wakeup(), MirrorMaker)
-        CoreUtils.swallow(consumerWrapper.close(), MirrorMaker)
+        CoreUtils.swallow(consumerWrapper.wakeup(), this)
+        CoreUtils.swallow(consumerWrapper.close(), this)
         shutdownLatch.countDown()
         info("Mirror maker thread stopped")
         // if it exits accidentally, stop the entire mirror maker
@@ -292,7 +291,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     }
   }
 
-  // Visible for testing
+  @VisibleForTesting
   private[tools] class ConsumerWrapper(private[tools] val consumer: Consumer[Array[Byte], Array[Byte]],
                                        customRebalanceListener: Option[ConsumerRebalanceListener],
                                        whitelistOpt: Option[String]) {
@@ -300,7 +299,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     var recordIter: java.util.Iterator[ConsumerRecord[Array[Byte], Array[Byte]]] = null
 
     // We manually maintain the consumed offsets for historical reasons and it could be simplified
-    // Visible for testing
+    @VisibleForTesting
     private[tools] val offsets = new HashMap[TopicPartition, Long]()
 
     def init(): Unit = {
@@ -428,7 +427,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     }
   }
 
-  // package-private for tests
+  @VisibleForTesting
   private[tools] class NoRecordsException extends RuntimeException
 
   class MirrorMakerOptions(args: Array[String]) extends CommandDefaultOptions(args) {

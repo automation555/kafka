@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
@@ -397,28 +398,23 @@ public final class RecordAccumulator {
             //
             // Since we reenqueue exactly one batch a time and ensure that the queue is ordered by sequence always, it
             // is a simple linear scan of a subset of the in flight batches to find the right place in the queue each time.
-            ProducerBatch lastBatchInQueue = deque.peekLast();
-            if(lastBatchInQueue !=null && lastBatchInQueue.hasSequence() && lastBatchInQueue.baseSequence() <= batch.baseSequence()){
-                deque.addLast(batch);
-            } else {
-                List<ProducerBatch> orderedBatches = new ArrayList<>();
-                while (deque.peekFirst() != null && deque.peekFirst().hasSequence() && deque.peekFirst().baseSequence() < batch.baseSequence())
-                    orderedBatches.add(deque.pollFirst());
+            List<ProducerBatch> orderedBatches = new ArrayList<>();
+            while (deque.peekFirst() != null && deque.peekFirst().hasSequence() && deque.peekFirst().baseSequence() < batch.baseSequence())
+                orderedBatches.add(deque.pollFirst());
 
-                log.debug("Reordered incoming batch with sequence {} for partition {}. It was placed in the queue at " +
-                        "position {}", batch.baseSequence(), batch.topicPartition, orderedBatches.size());
-                // Either we have reached a point where there are batches without a sequence (ie. never been drained
-                // and are hence in order by default), or the batch at the front of the queue has a sequence greater
-                // than the incoming batch. This is the right place to add the incoming batch.
-                deque.addFirst(batch);
+            log.debug("Reordered incoming batch with sequence {} for partition {}. It was placed in the queue at " +
+                "position {}", batch.baseSequence(), batch.topicPartition, orderedBatches.size());
+            // Either we have reached a point where there are batches without a sequence (ie. never been drained
+            // and are hence in order by default), or the batch at the front of the queue has a sequence greater
+            // than the incoming batch. This is the right place to add the incoming batch.
+            deque.addFirst(batch);
 
-                // Now we have to re insert the previously queued batches in the right order.
-                for (int i = orderedBatches.size() - 1; i >= 0; --i) {
-                    deque.addFirst(orderedBatches.get(i));
-                }
-
-                // At this point, the incoming batch has been queued in the correct place according to its sequence.
+            // Now we have to re insert the previously queued batches in the right order.
+            for (int i = orderedBatches.size() - 1; i >= 0; --i) {
+                deque.addFirst(orderedBatches.get(i));
             }
+
+            // At this point, the incoming batch has been queued in the correct place according to its sequence.
         } else {
             deque.addFirst(batch);
         }
@@ -682,14 +678,13 @@ public final class RecordAccumulator {
 
     /**
      * Are there any threads currently waiting on a flush?
-     *
-     * package private for test
      */
+    @VisibleForTesting
     boolean flushInProgress() {
         return flushesInProgress.get() > 0;
     }
 
-    /* Visible for testing */
+    @VisibleForTesting
     Map<TopicPartition, Deque<ProducerBatch>> batches() {
         return Collections.unmodifiableMap(batches);
     }

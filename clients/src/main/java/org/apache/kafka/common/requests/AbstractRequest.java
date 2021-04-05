@@ -16,10 +16,12 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.Message;
 import org.apache.kafka.common.protocol.MessageUtil;
 import org.apache.kafka.common.protocol.ObjectSerializationCache;
 import org.apache.kafka.common.protocol.SendBuilder;
@@ -101,25 +103,14 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
         return SendBuilder.buildRequestSend(header, data());
     }
 
-    /**
-     * Serializes header and body without prefixing with size (unlike `toSend`, which does include a size prefix).
-     */
-    public final ByteBuffer serializeWithHeader(RequestHeader header) {
-        if (header.apiKey() != apiKey) {
-            throw new IllegalArgumentException("Could not build request " + apiKey + " with header api key " + header.apiKey());
-        }
-        if (header.apiVersion() != version) {
-            throw new IllegalArgumentException("Could not build request version " + version + " with header version " + header.apiVersion());
-        }
-        return RequestUtils.serialize(header.data(), header.headerVersion(), data(), version);
-    }
+    protected abstract Message data();
 
-    // Visible for testing
+    @VisibleForTesting
     public final ByteBuffer serialize() {
         return MessageUtil.toByteBuffer(data(), version);
     }
 
-    // Visible for testing
+    @VisibleForTesting
     final int sizeInBytes() {
         return data().size(new ObjectSerializationCache(), version);
     }
@@ -172,7 +163,7 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
             case FETCH:
                 return FetchRequest.parse(buffer, apiVersion);
             case LIST_OFFSETS:
-                return ListOffsetsRequest.parse(buffer, apiVersion);
+                return ListOffsetRequest.parse(buffer, apiVersion);
             case METADATA:
                 return MetadataRequest.parse(buffer, apiVersion);
             case OFFSET_COMMIT:
@@ -285,22 +276,6 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
                 return UpdateFeaturesRequest.parse(buffer, apiVersion);
             case ENVELOPE:
                 return EnvelopeRequest.parse(buffer, apiVersion);
-            case FETCH_SNAPSHOT:
-                return FetchSnapshotRequest.parse(buffer, apiVersion);
-            case DESCRIBE_CLUSTER:
-                return DescribeClusterRequest.parse(buffer, apiVersion);
-            case DESCRIBE_PRODUCERS:
-                return DescribeProducersRequest.parse(buffer, apiVersion);
-            case BROKER_REGISTRATION:
-                return BrokerRegistrationRequest.parse(buffer, apiVersion);
-            case BROKER_HEARTBEAT:
-                return BrokerHeartbeatRequest.parse(buffer, apiVersion);
-            case UNREGISTER_BROKER:
-                return UnregisterBrokerRequest.parse(buffer, apiVersion);
-            case DESCRIBE_TRANSACTIONS:
-                return DescribeTransactionsRequest.parse(buffer, apiVersion);
-            case LIST_TRANSACTIONS:
-                return ListTransactionsRequest.parse(buffer, apiVersion);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseRequest`, the " +
                         "code should be updated to do so.", apiKey));

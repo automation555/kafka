@@ -19,6 +19,8 @@ package kafka.utils
 
 import java.util.concurrent._
 import atomic._
+
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.utils.KafkaThread
 
 /**
@@ -99,6 +101,10 @@ class KafkaScheduler(val threads: Int,
     }
   }
 
+  def scheduleOnce(name: String, fun: () => Unit): Unit = {
+    schedule(name, fun, delay = 0L, period = -1L, unit = TimeUnit.MILLISECONDS)
+  }
+
   def schedule(name: String, fun: () => Unit, delay: Long, period: Long, unit: TimeUnit): ScheduledFuture[_] = {
     debug("Scheduling task %s with initial delay %d ms and period %d ms."
         .format(name, TimeUnit.MILLISECONDS.convert(delay, unit), TimeUnit.MILLISECONDS.convert(period, unit)))
@@ -121,9 +127,7 @@ class KafkaScheduler(val threads: Int,
     }
   }
 
-  /**
-   * Package private for testing.
-   */
+  @VisibleForTesting
   private[kafka] def taskRunning(task: ScheduledFuture[_]): Boolean = {
     executor.getQueue().contains(task)
   }

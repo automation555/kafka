@@ -26,6 +26,7 @@ import kafka.common._
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.{BrokerReconfigurable, KafkaConfig, LogDirFailureChannel}
 import kafka.utils._
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.errors.{CorruptRecordException, KafkaStorageException}
@@ -93,10 +94,8 @@ class LogCleaner(initialConfig: CleanerConfig,
                  val logDirs: Seq[File],
                  val logs: Pool[TopicPartition, Log],
                  val logDirFailureChannel: LogDirFailureChannel,
-                 time: Time = Time.SYSTEM) extends KafkaMetricsGroup with BrokerReconfigurable
+                 time: Time = Time.SYSTEM) extends Logging with KafkaMetricsGroup with BrokerReconfigurable
 {
-
-  import LogCleaner._
 
   /* Log cleaner configuration which may be dynamically updated */
   @volatile private var config = initialConfig
@@ -279,24 +278,20 @@ class LogCleaner(initialConfig: CleanerConfig,
     cleanerManager.pauseCleaningForNonCompactedPartitions()
   }
 
-  // Only for testing
+  @VisibleForTesting
   private[kafka] def currentConfig: CleanerConfig = config
 
-  // Only for testing
+  @VisibleForTesting
   private[log] def cleanerCount: Int = cleaners.size
-
-  private[log] object CleanerThread extends Logging {
-    protected override def loggerName = classOf[LogCleaner].getName
-  }
 
   /**
    * The cleaner threads do the actual log cleaning. Each thread processes does its cleaning repeatedly by
    * choosing the dirtiest log, cleaning it, and then swapping in the cleaned segments.
    */
   private[log] class CleanerThread(threadId: Int)
-    extends ShutdownableThread(name = s"kafka-log-cleaner-thread-$threadId", isInterruptible = false)  {
+    extends ShutdownableThread(name = s"kafka-log-cleaner-thread-$threadId", isInterruptible = false) {
 
-    import CleanerThread._
+    protected override def loggerName = classOf[LogCleaner].getName
 
     if (config.dedupeBufferSize / config.numThreads > Int.MaxValue)
       warn("Cannot use more than 2G of cleaner buffer space per cleaner thread, ignoring excess buffer space...")
@@ -434,7 +429,7 @@ class LogCleaner(initialConfig: CleanerConfig,
   }
 }
 
-object LogCleaner extends Logging {
+object LogCleaner {
   val ReconfigurableConfigs = Set(
     KafkaConfig.LogCleanerThreadsProp,
     KafkaConfig.LogCleanerDedupeBufferSizeProp,
@@ -459,14 +454,10 @@ object LogCleaner extends Logging {
 
   def createNewCleanedSegment(log: Log, baseOffset: Long): LogSegment = {
     LogSegment.deleteIfExists(log.dir, baseOffset, fileSuffix = Log.CleanedFileSuffix)
-    LogSegment.open(log.dir, baseOffset, log.config, Time.SYSTEM,
+    LogSegment.open(log.dir, baseOffset, log.config, Time.SYSTEM, fileAlreadyExists = false,
       fileSuffix = Log.CleanedFileSuffix, initFileSize = log.initFileSize, preallocate = log.config.preallocate)
   }
 
-}
-
-private[log] object Cleaner extends Logging {
-  protected override def loggerName = classOf[LogCleaner].getName
 }
 
 /**
@@ -487,11 +478,11 @@ private[log] class Cleaner(val id: Int,
                            dupBufferLoadFactor: Double,
                            throttler: Throttler,
                            time: Time,
-                           checkDone: TopicPartition => Unit) {
+                           checkDone: TopicPartition => Unit) extends Logging {
 
-  import Cleaner._
+  protected override def loggerName = classOf[LogCleaner].getName
 
-  protected implicit val logIdent = Some(LogIdent(s"Cleaner $id: "))
+  this.logIdent = s"Cleaner $id: "
 
   /* buffer used for read i/o */
   private var readBuffer = ByteBuffer.allocate(ioBufferSize)

@@ -30,6 +30,7 @@ import kafka.server.ConfigType
 import kafka.utils.Logging
 import kafka.zk.TopicZNode.TopicIdReplicaAssignment
 import kafka.zookeeper._
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
 import org.apache.kafka.common.security.token.delegation.{DelegationToken, TokenInformation}
@@ -51,8 +52,8 @@ import scala.collection.{Map, Seq, mutable}
  * easier to migrate away from `ZkUtils` (since removed). We should revisit this. We should also consider whether a
  * monolithic [[kafka.zk.ZkData]] is the way to go.
  */
-class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boolean, time: Time) extends AutoCloseable
-  with KafkaMetricsGroup {
+class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boolean, time: Time) extends AutoCloseable with
+  Logging with KafkaMetricsGroup {
 
   override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
     explicitMetricName("kafka.server", "ZooKeeperClientMetrics", name, metricTags)
@@ -62,7 +63,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
   import KafkaZkClient._
 
-  // Only for testing
+  @VisibleForTesting
   private[kafka] def currentZooKeeper: ZooKeeper = zooKeeperClient.currentZooKeeper
 
   // This variable holds the Zookeeper session id at the moment a Broker gets registered in Zookeeper and the subsequent
@@ -507,7 +508,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   /**
    * Sets the topic znode with the given assignment.
    * @param topic the topic whose assignment is being set.
-   * @param topicId unique topic ID for the topic
+   * @param topicId optional topic ID if the topic has one
    * @param assignment the partition to replica mapping to set for the given topic
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    * @return SetDataResponse
@@ -887,7 +888,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       case Code.OK =>
         ReassignPartitionsZNode.decode(getDataResponse.data) match {
           case Left(e) =>
-            warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
+            logger.warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
             Map.empty[TopicPartition, Seq[Int]]
           case Right(assignments) => assignments
         }
@@ -1829,12 +1830,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     currentZooKeeperSessionId = newSessionId
   }
 
-  object CheckedEphemeral extends Logging {
-
-  }
-
-  private class CheckedEphemeral(path: String, data: Array[Byte]) {
-    import CheckedEphemeral._
+  private class CheckedEphemeral(path: String, data: Array[Byte]) extends Logging {
     def create(): Stat = {
       val response = retryRequestUntilConnected(
         MultiRequest(Seq(
@@ -1922,7 +1918,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   }
 }
 
-object KafkaZkClient extends Logging {
+object KafkaZkClient {
 
   /**
    * @param finishedPartitions Partitions that finished either in successfully

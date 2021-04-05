@@ -22,13 +22,10 @@ import java.util.concurrent.{CountDownLatch, LinkedBlockingQueue, TimeUnit}
 import kafka.utils.{Logging, ShutdownableThread}
 import kafka.zk.{FeatureZNode, FeatureZNodeStatus, KafkaZkClient, ZkVersion}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler}
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.internals.FatalExitError
 
 import scala.concurrent.TimeoutException
-
-object FinalizedFeatureChangeListener extends Logging {
-
-}
 
 /**
  * Listens to changes in the ZK feature node, via the ZK client. Whenever a change notification
@@ -40,8 +37,8 @@ object FinalizedFeatureChangeListener extends Logging {
  * @param zkClient                the Zookeeper client
  */
 class FinalizedFeatureChangeListener(private val finalizedFeatureCache: FinalizedFeatureCache,
-                                     private val zkClient: KafkaZkClient) {
-  import FinalizedFeatureChangeListener._
+                                     private val zkClient: KafkaZkClient) extends Logging {
+
   /**
    * Helper class used to update the FinalizedFeatureCache.
    *
@@ -249,12 +246,10 @@ class FinalizedFeatureChangeListener(private val finalizedFeatureCache: Finalize
     thread.join()
   }
 
-  // For testing only.
-  def isListenerInitiated: Boolean = {
-    thread.isRunning && thread.isAlive
-  }
+  @VisibleForTesting
+  def isListenerInitiated: Boolean = thread.isRunning && thread.isAlive
 
-  // For testing only.
+  @VisibleForTesting
   def isListenerDead: Boolean = {
     !thread.isRunning && !thread.isAlive
   }

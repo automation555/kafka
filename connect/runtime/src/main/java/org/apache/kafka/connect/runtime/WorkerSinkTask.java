@@ -24,6 +24,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetCommitCallback;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Avg;
@@ -33,6 +34,7 @@ import org.apache.kafka.common.metrics.stats.Rate;
 import org.apache.kafka.common.metrics.stats.Value;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.Utils.UncheckedCloseable;
 import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
@@ -195,13 +197,12 @@ class WorkerSinkTask extends WorkerTask {
         initializeAndStart();
         // Make sure any uncommitted data has been committed and the task has
         // a chance to clean up its state
-        try {
-            while (!isStopping()) iteration();
+        try (UncheckedCloseable suppressible = this::closePartitions) {
+            while (!isStopping())
+                iteration();
         } catch (WakeupException e) {
-            log.trace("Consumer woken up during initial offset commit attempt, "
-                    + "but succeeded during a later attempt");
-        } finally {
-            closePartitions();
+            log.trace("Consumer woken up during initial offset commit attempt, " 
+                + "but succeeded during a later attempt");
         }
     }
 
@@ -329,7 +330,7 @@ class WorkerSinkTask extends WorkerTask {
         deliverMessages();
     }
 
-    // Visible for testing
+    @VisibleForTesting
     boolean isCommitting() {
         return committing;
     }
@@ -350,7 +351,12 @@ class WorkerSinkTask extends WorkerTask {
 
     private void doCommitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, final int seqno) {
         log.debug("{} Committing offsets asynchronously using sequence number {}: {}", this, seqno, offsets);
-        OffsetCommitCallback cb = (tpOffsets, error) -> onCommitCompleted(error, seqno, tpOffsets);
+        OffsetCommitCallback cb = new OffsetCommitCallback() {
+            @Override
+            public void onComplete(Map<TopicPartition, OffsetAndMetadata> offsets, Exception error) {
+                onCommitCompleted(error, seqno, offsets);
+            }
+        };
         consumer.commitAsync(offsets, cb);
     }
 
@@ -661,7 +667,7 @@ class WorkerSinkTask extends WorkerTask {
         return sinkTaskMetricsGroup;
     }
 
-    // Visible for testing
+    @VisibleForTesting
     long getNextCommit() {
         return nextCommit;
     }

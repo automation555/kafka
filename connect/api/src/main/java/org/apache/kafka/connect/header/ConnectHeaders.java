@@ -16,7 +16,8 @@
  */
 package org.apache.kafka.connect.header;
 
-import org.apache.kafka.common.utils.FilterByKeyIterator;
+import org.apache.kafka.common.annotation.VisibleForTesting;
+import org.apache.kafka.common.utils.AbstractIterator;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Schema;
@@ -239,7 +240,7 @@ public class ConnectHeaders implements Headers {
 
     @Override
     public Iterator<Header> allWithName(String key) {
-        return new FilterByKeyIterator<>(iterator(), header -> header.key().equals(key));
+        return new FilterByKeyIterator(iterator(), key);
     }
 
     @Override
@@ -395,7 +396,7 @@ public class ConnectHeaders implements Headers {
      * @param schemaAndValue the schema and value pair
      * @throws DataException if the schema is not compatible with the value
      */
-    // visible for testing
+    @VisibleForTesting
     void checkSchemaMatches(SchemaAndValue schemaAndValue) {
         if (schemaAndValue != null) {
             Schema schema = schemaAndValue.schema();
@@ -469,6 +470,29 @@ public class ConnectHeaders implements Headers {
                 }
                 throw new DataException("The value " + value + " is not compatible with the schema " + schema);
             }
+        }
+    }
+
+    private static final class FilterByKeyIterator extends AbstractIterator<Header> {
+
+        private final Iterator<Header> original;
+        private final String key;
+
+        private FilterByKeyIterator(Iterator<Header> original, String key) {
+            this.original = original;
+            this.key = key;
+        }
+
+        @Override
+        protected Header makeNext() {
+            while (original.hasNext()) {
+                Header header = original.next();
+                if (!header.key().equals(key)) {
+                    continue;
+                }
+                return header;
+            }
+            return this.allDone();
         }
     }
 }

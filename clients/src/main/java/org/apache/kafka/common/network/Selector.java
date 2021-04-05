@@ -18,6 +18,7 @@ package org.apache.kafka.common.network;
 
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.metrics.Metrics;
@@ -505,7 +506,7 @@ public class Selector implements Selectable, AutoCloseable {
      * @param isImmediatelyConnected true if running over a set of keys for just-connected sockets
      * @param currentTimeNanos time at which set of keys was determined
      */
-    // package-private for testing
+    @VisibleForTesting
     void pollSelectionKeys(Set<SelectionKey> selectionKeys,
                            boolean isImmediatelyConnected,
                            long currentTimeNanos) {
@@ -638,7 +639,7 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
-    // package-private for testing
+    @VisibleForTesting
     void write(KafkaChannel channel) throws IOException {
         String nodeId = channel.id();
         long bytesSent = channel.write();
@@ -769,7 +770,7 @@ public class Selector implements Selectable, AutoCloseable {
             unmute(channel);
     }
 
-    // package-private for testing
+    @VisibleForTesting
     void completeDelayedChannelClose(long currentTimeNanos) {
         if (delayedClosingChannels == null)
             return;
@@ -1050,7 +1051,7 @@ public class Selector implements Selectable, AutoCloseable {
         sensors.recordCompletedReceive(channel.id(), networkReceive.size(), currentTimeMs);
     }
 
-    // only for testing
+    @VisibleForTesting
     public Set<SelectionKey> keys() {
         return new HashSet<>(nioSelector.keys());
     }
@@ -1059,15 +1060,9 @@ public class Selector implements Selectable, AutoCloseable {
     class SelectorChannelMetadataRegistry implements ChannelMetadataRegistry {
         private CipherInformation cipherInformation;
         private ClientInformation clientInformation;
-        private boolean closed = false;
 
         @Override
-        public synchronized void registerCipherInformation(final CipherInformation cipherInformation) {
-            if (closed) {
-                log.warn("Attempted to update cipher, but the connection was closed.");
-                return;
-            }
-
+        public void registerCipherInformation(final CipherInformation cipherInformation) {
             if (this.cipherInformation != null) {
                 if (this.cipherInformation.equals(cipherInformation))
                     return;
@@ -1079,17 +1074,12 @@ public class Selector implements Selectable, AutoCloseable {
         }
 
         @Override
-        public synchronized CipherInformation cipherInformation() {
+        public CipherInformation cipherInformation() {
             return cipherInformation;
         }
 
         @Override
-        public synchronized void registerClientInformation(final ClientInformation clientInformation) {
-            if (closed) {
-                log.warn("Attempted to update client information, but the connection was closed.");
-                return;
-            }
-
+        public void registerClientInformation(final ClientInformation clientInformation) {
             if (this.clientInformation != null) {
                 if (this.clientInformation.equals(clientInformation))
                     return;
@@ -1101,12 +1091,12 @@ public class Selector implements Selectable, AutoCloseable {
         }
 
         @Override
-        public synchronized ClientInformation clientInformation() {
+        public ClientInformation clientInformation() {
             return clientInformation;
         }
 
         @Override
-        public synchronized void close() {
+        public void close() {
             if (this.cipherInformation != null) {
                 sensors.connectionsByCipher.decrement(this.cipherInformation);
                 this.cipherInformation = null;
@@ -1116,8 +1106,6 @@ public class Selector implements Selectable, AutoCloseable {
                 sensors.connectionsByClient.decrement(this.clientInformation);
                 this.clientInformation = null;
             }
-
-            this.closed = true;
         }
     }
 
@@ -1466,17 +1454,17 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
-    //package-private for testing
+    @VisibleForTesting
     boolean isOutOfMemory() {
         return outOfMemory;
     }
 
-    //package-private for testing
+    @VisibleForTesting
     boolean isMadeReadProgressLastPoll() {
         return madeReadProgressLastPoll;
     }
 
-    // package-private for testing
+    @VisibleForTesting
     Map<?, ?> delayedClosingChannels() {
         return delayedClosingChannels;
     }

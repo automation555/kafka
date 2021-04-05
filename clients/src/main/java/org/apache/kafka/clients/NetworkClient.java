@@ -20,10 +20,11 @@ import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.DisconnectException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersion;
+import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKey;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.network.ChannelState;
 import org.apache.kafka.common.network.NetworkSend;
@@ -146,8 +147,9 @@ public class NetworkClient implements KafkaClient {
                          boolean discoverBrokerVersions,
                          ApiVersions apiVersions,
                          LogContext logContext) {
-        this(selector,
+        this(null,
              metadata,
+             selector,
              clientId,
              maxInFlightRequestsPerConnection,
              reconnectBackoffMs,
@@ -166,22 +168,22 @@ public class NetworkClient implements KafkaClient {
     }
 
     public NetworkClient(Selectable selector,
-                         Metadata metadata,
-                         String clientId,
-                         int maxInFlightRequestsPerConnection,
-                         long reconnectBackoffMs,
-                         long reconnectBackoffMax,
-                         int socketSendBuffer,
-                         int socketReceiveBuffer,
-                         int defaultRequestTimeoutMs,
-                         long connectionSetupTimeoutMs,
-                         long connectionSetupTimeoutMaxMs,
-                         ClientDnsLookup clientDnsLookup,
-                         Time time,
-                         boolean discoverBrokerVersions,
-                         ApiVersions apiVersions,
-                         Sensor throttleTimeSensor,
-                         LogContext logContext) {
+            Metadata metadata,
+            String clientId,
+            int maxInFlightRequestsPerConnection,
+            long reconnectBackoffMs,
+            long reconnectBackoffMax,
+            int socketSendBuffer,
+            int socketReceiveBuffer,
+            int defaultRequestTimeoutMs,
+            long connectionSetupTimeoutMs,
+            long connectionSetupTimeoutMaxMs,
+            ClientDnsLookup clientDnsLookup,
+            Time time,
+            boolean discoverBrokerVersions,
+            ApiVersions apiVersions,
+            Sensor throttleTimeSensor,
+            LogContext logContext) {
         this(null,
              metadata,
              selector,
@@ -199,8 +201,7 @@ public class NetworkClient implements KafkaClient {
              discoverBrokerVersions,
              apiVersions,
              throttleTimeSensor,
-             logContext,
-             new DefaultHostResolver());
+             logContext);
     }
 
     public NetworkClient(Selectable selector,
@@ -236,29 +237,27 @@ public class NetworkClient implements KafkaClient {
              discoverBrokerVersions,
              apiVersions,
              null,
-             logContext,
-             new DefaultHostResolver());
+             logContext);
     }
 
-    public NetworkClient(MetadataUpdater metadataUpdater,
-                         Metadata metadata,
-                         Selectable selector,
-                         String clientId,
-                         int maxInFlightRequestsPerConnection,
-                         long reconnectBackoffMs,
-                         long reconnectBackoffMax,
-                         int socketSendBuffer,
-                         int socketReceiveBuffer,
-                         int defaultRequestTimeoutMs,
-                         long connectionSetupTimeoutMs,
-                         long connectionSetupTimeoutMaxMs,
-                         ClientDnsLookup clientDnsLookup,
-                         Time time,
-                         boolean discoverBrokerVersions,
-                         ApiVersions apiVersions,
-                         Sensor throttleTimeSensor,
-                         LogContext logContext,
-                         HostResolver hostResolver) {
+    private NetworkClient(MetadataUpdater metadataUpdater,
+                          Metadata metadata,
+                          Selectable selector,
+                          String clientId,
+                          int maxInFlightRequestsPerConnection,
+                          long reconnectBackoffMs,
+                          long reconnectBackoffMax,
+                          int socketSendBuffer,
+                          int socketReceiveBuffer,
+                          int defaultRequestTimeoutMs,
+                          long connectionSetupTimeoutMs,
+                          long connectionSetupTimeoutMaxMs,
+                          ClientDnsLookup clientDnsLookup,
+                          Time time,
+                          boolean discoverBrokerVersions,
+                          ApiVersions apiVersions,
+                          Sensor throttleTimeSensor,
+                          LogContext logContext) {
         /* It would be better if we could pass `DefaultMetadataUpdater` from the public constructor, but it's not
          * possible because `DefaultMetadataUpdater` is an inner class and it can only be instantiated after the
          * super constructor is invoked.
@@ -275,7 +274,7 @@ public class NetworkClient implements KafkaClient {
         this.inFlightRequests = new InFlightRequests(maxInFlightRequestsPerConnection);
         this.connectionStates = new ClusterConnectionStates(
                 reconnectBackoffMs, reconnectBackoffMax,
-                connectionSetupTimeoutMs, connectionSetupTimeoutMaxMs, logContext, hostResolver);
+                connectionSetupTimeoutMs, connectionSetupTimeoutMaxMs, logContext);
         this.socketSendBuffer = socketSendBuffer;
         this.socketReceiveBuffer = socketReceiveBuffer;
         this.correlation = 0;
@@ -313,7 +312,7 @@ public class NetworkClient implements KafkaClient {
         return false;
     }
 
-    // Visible for testing
+    @VisibleForTesting
     boolean canConnect(Node node, long now) {
         return connectionStates.canConnect(node.idString(), now);
     }
@@ -386,7 +385,7 @@ public class NetworkClient implements KafkaClient {
     }
 
     // Return the remaining throttling delay in milliseconds if throttling is in progress. Return 0, otherwise.
-    // This is for testing.
+    @VisibleForTesting
     public long throttleDelayMs(Node node, long now) {
         return connectionStates.throttleDelayMs(node.idString(), now);
     }
@@ -461,7 +460,7 @@ public class NetworkClient implements KafkaClient {
         doSend(request, false, now);
     }
 
-    // package-private for testing
+    @VisibleForTesting
     void sendInternalMetadataRequest(MetadataRequest.Builder builder, String nodeConnectionId, long now) {
         ClientRequest clientRequest = newClientRequest(nodeConnectionId, builder, now, true);
         doSend(clientRequest, true, now);
@@ -895,10 +894,10 @@ public class NetworkClient implements KafkaClient {
     private void handleApiVersionsResponse(List<ClientResponse> responses,
                                            InFlightRequest req, long now, ApiVersionsResponse apiVersionsResponse) {
         final String node = req.destination;
-        if (apiVersionsResponse.data().errorCode() != Errors.NONE.code()) {
-            if (req.request.version() == 0 || apiVersionsResponse.data().errorCode() != Errors.UNSUPPORTED_VERSION.code()) {
+        if (apiVersionsResponse.data.errorCode() != Errors.NONE.code()) {
+            if (req.request.version() == 0 || apiVersionsResponse.data.errorCode() != Errors.UNSUPPORTED_VERSION.code()) {
                 log.warn("Received error {} from node {} when making an ApiVersionsRequest with correlation id {}. Disconnecting.",
-                        Errors.forCode(apiVersionsResponse.data().errorCode()), node, req.header.correlationId());
+                        Errors.forCode(apiVersionsResponse.data.errorCode()), node, req.header.correlationId());
                 this.selector.close(node);
                 processDisconnection(responses, node, now, ChannelState.LOCAL_CLOSE);
             } else {
@@ -906,8 +905,8 @@ public class NetworkClient implements KafkaClient {
                 // the ApiVersionsRequest when an UNSUPPORTED_VERSION error is returned.
                 // If not provided, the client falls back to version 0.
                 short maxApiVersion = 0;
-                if (apiVersionsResponse.data().apiKeys().size() > 0) {
-                    ApiVersion apiVersion = apiVersionsResponse.data().apiKeys().find(ApiKeys.API_VERSIONS.id);
+                if (apiVersionsResponse.data.apiKeys().size() > 0) {
+                    ApiVersionsResponseKey apiVersion = apiVersionsResponse.data.apiKeys().find(ApiKeys.API_VERSIONS.id);
                     if (apiVersion != null) {
                         maxApiVersion = apiVersion.maxVersion();
                     }
@@ -916,12 +915,10 @@ public class NetworkClient implements KafkaClient {
             }
             return;
         }
-        NodeApiVersions nodeVersionInfo = new NodeApiVersions(apiVersionsResponse.data().apiKeys());
+        NodeApiVersions nodeVersionInfo = new NodeApiVersions(apiVersionsResponse.data.apiKeys());
         apiVersions.update(node, nodeVersionInfo);
         this.connectionStates.ready(node);
-        log.debug("Node {} has finalized features epoch: {}, finalized features: {}, supported features: {}, API versions: {}.",
-                node, apiVersionsResponse.data().finalizedFeaturesEpoch(), apiVersionsResponse.data().finalizedFeatures(),
-                apiVersionsResponse.data().supportedFeatures(), nodeVersionInfo);
+        log.debug("Recorded API versions for node {}: {}", node, nodeVersionInfo);
     }
 
     /**
@@ -1085,8 +1082,8 @@ public class NetworkClient implements KafkaClient {
             // This could be a transient issue if listeners were added dynamically to brokers.
             List<TopicPartition> missingListenerPartitions = response.topicMetadata().stream().flatMap(topicMetadata ->
                 topicMetadata.partitionMetadata().stream()
-                    .filter(partitionMetadata -> partitionMetadata.errorCode() == Errors.LISTENER_NOT_FOUND.code())
-                    .map(partitionMetadata -> new TopicPartition(topicMetadata.topic(), partitionMetadata.partitionIndex())))
+                    .filter(partitionMetadata -> partitionMetadata.error == Errors.LISTENER_NOT_FOUND)
+                    .map(partitionMetadata -> new TopicPartition(topicMetadata.topic(), partitionMetadata.partition())))
                 .collect(Collectors.toList());
             if (!missingListenerPartitions.isEmpty()) {
                 int count = missingListenerPartitions.size();
@@ -1173,7 +1170,7 @@ public class NetworkClient implements KafkaClient {
                 this.requestVersion = requestVersion;
                 this.isPartialUpdate = isPartialUpdate;
             }
-        }
+        };
 
     }
 
@@ -1185,7 +1182,7 @@ public class NetworkClient implements KafkaClient {
         return newClientRequest(nodeId, requestBuilder, createdTimeMs, expectResponse, defaultRequestTimeoutMs, null);
     }
 
-    // visible for testing
+    @VisibleForTesting
     int nextCorrelationId() {
         if (SaslClientAuthenticator.isReserved(correlation)) {
             // the numeric overflow is fine as negative values is acceptable

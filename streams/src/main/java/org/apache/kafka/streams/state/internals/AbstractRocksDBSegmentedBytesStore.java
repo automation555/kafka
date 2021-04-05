@@ -17,6 +17,7 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
@@ -204,7 +205,7 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
         final long segmentId = segments.segmentId(timestamp);
         final S segment = segments.getOrCreateSegmentIfLive(segmentId, context, observedStreamTime);
         if (segment == null) {
-            expiredRecordSensor.record(1.0d, ProcessorContextUtils.currentSystemTime(context));
+            expiredRecordSensor.record(1.0d, ProcessorContextUtils.getCurrentSystemTime(context));
             LOG.warn("Skipping record for expired segment.");
         } else {
             segment.put(key, value);
@@ -272,12 +273,12 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
         return open;
     }
 
-    // Visible for testing
+    @VisibleForTesting
     List<S> getSegments() {
         return segments.allSegments(false);
     }
 
-    // Visible for testing
+    @VisibleForTesting
     void restoreAllInternal(final Collection<KeyValue<byte[], byte[]>> records) {
         try {
             final Map<S, WriteBatch> writeBatchMap = getWriteBatches(records);
@@ -292,7 +293,7 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
         }
     }
 
-    // Visible for testing
+    @VisibleForTesting
     Map<S, WriteBatch> getWriteBatches(final Collection<KeyValue<byte[], byte[]>> records) {
         // advance stream time to the max timestamp in the batch
         for (final KeyValue<byte[], byte[]> record : records) {

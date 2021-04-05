@@ -28,6 +28,7 @@ import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.utils.CoreUtils._
 import kafka.utils.{Logging, Pool}
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.KafkaStorageException
 
@@ -60,10 +61,13 @@ private[log] class LogCleaningException(val log: Log,
   */
 private[log] class LogCleanerManager(val logDirs: Seq[File],
                                      val logs: Pool[TopicPartition, Log],
-                                     val logDirFailureChannel: LogDirFailureChannel) extends KafkaMetricsGroup {
+                                     val logDirFailureChannel: LogDirFailureChannel) extends Logging with KafkaMetricsGroup {
   import LogCleanerManager._
 
-  // package-private for testing
+
+  protected override def loggerName = classOf[LogCleaner].getName
+
+  @VisibleForTesting
   private[log] val offsetCheckpointFile = "cleaner-offset-checkpoint"
 
   /* the offset checkpoints holding the last cleaned point for each log */
@@ -484,8 +488,8 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
 
   /**
    * Returns an immutable set of the uncleanable partitions for a given log directory
-   * Only used for testing
    */
+  @VisibleForTesting
   private[log] def uncleanablePartitions(logDir: String): Set[TopicPartition] = {
     var partitions: Set[TopicPartition] = Set()
     inLock(lock) { partitions ++= uncleanablePartitions.getOrElse(logDir, partitions) }
@@ -525,8 +529,6 @@ private case class OffsetsToClean(firstDirtyOffset: Long,
 }
 
 private[log] object LogCleanerManager extends Logging {
-
-  override protected def loggerName = classOf[LogCleaner].getName
 
   def isCompactAndDelete(log: Log): Boolean = {
     log.config.compact && log.config.delete

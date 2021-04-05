@@ -27,6 +27,7 @@ import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.server.{BrokerState, RecoveringFromUncleanShutdown, _}
 import kafka.utils._
 import kafka.zk.KafkaZkClient
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.{KafkaStorageException, LogDirNotFoundException}
@@ -35,7 +36,6 @@ import scala.jdk.CollectionConverters._
 import scala.collection._
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
-import kafka.utils.Implicits._
 
 /**
  * The entry point to the kafka log management subsystem. The log manager is responsible for log creation, retrieval, and cleaning.
@@ -63,7 +63,7 @@ class LogManager(logDirs: Seq[File],
                  val brokerState: BrokerState,
                  brokerTopicStats: BrokerTopicStats,
                  logDirFailureChannel: LogDirFailureChannel,
-                 time: Time) extends KafkaMetricsGroup {
+                 time: Time) extends Logging with KafkaMetricsGroup {
 
   import LogManager._
 
@@ -87,7 +87,7 @@ class LogManager(logDirs: Seq[File],
   // of these partitions get updated at the same time, the corresponding entry in this map is set to "true",
   // which triggers a config reload after initialization is finished (to get the latest config value).
   // See KAFKA-8813 for more detail on the race condition
-  // Visible for testing
+  @VisibleForTesting
   private[log] val partitionsInitializing = new ConcurrentHashMap[TopicPartition, Boolean]().asScala
 
   def reconfigureDefaultLogConfig(logConfig: LogConfig): Unit = {
@@ -223,7 +223,7 @@ class LogManager(logDirs: Seq[File],
 
       warn(s"Logs for partitions ${offlineCurrentTopicPartitions.mkString(",")} are offline and " +
            s"logs for future partitions ${offlineFutureTopicPartitions.mkString(",")} are offline due to failure on log directory $dir")
-      dirLocks.filter(_.file.getParent == dir).foreach(dir => CoreUtils.swallow(dir.destroy(), LogManager))
+      dirLocks.filter(_.file.getParent == dir).foreach(dir => CoreUtils.swallow(dir.destroy(), this))
     }
   }
 
@@ -250,7 +250,7 @@ class LogManager(logDirs: Seq[File],
     this.logsToBeDeleted.add((log, time.milliseconds()))
   }
 
-  // Only for testing
+  @VisibleForTesting
   private[log] def hasLogsToBeDeleted: Boolean = !logsToBeDeleted.isEmpty
 
   private[log] def loadLog(logDir: File,
@@ -452,7 +452,7 @@ class LogManager(logDirs: Seq[File],
 
     // stop the cleaner first
     if (cleaner != null) {
-      CoreUtils.swallow(cleaner.shutdown(), LogManager)
+      CoreUtils.swallow(cleaner.shutdown(), this)
     }
 
     val localLogsByDir = logsByDir
@@ -479,9 +479,17 @@ class LogManager(logDirs: Seq[File],
     }
 
     try {
-      jobs.forKeyValue { (dir, dirJobs) =>
-        if (waitForAllToComplete(dirJobs,
-          e => warn(s"There was an error in one of the threads during LogManager shutdown: ${e.getCause}"))) {
+      for ((dir, dirJobs) <- jobs) {
+        val hasErrors = dirJobs.exists  { future =>
+          Try(future.get) match {
+            case Success(_) => false
+            case Failure(e) =>
+              warn(s"There was an error in one of the threads during LogManager shutdown: ${e.getCause}")
+              true
+          }
+        }
+
+        if (!hasErrors) {
           val logs = logsInDir(localLogsByDir, dir)
 
           // update the last flush point
@@ -493,7 +501,7 @@ class LogManager(logDirs: Seq[File],
 
           // mark that the shutdown was clean by creating marker file
           debug(s"Writing clean shutdown marker at $dir")
-          CoreUtils.swallow(Files.createFile(new File(dir, Log.CleanShutdownFile).toPath), LogManager)
+          CoreUtils.swallow(Files.createFile(new File(dir, Log.CleanShutdownFile).toPath), this)
         }
       }
     } finally {
@@ -602,7 +610,7 @@ class LogManager(logDirs: Seq[File],
    *
    * @param logDir the directory in which the logs to be checkpointed are
    */
-  // Only for testing
+  @VisibleForTesting
   private[log] def checkpointRecoveryOffsetsInDir(logDir: File): Unit = {
     checkpointRecoveryOffsetsInDir(logDir, logsInDir(logDir))
   }
@@ -1158,22 +1166,7 @@ class LogManager(logDirs: Seq[File],
   }
 }
 
-object LogManager extends Logging {
-
-  /**
-   * Wait all jobs to complete
-   * @param jobs jobs
-   * @param callback this will be called to handle the exception caused by each Future#get
-   * @return true if all pass. Otherwise, false
-   */
-  private[log] def waitForAllToComplete(jobs: Seq[Future[_]], callback: Throwable => Unit): Boolean = {
-    jobs.count(future => Try(future.get) match {
-      case Success(_) => false
-      case Failure(e) =>
-        callback(e)
-        true
-    }) == 0
-  }
+object LogManager {
 
   val RecoveryPointCheckpointFile = "recovery-point-offset-checkpoint"
   val LogStartOffsetCheckpointFile = "log-start-offset-checkpoint"

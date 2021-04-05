@@ -16,7 +16,7 @@
  */
 package org.apache.kafka.connect.mirror;
 
-import java.util.Map.Entry;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.source.SourceConnector;
 import org.apache.kafka.common.config.ConfigDef;
@@ -84,13 +84,13 @@ public class MirrorSourceConnector extends SourceConnector {
         // nop
     }
 
-    // visible for testing
+    @VisibleForTesting
     MirrorSourceConnector(List<TopicPartition> knownSourceTopicPartitions, MirrorConnectorConfig config) {
         this.knownSourceTopicPartitions = knownSourceTopicPartitions;
         this.config = config;
     }
 
-    // visible for testing
+    @VisibleForTesting
     MirrorSourceConnector(SourceAndTarget sourceAndTarget, ReplicationPolicy replicationPolicy,
             TopicFilter topicFilter, ConfigPropertyFilter configPropertyFilter) {
         this.sourceAndTarget = sourceAndTarget;
@@ -187,7 +187,7 @@ public class MirrorSourceConnector extends SourceConnector {
         return "1";
     }
 
-    // visible for testing
+    @VisibleForTesting
     List<TopicPartition> findSourceTopicPartitions()
             throws InterruptedException, ExecutionException {
         Set<String> topics = listTopics(sourceAdminClient).stream()
@@ -198,7 +198,7 @@ public class MirrorSourceConnector extends SourceConnector {
             .collect(Collectors.toList());
     }
 
-    // visible for testing
+    @VisibleForTesting
     List<TopicPartition> findTargetTopicPartitions()
             throws InterruptedException, ExecutionException {
         Set<String> topics = listTopics(targetAdminClient).stream()
@@ -210,7 +210,7 @@ public class MirrorSourceConnector extends SourceConnector {
                 .collect(Collectors.toList());
     }
 
-    // visible for testing
+    @VisibleForTesting
     void refreshTopicPartitions()
             throws InterruptedException, ExecutionException {
 
@@ -270,7 +270,7 @@ public class MirrorSourceConnector extends SourceConnector {
     private Set<String> topicsBeingReplicated() {
         Set<String> knownTargetTopics = toTopics(knownTargetTopicPartitions);
         return knownSourceTopicPartitions.stream()
-            .map(TopicPartition::topic)
+            .map(x -> x.topic())
             .distinct()
             .filter(x -> knownTargetTopics.contains(formatRemoteTopic(x)))
             .collect(Collectors.toSet());
@@ -278,7 +278,7 @@ public class MirrorSourceConnector extends SourceConnector {
 
     private Set<String> toTopics(Collection<TopicPartition> tps) {
         return tps.stream()
-                .map(TopicPartition::topic)
+                .map(x -> x.topic())
                 .collect(Collectors.toSet());
     }
 
@@ -303,15 +303,15 @@ public class MirrorSourceConnector extends SourceConnector {
     }
 
     private void createOffsetSyncsTopic() {
-        MirrorUtils.createSinglePartitionCompactedTopic(config.offsetSyncsTopic(), config.offsetSyncsTopicReplicationFactor(), config.offsetSyncsTopicAdminConfig());
+        MirrorUtils.createSinglePartitionCompactedTopic(config.offsetSyncsTopic(), config.offsetSyncsTopicReplicationFactor(), config.sourceAdminConfig());
     }
 
-    // visible for testing
+    @VisibleForTesting
     void computeAndCreateTopicPartitions()
             throws InterruptedException, ExecutionException {
         Map<String, Long> partitionCounts = knownSourceTopicPartitions.stream()
-            .collect(Collectors.groupingBy(TopicPartition::topic, Collectors.counting())).entrySet().stream()
-            .collect(Collectors.toMap(x -> formatRemoteTopic(x.getKey()), Entry::getValue));
+            .collect(Collectors.groupingBy(x -> x.topic(), Collectors.counting())).entrySet().stream()
+            .collect(Collectors.toMap(x -> formatRemoteTopic(x.getKey()), x -> x.getValue()));
         Set<String> knownTargetTopics = toTopics(knownTargetTopicPartitions);
         List<NewTopic> newTopics = partitionCounts.entrySet().stream()
             .filter(x -> !knownTargetTopics.contains(x.getKey()))
@@ -319,11 +319,11 @@ public class MirrorSourceConnector extends SourceConnector {
             .collect(Collectors.toList());
         Map<String, NewPartitions> newPartitions = partitionCounts.entrySet().stream()
             .filter(x -> knownTargetTopics.contains(x.getKey()))
-            .collect(Collectors.toMap(Entry::getKey, x -> NewPartitions.increaseTo(x.getValue().intValue())));
+            .collect(Collectors.toMap(x -> x.getKey(), x -> NewPartitions.increaseTo(x.getValue().intValue())));
         createTopicPartitions(partitionCounts, newTopics, newPartitions);
     }
 
-    // visible for testing
+    @VisibleForTesting
     void createTopicPartitions(Map<String, Long> partitionCounts, List<NewTopic> newTopics,
             Map<String, NewPartitions> newPartitions) {
         targetAdminClient.createTopics(newTopics, new CreateTopicsOptions()).values().forEach((k, v) -> v.whenComplete((x, e) -> {
@@ -365,7 +365,7 @@ public class MirrorSourceConnector extends SourceConnector {
             throws InterruptedException, ExecutionException {
         Map<ConfigResource, Config> configs = topicConfigs.entrySet().stream()
             .collect(Collectors.toMap(x ->
-                new ConfigResource(ConfigResource.Type.TOPIC, x.getKey()), Entry::getValue));
+                new ConfigResource(ConfigResource.Type.TOPIC, x.getKey()), x -> x.getValue()));
         log.trace("Syncing configs for {} topics.", configs.size());
         targetAdminClient.alterConfigs(configs).values().forEach((k, v) -> v.whenComplete((x, e) -> {
             if (e != null) {
@@ -396,7 +396,7 @@ public class MirrorSourceConnector extends SourceConnector {
             .map(x -> new ConfigResource(ConfigResource.Type.TOPIC, x))
             .collect(Collectors.toSet());
         return sourceAdminClient.describeConfigs(resources).all().get().entrySet().stream()
-            .collect(Collectors.toMap(x -> x.getKey().name(), Entry::getValue));
+            .collect(Collectors.toMap(x -> x.getKey().name(), x -> x.getValue()));
     }
 
     Config targetConfig(Config sourceConfig) {

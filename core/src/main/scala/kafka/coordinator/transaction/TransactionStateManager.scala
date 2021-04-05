@@ -21,13 +21,15 @@ import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantReadWriteLock
+
 import kafka.log.{AppendOrigin, LogConfig}
 import kafka.message.UncompressedCodec
 import kafka.server.{Defaults, FetchLogEnd, ReplicaManager}
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
-import kafka.utils.{LogIdent, Logging, Pool, Scheduler}
+import kafka.utils.{Logging, Pool, Scheduler}
 import kafka.utils.Implicits._
 import kafka.zk.KafkaZkClient
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.metrics.stats.{Avg, Max}
@@ -42,7 +44,7 @@ import scala.jdk.CollectionConverters._
 import scala.collection.mutable
 
 
-object TransactionStateManager extends Logging {
+object TransactionStateManager {
   // default transaction management config values
   val DefaultTransactionsMaxTimeoutMs: Int = TimeUnit.MINUTES.toMillis(15).toInt
   val DefaultTransactionalIdExpirationMs: Int = TimeUnit.DAYS.toMillis(7).toInt
@@ -76,11 +78,9 @@ class TransactionStateManager(brokerId: Int,
                               replicaManager: ReplicaManager,
                               config: TransactionConfig,
                               time: Time,
-                              metrics: Metrics) {
+                              metrics: Metrics) extends Logging {
 
-  import TransactionStateManager._
-
-  protected implicit val logIdent = Some(LogIdent("[Transaction State Manager " + brokerId + "]: "))
+  this.logIdent = "[Transaction State Manager " + brokerId + "]: "
 
   type SendTxnMarkersCallback = (Int, TransactionResult, TransactionMetadata, TxnTransitMetadata) => Unit
 
@@ -109,7 +109,7 @@ class TransactionStateManager(brokerId: Int,
     TransactionStateManager.MetricsGroup,
     "The avg time it took to load the partitions in the last 30sec"), new Avg())
 
-  // visible for testing only
+  @VisibleForTesting
   private[transaction] def addLoadingPartition(partitionId: Int, coordinatorEpoch: Int): Unit = {
     val partitionAndLeaderEpoch = TransactionPartitionAndLeaderEpoch(partitionId, coordinatorEpoch)
     inWriteLock(stateLock) {

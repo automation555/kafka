@@ -24,6 +24,7 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 
 import com.yammer.metrics.core.Meter
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.internals.FatalExitError
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 
@@ -32,10 +33,6 @@ import scala.jdk.CollectionConverters._
 
 trait ApiRequestHandler {
   def handle(request: RequestChannel.Request): Unit
-}
-
-object KafkaRequestHandler extends Logging {
-
 }
 
 /**
@@ -47,10 +44,8 @@ class KafkaRequestHandler(id: Int,
                           val totalHandlerThreads: AtomicInteger,
                           val requestChannel: RequestChannel,
                           apis: ApiRequestHandler,
-                          time: Time) extends Runnable {
-  import KafkaRequestHandler._
-
-  protected implicit val logIdent = Some(LogIdent("[Kafka Request Handler " + id + " on Broker " + brokerId + "], "))
+                          time: Time) extends Runnable with Logging {
+  this.logIdent = "[Kafka Request Handler " + id + " on Broker " + brokerId + "], "
   private val shutdownComplete = new CountDownLatch(1)
   @volatile private var stopped = false
 
@@ -103,23 +98,19 @@ class KafkaRequestHandler(id: Int,
 
 }
 
-object KafkaRequestHandlerPool extends Logging {
-
-}
 class KafkaRequestHandlerPool(val brokerId: Int,
                               val requestChannel: RequestChannel,
                               val apis: ApiRequestHandler,
                               time: Time,
                               numThreads: Int,
                               requestHandlerAvgIdleMetricName: String,
-                              logAndThreadNamePrefix : String) extends KafkaMetricsGroup {
+                              logAndThreadNamePrefix : String) extends Logging with KafkaMetricsGroup {
 
-  import KafkaRequestHandlerPool._
   private val threadPoolSize: AtomicInteger = new AtomicInteger(numThreads)
   /* a meter to track the average free capacity of the request handlers */
   private val aggregateIdleMeter = newMeter(requestHandlerAvgIdleMetricName, "percent", TimeUnit.NANOSECONDS)
 
-  protected implicit val logIdent = Some(LogIdent("[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "))
+  this.logIdent = "[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "
   val runnables = new mutable.ArrayBuffer[KafkaRequestHandler](numThreads)
   for (i <- 0 until numThreads) {
     createHandler(i)
@@ -215,7 +206,7 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
     metricTypeMap.put(BrokerTopicStats.ReassignmentBytesOutPerSec, MeterWrapper(BrokerTopicStats.ReassignmentBytesOutPerSec, "bytes"))
   }
 
-  // used for testing only
+  @VisibleForTesting
   def metricMap: Map[String, MeterWrapper] = metricTypeMap.toMap
 
   def messagesInRate: Meter = metricTypeMap.get(BrokerTopicStats.MessagesInPerSec).meter()
@@ -271,7 +262,7 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
   def close(): Unit = metricTypeMap.values.foreach(_.close())
 }
 
-object BrokerTopicStats extends Logging {
+object BrokerTopicStats {
   val MessagesInPerSec = "MessagesInPerSec"
   val BytesInPerSec = "BytesInPerSec"
   val BytesOutPerSec = "BytesOutPerSec"
@@ -296,7 +287,7 @@ object BrokerTopicStats extends Logging {
   private val valueFactory = (k: String) => new BrokerTopicMetrics(Some(k))
 }
 
-class BrokerTopicStats {
+class BrokerTopicStats extends Logging {
   import BrokerTopicStats._
 
   private val stats = new Pool[String, BrokerTopicMetrics](Some(valueFactory))

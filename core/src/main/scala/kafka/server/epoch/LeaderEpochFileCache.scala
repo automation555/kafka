@@ -18,18 +18,16 @@ package kafka.server.epoch
 
 import java.util
 import java.util.concurrent.locks.ReentrantReadWriteLock
+
 import kafka.server.checkpoints.LeaderEpochCheckpoint
 import kafka.utils.CoreUtils._
-import kafka.utils.{LogIdent, Logging}
+import kafka.utils.Logging
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.{UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET}
 
 import scala.collection.{Seq, mutable}
 import scala.jdk.CollectionConverters._
-
-object LeaderEpochFileCache extends Logging {
-
-}
 
 /**
  * Represents a cache of (LeaderEpoch => Offset) mappings for a particular replica.
@@ -43,9 +41,8 @@ object LeaderEpochFileCache extends Logging {
  */
 class LeaderEpochFileCache(topicPartition: TopicPartition,
                            logEndOffset: () => Long,
-                           checkpoint: LeaderEpochCheckpoint) {
-  import LeaderEpochFileCache._
-  protected implicit val logIdent = Some(LogIdent(s"[LeaderEpochCache $topicPartition] "))
+                           checkpoint: LeaderEpochCheckpoint) extends Logging {
+  this.logIdent = s"[LeaderEpochCache $topicPartition] "
 
   private val lock = new ReentrantReadWriteLock()
   private val epochs = new util.TreeMap[Int, EpochEntry]()
@@ -289,7 +286,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
     }
   }
 
-  // Visible for testing
+  @VisibleForTesting
   def epochEntries: Seq[EpochEntry] = epochs.values.asScala.toSeq
 
   private def flush(): Unit = {

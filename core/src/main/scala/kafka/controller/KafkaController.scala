@@ -36,6 +36,7 @@ import kafka.zookeeper.{StateChangeHandler, ZNodeChangeHandler, ZNodeChildChange
 import org.apache.kafka.common.ElectionType
 import org.apache.kafka.common.KafkaException
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.errors.{BrokerNotAvailableException, ControllerMovedException, StaleBrokerEpochException}
 import org.apache.kafka.common.message.{AlterIsrRequestData, AlterIsrResponseData}
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange}
@@ -78,11 +79,9 @@ class KafkaController(val config: KafkaConfig,
                       brokerFeatures: BrokerFeatures,
                       featureCache: FinalizedFeatureCache,
                       threadNamePrefix: Option[String] = None)
-  extends ControllerEventProcessor with KafkaMetricsGroup {
+  extends ControllerEventProcessor with Logging with KafkaMetricsGroup {
 
-  import KafkaController._
-
-  protected implicit val logIdent = Some(LogIdent(s"[Controller id=${config.brokerId}] "))
+  this.logIdent = s"[Controller id=${config.brokerId}] "
 
   @volatile private var brokerInfo = initialBrokerInfo
   @volatile private var _brokerEpoch = initialBrokerEpoch
@@ -94,10 +93,10 @@ class KafkaController(val config: KafkaConfig,
     stateChangeLogger, threadNamePrefix)
 
   // have a separate scheduler for the controller to be able to start and stop independently of the kafka server
-  // visible for testing
+  @VisibleForTesting
   private[controller] val kafkaScheduler = new KafkaScheduler(1)
 
-  // visible for testing
+  @VisibleForTesting
   private[controller] val eventManager = new ControllerEventManager(config.brokerId, this, time,
     controllerContext.stats.rateAndTimeMetrics)
 
@@ -1380,10 +1379,11 @@ class KafkaController(val config: KafkaConfig,
     val offlineReplicas = new ArrayBuffer[TopicPartition]()
     val onlineReplicas = new ArrayBuffer[TopicPartition]()
 
-    leaderAndIsrResponse.partitionErrors(controllerContext.topicNames.asJava).forEach{ case (tp, error) =>
-      if (error.code() == Errors.KAFKA_STORAGE_ERROR.code)
+    leaderAndIsrResponse.partitions.forEach { partition =>
+      val tp = new TopicPartition(partition.topicName, partition.partitionIndex)
+      if (partition.errorCode == Errors.KAFKA_STORAGE_ERROR.code)
         offlineReplicas += tp
-      else if (error.code() == Errors.NONE.code)
+      else if (partition.errorCode == Errors.NONE.code)
         onlineReplicas += tp
     }
 
@@ -1463,7 +1463,7 @@ class KafkaController(val config: KafkaConfig,
     }.sum
   }
 
-  // visible for testing
+  @VisibleForTesting
   private[controller] def handleIllegalState(e: IllegalStateException): Nothing = {
     // Resign if the controller is in an illegal state
     error("Forcing the controller to resign")

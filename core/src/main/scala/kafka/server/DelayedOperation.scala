@@ -25,13 +25,11 @@ import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.CoreUtils.inLock
 import kafka.utils._
 import kafka.utils.timer._
+import org.apache.kafka.common.annotation.VisibleForTesting
 
 import scala.collection._
 import scala.collection.mutable.ListBuffer
 
-object DelayedOperation extends Logging {
-
-}
 /**
  * An operation whose processing needs to be delayed for at most the given delayMs. For example
  * a delayed produce operation could be waiting for specified number of acks; or
@@ -50,9 +48,10 @@ object DelayedOperation extends Logging {
  */
 abstract class DelayedOperation(override val delayMs: Long,
                                 lockOpt: Option[Lock] = None)
-  extends TimerTask {
+  extends TimerTask with Logging {
+
   private val completed = new AtomicBoolean(false)
-  // Visible for testing
+  @VisibleForTesting
   private[server] val lock: Lock = lockOpt.getOrElse(new ReentrantLock)
 
   /*
@@ -131,7 +130,7 @@ abstract class DelayedOperation(override val delayMs: Long,
   }
 }
 
-object DelayedOperationPurgatory extends Logging {
+object DelayedOperationPurgatory {
 
   private val Shards = 512 // Shard the watcher list to reduce lock contention
 
@@ -155,9 +154,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
                                                              purgeInterval: Int = 1000,
                                                              reaperEnabled: Boolean = true,
                                                              timerEnabled: Boolean = true)
-        extends KafkaMetricsGroup {
-  import DelayedOperationPurgatory._
-
+        extends Logging with KafkaMetricsGroup {
   /* a list of operation watching keys */
   private class WatcherList {
     val watchersByKey = new Pool[Any, Watchers](Some((key: Any) => new Watchers(key)))

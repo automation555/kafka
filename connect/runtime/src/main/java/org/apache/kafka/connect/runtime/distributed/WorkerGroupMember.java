@@ -25,6 +25,7 @@ import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.clients.GroupRebalanceConfig;
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.MetricsContext;
@@ -113,10 +114,8 @@ public class WorkerGroupMember {
             this.metadata.bootstrap(addresses);
             String metricGrpPrefix = "connect";
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config, time, logContext);
-            Selector selector = new Selector(config.getLong(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG),
-                    config.getBoolean(CommonClientConfigs.SOCKET_TCP_NODELAY_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext);
             NetworkClient netClient = new NetworkClient(
-                    selector,
+                    new Selector(config.getLong(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext),
                     this.metadata,
                     clientId,
                     100, // a fixed large enough value will suffice
@@ -202,7 +201,7 @@ public class WorkerGroupMember {
     }
 
     public void requestRejoin() {
-        coordinator.requestRejoin("connect worker requested rejoin");
+        coordinator.requestRejoin();
     }
 
     public void maybeLeaveGroup(String leaveReason) {
@@ -244,7 +243,7 @@ public class WorkerGroupMember {
             log.debug("The Connect group member has stopped.");
     }
 
-    // Visible for testing
+    @VisibleForTesting
     Metrics metrics() {
         return this.metrics;
     }

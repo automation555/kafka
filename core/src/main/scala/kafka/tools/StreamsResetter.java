@@ -35,7 +35,7 @@ import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.annotation.InterfaceStability;
-import org.apache.kafka.common.requests.ListOffsetsResponse;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
@@ -53,7 +53,6 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -121,7 +120,7 @@ public class StreamsResetter {
             + "* This tool will not clean up the local state on the stream application instances (the persisted "
             + "stores used to cache aggregation results).\n"
             + "You need to call KafkaStreams#cleanUp() in your application or manually delete them from the "
-            + "directory specified by \"state.dir\" configuration (${java.io.tmpdir}/kafka-streams/<application.id> by default).\n"
+            + "directory specified by \"state.dir\" configuration (/tmp/kafka-streams/<application.id> by default).\n"
             + "* When long session timeout has been configured, active members could take longer to get expired on the "
             + "broker thus blocking the reset job to complete. Use the \"--force\" option could remove those left-over "
             + "members immediately. Make sure to stop all stream applications when this option is specified "
@@ -414,7 +413,7 @@ public class StreamsResetter {
         return topicNotFound;
     }
 
-    // visible for testing
+    @VisibleForTesting
     public void maybeSeekToEnd(final String groupId,
                                final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> intermediateTopicPartitions) {
@@ -466,7 +465,7 @@ public class StreamsResetter {
         }
     }
 
-    // visible for testing
+    @VisibleForTesting
     public void resetOffsetsFromResetPlan(final Consumer<byte[], byte[]> client,
                                           final Set<TopicPartition> inputTopicPartitions,
                                           final Map<TopicPartition, Long> topicPartitionsAndOffset) {
@@ -494,10 +493,9 @@ public class StreamsResetter {
         resetToDatetime(client, inputTopicPartitions, Instant.now().minus(duration).toEpochMilli());
     }
 
-    // visible for testing
-    public void resetToDatetime(final Consumer<byte[], byte[]> client,
-                                final Set<TopicPartition> inputTopicPartitions,
-                                final Long timestamp) {
+    private void resetToDatetime(final Consumer<byte[], byte[]> client,
+                                 final Set<TopicPartition> inputTopicPartitions,
+                                 final Long timestamp) {
         final Map<TopicPartition, Long> topicPartitionsAndTimes = new HashMap<>(inputTopicPartitions.size());
         for (final TopicPartition topicPartition : inputTopicPartitions) {
             topicPartitionsAndTimes.put(topicPartition, timestamp);
@@ -506,20 +504,11 @@ public class StreamsResetter {
         final Map<TopicPartition, OffsetAndTimestamp> topicPartitionsAndOffset = client.offsetsForTimes(topicPartitionsAndTimes);
 
         for (final TopicPartition topicPartition : inputTopicPartitions) {
-            final Optional<Long> partitionOffset = Optional.ofNullable(topicPartitionsAndOffset.get(topicPartition))
-                    .map(OffsetAndTimestamp::offset)
-                    .filter(offset -> offset != ListOffsetsResponse.UNKNOWN_OFFSET);
-            if (partitionOffset.isPresent()) {
-                client.seek(topicPartition, partitionOffset.get());
-            } else {
-                client.seekToEnd(Collections.singletonList(topicPartition));
-                System.out.println("Partition " + topicPartition.partition() + " from topic " + topicPartition.topic() +
-                        " is empty, without a committed record. Falling back to latest known offset.");
-            }
+            client.seek(topicPartition, topicPartitionsAndOffset.get(topicPartition).offset());
         }
     }
 
-    // visible for testing
+    @VisibleForTesting
     public void shiftOffsetsBy(final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> inputTopicPartitions,
                                final long shiftBy) {
@@ -541,7 +530,7 @@ public class StreamsResetter {
         }
     }
 
-    // visible for testing
+    @VisibleForTesting
     public void resetOffsetsTo(final Consumer<byte[], byte[]> client,
                                final Set<TopicPartition> inputTopicPartitions,
                                final Long offset) {
@@ -634,7 +623,7 @@ public class StreamsResetter {
         System.out.println("Done.");
     }
 
-    // visible for testing
+    @VisibleForTesting
     public void doDelete(final List<String> topicsToDelete,
                          final Admin adminClient) {
         boolean hasDeleteErrors = false;
@@ -664,7 +653,7 @@ public class StreamsResetter {
                && matchesInternalTopicFormat(topicName);
     }
 
-    // visible for testing
+    @VisibleForTesting
     public boolean matchesInternalTopicFormat(final String topicName) {
         return topicName.endsWith("-changelog") || topicName.endsWith("-repartition")
                || topicName.endsWith("-subscription-registration-topic")

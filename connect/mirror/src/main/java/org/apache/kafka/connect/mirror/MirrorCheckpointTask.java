@@ -20,6 +20,7 @@ import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.common.ConsumerGroupState;
 import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.connect.source.SourceTask;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.data.Schema;
@@ -66,7 +67,7 @@ public class MirrorCheckpointTask extends SourceTask {
     private Map<String, List<Checkpoint>> checkpointsPerConsumerGroup;
     public MirrorCheckpointTask() {}
 
-    // for testing
+    @VisibleForTesting
     MirrorCheckpointTask(String sourceClusterAlias, String targetClusterAlias,
             ReplicationPolicy replicationPolicy, OffsetSyncStore offsetSyncStore,
             Map<String, Map<TopicPartition, OffsetAndMetadata>> idleConsumerGroupsOffset,
@@ -235,7 +236,7 @@ public class MirrorCheckpointTask extends SourceTask {
                 if (consumerGroupState.equals(ConsumerGroupState.EMPTY)) {
                     idleConsumerGroupsOffset.put(group, targetAdminClient.listConsumerGroupOffsets(group)
                         .partitionsToOffsetAndMetadata().get().entrySet().stream().collect(
-                            Collectors.toMap(Entry::getKey, Entry::getValue)));
+                            Collectors.toMap(e -> e.getKey(), e -> e.getValue())));
                 }
                 // new consumer upstream has state "DEAD" and will be identified during the offset sync-up
             } catch (InterruptedException | ExecutionException e) {

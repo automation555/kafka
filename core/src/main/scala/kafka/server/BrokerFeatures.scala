@@ -18,8 +18,9 @@
 package kafka.server
 
 import kafka.utils.Logging
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.feature.{Features, FinalizedVersionRange, SupportedVersionRange}
-import org.apache.kafka.common.feature.FeatureAndVersionRange
+import org.apache.kafka.common.feature.Features._
 
 import scala.jdk.CollectionConverters._
 
@@ -30,7 +31,7 @@ import scala.jdk.CollectionConverters._
  * of testing.
  */
 class BrokerFeatures private (@volatile var supportedFeatures: Features[SupportedVersionRange]) {
-  // For testing only.
+  @VisibleForTesting
   def setSupportedFeatures(newFeatures: Features[SupportedVersionRange]): Unit = {
     supportedFeatures = newFeatures
   }
@@ -68,13 +69,11 @@ class BrokerFeatures private (@volatile var supportedFeatures: Features[Supporte
 }
 
 object BrokerFeatures extends Logging {
-  private val features: Map[String, SupportedVersionRange] = FeatureAndVersionRange.ALL.asScala.map(featureAndVersionRange => (featureAndVersionRange.feature,
-    featureAndVersionRange.supportedVersionRange())).toMap
-  val supportedFeatures = Features.supportedFeatures(features.asJava)
+
   def createDefault(): BrokerFeatures = {
     // The arguments are currently empty, but, in the future as we define features we should
     // populate the required values here.
-    new BrokerFeatures(supportedFeatures)
+    new BrokerFeatures(emptySupportedFeatures)
   }
 
   /**

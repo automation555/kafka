@@ -23,14 +23,21 @@ import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.errors.BrokerIdNotRegisteredException;
+import org.apache.kafka.common.errors.InvalidPartitionsException;
+import org.apache.kafka.common.errors.InvalidReplicaAssignmentException;
 import org.apache.kafka.common.errors.InvalidReplicationFactorException;
 import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.errors.InvalidTopicException;
+import org.apache.kafka.common.errors.UnknownServerException;
 import org.apache.kafka.common.errors.UnknownTopicIdException;
+import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.message.AlterIsrRequestData;
 import org.apache.kafka.common.message.AlterIsrResponseData;
 import org.apache.kafka.common.message.BrokerHeartbeatRequestData;
+import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsAssignment;
+import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsTopic;
+import org.apache.kafka.common.message.CreatePartitionsResponseData.CreatePartitionsTopicResult;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableReplicaAssignment;
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic;
@@ -71,7 +78,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 
 import static org.apache.kafka.clients.admin.AlterConfigOp.OpType.SET;
@@ -497,7 +503,7 @@ public class ReplicationControlManager {
                 defaultReplicationFactor : topic.replicationFactor();
             try {
                 List<List<Integer>> replicas = clusterControl.
-                    placeReplicas(numPartitions, replicationFactor);
+                    placeReplicas(0, numPartitions, replicationFactor);
                 for (int partitionId = 0; partitionId < replicas.size(); partitionId++) {
                     int[] r = Replicas.toArray(replicas.get(partitionId));
                     newParts.put(partitionId,
@@ -1007,46 +1013,109 @@ public class ReplicationControlManager {
         return ControllerResult.of(records, null);
     }
 
-    class ReplicationControlIterator implements Iterator<List<ApiMessageAndVersion>> {
-        private final long epoch;
-        private final Iterator<TopicControlInfo> iterator;
-
-        ReplicationControlIterator(long epoch) {
-            this.epoch = epoch;
-            this.iterator = topics.values(epoch).iterator();
-        }
-
-        @Override
-        public boolean hasNext() {
-            return iterator.hasNext();
-        }
-
-        @Override
-        public List<ApiMessageAndVersion> next() {
-            if (!hasNext()) throw new NoSuchElementException();
-            TopicControlInfo topic = iterator.next();
-            List<ApiMessageAndVersion> records = new ArrayList<>();
-            records.add(new ApiMessageAndVersion(new TopicRecord().
-                setName(topic.name).
-                setTopicId(topic.id), (short) 0));
-            for (Entry<Integer, PartitionControlInfo> entry : topic.parts.entrySet(epoch)) {
-                PartitionControlInfo partition = entry.getValue();
-                records.add(new ApiMessageAndVersion(new PartitionRecord().
-                    setPartitionId(entry.getKey()).
-                    setTopicId(topic.id).
-                    setReplicas(Replicas.toList(partition.replicas)).
-                    setIsr(Replicas.toList(partition.isr)).
-                    setRemovingReplicas(Replicas.toList(partition.removingReplicas)).
-                    setAddingReplicas(Replicas.toList(partition.addingReplicas)).
-                    setLeader(partition.leader).
-                    setLeaderEpoch(partition.leaderEpoch).
-                    setPartitionEpoch(partition.partitionEpoch), (short) 0));
+    ControllerResult<List<CreatePartitionsTopicResult>>
+            createPartitions(List<CreatePartitionsTopic> topics) {
+        List<ApiMessageAndVersion> records = new ArrayList<>();
+        List<CreatePartitionsTopicResult> results = new ArrayList<>();
+        for (CreatePartitionsTopic topic : topics) {
+            ApiError apiError = ApiError.NONE;
+            try {
+                createPartitions(topic, records);
+            } catch (ApiException e) {
+                apiError = ApiError.fromThrowable(e);
+            } catch (Exception e) {
+                log.error("Unexpected createPartitions error for {}", topic, e);
+                apiError = ApiError.fromThrowable(e);
             }
-            return records;
+            results.add(new CreatePartitionsTopicResult().
+                setName(topic.name()).
+                setErrorCode(apiError.error().code()).
+                setErrorMessage(apiError.message()));
         }
+        return new ControllerResult<>(records, results, true);
     }
 
-    ReplicationControlIterator iterator(long epoch) {
-        return new ReplicationControlIterator(epoch);
+    void createPartitions(CreatePartitionsTopic topic,
+                          List<ApiMessageAndVersion> records) {
+        Uuid topicId = topicsByName.get(topic.name());
+        if (topicId == null) {
+            throw new UnknownTopicOrPartitionException();
+        }
+        TopicControlInfo topicInfo = topics.get(topicId);
+        if (topicInfo == null) {
+            throw new UnknownTopicOrPartitionException();
+        }
+        if (topic.count() == topicInfo.parts.size()) {
+            throw new InvalidPartitionsException("Topic already has " +
+                topicInfo.parts.size() + " partition(s).");
+        } else if (topic.count() < topicInfo.parts.size()) {
+            throw new InvalidPartitionsException("The topic " + topic.name() + " currently " +
+                "has " + topicInfo.parts.size() + " partition(s); " + topic.count() +
+                " would not be an increase.");
+        }
+        int additional = topic.count() - topicInfo.parts.size();
+        if (topic.assignments() != null) {
+            if (topic.assignments().size() != additional) {
+                throw new InvalidReplicaAssignmentException("Attempted to add " + additional +
+                    " additional partition(s), but only " + topic.assignments().size() +
+                    " assignment(s) were specified.");
+            }
+        }
+        Iterator<PartitionControlInfo> iterator = topicInfo.parts.values().iterator();
+        if (!iterator.hasNext()) {
+            throw new UnknownServerException("Invalid state: topic " + topic.name() +
+                " appears to have no partitions.");
+        }
+        PartitionControlInfo partitionInfo = iterator.next();
+        if (partitionInfo.replicas.length > Short.MAX_VALUE) {
+            throw new UnknownServerException("Invalid replication factor " +
+                partitionInfo.replicas.length + ": expected a number less than 65536.");
+        }
+        short replicationFactor = (short) partitionInfo.replicas.length;
+        int startPartitionId = topicInfo.parts.size();
+
+        List<List<Integer>> placements = null;
+        if (topic.assignments() != null) {
+            placements = new ArrayList<>();
+            for (CreatePartitionsAssignment assignment : topic.assignments()) {
+                List<Integer> sortedBrokerIds = new ArrayList<>(assignment.brokerIds());
+                sortedBrokerIds.sort(Integer::compare);
+                Integer prevBrokerId = null;
+                for (Integer brokerId : sortedBrokerIds) {
+                    if (!clusterControl.unfenced(brokerId)) {
+                        throw new InvalidReplicaAssignmentException("Unable to place new " +
+                            "partition on broker " + brokerId + ".");
+                    }
+                    if (brokerId.equals(prevBrokerId)) {
+                        throw new InvalidReplicaAssignmentException("Duplicate broker ID " +
+                            prevBrokerId + " given in replica assignment.");
+                    }
+                    prevBrokerId = brokerId;
+                }
+                if (sortedBrokerIds.size() != replicationFactor) {
+                    throw new InvalidReplicaAssignmentException("Needed " +
+                        replicationFactor + " replica(s), but only found " +
+                        sortedBrokerIds.size() + " in replica assignment.");
+                }
+                placements.add(assignment.brokerIds());
+            }
+        } else {
+            placements = clusterControl.placeReplicas(startPartitionId, additional,
+                replicationFactor);
+        }
+        int partitionId = startPartitionId;
+        for (List<Integer> placement : placements) {
+            records.add(new ApiMessageAndVersion(new PartitionRecord().
+                setPartitionId(partitionId).
+                setTopicId(topicId).
+                setReplicas(placement).
+                setIsr(placement).
+                setRemovingReplicas(null).
+                setAddingReplicas(null).
+                setLeader(placement.get(0)).
+                setLeaderEpoch(0).
+                setPartitionEpoch(0), (short) 0));
+            partitionId++;
+        }
     }
 }

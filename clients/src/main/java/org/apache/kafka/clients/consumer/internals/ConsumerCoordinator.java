@@ -36,11 +36,11 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.FencedInstanceIdException;
 import org.apache.kafka.common.errors.GroupAuthorizationException;
 import org.apache.kafka.common.errors.InterruptException;
-import org.apache.kafka.common.errors.UnstableOffsetCommitException;
 import org.apache.kafka.common.errors.RebalanceInProgressException;
 import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
+import org.apache.kafka.common.errors.UnstableOffsetCommitException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.message.JoinGroupRequestData;
 import org.apache.kafka.common.message.JoinGroupResponseData;
@@ -95,6 +95,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     private final boolean autoCommitEnabled;
     private final int autoCommitIntervalMs;
     private final ConsumerInterceptors<?, ?> interceptors;
+    private final AtomicInteger inFlightAsyncCommits;
     private final AtomicInteger pendingAsyncCommits;
 
     // this collection must be thread-safe because it is modified from the response handler
@@ -167,6 +168,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.completedOffsetCommits = new ConcurrentLinkedQueue<>();
         this.sensors = new ConsumerCoordinatorMetrics(metrics, metricGrpPrefix);
         this.interceptors = interceptors;
+        this.inFlightAsyncCommits = new AtomicInteger();
         this.pendingAsyncCommits = new AtomicInteger();
         this.asyncCommitFenced = new AtomicBoolean(false);
         this.groupMetadata = new ConsumerGroupMetadata(rebalanceConfig.groupId,
@@ -373,10 +375,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         Set<TopicPartition> assignedPartitions = new HashSet<>(assignment.partitions());
 
         if (!subscriptions.checkAssignmentMatchedSubscription(assignedPartitions)) {
-            final String reason = String.format("received assignment %s does not match the current subscription %s; " +
-                    "it is likely that the subscription has changed since we joined the group, will re-join with current subscription",
-                    assignment.partitions(), subscriptions.prettyString());
-            requestRejoin(reason);
+            log.warn("We received an assignment {} that doesn't match our current subscription {}; it is likely " +
+                "that the subscription has changed since we joined the group. Will try re-join the group with current subscription",
+                assignment.partitions(), subscriptions.prettyString());
+
+            requestRejoin();
 
             return;
         }
@@ -407,9 +410,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 firstException.compareAndSet(null, invokePartitionsRevoked(revokedPartitions));
 
                 // If revoked any partitions, need to re-join the group afterwards
-                final String reason = String.format("need to revoke partitions %s as indicated " +
-                        "by the current assignment and re-join", revokedPartitions);
-                requestRejoin(reason);
+                log.debug("Need to revoke partitions {} and re-join the group", revokedPartitions);
+                requestRejoin();
             }
         }
 
@@ -450,6 +452,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // changes that would require a rebalance (e.g. new partitions).
             metadataSnapshot = new MetadataSnapshot(subscriptions, cluster, version);
         }
+    }
+
+    // for testing
+    boolean poll(Timer timer) {
+        return poll(timer, true);
     }
 
     /**
@@ -506,10 +513,6 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
                 // if not wait for join group, we would just use a timer of 0
                 if (!ensureActiveGroup(waitForJoinGroup ? timer : time.timer(0L))) {
-                    // since we may use a different timer in the callee, we'd still need
-                    // to update the original timer's current time after the call
-                    timer.update(time.milliseconds());
-
                     return false;
                 }
             }
@@ -531,7 +534,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     }
 
     /**
-     * Return the time to the next needed invocation of {@link ConsumerNetworkClient#poll(Timer)}.
+     * Return the time to the next needed invocation of {@link #poll(Timer)}.
      * @param now current time in milliseconds
      * @return the maximum time in milliseconds the caller should wait before the next invocation of poll()
      */
@@ -769,17 +772,19 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // we need to rejoin if we performed the assignment and metadata has changed;
         // also for those owned-but-no-longer-existed partitions we should drop them as lost
         if (assignmentSnapshot != null && !assignmentSnapshot.matches(metadataSnapshot)) {
-            final String reason = String.format("cached metadata has changed from %s at the beginning of the rebalance to %s",
-                assignmentSnapshot, metadataSnapshot);
-            requestRejoin(reason);
+            log.info("Requesting to re-join the group and trigger rebalance since the assignment metadata has changed from {} to {}",
+                    assignmentSnapshot, metadataSnapshot);
+
+            requestRejoin();
             return true;
         }
 
         // we need to join if our subscription has changed since the last join
         if (joinedSubscription != null && !joinedSubscription.equals(subscriptions.subscription())) {
-            final String reason = String.format("subscription has changed from %s at the beginning of the rebalance to %s",
+            log.info("Requesting to re-join the group and trigger rebalance since the subscription has changed from {} to {}",
                 joinedSubscription, subscriptions.subscription());
-            requestRejoin(reason);
+
+            requestRejoin();
             return true;
         }
 
@@ -918,6 +923,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     public void commitOffsetsAsync(final Map<TopicPartition, OffsetAndMetadata> offsets, final OffsetCommitCallback callback) {
         invokeCompletedOffsetCommitCallbacks();
 
+        inFlightAsyncCommits.incrementAndGet();
         if (!coordinatorUnknown()) {
             doCommitOffsetsAsync(offsets, callback);
         } else {
@@ -941,6 +947,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     pendingAsyncCommits.decrementAndGet();
                     completedOffsetCommits.add(new OffsetCommitCompletion(callback, offsets,
                             new RetriableCommitFailedException(e)));
+                    inFlightAsyncCommits.decrementAndGet();
                 }
             });
         }
@@ -960,6 +967,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 if (interceptors != null)
                     interceptors.onCommit(offsets);
                 completedOffsetCommits.add(new OffsetCommitCompletion(cb, offsets, null));
+                inFlightAsyncCommits.decrementAndGet();
             }
 
             @Override
@@ -973,6 +981,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 if (commitException instanceof FencedInstanceIdException) {
                     asyncCommitFenced.set(true);
                 }
+                inFlightAsyncCommits.decrementAndGet();
             }
         });
     }
@@ -991,8 +1000,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     public boolean commitOffsetsSync(Map<TopicPartition, OffsetAndMetadata> offsets, Timer timer) {
         invokeCompletedOffsetCommitCallbacks();
 
-        if (offsets.isEmpty())
-            return true;
+        if (offsets.isEmpty()) {
+            // The KafkaConsumer API guarantees that the callbacks for all commitAsync()
+            // calls will be invoked when commitSync() returns. This should be true even
+            // if no offsets are committed by commitSync().
+            return waitForPendingAsyncCommits(timer);
+        }
 
         do {
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
@@ -1030,6 +1043,26 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 doAutoCommitOffsetsAsync();
             }
         }
+    }
+
+    private boolean waitForPendingAsyncCommits(Timer timer) {
+        if (inFlightAsyncCommits.get() == 0) {
+            return true;
+        }
+
+        do {
+            ensureCoordinatorReady(timer);
+            client.poll(timer);
+            invokeCompletedOffsetCommitCallbacks();
+
+            if (inFlightAsyncCommits.get() == 0) {
+                return true;
+            }
+
+            timer.sleep(rebalanceConfig.retryBackoffMs);
+        } while (timer.notExpired());
+
+        return false;
     }
 
     private void doAutoCommitOffsetsAsync() {
@@ -1206,7 +1239,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                         } else if (error == Errors.COORDINATOR_NOT_AVAILABLE
                                 || error == Errors.NOT_COORDINATOR
                                 || error == Errors.REQUEST_TIMED_OUT) {
-                            markCoordinatorUnknown(error);
+                            markCoordinatorUnknown();
                             future.raise(error);
                             return;
                         } else if (error == Errors.FENCED_INSTANCE_ID) {
@@ -1216,7 +1249,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                             if (generationUnchanged()) {
                                 future.raise(error);
                             } else {
-                                if (ConsumerCoordinator.this.state == MemberState.PREPARING_REBALANCE) {
+                                if (ConsumerCoordinator.this.state == MemberState.REBALANCING) {
                                     future.raise(new RebalanceInProgressException("Offset commit cannot be completed since the " +
                                         "consumer member's old generation is fenced by its group instance id, it is possible that " +
                                         "this consumer has already participated another rebalance and got a new generation"));
@@ -1234,7 +1267,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                              * request re-join but do not reset generations. If the callers decide to retry they
                              * can go ahead and call poll to finish up the rebalance first, and then try commit again.
                              */
-                            requestRejoin("offset commit failed since group is already rebalancing");
+                            requestRejoin();
                             future.raise(new RebalanceInProgressException("Offset commit cannot be completed since the " +
                                 "consumer group is executing a rebalance at the moment. You can try completing the rebalance " +
                                 "by calling poll() and then retry commit again"));
@@ -1245,7 +1278,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
                             // only need to reset generation and re-join group if generation has not changed or we are not in rebalancing;
                             // otherwise only raise rebalance-in-progress error
-                            if (!generationUnchanged() && ConsumerCoordinator.this.state == MemberState.PREPARING_REBALANCE) {
+                            if (!generationUnchanged() && ConsumerCoordinator.this.state == MemberState.REBALANCING) {
                                 future.raise(new RebalanceInProgressException("Offset commit cannot be completed since the " +
                                     "consumer member's generation is already stale, meaning it has already participated another rebalance and " +
                                     "got a new generation. You can try completing the rebalance by calling poll() and then retry commit again"));
@@ -1309,7 +1342,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     future.raise(error);
                 } else if (error == Errors.NOT_COORDINATOR) {
                     // re-discover the coordinator and retry
-                    markCoordinatorUnknown(error);
+                    markCoordinatorUnknown();
                     future.raise(error);
                 } else if (error == Errors.GROUP_AUTHORIZATION_FAILED) {
                     future.raise(GroupAuthorizationException.forGroupId(rebalanceConfig.groupId));
@@ -1465,9 +1498,5 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     /* test-only classes below */
     RebalanceProtocol getProtocol() {
         return protocol;
-    }
-
-    boolean poll(Timer timer) {
-        return poll(timer, true);
     }
 }

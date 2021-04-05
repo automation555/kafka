@@ -190,7 +190,7 @@ public class ConnectorConfig extends AbstractConfig {
                 .define(ERRORS_RETRY_MAX_DELAY_CONFIG, Type.LONG, ERRORS_RETRY_MAX_DELAY_DEFAULT, Importance.MEDIUM,
                         ERRORS_RETRY_MAX_DELAY_DOC, ERROR_GROUP, ++orderInErrorGroup, Width.MEDIUM, ERRORS_RETRY_MAX_DELAY_DISPLAY)
                 .define(ERRORS_TOLERANCE_CONFIG, Type.STRING, ERRORS_TOLERANCE_DEFAULT.value(),
-                        in(ToleranceType.NONE.value(), ToleranceType.ALL.value()), Importance.MEDIUM,
+                        in(ToleranceType.NONE.value(), ToleranceType.ALL.value(), ToleranceType.CONTINUE.value()), Importance.MEDIUM,
                         ERRORS_TOLERANCE_DOC, ERROR_GROUP, ++orderInErrorGroup, Width.SHORT, ERRORS_TOLERANCE_DISPLAY)
                 .define(ERRORS_LOG_ENABLE_CONFIG, Type.BOOLEAN, ERRORS_LOG_ENABLE_DEFAULT, Importance.MEDIUM,
                         ERRORS_LOG_ENABLE_DOC, ERROR_GROUP, ++orderInErrorGroup, Width.SHORT, ERRORS_LOG_ENABLE_DISPLAY)
@@ -295,7 +295,7 @@ public class ConnectorConfig extends AbstractConfig {
             final ConfigDef.Validator typeValidator = new ConfigDef.Validator() {
                 @Override
                 public void ensureValid(String name, Object value) {
-                    getConfigDefFromTransformation(transformationTypeConfig, (Class<?>) value);
+                    getConfigDefFromTransformation(transformationTypeConfig, (Class) value);
                 }
             };
             newDef.define(transformationTypeConfig, Type.CLASS, ConfigDef.NO_DEFAULT_VALUE, typeValidator, Importance.HIGH,
@@ -329,9 +329,9 @@ public class ConnectorConfig extends AbstractConfig {
         if (transformationCls == null || !Transformation.class.isAssignableFrom(transformationCls)) {
             throw new ConfigException(key, String.valueOf(transformationCls), "Not a Transformation");
         }
-        Transformation<?> transformation;
+        Transformation transformation;
         try {
-            transformation = transformationCls.asSubclass(Transformation.class).getConstructor().newInstance();
+            transformation = transformationCls.asSubclass(Transformation.class).newInstance();
         } catch (Exception e) {
             throw new ConfigException(key, String.valueOf(transformationCls), "Error getting config definition from Transformation: " + e.getMessage());
         }
@@ -360,7 +360,7 @@ public class ConnectorConfig extends AbstractConfig {
         @Override
         public List<Object> validValues(String name, Map<String, Object> parsedConfig) {
             List<Object> transformationPlugins = new ArrayList<>();
-            for (PluginDesc<Transformation<?>> plugin : plugins.transformations()) {
+            for (PluginDesc<Transformation> plugin : plugins.transformations()) {
                 transformationPlugins.add(plugin.pluginClass());
             }
             return Collections.unmodifiableList(transformationPlugins);

@@ -32,6 +32,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.apache.kafka.common.utils.Utils.getHost;
@@ -58,7 +59,7 @@ public final class ClientUtils {
                         throw new ConfigException("Invalid url in " + CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG + ": " + url);
 
                     if (clientDnsLookup == ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY) {
-                        InetAddress[] inetAddresses = InetAddress.getAllByName(host);
+                        InetAddress[] inetAddresses = DefaultDnsNameResolver.DEFAULT_DNS_NAME_RESOLVER.resolve(host);
                         for (InetAddress inetAddress : inetAddresses) {
                             String resolvedCanonicalName = inetAddress.getCanonicalHostName();
                             InetSocketAddress address = new InetSocketAddress(resolvedCanonicalName, port);
@@ -105,9 +106,20 @@ public final class ClientUtils {
                 clientSaslMechanism, time, true, logContext);
     }
 
-    static List<InetAddress> resolve(String host, HostResolver hostResolver) throws UnknownHostException {
-        InetAddress[] addresses = hostResolver.resolve(host);
-        return filterPreferredAddresses(addresses);
+    static List<InetAddress> resolve(String host,
+                                     DnsNameResolver dnsNameResolver,
+                                     ClientDnsLookup clientDnsLookup) throws UnknownHostException {
+        InetAddress[] addresses = dnsNameResolver.resolve(host);
+
+        switch (clientDnsLookup) {
+            case DEFAULT:
+                return Collections.singletonList(addresses[0]);
+            case USE_ALL_DNS_IPS:
+            case RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY:
+                return filterPreferredAddresses(addresses);
+        }
+
+        throw new IllegalStateException("Unhandled ClientDnsLookup instance: " + clientDnsLookup);
     }
 
     /**

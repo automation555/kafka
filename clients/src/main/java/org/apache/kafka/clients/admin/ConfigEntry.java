@@ -154,7 +154,9 @@ public class ConfigEntry {
                 this.isSensitive == that.isSensitive &&
                 this.isReadOnly == that.isReadOnly &&
                 this.source == that.source &&
-                Objects.equals(this.synonyms, that.synonyms);
+                Objects.equals(this.synonyms, that.synonyms) &&
+                Objects.equals(this.type, that.type) &&
+                Objects.equals(this.documentation, that.documentation);
     }
 
     @Override
@@ -167,6 +169,8 @@ public class ConfigEntry {
         result = prime * result + (isReadOnly ? 1 : 0);
         result = prime * result + source.hashCode();
         result = prime * result + synonyms.hashCode();
+        result = prime * result + type.hashCode();
+        result = prime * result + documentation.hashCode();
         return result;
     }
 
@@ -179,6 +183,8 @@ public class ConfigEntry {
                 ", isSensitive=" + isSensitive +
                 ", isReadOnly=" + isReadOnly +
                 ", synonyms=" + synonyms +
+                ", type=" + type +
+                ", documentation=" + documentation +
                 ")";
     }
 

@@ -469,6 +469,32 @@ class TopicCommandWithAdminClientTest extends KafkaServerTestHarness with Loggin
   }
 
   @Test
+  def testDescribeSortByName(): Unit = {
+    //topic1 -> topic-03, topic2 -> topic-02, topic3 -> topic-01
+    //Create topics in the order of 03 02 01
+    val topic1 = "topic-03"
+    val topic2 = "topic-02"
+    val topic3 = "topic-01"
+    adminClient.createTopics(
+      List (new NewTopic(topic1, 1, 2.toShort),
+        new NewTopic(topic2, 1, 2.toShort),
+        new NewTopic(topic3, 1, 2.toShort)).asJavaCollection)
+      .all().get()
+    waitForTopicCreated(topic1)
+    waitForTopicCreated(topic2)
+    waitForTopicCreated(topic3)
+
+    val output = TestUtils.grabConsoleOutput(
+      topicService.describeTopic(new TopicCommandOptions(Array())))
+    val rows = output.split("\n")
+    assertEquals(6, rows.size)
+    //Output in the order of 01 02 03
+    assertTrue(rows(0).startsWith(s"Topic: topic-01"))
+    assertTrue(rows(2).startsWith(s"Topic: topic-02"))
+    assertTrue(rows(4).startsWith(s"Topic: topic-03"))
+  }
+
+  @Test
   def testDescribeWhenTopicDoesntExist(): Unit = {
     assertThrows(classOf[IllegalArgumentException],
       () => topicService.describeTopic(new TopicCommandOptions(Array("--topic", testTopicName))))
@@ -557,33 +583,6 @@ class TopicCommandWithAdminClientTest extends KafkaServerTestHarness with Loggin
         topicService.describeTopic(new TopicCommandOptions(Array("--under-min-isr-partitions"))))
       val rows = output.split("\n")
       assertTrue(rows(0).startsWith(s"\tTopic: $testTopicName"))
-    } finally {
-      restartDeadBrokers()
-    }
-  }
-
-  @Test
-  def testDescribeUnderPreferredReplicaPartitions(): Unit = {
-    val underPreRepTopic = "under-preferred-replica-topic"
-    val notUnderPreRepTopic = "not-under-preferred-replica-topic"
-
-    adminClient.createTopics(
-      java.util.Arrays.asList(
-        new NewTopic(underPreRepTopic, Collections.singletonMap(0, java.util.Arrays.asList(0, 1, 2))),
-        new NewTopic(notUnderPreRepTopic, Collections.singletonMap(0, java.util.Arrays.asList(1, 0, 3))))).all().get()
-
-    waitForTopicCreated(underPreRepTopic)
-    waitForTopicCreated(notUnderPreRepTopic)
-
-    try {
-      killBroker(0)
-      val aliveServers = servers.filterNot(_.config.brokerId == 0)
-      TestUtils.waitForPartitionMetadata(aliveServers, underPreRepTopic, 0)
-      val output = TestUtils.grabConsoleOutput(
-        topicService.describeTopic(new TopicCommandOptions(Array("--under-preferred-replica-partitions"))))
-      val rows = output.split("\n")
-      assertEquals(1, rows.size)
-      assertTrue(rows(0).startsWith(s"\tTopic: $underPreRepTopic"))
     } finally {
       restartDeadBrokers()
     }
@@ -703,8 +702,8 @@ class TopicCommandWithAdminClientTest extends KafkaServerTestHarness with Loggin
       val output = TestUtils.grabConsoleOutput(
         topicService.describeTopic(new TopicCommandOptions(Array("--under-min-isr-partitions"))))
       val rows = output.split("\n")
-      assertTrue(rows(0).startsWith(s"\tTopic: $underMinIsrTopic"))
-      assertTrue(rows(1).startsWith(s"\tTopic: $offlineTopic"))
+      assertTrue(rows(0).startsWith(s"\tTopic: $offlineTopic"))
+      assertTrue(rows(1).startsWith(s"\tTopic: $underMinIsrTopic"))
       assertEquals(2, rows.length)
     } finally {
       restartDeadBrokers()

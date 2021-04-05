@@ -16,129 +16,167 @@
  */
 package org.apache.kafka.connect.transforms;
 
+import org.apache.kafka.common.cache.Cache;
+import org.apache.kafka.common.cache.LRUCache;
+import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
+import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.header.ConnectHeaders;
+import org.apache.kafka.connect.header.Header;
 import org.apache.kafka.connect.header.Headers;
+import org.apache.kafka.connect.transforms.util.NonEmptyListValidator;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
+import org.apache.kafka.connect.transforms.util.SchemaUtil;
 
-import java.util.AbstractMap;
-import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
-import static org.apache.kafka.connect.transforms.util.Requirements.requireStructOrNull;
+import static org.apache.kafka.connect.transforms.util.Requirements.requireMap;
+import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
 
 public abstract class HeaderTo<R extends ConnectRecord<R>> implements Transformation<R> {
 
     public static final String OVERVIEW_DOC =
-            "Moves or copies headers on a record into fields in on that record's key/value"
-                    + "<p/>Use the concrete transformation type designed for the record key"
-                    + "(<code>" + InsertField.Key.class.getName() + "</code>) or value "
-                    + "(<code>" + InsertField.Value.class.getName() + "</code>).";
+        "Moves or copy headers on a record into fields in that record's key/value";
 
-    private static final String DEFAULT_OPERATION = "copy";
+    private static final String OPERATION_COPY = "copy";
+    private static final String OPERATION_MOVE = "move";
 
-    private static final String PURPOSE = "Key/value field creation from headers";
+    private static final String HEADERS_CONFIG = "headers";
+    private static final String FIELDS_CONFIG = "fields";
+    private static final String OPERATION_CONFIG = "operation";
+    private static final String OPERATION_DEFAULT_VALUE = OPERATION_COPY;
+    private static final ConfigDef.ValidString OPERATION_VALIDATOR = ConfigDef.ValidString.in(OPERATION_COPY, OPERATION_MOVE);
 
-    private static final ConfigDef.Validator OPERATION_VALIDATOR = (name, value) -> {
-        try {
-            Operation.valueOf(value.toString().toLowerCase(Locale.ROOT));
-        } catch (IllegalArgumentException exception) {
-            throw new ConfigException("Only two operations are supported: copy and move");
-        }
-    };
+    public static final ConfigDef CONFIG_DEF = new ConfigDef()
+        .define(HEADERS_CONFIG, ConfigDef.Type.LIST, ConfigDef.NO_DEFAULT_VALUE,
+            new NonEmptyListValidator(), ConfigDef.Importance.MEDIUM,
+            "Comma-separated list of header names to copy/move.")
+        .define(FIELDS_CONFIG, ConfigDef.Type.LIST, ConfigDef.NO_DEFAULT_VALUE,
+            new NonEmptyListValidator(), ConfigDef.Importance.MEDIUM,
+            "Comma-separated list of field names to be updated with the corresponding header value, in the same order as the field names listed in the fields configuration property.")
+        .define(OPERATION_CONFIG, ConfigDef.Type.STRING, OPERATION_DEFAULT_VALUE,
+            OPERATION_VALIDATOR, ConfigDef.Importance.MEDIUM,
+            "Either move if the headers are to be moved, or copy if the headers are to be just copied and left on the record.");
+        
+    private static final String PURPOSE = "insert field from header";
 
-    private static final ConfigDef.Validator LIST_VALIDATOR = (name, value) -> {
-        if (!Pattern.compile("(\\w+)(,\\w+)*").matcher(value.toString().replaceAll("\\s+", "")).matches()) {
-            throw new ConfigException(
-                    String.format("Config %s is suppose to be a comma-separated list of fields", name)
-            );
-        }
-    };
+    private List<String> headersConfig;
+    private List<String> fieldsConfig;
+    private String operationConfig;
+    private Cache<Schema, Schema> schemaUpdateCache;
 
-    private static final ConfigDef CONFIG_DEF = new ConfigDef()
-
-            .define(ConfigName.FIELDS,
-                    ConfigDef.Type.STRING,
-                    "transformation, not, configured",
-                    LIST_VALIDATOR,
-                    ConfigDef.Importance.HIGH,
-                    "Field names, in the same order as the header names listed in the headers configuration property")
-
-            .define(ConfigName.HEADERS,
-                    ConfigDef.Type.STRING,
-                    "transformation, not, configured",
-                    LIST_VALIDATOR,
-                    ConfigDef.Importance.HIGH,
-                    "Header names whose latest values are to be copied/moved to key or value.")
-
-            .define(ConfigName.OPERATION,
-                    ConfigDef.Type.STRING,
-                    DEFAULT_OPERATION,
-                    OPERATION_VALIDATOR,
-                    ConfigDef.Importance.HIGH,
-                    "Operation applied on the header (can be either move or copy)");
-
-    private static Struct structWithAddedFields(Struct struct,
-                                                Headers headers,
-                                                List<Map.Entry<String, String>> headerFieldPairs) {
-
-        SchemaBuilder newSchema = SchemaBuilder.struct();
-        newSchema.doc(struct.schema().doc());
-
-        struct.schema().fields().forEach(filed -> newSchema.field(filed.name(), filed.schema()));
-        headerFieldPairs.forEach(pair ->
-                newSchema.field(pair.getValue(), headers.lastWithName(pair.getKey()).schema())
-        );
-
-        Struct newStruct = new Struct(newSchema.build());
-        struct.schema().fields().forEach(filed -> newStruct.put(filed.name(), struct.get(filed)));
-        headerFieldPairs.forEach(pair ->
-                newStruct.put(pair.getValue(), headers.lastWithName(pair.getKey()).value())
-        );
-
-        return newStruct;
+    @Override
+    public void configure(Map<String, ?> props) {
+        final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
+        headersConfig = config.getList(HEADERS_CONFIG);
+        fieldsConfig = config.getList(FIELDS_CONFIG);
+        operationConfig = config.getString(OPERATION_CONFIG);
+        schemaUpdateCache = new SynchronizedCache<>(new LRUCache<Schema, Schema>(16));
     }
-
-    private enum Operation {
-        move,
-        copy
-    }
-
-    private interface ConfigName {
-        String FIELDS = "fields";
-        String HEADERS = "headers";
-        String OPERATION = "operation";
-    }
-
-    protected String[] fields;
-    protected String[] headers;
-    protected Operation operation;
-
-    protected List<Map.Entry<String, String>> headersFieldsZipped;
 
     @Override
     public R apply(R record) {
-        if (record == null || operatingSchema(record) == null) return record;
-
-        R newRecord = addFields(record);
-
-        if (operation == Operation.move) {
-            Arrays.stream(headers).forEach(header -> newRecord.headers().remove(header));
+        if (operatingSchema(record) == null) {
+            return applySchemaless(record);
+        } else {
+            return applyWithSchema(record);
         }
-        return newRecord;
+    }
+
+    private boolean isTombstoneRecord(R record) {
+        return record.value() == null;
+    }
+
+    private R applySchemaless(R record) {
+        final Map<String, Object> value;
+
+        Object rawValue = operatingValue(record);
+        if (rawValue == null) {
+            value = new HashMap<>();
+        } else {
+            value = requireMap(rawValue, PURPOSE);
+        }
+            
+        final Map<String, Object> updatedValue = new HashMap<>(value);
+
+        Headers updatedHeaders = new ConnectHeaders(record.headers());
+
+        int length = Math.min(headersConfig.size(), fieldsConfig.size());
+
+        for (int i = 0; i < length; i++) {
+            String headerName = headersConfig.get(i);
+            String fieldName = fieldsConfig.get(i);
+            Header header = updatedHeaders.lastWithName(headerName);
+            if (header != null) {
+                updatedValue.put(fieldName, header.value());
+
+                // Remove header if operation is move
+                if (operationConfig == OPERATION_MOVE)
+                    updatedHeaders.remove(headerName);
+            }
+        }
+
+        return newRecord(record, null, updatedValue, updatedHeaders);
+    }
+
+    private R applyWithSchema(R record) {
+        final Struct value = requireStruct(operatingValue(record), PURPOSE);
+
+        Schema updatedSchema = schemaUpdateCache.get(value.schema());
+        if (updatedSchema == null) {
+            updatedSchema = makeUpdatedSchema(value.schema());
+            schemaUpdateCache.put(value.schema(), updatedSchema);
+        }
+
+        final Struct updatedValue = new Struct(updatedSchema);
+
+        for (Field field : value.schema().fields()) {
+            updatedValue.put(field.name(), value.get(field));
+        }
+
+        Headers updatedHeaders = new ConnectHeaders(record.headers());
+
+        int length = Math.min(headersConfig.size(), fieldsConfig.size());
+
+        for (int i = 0; i < length; i++) {
+            String headerName = headersConfig.get(i);
+            String fieldName = fieldsConfig.get(i);
+            Header header = updatedHeaders.lastWithName(headerName);
+            if (header != null) {
+                updatedValue.put(fieldName, header.value());
+
+                // Remove header if operation is move
+                if (operationConfig == OPERATION_MOVE)
+                    updatedHeaders.remove(headerName);
+            }
+        }
+
+        return newRecord(record, updatedSchema, updatedValue, updatedHeaders);
+    }
+
+    private Schema makeUpdatedSchema(Schema schema) {
+        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(schema, SchemaBuilder.struct());
+
+        for (Field field : schema.fields()) {
+            builder.field(field.name(), field.schema());
+        }
+
+        for (String fieldName : fieldsConfig) {
+            builder.field(fieldName, Schema.OPTIONAL_STRING_SCHEMA);
+        }
+
+        return builder.build();
     }
 
     @Override
     public void close() {
+        schemaUpdateCache = null;
     }
 
     @Override
@@ -146,35 +184,11 @@ public abstract class HeaderTo<R extends ConnectRecord<R>> implements Transforma
         return CONFIG_DEF;
     }
 
-    @Override
-    public void configure(Map<String, ?> configs) {
-        final SimpleConfig config = new SimpleConfig(CONFIG_DEF, configs);
-        fields = HeaderFrom.trimAll(config.getString(ConfigName.FIELDS).split(","));
-        headers = HeaderFrom.trimAll(config.getString(ConfigName.HEADERS).split(","));
-        operation = Operation.valueOf(config.getString(ConfigName.OPERATION).toLowerCase(Locale.ROOT));
-
-        if (fields.length != headers.length) {
-            throw new ConfigException(
-                    String.format(
-                            "The fields and headers should have the same number of elements. " +
-                                    "Found: %s fields and %s headers",
-                            fields.length,
-                            headers.length
-                    )
-            );
-        }
-
-        headersFieldsZipped = IntStream
-                .range(0, headers.length)
-                .mapToObj(i -> new AbstractMap.SimpleImmutableEntry<>(headers[i], fields[i]))
-                .collect(Collectors.toList());
-    }
-
     protected abstract Schema operatingSchema(R record);
 
     protected abstract Object operatingValue(R record);
 
-    protected abstract R addFields(R record);
+    protected abstract R newRecord(R record, Schema updatedSchema, Object updatedValue, Headers updatedHeaders);
 
     public static class Key<R extends ConnectRecord<R>> extends HeaderTo<R> {
 
@@ -189,21 +203,10 @@ public abstract class HeaderTo<R extends ConnectRecord<R>> implements Transforma
         }
 
         @Override
-        protected R addFields(R record) {
-            Struct oldKey = requireStructOrNull(operatingValue(record), PURPOSE);
-            Struct newKey = structWithAddedFields(oldKey, record.headers(), headersFieldsZipped);
-
-            return record.newRecord(
-                    record.topic(),
-                    record.kafkaPartition(),
-                    newKey.schema(),
-                    newKey,
-                    record.valueSchema(),
-                    record.value(),
-                    record.timestamp(),
-                    record.headers()
-            );
+        protected R newRecord(R record, Schema updatedSchema, Object updatedValue, Headers updatedHeaders) {
+            return record.newRecord(record.topic(), record.kafkaPartition(), updatedSchema, updatedValue, record.valueSchema(), record.value(), record.timestamp(), updatedHeaders);
         }
+
     }
 
     public static class Value<R extends ConnectRecord<R>> extends HeaderTo<R> {
@@ -219,20 +222,9 @@ public abstract class HeaderTo<R extends ConnectRecord<R>> implements Transforma
         }
 
         @Override
-        protected R addFields(R record) {
-            Struct oldValue = requireStructOrNull(operatingValue(record), PURPOSE);
-            Struct newValue = structWithAddedFields(oldValue, record.headers(), headersFieldsZipped);
-
-            return record.newRecord(
-                    record.topic(),
-                    record.kafkaPartition(),
-                    record.keySchema(),
-                    record.key(),
-                    newValue.schema(),
-                    newValue,
-                    record.timestamp(),
-                    record.headers()
-            );
+        protected R newRecord(R record, Schema updatedSchema, Object updatedValue, Headers updatedHeaders) {
+            return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), record.key(), updatedSchema, updatedValue, record.timestamp(), updatedHeaders);
         }
+
     }
 }

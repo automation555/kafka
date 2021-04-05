@@ -17,220 +17,125 @@
 package org.apache.kafka.connect.transforms;
 
 import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.SchemaAndValue;
-import org.apache.kafka.connect.data.SchemaBuilder;
-import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.header.ConnectHeaders;
-import org.apache.kafka.connect.sink.SinkRecord;
-import org.hamcrest.core.IsEqual;
+import org.apache.kafka.connect.header.Headers;
+import org.apache.kafka.connect.source.SourceRecord;
 import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Test;
 
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static java.util.Collections.emptyMap;
-import static org.apache.kafka.common.record.TimestampType.NO_TIMESTAMP_TYPE;
-import static org.apache.kafka.connect.transforms.util.Requirements.requireStructOrNull;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.apache.kafka.connect.transforms.util.Requirements.requireMap;
 
 public class HeaderToTest {
-
-    private HeaderTo<SinkRecord> toKey = new HeaderTo.Key<>();
-    private HeaderTo<SinkRecord> toValue = new HeaderTo.Value<>();
-
-    private static final Schema VALUE_SCHEMA = SchemaBuilder
-            .struct()
-            .name("HeaderToTestValue")
-            .version(1)
-            .field("value_field1", Schema.STRING_SCHEMA)
-            .field("value_field2", Schema.OPTIONAL_FLOAT64_SCHEMA)
-            .build();
-
-    private static final Schema KEY_SCHEMA = SchemaBuilder
-            .struct()
-            .name("HeaderToTestKey")
-            .version(1)
-            .field("key_field1", Schema.STRING_SCHEMA)
-            .field("key_field2", Schema.OPTIONAL_BOOLEAN_SCHEMA)
-            .build();
-
-    private Struct testStruct(Object struct) {
-        return requireStructOrNull(struct, "test purpose");
-    }
-
-    private SinkRecord testRecord(String valueField1, String keyField1, Map<String, String> headerMap) {
-        Struct key = new Struct(KEY_SCHEMA);
-        Struct value = new Struct(VALUE_SCHEMA);
-        key.put("key_field1", keyField1);
-        value.put("value_field1", valueField1);
-
-        ConnectHeaders headers = new ConnectHeaders();
-        headerMap.forEach((headerKey, headerValue) ->
-                headers.add(headerKey, new SchemaAndValue(Schema.STRING_SCHEMA, headerValue))
-        );
-
-        return new SinkRecord(
-                "test-topic", 0, KEY_SCHEMA, key, VALUE_SCHEMA, value, 0L, 0L, NO_TIMESTAMP_TYPE, headers
-        );
-    }
-
-    @Before
-    public void setUp() {
-        toKey = new HeaderTo.Key<>();
-        toValue = new HeaderTo.Value<>();
-    }
+    private HeaderTo<SourceRecord> xform = new HeaderTo.Value<>();
 
     @After
-    public void tearDown() {
-        toKey.close();
-        toValue.close();
-    }
-
-    @Test
-    public void createValueFieldsFromHeadersTest() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("headers", "header1");
-        configMap.put("fields", "new_field1");
-
-        toValue.configure(configMap);
-        SinkRecord record = testRecord("test-key", "test-value", Collections.singletonMap("header1", "data"));
-
-        SinkRecord result = toValue.apply(record);
-
-        Assert.assertEquals("Expected an additional value field", 3, result.valueSchema().fields().size());
-        Assert.assertEquals(
-                "Expected the additional value field to have a specific data type",
-                Schema.STRING_SCHEMA, requireStructOrNull(result.value(), "test").schema().field("new_field1").schema()
-        );
-        Assert.assertEquals(
-                "Expected the additional value field to have a specific value",
-                "data", testStruct(result.value()).get("new_field1").toString()
-        );
-        Assert.assertEquals(
-                "Default operation being copy, header1 was still expected in the headers",
-                "data", result.headers().lastWithName("header1").value().toString()
-        );
-    }
-
-    @Test
-    public void createKeyFieldsFromHeadersTest() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("headers", "header2");
-        configMap.put("fields", "new_field2");
-
-        toKey.configure(configMap);
-        SinkRecord record = testRecord("test-key", "test-value", Collections.singletonMap("header2", "bladibla"));
-
-        SinkRecord result = toKey.apply(record);
-
-        Assert.assertEquals(
-                "Expected the additional value field to have a specific value",
-                "bladibla", testStruct(result.key()).get("new_field2").toString()
-        );
-    }
-
-    @Test
-    public void createFieldsWithTheMoveOperator() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("headers", "header1");
-        configMap.put("fields", "new_field1");
-        configMap.put("operation", "move");
-
-        toValue.configure(configMap);
-        SinkRecord record = testRecord("test-key", "test-value", Collections.singletonMap("header1", "data"));
-
-        SinkRecord result = toValue.apply(record);
-
-        Assert.assertNull(result.headers().lastWithName("header1"));
-
-        Assert.assertEquals(
-                "Expected the additional value field to have a specific value",
-                "data", testStruct(result.value()).get("new_field1").toString()
-        );
+    public void teardown() {
+        xform.close();
     }
 
     @Test(expected = ConfigException.class)
-    public void createValuesFromImbalancedSourceHeaders() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("fields", "value_field1, value_field2, value_field3");
-        configMap.put("headers", "header1");
+    public void shouldFailWithEmptyHeadersConfig() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "");
+        props.put("fields", "AAA");
 
-        toValue.configure(configMap);
+        xform.configure(props);
     }
 
     @Test(expected = ConfigException.class)
-    public void createValuesFromAnInvalidOperation() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("fields", "value_field1");
-        configMap.put("headers", "new_header1");
-        configMap.put("operation", "weirdCopyPaste");
+    public void shouldFailWithBlankHeadersConfig() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "    ");
+        props.put("fields", "AAA");
 
-        toValue.configure(configMap);
+        xform.configure(props);
     }
 
     @Test(expected = ConfigException.class)
-    public void createValuesFromAnInvalidConfigList() {
-        final Map<String, Object> configMap = new HashMap<>();
-        configMap.put("fields", "field1;field2;field3;field4");
-        configMap.put("headers", "header1;header2;header3;header4");
+    public void shouldFailWithEmptyFieldsConfig() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "AAA");
+        props.put("fields", "");
 
-        toKey.configure(configMap);
+        xform.configure(props);
+    }
+
+    @Test(expected = ConfigException.class)
+    public void shouldFailWithBlankFieldsConfig() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "AAA");
+        props.put("fields", "    ");
+
+        xform.configure(props);
+    }
+
+    @Test(expected = ConfigException.class)
+    public void shouldFailWithInvalidOperationConfig() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "AAA");
+        props.put("fields", "AAA");
+        props.put("operation", "AAA");
+
+        xform.configure(props);
     }
 
     @Test
-    public void hasAWellSpecifiedConfigurationDefTest() {
-        assertThat(
-                Arrays.asList("fields", "headers", "operation").toArray(),
-                IsEqual.equalTo(toValue.config().configKeys().keySet().toArray())
+    public void insertHeaderAsFieldWithCopy() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "header");
+        props.put("fields", "field");
 
-        );
+        xform.configure(props);
+
+        final Headers headers = new ConnectHeaders().add("header", "value", null);
+
+        final SourceRecord record = new SourceRecord(null, null, "test",
+            0, null, null, null, null, null, headers);
+        final SourceRecord transformedRecord = xform.apply(record);
+
+        assertNotNull(transformedRecord.value());
+
+        final Map<String, Object> expectedValue = new HashMap<>();
+        expectedValue.put("field", "value");
+
+        final Map<String, Object> actualValue = requireMap(transformedRecord.value(), "");
+
+        assertEquals(1, actualValue.size());
+        assertEquals(expectedValue, actualValue);
+        assertEquals(headers, transformedRecord.headers());
     }
 
     @Test
-    public void performNoModificationWithOutSchemaTest() {
-        final Map<String, Object> keyConfigMap = new HashMap<>();
-        keyConfigMap.put("fields", "key_field1, key_field2, key_field1");
-        keyConfigMap.put("headers", "header1, header2, header3");
+    public void insertHeaderAsFieldWithMove() {
+        final Map<String, Object> props = new HashMap<>();
+        props.put("headers", "header");
+        props.put("fields", "field");
+        props.put("operation", "move");
 
-        toKey.configure(keyConfigMap);
+        xform.configure(props);
 
-        final Map<String, Object> valueConfigMap = new HashMap<>();
-        valueConfigMap.put("fields", "value_field1");
-        valueConfigMap.put("headers", "new_header");
+        final Headers headers = new ConnectHeaders().add("header", "value", null);
 
-        toValue.configure(valueConfigMap);
+        final SourceRecord record = new SourceRecord(null, null, "test",
+            0, null, null, null, null, null, headers);
+        final SourceRecord transformedRecord = xform.apply(record);
 
-        SinkRecord record = new SinkRecord("test-topic", 0, null, emptyMap(), null, emptyMap(), 0L);
+        assertNotNull(transformedRecord.value());
 
-        SinkRecord result = toValue.apply(toKey.apply(record));
+        final Map<String, Object> expectedValue = new HashMap<>();
+        expectedValue.put("field", "value");
 
-        Assert.assertEquals(record, result);
-    }
+        final Map<String, Object> actualValue = requireMap(transformedRecord.value(), "");
 
-    @Test
-    public void performNoModificationOnNullRecordsTest() {
-        final Map<String, Object> keyConfigMap = new HashMap<>();
-        keyConfigMap.put("fields", "key_field1, key_field2, key_field1");
-        keyConfigMap.put("headers", "header1, header2, header3");
+        final Headers expectedHeaders = new ConnectHeaders();
 
-        toKey.configure(keyConfigMap);
-
-        final Map<String, Object> valueConfigMap = new HashMap<>();
-        valueConfigMap.put("fields", "value_field1");
-        valueConfigMap.put("headers", "header5");
-
-        toValue.configure(valueConfigMap);
-
-        SinkRecord record = null;
-
-        SinkRecord result = toValue.apply(toKey.apply(record));
-
-        Assert.assertNull(result);
+        assertEquals(1, actualValue.size());
+        assertEquals(expectedValue, actualValue);
+        assertEquals(expectedHeaders, transformedRecord.headers());
     }
 }

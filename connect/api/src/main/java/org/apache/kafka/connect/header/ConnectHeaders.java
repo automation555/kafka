@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.connect.header;
 
-import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.utils.AbstractIterator;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
@@ -26,6 +25,7 @@ import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.data.Time;
 import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.data.TimestampMicros;
 import org.apache.kafka.connect.errors.DataException;
 
 import java.math.BigDecimal;
@@ -64,7 +64,6 @@ public class ConnectHeaders implements Headers {
         } else {
             headers = new LinkedList<>();
             for (Header header : original) {
-                Objects.requireNonNull(header, "Unable to add a null header.");
                 headers.add(header);
             }
         }
@@ -77,7 +76,7 @@ public class ConnectHeaders implements Headers {
 
     @Override
     public boolean isEmpty() {
-        return headers == null || headers.isEmpty();
+        return headers == null ? true : headers.isEmpty();
     }
 
     @Override
@@ -221,6 +220,15 @@ public class ConnectHeaders implements Headers {
             Timestamp.fromLogical(Timestamp.SCHEMA, value);
         }
         return addWithoutValidating(key, value, Timestamp.SCHEMA);
+    }
+
+    @Override
+    public Headers addTimestampMicros(String key, java.time.Instant value) {
+        if (value != null) {
+            // Check that this is a timestamp with microseconds precision...
+            TimestampMicros.fromLogical(TimestampMicros.SCHEMA, value);
+        }
+        return addWithoutValidating(key, value, TimestampMicros.SCHEMA);
     }
 
     @Override
@@ -396,7 +404,7 @@ public class ConnectHeaders implements Headers {
      * @param schemaAndValue the schema and value pair
      * @throws DataException if the schema is not compatible with the value
      */
-    @VisibleForTesting
+    // visible for testing
     void checkSchemaMatches(SchemaAndValue schemaAndValue) {
         if (schemaAndValue != null) {
             Schema schema = schemaAndValue.schema();
@@ -445,6 +453,8 @@ public class ConnectHeaders implements Headers {
                         if (value instanceof Long)
                             return;
                         if (value instanceof java.util.Date && Timestamp.LOGICAL_NAME.equals(schema.name()))
+                            return;
+                        if (value instanceof java.time.Instant && TimestampMicros.LOGICAL_NAME.equals(schema.name()))
                             return;
                         break;
                     case FLOAT32:

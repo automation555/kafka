@@ -21,9 +21,8 @@ import org.apache.kafka.connect.data.Values.Parser;
 import org.apache.kafka.connect.errors.DataException;
 import org.junit.Test;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -397,6 +396,16 @@ public class ValuesTest {
     }
 
     @Test
+    public void shouldParseTimestampStringAsTimestampMicros() throws Exception {
+        String str = "2019-08-23T14:34:54.346876Z";
+        SchemaAndValue result = Values.parseString(str);
+        assertEquals(Type.INT64, result.schema().type());
+        assertEquals(TimestampMicros.LOGICAL_NAME, result.schema().name());
+        Instant expected = Instant.parse(str);
+        assertEquals(expected, result.value());
+    }
+
+    @Test
     public void shouldParseDateStringAsDate() throws Exception {
         String str = "2019-08-23";
         SchemaAndValue result = Values.parseString(str);
@@ -424,6 +433,17 @@ public class ValuesTest {
         assertEquals(Timestamp.LOGICAL_NAME, result.schema().name());
         String expectedStr = "2019-08-23T14:34:54.346Z";
         java.util.Date expected = new SimpleDateFormat(Values.ISO_8601_TIMESTAMP_FORMAT_PATTERN).parse(expectedStr);
+        assertEquals(expected, result.value());
+    }
+
+    @Test
+    public void shouldParseTimestampMicrosStringWithEscapedColonsAsTimestampMicros() throws Exception {
+        String str = "2019-08-23T14\\:34\\:54.346876Z";
+        SchemaAndValue result = Values.parseString(str);
+        assertEquals(Type.INT64, result.schema().type());
+        assertEquals(TimestampMicros.LOGICAL_NAME, result.schema().name());
+        String expectedStr = "2019-08-23T14:34:54.346876Z";
+        Instant expected = Instant.parse(expectedStr);
         assertEquals(expected, result.value());
     }
 
@@ -478,6 +498,19 @@ public class ValuesTest {
     }
 
     @Test
+    public void shouldParseTimestampMicrosStringAsTimestampMicrosInArray() throws Exception {
+        String tsStr = "2019-08-23T14:34:54.346876Z";
+        String arrayStr = "[" + tsStr + "]";
+        SchemaAndValue result = Values.parseString(arrayStr);
+        assertEquals(Type.ARRAY, result.schema().type());
+        Schema elementSchema = result.schema().valueSchema();
+        assertEquals(Type.INT64, elementSchema.type());
+        assertEquals(TimestampMicros.LOGICAL_NAME, elementSchema.name());
+        Instant expected = Instant.parse(tsStr);
+        assertEquals(Collections.singletonList(expected), result.value());
+    }
+
+    @Test
     public void shouldParseMultipleTimestampStringAsTimestampInArray() throws Exception {
         String tsStr1 = "2019-08-23T14:34:54.346Z";
         String tsStr2 = "2019-01-23T15:12:34.567Z";
@@ -491,6 +524,23 @@ public class ValuesTest {
         java.util.Date expected1 = new SimpleDateFormat(Values.ISO_8601_TIMESTAMP_FORMAT_PATTERN).parse(tsStr1);
         java.util.Date expected2 = new SimpleDateFormat(Values.ISO_8601_TIMESTAMP_FORMAT_PATTERN).parse(tsStr2);
         java.util.Date expected3 = new SimpleDateFormat(Values.ISO_8601_TIMESTAMP_FORMAT_PATTERN).parse(tsStr3);
+        assertEquals(Arrays.asList(expected1, expected2, expected3), result.value());
+    }
+
+    @Test
+    public void shouldParseMultipleTimestampMicrosStringAsTimestampMicrosInArray() throws Exception {
+        String tsStr1 = "2019-08-23T14:34:54.346876Z";
+        String tsStr2 = "2019-01-23T15:12:34.567765Z";
+        String tsStr3 = "2019-04-23T19:12:34.567654Z";
+        String arrayStr = "[" + tsStr1 + "," + tsStr2 + ",   " + tsStr3 + "]";
+        SchemaAndValue result = Values.parseString(arrayStr);
+        assertEquals(Type.ARRAY, result.schema().type());
+        Schema elementSchema = result.schema().valueSchema();
+        assertEquals(Type.INT64, elementSchema.type());
+        assertEquals(TimestampMicros.LOGICAL_NAME, elementSchema.name());
+        Instant expected1 = Instant.parse(tsStr1);
+        Instant expected2 = Instant.parse(tsStr2);
+        Instant expected3 = Instant.parse(tsStr3);
         assertEquals(Arrays.asList(expected1, expected2, expected3), result.value());
     }
 
@@ -667,6 +717,11 @@ public class ValuesTest {
         // Millis as long
         java.util.Date t4 = Values.convertToTime(Time.SCHEMA, currentMillis);
         assertEquals(currentMillis, t4.getTime());
+
+        // Millis as java.time.Instant - discard the date and microseconds and keep just day's milliseconds
+        java.util.Date t5 = Values.convertToTime(TimestampMicros.SCHEMA, current.toInstant());
+        assertEquals(currentMillis, t5.getTime());
+
     }
 
     @Test
@@ -693,6 +748,10 @@ public class ValuesTest {
         // Days as long
         java.util.Date d4 = Values.convertToDate(Date.SCHEMA, days);
         assertEquals(currentDate, d4);
+
+        // Days as java.time.Instant
+        java.util.Date t5 = Values.convertToDate(TimestampMicros.SCHEMA, current.toInstant());
+        assertEquals(current, t5);
     }
 
     @Test
@@ -722,136 +781,14 @@ public class ValuesTest {
         // Millis as long
         java.util.Date ts4 = Values.convertToTimestamp(Timestamp.SCHEMA, current.getTime());
         assertEquals(current, ts4);
+
+        // Millis as java.time.Instant
+        java.util.Date ts5 = Values.convertToTimestamp(TimestampMicros.SCHEMA, current.toInstant());
+        assertEquals(current, ts5);
     }
 
     @Test
     public void canConsume() {
-    }
-
-    @Test
-    public void shouldParseBigIntegerAsDecimalWithZeroScale() {
-        BigInteger value = BigInteger.valueOf(Long.MAX_VALUE).add(new BigInteger("1"));
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Decimal.schema(0), schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof BigDecimal);
-        assertEquals(value, ((BigDecimal) schemaAndValue.value()).unscaledValue());
-        value = BigInteger.valueOf(Long.MIN_VALUE).subtract(new BigInteger("1"));
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Decimal.schema(0), schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof BigDecimal);
-        assertEquals(value, ((BigDecimal) schemaAndValue.value()).unscaledValue());
-    }
-
-    @Test
-    public void shouldParseByteAsInt8() {
-        Byte value = Byte.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT8_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Byte);
-        assertEquals(value.byteValue(), ((Byte) schemaAndValue.value()).byteValue());
-        value = Byte.MIN_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT8_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Byte);
-        assertEquals(value.byteValue(), ((Byte) schemaAndValue.value()).byteValue());
-    }
-
-    @Test
-    public void shouldParseShortAsInt16() {
-        Short value = Short.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT16_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Short);
-        assertEquals(value.shortValue(), ((Short) schemaAndValue.value()).shortValue());
-        value = Short.MIN_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT16_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Short);
-        assertEquals(value.shortValue(), ((Short) schemaAndValue.value()).shortValue());
-    }
-
-    @Test
-    public void shouldParseIntegerAsInt32() {
-        Integer value = Integer.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT32_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Integer);
-        assertEquals(value.intValue(), ((Integer) schemaAndValue.value()).intValue());
-        value = Integer.MIN_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT32_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Integer);
-        assertEquals(value.intValue(), ((Integer) schemaAndValue.value()).intValue());
-    }
-
-    @Test
-    public void shouldParseLongAsInt64() {
-        Long value = Long.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT64_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Long);
-        assertEquals(value.longValue(), ((Long) schemaAndValue.value()).longValue());
-        value = Long.MIN_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.INT64_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Long);
-        assertEquals(value.longValue(), ((Long) schemaAndValue.value()).longValue());
-    }
-
-    @Test
-    public void shouldParseFloatAsFloat32() {
-        Float value = Float.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.FLOAT32_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Float);
-        assertEquals(value.floatValue(), ((Float) schemaAndValue.value()).floatValue(), 0);
-        value = -Float.MAX_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.FLOAT32_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Float);
-        assertEquals(value.floatValue(), ((Float) schemaAndValue.value()).floatValue(), 0);
-    }
-
-    @Test
-    public void shouldParseDoubleAsFloat64() {
-        Double value = Double.MAX_VALUE;
-        SchemaAndValue schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.FLOAT64_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Double);
-        assertEquals(value.doubleValue(), ((Double) schemaAndValue.value()).doubleValue(), 0);
-        value = -Double.MAX_VALUE;
-        schemaAndValue = Values.parseString(
-            String.valueOf(value)
-        );
-        assertEquals(Schema.FLOAT64_SCHEMA, schemaAndValue.schema());
-        assertTrue(schemaAndValue.value() instanceof Double);
-        assertEquals(value.doubleValue(), ((Double) schemaAndValue.value()).doubleValue(), 0);
     }
 
     protected void assertParsed(String input) {

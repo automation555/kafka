@@ -514,14 +514,8 @@ public class KafkaAdminClient extends AdminClient {
             metrics = new Metrics(metricConfig, reporters, time, metricsContext);
             String metricGrpPrefix = "admin-client";
             channelBuilder = ClientUtils.createChannelBuilder(config, time, logContext);
-            Selector.Builder selectorBuilder = new Selector.Builder();
-            selectorBuilder.withConnectionMaxIdleMs(config.getLong(AdminClientConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG))
-                    .withMetrics(metrics)
-                    .withTime(time)
-                    .withMetricGrpPrefix(metricGrpPrefix)
-                    .withChannelBuilder(channelBuilder)
-                    .withLogContext(logContext);
-            selector = selectorBuilder.build();
+            selector = new Selector(config.getLong(AdminClientConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
+                    metrics, time, metricGrpPrefix, channelBuilder, logContext);
             networkClient = new NetworkClient(
                 selector,
                 metadataManager.updater(),
@@ -3366,7 +3360,7 @@ public class KafkaAdminClient extends AdminClient {
                             String protocolType = group.protocolType();
                             if (protocolType.equals(ConsumerProtocol.PROTOCOL_TYPE) || protocolType.isEmpty()) {
                                 final String groupId = group.groupId();
-                                final Optional<ConsumerGroupState> state = group.groupState().equals("")
+                                final Optional<ConsumerGroupState> state = "".equals(group.groupState())
                                         ? Optional.empty()
                                         : Optional.of(ConsumerGroupState.parse(group.groupState()));
                                 final ConsumerGroupListing groupListing = new ConsumerGroupListing(groupId, protocolType.isEmpty(), state);

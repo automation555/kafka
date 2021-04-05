@@ -19,8 +19,10 @@ package kafka.server
 
 import kafka.cluster.BrokerEndPoint
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.utils.Time
 
 class ReplicaAlterLogDirsManager(brokerConfig: KafkaConfig,
+                                 time: Time,
                                  replicaManager: ReplicaManager,
                                  quotaManager: ReplicationQuotaManager,
                                  brokerTopicStats: BrokerTopicStats)
@@ -31,12 +33,12 @@ class ReplicaAlterLogDirsManager(brokerConfig: KafkaConfig,
 
   override def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): ReplicaAlterLogDirsThread = {
     val threadName = s"ReplicaAlterLogDirsThread-$fetcherId"
-    new ReplicaAlterLogDirsThread(threadName, sourceBroker, brokerConfig, failedPartitions, replicaManager,
+    new ReplicaAlterLogDirsThread(threadName, sourceBroker, brokerConfig, time, failedPartitions, replicaManager,
       quotaManager, brokerTopicStats)
   }
 
   override protected def addPartitionsToFetcherThread(fetcherThread: ReplicaAlterLogDirsThread,
-                                                      initialOffsetAndEpochs: collection.Map[TopicPartition, InitialFetchState]): Unit = {
+                                                      initialOffsetAndEpochs: collection.Map[TopicPartition, OffsetAndEpoch]): Unit = {
     val addedPartitions = fetcherThread.addPartitions(initialOffsetAndEpochs)
     val (addedInitialOffsets, notAddedInitialOffsets) = initialOffsetAndEpochs.partition { case (tp, _) =>
       addedPartitions.contains(tp)

@@ -35,6 +35,7 @@
   <allow pkg="javax.net.ssl" />
   <allow pkg="javax.security" />
   <allow pkg="org.ietf.jgss" />
+  <allow pkg="org.jetbrains.annotations"/>
 
   <!-- no one depends on the server -->
   <disallow pkg="kafka" />
@@ -108,9 +109,6 @@
         <allow pkg="org.apache.kafka.common.protocol.types" />
         <allow pkg="org.apache.kafka.common.requests" />
         <allow pkg="org.apache.kafka.clients" />
-      </subpackage>
-      <subpackage name="ssl">
-        <allow pkg="javax.crypto" />
       </subpackage>
       <subpackage name="scram">
         <allow pkg="javax.crypto" />
@@ -291,6 +289,7 @@
         <allow pkg="com.fasterxml.jackson" />
         <allow pkg="kafka.utils" />
         <allow pkg="org.apache.zookeeper" />
+        <allow pkg="org.apache.zookeeper" />
         <allow pkg="org.apache.log4j" />
         <subpackage name="testutil">
           <allow pkg="org.apache.log4j" />
@@ -309,7 +308,6 @@
   <subpackage name="test">
     <allow pkg="org.apache.kafka" />
     <allow pkg="org.bouncycastle" />
-    <allow pkg="org.rocksdb" />
   </subpackage>
 
   <subpackage name="raft">

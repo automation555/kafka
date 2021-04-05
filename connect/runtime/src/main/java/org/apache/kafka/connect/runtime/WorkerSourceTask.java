@@ -98,12 +98,13 @@ class WorkerSourceTask extends WorkerTask {
     private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessages;
     // A second buffer is used while an offset flush is running
     private IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> outstandingMessagesBacklog;
-    private boolean recordFlushPending;
-    private boolean offsetFlushPending;
-    private final CountDownLatch stopRequestedLatch;
+    private boolean flushing;
+    private CountDownLatch stopRequestedLatch;
 
     private Map<String, String> taskConfig;
-    private boolean started = false;
+    private boolean finishedStart = false;
+    private boolean startedShutdownBeforeStartCompleted = false;
+    private boolean stopped = false;
 
     public WorkerSourceTask(ConnectorTaskId id,
                             SourceTask task,
@@ -145,7 +146,7 @@ class WorkerSourceTask extends WorkerTask {
         this.lastSendFailed = false;
         this.outstandingMessages = new IdentityHashMap<>();
         this.outstandingMessagesBacklog = new IdentityHashMap<>();
-        this.recordFlushPending = false;
+        this.flushing = false;
         this.stopRequestedLatch = new CountDownLatch(1);
         this.sourceTaskMetricsGroup = new SourceTaskMetricsGroup(id, connectMetrics);
         this.producerSendException = new AtomicReference<>();
@@ -165,12 +166,8 @@ class WorkerSourceTask extends WorkerTask {
 
     @Override
     protected void close() {
-        if (started) {
-            try {
-                task.stop();
-            } catch (Throwable t) {
-                log.warn("Could not stop task", t);
-            }
+        if (!shouldPause()) {
+            tryStop();
         }
         if (producer != null) {
             try {
@@ -209,21 +206,39 @@ class WorkerSourceTask extends WorkerTask {
     public void stop() {
         super.stop();
         stopRequestedLatch.countDown();
+        synchronized (this) {
+            if (finishedStart)
+                tryStop();
+            else
+                startedShutdownBeforeStartCompleted = true;
+        }
+    }
+
+    private synchronized void tryStop() {
+        if (!stopped) {
+            try {
+                task.stop();
+                stopped = true;
+            } catch (Throwable t) {
+                log.warn("Could not stop task", t);
+            }
+        }
     }
 
     @Override
     public void execute() {
         try {
-            // If we try to start the task at all by invoking initialize, then count this as
-            // "started" and expect a subsequent call to the task's stop() method
-            // to properly clean up any resources allocated by its initialize() or 
-            // start() methods. If the task throws an exception during stop(),
-            // the worst thing that happens is another exception gets logged for an already-
-            // failed task
-            started = true;
             task.initialize(new WorkerSourceTaskContext(offsetReader, this, configState));
             task.start(taskConfig);
             log.info("{} Source task finished initialization and start", this);
+            synchronized (this) {
+                if (startedShutdownBeforeStartCompleted) {
+                    tryStop();
+                    return;
+                }
+                finishedStart = true;
+            }
+
             while (!isStopping()) {
                 if (shouldPause()) {
                     onPause();
@@ -293,10 +308,10 @@ class WorkerSourceTask extends WorkerTask {
 
         RecordHeaders headers = retryWithToleranceOperator.execute(() -> convertHeaderFor(record), Stage.HEADER_CONVERTER, headerConverter.getClass());
 
-        byte[] key = retryWithToleranceOperator.execute(() -> keyConverter.fromConnectData(record.topic(), headers, record.keySchema(), record.key()),
+        byte[] key = retryWithToleranceOperator.execute(() -> convertKey(record, headers),
                 Stage.KEY_CONVERTER, keyConverter.getClass());
 
-        byte[] value = retryWithToleranceOperator.execute(() -> valueConverter.fromConnectData(record.topic(), headers, record.valueSchema(), record.value()),
+        byte[] value = retryWithToleranceOperator.execute(() -> convertValue(record, headers),
                 Stage.VALUE_CONVERTER, valueConverter.getClass());
 
         if (retryWithToleranceOperator.failed()) {
@@ -336,7 +351,7 @@ class WorkerSourceTask extends WorkerTask {
             // messages and update the offsets.
             synchronized (this) {
                 if (!lastSendFailed) {
-                    if (!recordFlushPending) {
+                    if (!flushing) {
                         outstandingMessages.put(producerRecord, producerRecord);
                     } else {
                         outstandingMessagesBacklog.put(producerRecord, producerRecord);
@@ -413,15 +428,10 @@ class WorkerSourceTask extends WorkerTask {
         log.debug("Topic '{}' matched topic creation group: {}", topic, topicGroup);
         NewTopic newTopic = topicGroup.newTopic(topic);
 
-        TopicAdmin.TopicCreationResponse response = admin.createOrFindTopics(newTopic);
-        if (response.isCreated(newTopic.name())) {
+        if (admin.createTopic(newTopic)) {
             topicCreation.addTopic(topic);
             log.info("Created topic '{}' using creation group {}", newTopic, topicGroup);
-        } else if (response.isExisting(newTopic.name())) {
-            topicCreation.addTopic(topic);
-            log.info("Found existing topic '{}'", newTopic);
         } else {
-            // The topic still does not exist and could not be created, so treat it as a task failure
             log.warn("Request to create new topic '{}' failed", topic);
             throw new ConnectException("Task failed to create new topic " + newTopic + ". Ensure "
                     + "that the task is authorized to create topics or that the topic exists and "
@@ -454,12 +464,12 @@ class WorkerSourceTask extends WorkerTask {
     private synchronized void recordSent(final ProducerRecord<byte[], byte[]> record) {
         ProducerRecord<byte[], byte[]> removed = outstandingMessages.remove(record);
         // While flushing, we may also see callbacks for items in the backlog
-        if (removed == null && recordFlushPending)
+        if (removed == null && flushing)
             removed = outstandingMessagesBacklog.remove(record);
         // But if neither one had it, something is very wrong
         if (removed == null) {
             log.error("{} CRITICAL Saw callback for record that was not present in the outstanding message set: {}", this, record);
-        } else if (recordFlushPending && outstandingMessages.isEmpty()) {
+        } else if (flushing && outstandingMessages.isEmpty()) {
             // flush thread may be waiting on the outstanding messages to clear
             this.notifyAll();
         }
@@ -476,15 +486,11 @@ class WorkerSourceTask extends WorkerTask {
         synchronized (this) {
             // First we need to make sure we snapshot everything in exactly the current state. This
             // means both the current set of messages we're still waiting to finish, stored in this
-            // class, which setting recordFlushPending = true will handle by storing any new values into a new
+            // class, which setting flushing = true will handle by storing any new values into a new
             // buffer; and the current set of user-specified offsets, stored in the
             // OffsetStorageWriter, for which we can use beginFlush() to initiate the snapshot.
-            // No need to begin a new offset flush if we timed out waiting for records to be flushed to
-            // Kafka in a prior attempt.
-            if (!recordFlushPending) {
-                recordFlushPending = true;
-                offsetFlushPending = offsetWriter.beginFlush();
-            }
+            flushing = true;
+            boolean flushStarted = offsetWriter.beginFlush();
             // Still wait for any producer records to flush, even if there aren't any offsets to write
             // to persistent storage
 
@@ -495,6 +501,7 @@ class WorkerSourceTask extends WorkerTask {
                     long timeoutMs = timeout - time.milliseconds();
                     if (timeoutMs <= 0) {
                         log.error("{} Failed to flush, timed out while waiting for producer to flush outstanding {} messages", this, outstandingMessages.size());
+                        finishFailedFlush();
                         recordCommitFailure(time.milliseconds() - started, null);
                         return false;
                     }
@@ -510,7 +517,7 @@ class WorkerSourceTask extends WorkerTask {
                 }
             }
 
-            if (!offsetFlushPending) {
+            if (!flushStarted) {
                 // There was nothing in the offsets to process, but we still waited for the data in the
                 // buffer to flush. This is useful since this can feed into metrics to monitor, e.g.
                 // flush time, which can be used for monitoring even if the connector doesn't record any
@@ -587,8 +594,7 @@ class WorkerSourceTask extends WorkerTask {
         offsetWriter.cancelFlush();
         outstandingMessages.putAll(outstandingMessagesBacklog);
         outstandingMessagesBacklog.clear();
-        recordFlushPending = false;
-        offsetFlushPending = false;
+        flushing = false;
     }
 
     private synchronized void finishSuccessfulFlush() {
@@ -596,8 +602,31 @@ class WorkerSourceTask extends WorkerTask {
         IdentityHashMap<ProducerRecord<byte[], byte[]>, ProducerRecord<byte[], byte[]>> temp = outstandingMessages;
         outstandingMessages = outstandingMessagesBacklog;
         outstandingMessagesBacklog = temp;
-        recordFlushPending = false;
-        offsetFlushPending = false;
+        flushing = false;
+    }
+
+    private byte[] convertKey(SourceRecord record, RecordHeaders headers) {
+        try {
+            return keyConverter.fromConnectData(record.topic(), headers, record.keySchema(), record.key());
+        } catch (Exception e) {
+            String errorMessage = String.format("Error while serializing the key for a source record to topic: %s. Check the key.converter and key.converter.* " +
+                    "settings in the connector configuration, or in the worker configuration if the connector is inheriting the connector configuration. " +
+                    "Underlying converter error: %s", record.topic(), e.getMessage());
+            log.error(errorMessage, e);
+            throw new RetriableException(errorMessage, e);
+        }
+    }
+
+    private byte[] convertValue(SourceRecord record, RecordHeaders headers) {
+        try {
+            return valueConverter.fromConnectData(record.topic(), headers, record.valueSchema(), record.value());
+        } catch (Exception e) {
+            String errorMessage = String.format("Error while serializing the value for a source record to topic: %s. Check the value.converter and value.converter.* " +
+                    "settings in the connector configuration, or in the worker configuration if the connector is inheriting the connector configuration. " +
+                    "Underlying converter error: %s", record.topic(), e.getMessage());
+            log.error(errorMessage, e);
+            throw new RetriableException(errorMessage, e);
+        }
     }
 
     @Override

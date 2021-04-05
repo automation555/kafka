@@ -17,7 +17,7 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.utils.AbstractIterator;
+import org.apache.kafka.common.utils.FlattenedIterator;
 import org.apache.kafka.common.utils.Utils;
 
 import java.nio.ByteBuffer;
@@ -62,28 +62,12 @@ public abstract class AbstractRecords implements Records {
     }
 
     @Override
-    public DefaultRecordsSend<Records> toSend() {
-        return new DefaultRecordsSend<>(this);
+    public DefaultRecordsSend toSend() {
+        return new DefaultRecordsSend(this);
     }
 
     private Iterator<Record> recordsIterator() {
-        return new AbstractIterator<Record>() {
-            private final Iterator<? extends RecordBatch> batches = batches().iterator();
-            private Iterator<Record> records;
-
-            @Override
-            protected Record makeNext() {
-                if (records != null && records.hasNext())
-                    return records.next();
-
-                if (batches.hasNext()) {
-                    records = batches.next().iterator();
-                    return makeNext();
-                }
-
-                return allDone();
-            }
-        };
+        return new FlattenedIterator<>(batches().iterator(), Iterable::iterator);
     }
 
     public static int estimateSizeInBytes(byte magic,

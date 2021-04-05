@@ -126,7 +126,6 @@ import org.apache.kafka.common.message.JoinGroupResponseData;
 import org.apache.kafka.common.message.JoinGroupResponseData.JoinGroupResponseMember;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrPartitionState;
 import org.apache.kafka.common.message.LeaderAndIsrResponseData;
-import org.apache.kafka.common.message.LeaderAndIsrResponseData.LeaderAndIsrTopicErrorCollection;
 import org.apache.kafka.common.message.LeaveGroupRequestData.MemberIdentity;
 import org.apache.kafka.common.message.LeaveGroupResponseData;
 import org.apache.kafka.common.message.ListGroupsRequestData;
@@ -140,6 +139,7 @@ import org.apache.kafka.common.message.ListPartitionReassignmentsRequestData;
 import org.apache.kafka.common.message.ListPartitionReassignmentsResponseData;
 import org.apache.kafka.common.message.ListTransactionsRequestData;
 import org.apache.kafka.common.message.ListTransactionsResponseData;
+import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.OffsetCommitRequestData;
 import org.apache.kafka.common.message.OffsetCommitResponseData;
 import org.apache.kafka.common.message.OffsetDeleteRequestData;
@@ -221,18 +221,15 @@ import java.util.Set;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
-import static org.apache.kafka.common.protocol.ApiKeys.CREATE_PARTITIONS;
-import static org.apache.kafka.common.protocol.ApiKeys.CREATE_TOPICS;
-import static org.apache.kafka.common.protocol.ApiKeys.DELETE_TOPICS;
 import static org.apache.kafka.common.protocol.ApiKeys.DESCRIBE_CONFIGS;
 import static org.apache.kafka.common.protocol.ApiKeys.FETCH;
 import static org.apache.kafka.common.protocol.ApiKeys.JOIN_GROUP;
-import static org.apache.kafka.common.protocol.ApiKeys.LEADER_AND_ISR;
 import static org.apache.kafka.common.protocol.ApiKeys.LIST_GROUPS;
 import static org.apache.kafka.common.protocol.ApiKeys.LIST_OFFSETS;
-import static org.apache.kafka.common.protocol.ApiKeys.STOP_REPLICA;
 import static org.apache.kafka.common.protocol.ApiKeys.SYNC_GROUP;
+import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPOCH;
 import static org.apache.kafka.common.requests.FetchMetadata.INVALID_SESSION_ID;
+import static org.apache.kafka.common.requests.MetadataResponse.NO_LEADER_ID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -247,7 +244,7 @@ public class RequestResponseTest {
     private final UnknownServerException unknownServerException = new UnknownServerException("secret");
 
     @Test
-    public void testSerialization() {
+    public void testSerialization() throws Exception {
         checkRequest(createFindCoordinatorRequest(0), true);
         checkRequest(createFindCoordinatorRequest(1), true);
         checkErrorResponse(createFindCoordinatorRequest(0), unknownServerException, true);
@@ -272,26 +269,26 @@ public class RequestResponseTest {
         checkErrorResponse(createHeartBeatRequest(), unknownServerException, true);
         checkResponse(createHeartBeatResponse(), 0, true);
 
-        for (short version : JOIN_GROUP.allVersions()) {
-            checkRequest(createJoinGroupRequest(version), true);
-            checkErrorResponse(createJoinGroupRequest(version), unknownServerException, true);
-            checkResponse(createJoinGroupResponse(version), version, true);
+        for (int v = ApiKeys.JOIN_GROUP.oldestVersion(); v <= ApiKeys.JOIN_GROUP.latestVersion(); v++) {
+            checkRequest(createJoinGroupRequest(v), true);
+            checkErrorResponse(createJoinGroupRequest(v), unknownServerException, true);
+            checkResponse(createJoinGroupResponse(v), v, true);
         }
 
-        for (short version : SYNC_GROUP.allVersions()) {
-            checkRequest(createSyncGroupRequest(version), true);
-            checkErrorResponse(createSyncGroupRequest(version), unknownServerException, true);
-            checkResponse(createSyncGroupResponse(version), version, true);
+        for (int v = ApiKeys.SYNC_GROUP.oldestVersion(); v <= ApiKeys.SYNC_GROUP.latestVersion(); v++) {
+            checkRequest(createSyncGroupRequest(v), true);
+            checkErrorResponse(createSyncGroupRequest(v), unknownServerException, true);
+            checkResponse(createSyncGroupResponse(v), v, true);
         }
 
         checkRequest(createLeaveGroupRequest(), true);
         checkErrorResponse(createLeaveGroupRequest(), unknownServerException, true);
         checkResponse(createLeaveGroupResponse(), 0, true);
 
-        for (short version : ApiKeys.LIST_GROUPS.allVersions()) {
-            checkRequest(createListGroupsRequest(version), false);
-            checkErrorResponse(createListGroupsRequest(version), unknownServerException, true);
-            checkResponse(createListGroupsResponse(version), version, true);
+        for (short v = ApiKeys.LIST_GROUPS.oldestVersion(); v <= ApiKeys.LIST_GROUPS.latestVersion(); v++) {
+            checkRequest(createListGroupsRequest(v), false);
+            checkErrorResponse(createListGroupsRequest(v), unknownServerException, true);
+            checkResponse(createListGroupsResponse(v), v, true);
         }
 
         checkRequest(createDescribeGroupRequest(), true);
@@ -300,10 +297,10 @@ public class RequestResponseTest {
         checkRequest(createDeleteGroupsRequest(), true);
         checkErrorResponse(createDeleteGroupsRequest(), unknownServerException, true);
         checkResponse(createDeleteGroupsResponse(), 0, true);
-        for (short version : LIST_OFFSETS.allVersions()) {
-            checkRequest(createListOffsetRequest(version), true);
-            checkErrorResponse(createListOffsetRequest(version), unknownServerException, true);
-            checkResponse(createListOffsetResponse(version), version, true);
+        for (int i = 0; i < ApiKeys.LIST_OFFSETS.latestVersion(); i++) {
+            checkRequest(createListOffsetRequest(i), true);
+            checkErrorResponse(createListOffsetRequest(i), unknownServerException, true);
+            checkResponse(createListOffsetResponse(i), i, true);
         }
         checkRequest(MetadataRequest.Builder.allTopics().build((short) 2), true);
         checkRequest(createMetadataRequest(1, Collections.singletonList("topic1")), true);
@@ -336,18 +333,18 @@ public class RequestResponseTest {
         checkResponse(createProduceResponse(), 2, true);
         checkResponse(createProduceResponseWithErrorMessage(), 8, true);
 
-        for (short version : STOP_REPLICA.allVersions()) {
-            checkRequest(createStopReplicaRequest(version, true), true);
-            checkRequest(createStopReplicaRequest(version, false), true);
-            checkErrorResponse(createStopReplicaRequest(version, true), unknownServerException, true);
-            checkErrorResponse(createStopReplicaRequest(version, false), unknownServerException, true);
-            checkResponse(createStopReplicaResponse(version), version, true);
+        for (int v = ApiKeys.STOP_REPLICA.oldestVersion(); v <= ApiKeys.STOP_REPLICA.latestVersion(); v++) {
+            checkRequest(createStopReplicaRequest(v, true), true);
+            checkRequest(createStopReplicaRequest(v, false), true);
+            checkErrorResponse(createStopReplicaRequest(v, true), unknownServerException, true);
+            checkErrorResponse(createStopReplicaRequest(v, false), unknownServerException, true);
+            checkResponse(createStopReplicaResponse(), v, true);
         }
 
-        for (short version : LEADER_AND_ISR.allVersions()) {
-            checkRequest(createLeaderAndIsrRequest(version), true);
-            checkErrorResponse(createLeaderAndIsrRequest(version), unknownServerException, false);
-            checkResponse(createLeaderAndIsrResponse(version), version, true);
+        for (int v = ApiKeys.LEADER_AND_ISR.oldestVersion(); v <= ApiKeys.LEADER_AND_ISR.latestVersion(); v++) {
+            checkRequest(createLeaderAndIsrRequest(v), true);
+            checkErrorResponse(createLeaderAndIsrRequest(v), unknownServerException, false);
+            checkResponse(createLeaderAndIsrResponse(v), v, true);
         }
         
         checkRequest(createSaslHandshakeRequest(), true);
@@ -358,23 +355,23 @@ public class RequestResponseTest {
         checkResponse(createSaslAuthenticateResponse(), 0, true);
         checkResponse(createSaslAuthenticateResponse(), 1, true);
 
-        for (short version : CREATE_TOPICS.allVersions()) {
-            checkRequest(createCreateTopicRequest(version), true);
-            checkErrorResponse(createCreateTopicRequest(version), unknownServerException, true);
-            checkResponse(createCreateTopicResponse(), version, true);
+        for (int v = ApiKeys.CREATE_TOPICS.oldestVersion(); v <= ApiKeys.CREATE_TOPICS.latestVersion(); v++) {
+            checkRequest(createCreateTopicRequest(v), true);
+            checkErrorResponse(createCreateTopicRequest(v), unknownServerException, true);
+            checkResponse(createCreateTopicResponse(), v, true);
         }
 
-        for (short version : DELETE_TOPICS.allVersions()) {
-            checkRequest(createDeleteTopicsRequest(version), true);
-            checkErrorResponse(createDeleteTopicsRequest(version), unknownServerException, true);
-            checkResponse(createDeleteTopicsResponse(), version, true);
+        for (int v = ApiKeys.DELETE_TOPICS.oldestVersion(); v <= ApiKeys.DELETE_TOPICS.latestVersion(); v++) {
+            checkRequest(createDeleteTopicsRequest(v), true);
+            checkErrorResponse(createDeleteTopicsRequest(v), unknownServerException, true);
+            checkResponse(createDeleteTopicsResponse(), v, true);
         }
 
-        for (short version : CREATE_PARTITIONS.allVersions()) {
-            checkRequest(createCreatePartitionsRequest(version), true);
-            checkRequest(createCreatePartitionsRequestWithAssignments(version), false);
-            checkErrorResponse(createCreatePartitionsRequest(version), unknownServerException, true);
-            checkResponse(createCreatePartitionsResponse(), version, true);
+        for (int v = ApiKeys.CREATE_PARTITIONS.oldestVersion(); v <= ApiKeys.CREATE_PARTITIONS.latestVersion(); v++) {
+            checkRequest(createCreatePartitionsRequest(v), true);
+            checkRequest(createCreatePartitionsRequestWithAssignments(v), false);
+            checkErrorResponse(createCreatePartitionsRequest(v), unknownServerException, true);
+            checkResponse(createCreatePartitionsResponse(), v, true);
         }
 
         checkRequest(createInitPidRequest(), true);
@@ -523,75 +520,75 @@ public class RequestResponseTest {
 
     @Test
     public void testApiVersionsSerialization() {
-        for (short version : ApiKeys.API_VERSIONS.allVersions()) {
-            checkRequest(createApiVersionRequest(version), true);
-            checkErrorResponse(createApiVersionRequest(version), unknownServerException, true);
-            checkErrorResponse(createApiVersionRequest(version), new UnsupportedVersionException("Not Supported"), true);
-            checkResponse(createApiVersionResponse(), version, true);
-            checkResponse(ApiVersionsResponse.defaultApiVersionsResponse(ApiMessageType.ListenerType.ZK_BROKER), version, true);
+        for (short v : ApiKeys.API_VERSIONS.allVersions()) {
+            checkRequest(createApiVersionRequest(v), true);
+            checkErrorResponse(createApiVersionRequest(v), unknownServerException, true);
+            checkErrorResponse(createApiVersionRequest(v), new UnsupportedVersionException("Not Supported"), true);
+            checkResponse(createApiVersionResponse(), v, true);
+            checkResponse(ApiVersionsResponse.defaultApiVersionsResponse(ApiMessageType.ListenerType.ZK_BROKER), v, true);
         }
     }
 
     @Test
     public void testBrokerHeartbeatSerialization() {
-        for (short version : ApiKeys.BROKER_HEARTBEAT.allVersions()) {
-            checkRequest(createBrokerHeartbeatRequest(version), true);
-            checkErrorResponse(createBrokerHeartbeatRequest(version), unknownServerException, true);
-            checkResponse(createBrokerHeartbeatResponse(), version, true);
+        for (short v : ApiKeys.BROKER_HEARTBEAT.allVersions()) {
+            checkRequest(createBrokerHeartbeatRequest(v), true);
+            checkErrorResponse(createBrokerHeartbeatRequest(v), unknownServerException, true);
+            checkResponse(createBrokerHeartbeatResponse(), v, true);
         }
     }
 
     @Test
     public void testBrokerRegistrationSerialization() {
-        for (short version : ApiKeys.BROKER_REGISTRATION.allVersions()) {
-            checkRequest(createBrokerRegistrationRequest(version), true);
-            checkErrorResponse(createBrokerRegistrationRequest(version), unknownServerException, true);
+        for (short v : ApiKeys.BROKER_REGISTRATION.allVersions()) {
+            checkRequest(createBrokerRegistrationRequest(v), true);
+            checkErrorResponse(createBrokerRegistrationRequest(v), unknownServerException, true);
             checkResponse(createBrokerRegistrationResponse(), 0, true);
         }
     }
 
     @Test
     public void testDescribeProducersSerialization() {
-        for (short version : ApiKeys.DESCRIBE_PRODUCERS.allVersions()) {
-            checkRequest(createDescribeProducersRequest(version), true);
-            checkErrorResponse(createDescribeProducersRequest(version), unknownServerException, true);
-            checkResponse(createDescribeProducersResponse(), version, true);
+        for (short v : ApiKeys.DESCRIBE_PRODUCERS.allVersions()) {
+            checkRequest(createDescribeProducersRequest(v), true);
+            checkErrorResponse(createDescribeProducersRequest(v), unknownServerException, true);
+            checkResponse(createDescribeProducersResponse(), v, true);
         }
     }
 
     @Test
     public void testDescribeTransactionsSerialization() {
-        for (short version : ApiKeys.DESCRIBE_TRANSACTIONS.allVersions()) {
-            checkRequest(createDescribeTransactionsRequest(version), true);
-            checkErrorResponse(createDescribeTransactionsRequest(version), unknownServerException, true);
-            checkResponse(createDescribeTransactionsResponse(), version, true);
+        for (short v : ApiKeys.DESCRIBE_TRANSACTIONS.allVersions()) {
+            checkRequest(createDescribeTransactionsRequest(v), true);
+            checkErrorResponse(createDescribeTransactionsRequest(v), unknownServerException, true);
+            checkResponse(createDescribeTransactionsResponse(), v, true);
         }
     }
 
     @Test
     public void testListTransactionsSerialization() {
-        for (short version : ApiKeys.LIST_TRANSACTIONS.allVersions()) {
-            checkRequest(createListTransactionsRequest(version), true);
-            checkErrorResponse(createListTransactionsRequest(version), unknownServerException, true);
-            checkResponse(createListTransactionsResponse(), version, true);
+        for (short v : ApiKeys.LIST_TRANSACTIONS.allVersions()) {
+            checkRequest(createListTransactionsRequest(v), true);
+            checkErrorResponse(createListTransactionsRequest(v), unknownServerException, true);
+            checkResponse(createListTransactionsResponse(), v, true);
         }
     }
 
     @Test
     public void testDescribeClusterSerialization() {
-        for (short version : ApiKeys.DESCRIBE_CLUSTER.allVersions()) {
-            checkRequest(createDescribeClusterRequest(version), true);
-            checkErrorResponse(createDescribeClusterRequest(version), unknownServerException, true);
-            checkResponse(createDescribeClusterResponse(), version, true);
+        for (short v : ApiKeys.DESCRIBE_CLUSTER.allVersions()) {
+            checkRequest(createDescribeClusterRequest(v), true);
+            checkErrorResponse(createDescribeClusterRequest(v), unknownServerException, true);
+            checkResponse(createDescribeClusterResponse(), v, true);
         }
     }
 
     @Test
     public void testUnregisterBrokerSerialization() {
-        for (short version : ApiKeys.UNREGISTER_BROKER.allVersions()) {
-            checkRequest(createUnregisterBrokerRequest(version), true);
-            checkErrorResponse(createUnregisterBrokerRequest(version), unknownServerException, true);
-            checkResponse(createUnregisterBrokerResponse(), version, true);
+        for (short v : ApiKeys.UNREGISTER_BROKER.allVersions()) {
+            checkRequest(createUnregisterBrokerRequest(v), true);
+            checkErrorResponse(createUnregisterBrokerRequest(v), unknownServerException, true);
+            checkResponse(createUnregisterBrokerResponse(), v, true);
         }
     }
 
@@ -628,12 +625,13 @@ public class RequestResponseTest {
     }
 
     private void checkOlderFetchVersions() {
-        for (short version : FETCH.allVersions()) {
-            if (version > 7) {
-                checkErrorResponse(createFetchRequest(version), unknownServerException, true);
+        int latestVersion = FETCH.latestVersion();
+        for (int i = 0; i < latestVersion; ++i) {
+            if (i > 7) {
+                checkErrorResponse(createFetchRequest(i), unknownServerException, true);
             }
-            checkRequest(createFetchRequest(version), true);
-            checkResponse(createFetchResponse(version >= 4), version, true);
+            checkRequest(createFetchRequest(i), true);
+            checkResponse(createFetchResponse(i >= 4), i, true);
         }
     }
 
@@ -672,11 +670,12 @@ public class RequestResponseTest {
     }
 
     private void checkDescribeConfigsResponseVersions() {
-        for (short version : ApiKeys.DESCRIBE_CONFIGS.allVersions()) {
-            DescribeConfigsResponse response = createDescribeConfigsResponse(version);
+        for (int version = ApiKeys.DESCRIBE_CONFIGS.oldestVersion(); version < ApiKeys.DESCRIBE_CONFIGS.latestVersion(); ++version) {
+            short apiVersion = (short) version;
+            DescribeConfigsResponse response = createDescribeConfigsResponse(apiVersion);
             DescribeConfigsResponse deserialized0 = (DescribeConfigsResponse) AbstractResponse.parseResponse(ApiKeys.DESCRIBE_CONFIGS,
-                    response.serialize(version), version);
-            verifyDescribeConfigsResponse(response, deserialized0, version);
+                    response.serialize(apiVersion), apiVersion);
+            verifyDescribeConfigsResponse(response, deserialized0, apiVersion);
         }
     }
 
@@ -806,18 +805,15 @@ public class RequestResponseTest {
 
     @Test
     public void fetchResponseVersionTest() {
-        LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData = new LinkedHashMap<>();
+        LinkedHashMap<TopicPartition, FetchResponse.PartitionData<MemoryRecords>> responseData = new LinkedHashMap<>();
 
         MemoryRecords records = MemoryRecords.readableRecords(ByteBuffer.allocate(10));
-        responseData.put(new TopicPartition("test", 0),
-                new FetchResponseData.PartitionData()
-                        .setPartitionIndex(0)
-                        .setHighWatermark(1000000)
-                        .setLogStartOffset(0)
-                        .setRecords(records));
+        responseData.put(new TopicPartition("test", 0), new FetchResponse.PartitionData<>(
+                Errors.NONE, 1000000, FetchResponse.INVALID_LAST_STABLE_OFFSET,
+                0L, Optional.empty(), Collections.emptyList(), records));
 
-        FetchResponse v0Response = FetchResponse.of(Errors.NONE, 0, INVALID_SESSION_ID, responseData);
-        FetchResponse v1Response = FetchResponse.of(Errors.NONE, 10, INVALID_SESSION_ID, responseData);
+        FetchResponse<MemoryRecords> v0Response = new FetchResponse<>(Errors.NONE, responseData, 0, INVALID_SESSION_ID);
+        FetchResponse<MemoryRecords> v1Response = new FetchResponse<>(Errors.NONE, responseData, 10, INVALID_SESSION_ID);
         assertEquals(0, v0Response.throttleTimeMs(), "Throttle time must be zero");
         assertEquals(10, v1Response.throttleTimeMs(), "Throttle time must be 10");
         assertEquals(responseData, v0Response.responseData(), "Response data does not match");
@@ -826,34 +822,22 @@ public class RequestResponseTest {
 
     @Test
     public void testFetchResponseV4() {
-        LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData = new LinkedHashMap<>();
+        LinkedHashMap<TopicPartition, FetchResponse.PartitionData<MemoryRecords>> responseData = new LinkedHashMap<>();
         MemoryRecords records = MemoryRecords.readableRecords(ByteBuffer.allocate(10));
 
-        List<FetchResponseData.AbortedTransaction> abortedTransactions = asList(
-                new FetchResponseData.AbortedTransaction().setProducerId(10).setFirstOffset(100),
-                new FetchResponseData.AbortedTransaction().setProducerId(15).setFirstOffset(50)
+        List<FetchResponse.AbortedTransaction> abortedTransactions = asList(
+                new FetchResponse.AbortedTransaction(10, 100),
+                new FetchResponse.AbortedTransaction(15, 50)
         );
-        responseData.put(new TopicPartition("bar", 0),
-                new FetchResponseData.PartitionData()
-                        .setPartitionIndex(0)
-                        .setHighWatermark(1000000)
-                        .setAbortedTransactions(abortedTransactions)
-                        .setRecords(records));
-        responseData.put(new TopicPartition("bar", 1),
-                new FetchResponseData.PartitionData()
-                        .setPartitionIndex(1)
-                        .setHighWatermark(900000)
-                        .setLastStableOffset(5)
-                        .setRecords(records));
-        responseData.put(new TopicPartition("foo", 0),
-                new FetchResponseData.PartitionData()
-                        .setPartitionIndex(0)
-                        .setHighWatermark(70000)
-                        .setLastStableOffset(6)
-                        .setRecords(records));
+        responseData.put(new TopicPartition("bar", 0), new FetchResponse.PartitionData<>(Errors.NONE, 100000,
+                FetchResponse.INVALID_LAST_STABLE_OFFSET, FetchResponse.INVALID_LOG_START_OFFSET, Optional.empty(), abortedTransactions, records));
+        responseData.put(new TopicPartition("bar", 1), new FetchResponse.PartitionData<>(Errors.NONE, 900000,
+                5, FetchResponse.INVALID_LOG_START_OFFSET, Optional.empty(), null, records));
+        responseData.put(new TopicPartition("foo", 0), new FetchResponse.PartitionData<>(Errors.NONE, 70000,
+                6, FetchResponse.INVALID_LOG_START_OFFSET, Optional.empty(), emptyList(), records));
 
-        FetchResponse response = FetchResponse.of(Errors.NONE, 10, INVALID_SESSION_ID, responseData);
-        FetchResponse deserialized = FetchResponse.parse(response.serialize((short) 4), (short) 4);
+        FetchResponse<MemoryRecords> response = new FetchResponse<>(Errors.NONE, responseData, 10, INVALID_SESSION_ID);
+        FetchResponse<MemoryRecords> deserialized = FetchResponse.parse(response.serialize((short) 4), (short) 4);
         assertEquals(responseData, deserialized.responseData());
     }
 
@@ -862,12 +846,12 @@ public class RequestResponseTest {
         verifyFetchResponseFullWrite(FETCH.latestVersion(), createFetchResponse(123));
         verifyFetchResponseFullWrite(FETCH.latestVersion(),
             createFetchResponse(Errors.FETCH_SESSION_ID_NOT_FOUND, 123));
-        for (short version : FETCH.allVersions()) {
+        for (short version = 0; version <= FETCH.latestVersion(); version++) {
             verifyFetchResponseFullWrite(version, createFetchResponse(version >= 4));
         }
     }
 
-    private void verifyFetchResponseFullWrite(short apiVersion, FetchResponse fetchResponse) throws Exception {
+    private void verifyFetchResponseFullWrite(short apiVersion, FetchResponse<MemoryRecords> fetchResponse) throws Exception {
         int correlationId = 15;
 
         short responseHeaderVersion = FETCH.responseHeaderVersion(apiVersion);
@@ -1176,49 +1160,38 @@ public class RequestResponseTest {
         return FetchRequest.Builder.forConsumer(100, 100000, fetchData).setMaxBytes(1000).build((short) version);
     }
 
-    private FetchResponse createFetchResponse(Errors error, int sessionId) {
-        return FetchResponse.of(error, 25, sessionId, new LinkedHashMap<>());
+    private FetchResponse<MemoryRecords> createFetchResponse(Errors error, int sessionId) {
+        return new FetchResponse<>(error, new LinkedHashMap<>(), 25, sessionId);
     }
 
-    private FetchResponse createFetchResponse(int sessionId) {
-        LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData = new LinkedHashMap<>();
+    private FetchResponse<MemoryRecords> createFetchResponse(int sessionId) {
+        LinkedHashMap<TopicPartition, FetchResponse.PartitionData<MemoryRecords>> responseData = new LinkedHashMap<>();
         MemoryRecords records = MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord("blah".getBytes()));
-        responseData.put(new TopicPartition("test", 0), new FetchResponseData.PartitionData()
-                        .setPartitionIndex(0)
-                        .setHighWatermark(1000000)
-                        .setLogStartOffset(0)
-                        .setRecords(records));
-        List<FetchResponseData.AbortedTransaction> abortedTransactions = Collections.singletonList(
-            new FetchResponseData.AbortedTransaction().setProducerId(234L).setFirstOffset(999L));
-        responseData.put(new TopicPartition("test", 1), new FetchResponseData.PartitionData()
-                        .setPartitionIndex(1)
-                        .setHighWatermark(1000000)
-                        .setLogStartOffset(0)
-                        .setAbortedTransactions(abortedTransactions));
-        return FetchResponse.of(Errors.NONE, 25, sessionId, responseData);
+        responseData.put(new TopicPartition("test", 0), new FetchResponse.PartitionData<>(Errors.NONE,
+            1000000, FetchResponse.INVALID_LAST_STABLE_OFFSET, 0L, Optional.empty(), Collections.emptyList(), records));
+        List<FetchResponse.AbortedTransaction> abortedTransactions = Collections.singletonList(
+            new FetchResponse.AbortedTransaction(234L, 999L));
+        responseData.put(new TopicPartition("test", 1), new FetchResponse.PartitionData<>(Errors.NONE,
+            1000000, FetchResponse.INVALID_LAST_STABLE_OFFSET, 0L, Optional.empty(), abortedTransactions, MemoryRecords.EMPTY));
+        return new FetchResponse<>(Errors.NONE, responseData, 25, sessionId);
     }
 
-    private FetchResponse createFetchResponse(boolean includeAborted) {
-        LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData = new LinkedHashMap<>();
+    private FetchResponse<MemoryRecords> createFetchResponse(boolean includeAborted) {
+        LinkedHashMap<TopicPartition, FetchResponse.PartitionData<MemoryRecords>> responseData = new LinkedHashMap<>();
         MemoryRecords records = MemoryRecords.withRecords(CompressionType.NONE, new SimpleRecord("blah".getBytes()));
-        responseData.put(new TopicPartition("test", 0), new FetchResponseData.PartitionData()
-                        .setPartitionIndex(0)
-                        .setHighWatermark(1000000)
-                        .setLogStartOffset(0)
-                        .setRecords(records));
 
-        List<FetchResponseData.AbortedTransaction> abortedTransactions = Collections.emptyList();
+        responseData.put(new TopicPartition("test", 0), new FetchResponse.PartitionData<>(Errors.NONE,
+                1000000, FetchResponse.INVALID_LAST_STABLE_OFFSET, 0L, Optional.empty(), Collections.emptyList(), records));
+
+        List<FetchResponse.AbortedTransaction> abortedTransactions = Collections.emptyList();
         if (includeAborted) {
             abortedTransactions = Collections.singletonList(
-                    new FetchResponseData.AbortedTransaction().setProducerId(234L).setFirstOffset(999L));
+                    new FetchResponse.AbortedTransaction(234L, 999L));
         }
-        responseData.put(new TopicPartition("test", 1), new FetchResponseData.PartitionData()
-                        .setPartitionIndex(1)
-                        .setHighWatermark(1000000)
-                        .setLogStartOffset(0)
-                        .setAbortedTransactions(abortedTransactions));
+        responseData.put(new TopicPartition("test", 1), new FetchResponse.PartitionData<>(Errors.NONE,
+                1000000, FetchResponse.INVALID_LAST_STABLE_OFFSET, 0L, Optional.empty(), abortedTransactions, MemoryRecords.EMPTY));
 
-        return FetchResponse.of(Errors.NONE, 25, INVALID_SESSION_ID, responseData);
+        return new FetchResponse<>(Errors.NONE, responseData, 25, INVALID_SESSION_ID);
     }
 
     private HeartbeatRequest createHeartBeatRequest() {
@@ -1479,17 +1452,29 @@ public class RequestResponseTest {
 
         List<MetadataResponse.TopicMetadata> allTopicMetadata = new ArrayList<>();
         allTopicMetadata.add(new MetadataResponse.TopicMetadata(Errors.NONE, "__consumer_offsets", true,
-                asList(new MetadataResponse.PartitionMetadata(Errors.NONE,
-                        new TopicPartition("__consumer_offsets", 1),
-                        Optional.of(node.id()), Optional.of(5), replicas, isr, offlineReplicas))));
+            singletonList(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(1)
+                .setLeaderId(node.id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(replicas)
+                .setIsrNodes(isr)
+                .setOfflineReplicas(offlineReplicas)
+            )));
         allTopicMetadata.add(new MetadataResponse.TopicMetadata(Errors.LEADER_NOT_AVAILABLE, "topic2", false,
                 emptyList()));
         allTopicMetadata.add(new MetadataResponse.TopicMetadata(Errors.NONE, "topic3", false,
-            asList(new MetadataResponse.PartitionMetadata(Errors.LEADER_NOT_AVAILABLE,
-                    new TopicPartition("topic3", 0), Optional.empty(),
-                    Optional.empty(), replicas, isr, offlineReplicas))));
+            singletonList(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.LEADER_NOT_AVAILABLE.code())
+                .setPartitionIndex(0)
+                .setLeaderId(NO_LEADER_ID)
+                .setLeaderEpoch(NO_PARTITION_LEADER_EPOCH)
+                .setReplicaNodes(replicas)
+                .setIsrNodes(isr)
+                .setOfflineReplicas(offlineReplicas)
+            )));
 
-        return RequestTestUtils.metadataResponse(asList(node), null, MetadataResponse.NO_CONTROLLER_ID, allTopicMetadata);
+        return RequestTestUtils.metadataResponse(singletonList(node), null, MetadataResponse.NO_CONTROLLER_ID, allTopicMetadata);
     }
 
     private OffsetCommitRequest createOffsetCommitRequest(int version) {
@@ -1505,12 +1490,12 @@ public class RequestResponseTest {
                                         new OffsetCommitRequestData.OffsetCommitRequestPartition()
                                                 .setPartitionIndex(0)
                                                 .setCommittedOffset(100)
-                                                .setCommittedLeaderEpoch(RecordBatch.NO_PARTITION_LEADER_EPOCH)
+                                                .setCommittedLeaderEpoch(NO_PARTITION_LEADER_EPOCH)
                                                 .setCommittedMetadata(""),
                                         new OffsetCommitRequestData.OffsetCommitRequestPartition()
                                                 .setPartitionIndex(1)
                                                 .setCommittedOffset(200)
-                                                .setCommittedLeaderEpoch(RecordBatch.NO_PARTITION_LEADER_EPOCH)
+                                                .setCommittedLeaderEpoch(NO_PARTITION_LEADER_EPOCH)
                                                 .setCommittedMetadata(null)
                                 ))
                 ))
@@ -1607,17 +1592,12 @@ public class RequestResponseTest {
             deletePartitions, topicStates).build((short) version);
     }
 
-    private StopReplicaResponse createStopReplicaResponse(int version) {
+    private StopReplicaResponse createStopReplicaResponse() {
         List<StopReplicaResponseData.StopReplicaPartitionError> partitions = new ArrayList<>();
-        StopReplicaResponseData.StopReplicaPartitionError error = new StopReplicaResponseData.StopReplicaPartitionError()
+        partitions.add(new StopReplicaResponseData.StopReplicaPartitionError()
+            .setTopicName("test")
             .setPartitionIndex(0)
-            .setErrorCode(Errors.NONE.code());
-        if (version < 4) {
-            error.setTopicName("test");
-        } else {
-            error.setTopicId(Uuid.randomUuid());
-        }
-        partitions.add(error);
+            .setErrorCode(Errors.NONE.code()));
         return new StopReplicaResponse(new StopReplicaResponseData()
             .setErrorCode(Errors.NONE.code())
             .setPartitionErrors(partitions));
@@ -1720,7 +1700,7 @@ public class RequestResponseTest {
                     new LeaderAndIsrResponseData.LeaderAndIsrPartitionError()
                     .setPartitionIndex(0)
                     .setErrorCode(Errors.NONE.code()));
-            LeaderAndIsrTopicErrorCollection topics = new LeaderAndIsrTopicErrorCollection();
+            List<LeaderAndIsrResponseData.LeaderAndIsrTopicError> topics = new ArrayList<>();
             topics.add(new LeaderAndIsrResponseData.LeaderAndIsrTopicError()
                     .setTopicId(Uuid.randomUuid())
                     .setPartitionErrors(partition));
@@ -1965,7 +1945,7 @@ public class RequestResponseTest {
                 new OffsetForLeaderPartition()
                     .setPartition(2)
                     .setLeaderEpoch(3)
-                    .setCurrentLeaderEpoch(RecordBatch.NO_PARTITION_LEADER_EPOCH))));
+                    .setCurrentLeaderEpoch(NO_PARTITION_LEADER_EPOCH))));
         return topics;
     }
 
@@ -2805,7 +2785,7 @@ public class RequestResponseTest {
         assertEquals(Integer.valueOf(1), createRenewTokenResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSaslAuthenticateResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSaslHandshakeResponse().errorCounts().get(Errors.NONE));
-        assertEquals(Integer.valueOf(2), createStopReplicaResponse(STOP_REPLICA.latestVersion()).errorCounts().get(Errors.NONE));
+        assertEquals(Integer.valueOf(2), createStopReplicaResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createSyncGroupResponse(SYNC_GROUP.latestVersion()).errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createTxnOffsetCommitResponse().errorCounts().get(Errors.NONE));
         assertEquals(Integer.valueOf(1), createUpdateMetadataResponse().errorCounts().get(Errors.NONE));

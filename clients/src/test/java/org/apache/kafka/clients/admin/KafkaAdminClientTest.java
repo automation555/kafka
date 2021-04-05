@@ -99,7 +99,6 @@ import org.apache.kafka.common.message.DescribeGroupsResponseData;
 import org.apache.kafka.common.message.DescribeGroupsResponseData.DescribedGroupMember;
 import org.apache.kafka.common.message.DescribeLogDirsResponseData;
 import org.apache.kafka.common.message.DescribeLogDirsResponseData.DescribeLogDirsTopic;
-import org.apache.kafka.common.message.DescribeProducersResponseData;
 import org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData;
 import org.apache.kafka.common.message.DescribeUserScramCredentialsResponseData.CredentialInfo;
 import org.apache.kafka.common.message.ElectLeadersResponseData.PartitionResult;
@@ -155,8 +154,6 @@ import org.apache.kafka.common.requests.DescribeClusterResponse;
 import org.apache.kafka.common.requests.DescribeConfigsResponse;
 import org.apache.kafka.common.requests.DescribeGroupsResponse;
 import org.apache.kafka.common.requests.DescribeLogDirsResponse;
-import org.apache.kafka.common.requests.DescribeProducersRequest;
-import org.apache.kafka.common.requests.DescribeProducersResponse;
 import org.apache.kafka.common.requests.DescribeUserScramCredentialsResponse;
 import org.apache.kafka.common.requests.ElectLeadersResponse;
 import org.apache.kafka.common.requests.FindCoordinatorResponse;
@@ -186,8 +183,6 @@ import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -199,15 +194,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
@@ -225,6 +216,8 @@ import static org.apache.kafka.common.message.AlterPartitionReassignmentsRespons
 import static org.apache.kafka.common.message.AlterPartitionReassignmentsResponseData.ReassignableTopicResponse;
 import static org.apache.kafka.common.message.ListPartitionReassignmentsResponseData.OngoingPartitionReassignment;
 import static org.apache.kafka.common.message.ListPartitionReassignmentsResponseData.OngoingTopicReassignment;
+import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPOCH;
+import static org.apache.kafka.common.requests.MetadataResponse.NO_LEADER_ID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -1227,9 +1220,14 @@ public class KafkaAdminClientTest {
 
             // Then we respond to the DescribeTopic request
             Node leader = initializedCluster.nodes().get(0);
-            MetadataResponse.PartitionMetadata partitionMetadata = new MetadataResponse.PartitionMetadata(
-                    Errors.NONE, new TopicPartition(topic, 0), Optional.of(leader.id()), Optional.of(10),
-                    singletonList(leader.id()), singletonList(leader.id()), singletonList(leader.id()));
+            MetadataResponseData.MetadataResponsePartition partitionMetadata = new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(0)
+                .setLeaderId(leader.id())
+                .setLeaderEpoch(10)
+                .setReplicaNodes(singletonList(leader.id()))
+                .setIsrNodes(singletonList(leader.id()))
+                .setOfflineReplicas(singletonList(leader.id()));
             env.kafkaClient().prepareResponse(RequestTestUtils.metadataResponse(initializedCluster.nodes(),
                     initializedCluster.clusterResource().clusterId(), 1,
                     singletonList(new MetadataResponse.TopicMetadata(Errors.NONE, topic, Uuid.ZERO_UUID, false,
@@ -2026,13 +2024,23 @@ public class KafkaAdminClientTest {
         try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(time, mockCluster(3, 0))) {
             List<Node> nodes = env.cluster().nodes();
 
-            List<MetadataResponse.PartitionMetadata> partitionMetadata = new ArrayList<>();
-            partitionMetadata.add(new MetadataResponse.PartitionMetadata(Errors.NONE, tp0,
-                    Optional.of(nodes.get(0).id()), Optional.of(5), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
-            partitionMetadata.add(new MetadataResponse.PartitionMetadata(Errors.NONE, tp1,
-                    Optional.of(nodes.get(1).id()), Optional.of(5), singletonList(nodes.get(1).id()),
-                    singletonList(nodes.get(1).id()), Collections.emptyList()));
+            List<MetadataResponseData.MetadataResponsePartition> partitionMetadata = new ArrayList<>();
+            partitionMetadata.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(tp0.partition())
+                .setLeaderId(nodes.get(0).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
+            partitionMetadata.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(tp1.partition())
+                .setLeaderId(nodes.get(1).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(1).id()))
+                .setIsrNodes(singletonList(nodes.get(1).id()))
+                .setOfflineReplicas(Collections.emptyList()));
 
             List<MetadataResponse.TopicMetadata> topicMetadata = new ArrayList<>();
             topicMetadata.add(new MetadataResponse.TopicMetadata(Errors.NONE, topic, false, partitionMetadata));
@@ -2106,22 +2114,48 @@ public class KafkaAdminClientTest {
                     ).iterator())));
 
             List<MetadataResponse.TopicMetadata> t = new ArrayList<>();
-            List<MetadataResponse.PartitionMetadata> p = new ArrayList<>();
-            p.add(new MetadataResponse.PartitionMetadata(Errors.NONE, myTopicPartition0,
-                    Optional.of(nodes.get(0).id()), Optional.of(5), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
-            p.add(new MetadataResponse.PartitionMetadata(Errors.NONE, myTopicPartition1,
-                    Optional.of(nodes.get(0).id()), Optional.of(5), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
-            p.add(new MetadataResponse.PartitionMetadata(Errors.LEADER_NOT_AVAILABLE, myTopicPartition2,
-                    Optional.empty(), Optional.empty(), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
-            p.add(new MetadataResponse.PartitionMetadata(Errors.NONE, myTopicPartition3,
-                    Optional.of(nodes.get(0).id()), Optional.of(5), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
-            p.add(new MetadataResponse.PartitionMetadata(Errors.NONE, myTopicPartition4,
-                    Optional.of(nodes.get(0).id()), Optional.of(5), singletonList(nodes.get(0).id()),
-                    singletonList(nodes.get(0).id()), Collections.emptyList()));
+            List<MetadataResponseData.MetadataResponsePartition> p = new ArrayList<>();
+            p.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(myTopicPartition0.partition())
+                .setLeaderId(nodes.get(0).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
+
+            p.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(myTopicPartition1.partition())
+                .setLeaderId(nodes.get(0).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
+            p.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.LEADER_NOT_AVAILABLE.code())
+                .setPartitionIndex(myTopicPartition2.partition())
+                .setLeaderId(NO_LEADER_ID)
+                .setLeaderEpoch(NO_PARTITION_LEADER_EPOCH)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
+            p.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(myTopicPartition3.partition())
+                .setLeaderId(nodes.get(0).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
+            p.add(new MetadataResponseData.MetadataResponsePartition()
+                .setErrorCode(Errors.NONE.code())
+                .setPartitionIndex(myTopicPartition4.partition())
+                .setLeaderId(nodes.get(0).id())
+                .setLeaderEpoch(5)
+                .setReplicaNodes(singletonList(nodes.get(0).id()))
+                .setIsrNodes(singletonList(nodes.get(0).id()))
+                .setOfflineReplicas(Collections.emptyList()));
 
             t.add(new MetadataResponse.TopicMetadata(Errors.NONE, "my_topic", false, p));
 
@@ -5314,258 +5348,6 @@ public class KafkaAdminClientTest {
             // Validate response
             assertNotNull(result.all());
             TestUtils.assertFutureThrows(result.all(), Errors.REQUEST_TIMED_OUT.exception().getClass());
-        }
-    }
-
-    @Test
-    public void testDescribeProducers() throws Exception {
-        try (AdminClientUnitTestEnv env = mockClientEnv()) {
-            TopicPartition topicPartition = new TopicPartition("foo", 0);
-
-            Node leader = env.cluster().nodes().iterator().next();
-            expectMetadataRequest(env, topicPartition, leader);
-
-            List<ProducerState> expected = Arrays.asList(
-                new ProducerState(12345L, 15, 30, env.time().milliseconds(),
-                    OptionalInt.of(99), OptionalLong.empty()),
-                new ProducerState(12345L, 15, 30, env.time().milliseconds(),
-                    OptionalInt.empty(), OptionalLong.of(23423L))
-            );
-
-            DescribeProducersResponse response = buildDescribeProducersResponse(
-                topicPartition,
-                expected
-            );
-
-            env.kafkaClient().prepareResponseFrom(
-                request -> request instanceof DescribeProducersRequest,
-                response,
-                leader
-            );
-
-            DescribeProducersResult result = env.adminClient().describeProducers(singleton(topicPartition));
-            KafkaFuture<DescribeProducersResult.PartitionProducerState> partitionFuture =
-                result.partitionResult(topicPartition);
-            assertEquals(new HashSet<>(expected), new HashSet<>(partitionFuture.get().activeProducers()));
-        }
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    public void testDescribeProducersTimeout(boolean timeoutInMetadataLookup) throws Exception {
-        MockTime time = new MockTime();
-        try (AdminClientUnitTestEnv env = mockClientEnv(time)) {
-            TopicPartition topicPartition = new TopicPartition("foo", 0);
-            int requestTimeoutMs = 15000;
-
-            if (!timeoutInMetadataLookup) {
-                Node leader = env.cluster().nodes().iterator().next();
-                expectMetadataRequest(env, topicPartition, leader);
-            }
-
-            DescribeProducersOptions options = new DescribeProducersOptions().timeoutMs(requestTimeoutMs);
-            DescribeProducersResult result = env.adminClient().describeProducers(
-                singleton(topicPartition), options);
-            assertFalse(result.all().isDone());
-
-            time.sleep(requestTimeoutMs);
-            TestUtils.waitForCondition(() -> result.all().isDone(),
-                "Future failed to timeout after expiration of timeout");
-
-            assertTrue(result.all().isCompletedExceptionally());
-            TestUtils.assertFutureThrows(result.all(), TimeoutException.class);
-            assertFalse(env.kafkaClient().hasInFlightRequests());
-        }
-    }
-
-    @Test
-    public void testDescribeProducersRetryAfterDisconnect() throws Exception {
-        MockTime time = new MockTime();
-        int retryBackoffMs = 100;
-        Cluster cluster = mockCluster(3, 0);
-        Map<String, Object> configOverride = newStrMap(AdminClientConfig.RETRY_BACKOFF_MS_CONFIG, "" + retryBackoffMs);
-
-        try (AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(time, cluster, configOverride)) {
-            TopicPartition topicPartition = new TopicPartition("foo", 0);
-            Iterator<Node> nodeIterator = env.cluster().nodes().iterator();
-
-            Node initialLeader = nodeIterator.next();
-            expectMetadataRequest(env, topicPartition, initialLeader);
-
-            List<ProducerState> expected = Arrays.asList(
-                new ProducerState(12345L, 15, 30, env.time().milliseconds(),
-                    OptionalInt.of(99), OptionalLong.empty()),
-                new ProducerState(12345L, 15, 30, env.time().milliseconds(),
-                    OptionalInt.empty(), OptionalLong.of(23423L))
-            );
-
-            DescribeProducersResponse response = buildDescribeProducersResponse(
-                topicPartition,
-                expected
-            );
-
-            env.kafkaClient().prepareResponseFrom(
-                request -> {
-                    // We need a sleep here because the client will attempt to
-                    // backoff after the disconnect
-                    env.time().sleep(retryBackoffMs);
-                    return request instanceof DescribeProducersRequest;
-                },
-                response,
-                initialLeader,
-                true
-            );
-
-            Node retryLeader = nodeIterator.next();
-            expectMetadataRequest(env, topicPartition, retryLeader);
-
-            env.kafkaClient().prepareResponseFrom(
-                request -> request instanceof DescribeProducersRequest,
-                response,
-                retryLeader
-            );
-
-            DescribeProducersResult result = env.adminClient().describeProducers(singleton(topicPartition));
-            KafkaFuture<DescribeProducersResult.PartitionProducerState> partitionFuture =
-                result.partitionResult(topicPartition);
-            assertEquals(new HashSet<>(expected), new HashSet<>(partitionFuture.get().activeProducers()));
-        }
-    }
-
-    private DescribeProducersResponse buildDescribeProducersResponse(
-        TopicPartition topicPartition,
-        List<ProducerState> producerStates
-    ) {
-        DescribeProducersResponseData response = new DescribeProducersResponseData();
-
-        DescribeProducersResponseData.TopicResponse topicResponse =
-            new DescribeProducersResponseData.TopicResponse()
-                .setName(topicPartition.topic());
-        response.topics().add(topicResponse);
-
-        DescribeProducersResponseData.PartitionResponse partitionResponse =
-            new DescribeProducersResponseData.PartitionResponse()
-                .setPartitionIndex(topicPartition.partition())
-                .setErrorCode(Errors.NONE.code());
-        topicResponse.partitions().add(partitionResponse);
-
-        partitionResponse.setActiveProducers(producerStates.stream().map(producerState ->
-            new DescribeProducersResponseData.ProducerState()
-                .setProducerId(producerState.producerId())
-                .setProducerEpoch(producerState.producerEpoch())
-                .setCoordinatorEpoch(producerState.coordinatorEpoch().orElse(-1))
-                .setLastSequence(producerState.lastSequence())
-                .setLastTimestamp(producerState.lastTimestamp())
-                .setCurrentTxnStartOffset(producerState.currentTransactionStartOffset().orElse(-1L))
-        ).collect(Collectors.toList()));
-
-        return new DescribeProducersResponse(response);
-    }
-
-    private void expectMetadataRequest(
-        AdminClientUnitTestEnv env,
-        TopicPartition topicPartition,
-        Node leader
-    ) {
-        MetadataResponseData.MetadataResponseTopicCollection responseTopics =
-            new MetadataResponseData.MetadataResponseTopicCollection();
-
-        MetadataResponseTopic responseTopic = new MetadataResponseTopic()
-            .setName(topicPartition.topic())
-            .setErrorCode(Errors.NONE.code());
-        responseTopics.add(responseTopic);
-
-        MetadataResponsePartition responsePartition = new MetadataResponsePartition()
-            .setErrorCode(Errors.NONE.code())
-            .setPartitionIndex(topicPartition.partition())
-            .setLeaderId(leader.id())
-            .setReplicaNodes(singletonList(leader.id()))
-            .setIsrNodes(singletonList(leader.id()));
-        responseTopic.partitions().add(responsePartition);
-
-        env.kafkaClient().prepareResponse(
-            request -> {
-                if (!(request instanceof MetadataRequest)) {
-                    return false;
-                }
-                MetadataRequest metadataRequest = (MetadataRequest) request;
-                return metadataRequest.topics().equals(singletonList(topicPartition.topic()));
-            },
-            new MetadataResponse(new MetadataResponseData().setTopics(responseTopics),
-                MetadataResponseData.HIGHEST_SUPPORTED_VERSION)
-        );
-    }
-
-    /**
-     * Test that if the client can obtain a node assignment, but can't send to the given
-     * node, it will disconnect and try a different node.
-     */
-    @Test
-    public void testClientSideTimeoutAfterFailureToSend() throws Exception {
-        Cluster cluster = mockCluster(3, 0);
-        CompletableFuture<String> disconnectFuture = new CompletableFuture<>();
-        MockTime time = new MockTime();
-        try (final AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(time, cluster,
-                newStrMap(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, "1",
-                          AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "100000",
-                          AdminClientConfig.RETRY_BACKOFF_MS_CONFIG, "1"))) {
-            env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
-            for (Node node : cluster.nodes()) {
-                env.kafkaClient().delayReady(node, 100);
-            }
-
-            // We use a countdown latch to ensure that we get to the first
-            // call to `ready` before we increment the time below to trigger
-            // the disconnect.
-            CountDownLatch readyLatch = new CountDownLatch(2);
-
-            env.kafkaClient().setDisconnectFuture(disconnectFuture);
-            env.kafkaClient().setReadyCallback(node -> readyLatch.countDown());
-            env.kafkaClient().prepareResponse(prepareMetadataResponse(cluster, Errors.NONE));
-
-            final ListTopicsResult result = env.adminClient().listTopics();
-
-            readyLatch.await(TestUtils.DEFAULT_MAX_WAIT_MS, TimeUnit.MILLISECONDS);
-            log.debug("Advancing clock by 25 ms to trigger client-side disconnect.");
-            time.sleep(25);
-            disconnectFuture.get();
-
-            log.debug("Enabling nodes to send requests again.");
-            for (Node node : cluster.nodes()) {
-                env.kafkaClient().delayReady(node, 0);
-            }
-            time.sleep(5);
-            log.info("Waiting for result.");
-            assertEquals(0, result.listings().get().size());
-        }
-    }
-
-    /**
-     * Test that if the client can send to a node, but doesn't receive a response, it will
-     * disconnect and try a different node.
-     */
-    @Test
-    public void testClientSideTimeoutAfterFailureToReceiveResponse() throws Exception {
-        Cluster cluster = mockCluster(3, 0);
-        CompletableFuture<String> disconnectFuture = new CompletableFuture<>();
-        MockTime time = new MockTime();
-        try (final AdminClientUnitTestEnv env = new AdminClientUnitTestEnv(time, cluster,
-            newStrMap(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, "1",
-                AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "100000",
-                AdminClientConfig.RETRY_BACKOFF_MS_CONFIG, "0"))) {
-            env.kafkaClient().setNodeApiVersions(NodeApiVersions.create());
-            env.kafkaClient().setDisconnectFuture(disconnectFuture);
-            final ListTopicsResult result = env.adminClient().listTopics();
-            TestUtils.waitForCondition(() -> {
-                time.sleep(1);
-                return disconnectFuture.isDone();
-            }, 1, 5000, () -> "Timed out waiting for expected disconnect");
-            assertFalse(disconnectFuture.isCompletedExceptionally());
-            assertFalse(result.future.isDone());
-            TestUtils.waitForCondition(env.kafkaClient()::hasInFlightRequests,
-                "Timed out waiting for retry");
-            env.kafkaClient().respond(prepareMetadataResponse(cluster, Errors.NONE));
-            assertEquals(0, result.listings().get().size());
         }
     }
 

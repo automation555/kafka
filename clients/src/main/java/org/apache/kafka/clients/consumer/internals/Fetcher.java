@@ -16,12 +16,12 @@
  */
 package org.apache.kafka.clients.consumer.internals;
 
-import org.apache.kafka.clients.ApiVersion;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.ClientResponse;
 import org.apache.kafka.clients.FetchSessionHandler;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NodeApiVersions;
+import org.apache.kafka.clients.ApiVersion;
 import org.apache.kafka.clients.StaleMetadataException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -30,33 +30,12 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
-import org.apache.kafka.clients.consumer.internals.OffsetsForLeaderEpochClient.OffsetForEpochResult;
-import org.apache.kafka.clients.consumer.internals.SubscriptionState.FetchPosition;
-import org.apache.kafka.common.Cluster;
-import org.apache.kafka.common.IsolationLevel;
-import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.Node;
-import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.CorruptRecordException;
-import org.apache.kafka.common.errors.InvalidTopicException;
-import org.apache.kafka.common.errors.RecordTooLargeException;
-import org.apache.kafka.common.errors.RetriableException;
-import org.apache.kafka.common.errors.SerializationException;
-import org.apache.kafka.common.errors.TimeoutException;
-import org.apache.kafka.common.errors.TopicAuthorizationException;
+import org.apache.kafka.common.*;
+import org.apache.kafka.common.errors.*;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
-import org.apache.kafka.common.metrics.Gauge;
-import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.metrics.stats.Avg;
-import org.apache.kafka.common.metrics.stats.Max;
-import org.apache.kafka.common.metrics.stats.Meter;
-import org.apache.kafka.common.metrics.stats.Min;
-import org.apache.kafka.common.metrics.stats.Value;
-import org.apache.kafka.common.metrics.stats.WindowedCount;
+import org.apache.kafka.common.metrics.*;
+import org.apache.kafka.common.metrics.stats.*;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.BufferSupplier;
@@ -99,6 +78,7 @@ import java.util.PriorityQueue;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -128,7 +108,6 @@ import static java.util.Collections.emptyList;
  * </ul>
  */
 public class Fetcher<K, V> implements Closeable {
-    private static final long NEAREST_TIMESTAMP = -3L;
     private final Logger log;
     private final LogContext logContext;
     private final ConsumerNetworkClient client;
@@ -156,9 +135,8 @@ public class Fetcher<K, V> implements Closeable {
     private final OffsetsForLeaderEpochClient offsetsForLeaderEpochClient;
     private final Set<Integer> nodesWithPendingFetchRequests;
     private final ApiVersions apiVersions;
-
     private CompletedFetch nextInLineFetch = null;
-    private final boolean useNearestOffsetReset;
+
 
     public Fetcher(LogContext logContext,
                    ConsumerNetworkClient client,
@@ -179,7 +157,6 @@ public class Fetcher<K, V> implements Closeable {
                    long retryBackoffMs,
                    long requestTimeoutMs,
                    IsolationLevel isolationLevel,
-                   boolean useNearestOffsetReset,
                    ApiVersions apiVersions) {
         this.log = logContext.logger(Fetcher.class);
         this.logContext = logContext;
@@ -205,13 +182,12 @@ public class Fetcher<K, V> implements Closeable {
         this.sessionHandlers = new HashMap<>();
         this.offsetsForLeaderEpochClient = new OffsetsForLeaderEpochClient(client, logContext);
         this.nodesWithPendingFetchRequests = new HashSet<>();
-        this.useNearestOffsetReset = useNearestOffsetReset;
     }
 
     /**
      * Represents data about an offset returned by a broker.
      */
-    static class ListOffsetData {
+    private static class ListOffsetData {
         final long offset;
         final Long timestamp; //  null if the broker does not support returning timestamps
         final Optional<Integer> leaderEpoch; // empty if the leader epoch is not known
@@ -321,7 +297,7 @@ public class Fetcher<K, V> implements Closeable {
                                             metricAggregator, batches, fetchOffset, responseVersion));
                                 }
                             }
-
+                            sensors.recordsFetchStatus.record(1.0);
                             sensors.fetchLatency.record(resp.requestLatencyMs());
                         } finally {
                             nodesWithPendingFetchRequests.remove(fetchTarget.id());
@@ -331,11 +307,15 @@ public class Fetcher<K, V> implements Closeable {
 
                 @Override
                 public void onFailure(RuntimeException e) {
+
                     synchronized (Fetcher.this) {
                         try {
                             FetchSessionHandler handler = sessionHandler(fetchTarget.id());
                             if (handler != null) {
                                 handler.handleError(e);
+                            }
+                            if(e instanceof DisconnectException){
+                                sensors.recordsFetchStatus.record(0.0);
                             }
                         } finally {
                             nodesWithPendingFetchRequests.remove(fetchTarget.id());
@@ -442,8 +422,6 @@ public class Fetcher<K, V> implements Closeable {
             return ListOffsetRequest.EARLIEST_TIMESTAMP;
         else if (strategy == OffsetResetStrategy.LATEST)
             return ListOffsetRequest.LATEST_TIMESTAMP;
-        else if (strategy == OffsetResetStrategy.NEAREST)
-            return NEAREST_TIMESTAMP;
         else
             return null;
     }
@@ -484,7 +462,7 @@ public class Fetcher<K, V> implements Closeable {
     }
 
     /**
-     * Validate offsets for all assigned partitions for which a leader change has been detected.
+     *  Validate offsets for all assigned partitions for which a leader change has been detected.
      */
     public void validateOffsetsIfNeeded() {
         RuntimeException exception = cachedOffsetForLeaderException.getAndSet(null);
@@ -494,14 +472,13 @@ public class Fetcher<K, V> implements Closeable {
         // Validate each partition against the current leader and epoch
         subscriptions.assignedPartitions().forEach(topicPartition -> {
             ConsumerMetadata.LeaderAndEpoch leaderAndEpoch = metadata.currentLeader(topicPartition);
-            subscriptions.maybeValidatePositionForCurrentLeader(apiVersions, topicPartition, leaderAndEpoch);
+            subscriptions.maybeValidatePositionForCurrentLeader(topicPartition, leaderAndEpoch);
         });
 
         // Collect positions needing validation, with backoff
-        Map<TopicPartition, FetchPosition> partitionsToValidate = subscriptions
+        Map<TopicPartition, SubscriptionState.FetchPosition> partitionsToValidate = subscriptions
                 .partitionsNeedingValidation(time.milliseconds())
                 .stream()
-                .filter(tp -> subscriptions.position(tp) != null)
                 .collect(Collectors.toMap(Function.identity(), subscriptions::position));
 
         validateOffsetsAsync(partitionsToValidate);
@@ -681,11 +658,7 @@ public class Fetcher<K, V> implements Closeable {
             log.debug("Not returning fetched records for assigned partition {} since it is no longer fetchable",
                     completedFetch.partition);
         } else {
-            FetchPosition position = subscriptions.position(completedFetch.partition);
-            if (position == null) {
-                throw new IllegalStateException("Missing position for fetchable partition " + completedFetch.partition);
-            }
-
+            SubscriptionState.FetchPosition position = subscriptions.position(completedFetch.partition);
             if (completedFetch.nextFetchOffset == position.offset) {
                 List<ConsumerRecord<K, V>> partRecords = completedFetch.fetchRecords(maxRecords);
 
@@ -693,7 +666,7 @@ public class Fetcher<K, V> implements Closeable {
                         partRecords.size(), position, completedFetch.partition);
 
                 if (completedFetch.nextFetchOffset > position.offset) {
-                    FetchPosition nextPosition = new FetchPosition(
+                    SubscriptionState.FetchPosition nextPosition = new SubscriptionState.FetchPosition(
                             completedFetch.nextFetchOffset,
                             completedFetch.lastEpoch,
                             position.currentLeader);
@@ -725,26 +698,11 @@ public class Fetcher<K, V> implements Closeable {
         return emptyList();
     }
 
-    // Visible for testing
-    void resetOffsetIfNeeded(TopicPartition partition, OffsetResetStrategy requestedResetStrategy, ListOffsetData offsetData) {
-        FetchPosition position = new FetchPosition(
+    private void resetOffsetIfNeeded(TopicPartition partition, OffsetResetStrategy requestedResetStrategy, ListOffsetData offsetData) {
+        SubscriptionState.FetchPosition position = new SubscriptionState.FetchPosition(
                 offsetData.offset, offsetData.leaderEpoch, metadata.currentLeader(partition));
         offsetData.leaderEpoch.ifPresent(epoch -> metadata.updateLastSeenEpochIfNewer(partition, epoch));
         subscriptions.maybeSeekUnvalidated(partition, position.offset, requestedResetStrategy);
-    }
-
-    private Map<TopicPartition, ListOffsetRequest.PartitionData> formatToValidResetTimestamp(Map<TopicPartition, ListOffsetRequest.PartitionData> original) {
-        Map<TopicPartition, ListOffsetRequest.PartitionData> newFormat = new HashMap<>();
-        original.forEach((tp, pd) -> {
-            // since NEAREST_TIMESTAMP is not implemented on the broker,
-            // we'll try get earliest timestamp first
-            if (pd.timestamp == NEAREST_TIMESTAMP) {
-                newFormat.put(tp, new ListOffsetRequest.PartitionData(ListOffsetRequest.EARLIEST_TIMESTAMP, pd.currentLeaderEpoch));
-            } else {
-                newFormat.put(tp, pd);
-            }
-        });
-        return newFormat;
     }
 
     private void resetOffsetsAsync(Map<TopicPartition, Long> partitionResetTimestamps) {
@@ -755,8 +713,7 @@ public class Fetcher<K, V> implements Closeable {
             final Map<TopicPartition, ListOffsetRequest.PartitionData> resetTimestamps = entry.getValue();
             subscriptions.setNextAllowedRetry(resetTimestamps.keySet(), time.milliseconds() + requestTimeoutMs);
 
-            Map<TopicPartition, ListOffsetRequest.PartitionData> validResetTimestamps = formatToValidResetTimestamp(resetTimestamps);
-            RequestFuture<ListOffsetResult> future = sendListOffsetRequest(node, validResetTimestamps, false);
+            RequestFuture<ListOffsetResult> future = sendListOffsetRequest(node, resetTimestamps, false);
             future.addListener(new RequestFutureListener<ListOffsetResult>() {
                 @Override
                 public void onSuccess(ListOffsetResult result) {
@@ -765,25 +722,11 @@ public class Fetcher<K, V> implements Closeable {
                         metadata.requestUpdate();
                     }
 
-                    Map<TopicPartition, Long> needNewReset = new HashMap<>();
                     for (Map.Entry<TopicPartition, ListOffsetData> fetchedOffset : result.fetchedOffsets.entrySet()) {
                         TopicPartition partition = fetchedOffset.getKey();
                         ListOffsetData offsetData = fetchedOffset.getValue();
-                        ListOffsetRequest.PartitionData timestamp = resetTimestamps.get(partition);
-                        if (timestamp != null && timestamp.timestamp == NEAREST_TIMESTAMP) {
-                            // outOffRangeOffset is higher than earliest offset in kafka,
-                            // meaning that the outOffRangeOffset is also higher than logsize
-                            // so we will send a request again to reset to latest
-                            if (subscriptions.outOffRangeOffset(partition) > offsetData.offset) {
-                                needNewReset.put(partition, ListOffsetRequest.LATEST_TIMESTAMP);
-                                continue;
-                            }
-                        }
-                        ListOffsetRequest.PartitionData requestedReset = validResetTimestamps.get(partition);
+                        ListOffsetRequest.PartitionData requestedReset = resetTimestamps.get(partition);
                         resetOffsetIfNeeded(partition, timestampToOffsetResetStrategy(requestedReset.timestamp), offsetData);
-                    }
-                    if (needNewReset.size() > 0) {
-                        resetOffsetsAsync(needNewReset);
                     }
                 }
 
@@ -799,7 +742,7 @@ public class Fetcher<K, V> implements Closeable {
         }
     }
 
-    static boolean hasUsableOffsetForLeaderEpochVersion(NodeApiVersions nodeApiVersions) {
+    private boolean hasUsableOffsetForLeaderEpochVersion(NodeApiVersions nodeApiVersions) {
         ApiVersion apiVersion = nodeApiVersions.apiVersion(ApiKeys.OFFSET_FOR_LEADER_EPOCH);
         if (apiVersion == null)
             return false;
@@ -813,11 +756,11 @@ public class Fetcher<K, V> implements Closeable {
      *
      * Requests are grouped by Node for efficiency.
      */
-    private void validateOffsetsAsync(Map<TopicPartition, FetchPosition> partitionsToValidate) {
-        final Map<Node, Map<TopicPartition, FetchPosition>> regrouped =
-            regroupFetchPositionsByLeader(partitionsToValidate);
+    private void validateOffsetsAsync(Map<TopicPartition, SubscriptionState.FetchPosition> partitionsToValidate) {
+        final Map<Node, Map<TopicPartition, SubscriptionState.FetchPosition>> regrouped =
+                regroupFetchPositionsByLeader(partitionsToValidate);
 
-        regrouped.forEach((node, fetchPositions) -> {
+        regrouped.forEach((node, fetchPostitions) -> {
             if (node.isEmpty()) {
                 metadata.requestUpdate();
                 return;
@@ -831,23 +774,22 @@ public class Fetcher<K, V> implements Closeable {
 
             if (!hasUsableOffsetForLeaderEpochVersion(nodeApiVersions)) {
                 log.debug("Skipping validation of fetch offsets for partitions {} since the broker does not " +
-                              "support the required protocol version (introduced in Kafka 2.3)",
-                    fetchPositions.keySet());
-                for (TopicPartition partition : fetchPositions.keySet()) {
+                                "support the required protocol version (introduced in Kafka 2.3)",
+                        fetchPostitions.keySet());
+                for (TopicPartition partition : fetchPostitions.keySet()) {
                     subscriptions.completeValidation(partition);
                 }
                 return;
             }
 
-            subscriptions.setNextAllowedRetry(fetchPositions.keySet(), time.milliseconds() + requestTimeoutMs);
+            subscriptions.setNextAllowedRetry(fetchPostitions.keySet(), time.milliseconds() + requestTimeoutMs);
 
-            RequestFuture<OffsetForEpochResult> future =
-                offsetsForLeaderEpochClient.sendAsyncRequest(node, fetchPositions);
-
-            future.addListener(new RequestFutureListener<OffsetForEpochResult>() {
+            RequestFuture<OffsetsForLeaderEpochClient.OffsetForEpochResult> future =
+                offsetsForLeaderEpochClient.sendAsyncRequest(node, fetchPostitions);
+            future.addListener(new RequestFutureListener<OffsetsForLeaderEpochClient.OffsetForEpochResult>() {
                 @Override
-                public void onSuccess(OffsetForEpochResult offsetsResult) {
-                    List<SubscriptionState.LogTruncation> truncations = new ArrayList<>();
+                public void onSuccess(OffsetsForLeaderEpochClient.OffsetForEpochResult offsetsResult) {
+                    Map<TopicPartition, OffsetAndMetadata> truncationWithoutResetPolicy = new HashMap<>();
                     if (!offsetsResult.partitionsToRetry().isEmpty()) {
                         subscriptions.setNextAllowedRetry(offsetsResult.partitionsToRetry(), time.milliseconds() + retryBackoffMs);
                         metadata.requestUpdate();
@@ -856,50 +798,31 @@ public class Fetcher<K, V> implements Closeable {
                     // For each OffsetsForLeader response, check if the end-offset is lower than our current offset
                     // for the partition. If so, it means we have experienced log truncation and need to reposition
                     // that partition's offset.
-                    //
-                    // In addition, check whether the returned offset and epoch are valid. If not, then we should reset
-                    // its offset if reset policy is configured, or throw out of range exception.
-                    offsetsResult.endOffsets().forEach((topicPartition, respEndOffset) -> {
-                        FetchPosition requestPosition = fetchPositions.get(topicPartition);
-                        Optional<SubscriptionState.LogTruncation> truncationOpt =
-                            subscriptions.maybeCompleteValidation(topicPartition, requestPosition, respEndOffset);
-                        truncationOpt.ifPresent(truncations::add);
+                    offsetsResult.endOffsets().forEach((respTopicPartition, respEndOffset) -> {
+                        SubscriptionState.FetchPosition requestPosition = fetchPostitions.get(respTopicPartition);
+                        Optional<OffsetAndMetadata> divergentOffsetOpt = subscriptions.maybeCompleteValidation(
+                                respTopicPartition, requestPosition, respEndOffset);
+                        divergentOffsetOpt.ifPresent(divergentOffset -> {
+                            truncationWithoutResetPolicy.put(respTopicPartition, divergentOffset);
+                        });
                     });
 
-                    if (!truncations.isEmpty()) {
-                        maybeSetOffsetForLeaderException(buildLogTruncationException(truncations));
+                    if (!truncationWithoutResetPolicy.isEmpty()) {
+                        throw new LogTruncationException(truncationWithoutResetPolicy);
                     }
                 }
 
                 @Override
                 public void onFailure(RuntimeException e) {
-                    subscriptions.requestFailed(fetchPositions.keySet(), time.milliseconds() + retryBackoffMs);
+                    subscriptions.requestFailed(fetchPostitions.keySet(), time.milliseconds() + retryBackoffMs);
                     metadata.requestUpdate();
 
-                    if (!(e instanceof RetriableException)) {
-                        maybeSetOffsetForLeaderException(e);
+                    if (!(e instanceof RetriableException) && !cachedOffsetForLeaderException.compareAndSet(null, e)) {
+                        log.error("Discarding error in OffsetsForLeaderEpoch because another error is pending", e);
                     }
                 }
             });
         });
-    }
-
-    private LogTruncationException buildLogTruncationException(List<SubscriptionState.LogTruncation> truncations) {
-        Map<TopicPartition, OffsetAndMetadata> divergentOffsets = new HashMap<>();
-        Map<TopicPartition, Long> truncatedFetchOffsets = new HashMap<>();
-        for (SubscriptionState.LogTruncation truncation : truncations) {
-            truncation.divergentOffsetOpt.ifPresent(divergentOffset ->
-                divergentOffsets.put(truncation.topicPartition, divergentOffset));
-            truncatedFetchOffsets.put(truncation.topicPartition, truncation.fetchPosition.offset);
-        }
-        return new LogTruncationException("Detected truncated partitions: " + truncations,
-            truncatedFetchOffsets, divergentOffsets);
-    }
-
-    private void maybeSetOffsetForLeaderException(RuntimeException e) {
-        if (!cachedOffsetForLeaderException.compareAndSet(null, e)) {
-            log.error("Discarding error in OffsetsForLeaderEpoch because another error is pending", e);
-        }
     }
 
     /**
@@ -1029,6 +952,7 @@ public class Fetcher<K, V> implements Closeable {
      *               value of each partition may be null only for v0. In v1 and later the ListOffset API would not
      *               return a null timestamp (-1 is returned instead when necessary).
      */
+    @SuppressWarnings("deprecation")
     private void handleListOffsetResponse(Map<TopicPartition, ListOffsetRequest.PartitionData> timestampsToSearch,
                                           ListOffsetResponse listOffsetResponse,
                                           RequestFuture<ListOffsetResult> future) {
@@ -1113,12 +1037,12 @@ public class Fetcher<K, V> implements Closeable {
         private final Map<TopicPartition, ListOffsetData> fetchedOffsets;
         private final Set<TopicPartition> partitionsToRetry;
 
-        ListOffsetResult(Map<TopicPartition, ListOffsetData> fetchedOffsets, Set<TopicPartition> partitionsNeedingRetry) {
+        public ListOffsetResult(Map<TopicPartition, ListOffsetData> fetchedOffsets, Set<TopicPartition> partitionsNeedingRetry) {
             this.fetchedOffsets = fetchedOffsets;
             this.partitionsToRetry = partitionsNeedingRetry;
         }
 
-        ListOffsetResult() {
+        public ListOffsetResult() {
             this.fetchedOffsets = new HashMap<>();
             this.partitionsToRetry = new HashSet<>();
         }
@@ -1163,25 +1087,20 @@ public class Fetcher<K, V> implements Closeable {
         Map<Node, FetchSessionHandler.Builder> fetchable = new LinkedHashMap<>();
 
         // Ensure the position has an up-to-date leader
-        subscriptions.assignedPartitions().forEach(tp ->
-            subscriptions.maybeValidatePositionForCurrentLeader(apiVersions, tp, metadata.currentLeader(tp))
-        );
+        subscriptions.assignedPartitions().forEach(
+            tp -> subscriptions.maybeValidatePositionForCurrentLeader(tp, metadata.currentLeader(tp)));
 
         long currentTimeMs = time.milliseconds();
 
         for (TopicPartition partition : fetchablePartitions()) {
-            FetchPosition position = this.subscriptions.position(partition);
-            if (position == null) {
-                throw new IllegalStateException("Missing position for fetchable partition " + partition);
-            }
-
+            // Use the preferred read replica if set, or the position's leader
+            SubscriptionState.FetchPosition position = this.subscriptions.position(partition);
             Optional<Node> leaderOpt = position.currentLeader.leader;
             if (!leaderOpt.isPresent()) {
                 metadata.requestUpdate();
                 continue;
             }
 
-            // Use the preferred read replica if set, otherwise the position's leader
             Node node = selectReadReplica(partition, leaderOpt.get(), currentTimeMs);
             if (client.isUnavailable(node)) {
                 client.maybeThrowAuthFailure(node);
@@ -1221,8 +1140,8 @@ public class Fetcher<K, V> implements Closeable {
         return reqs;
     }
 
-    private Map<Node, Map<TopicPartition, FetchPosition>> regroupFetchPositionsByLeader(
-            Map<TopicPartition, FetchPosition> partitionMap) {
+    private Map<Node, Map<TopicPartition, SubscriptionState.FetchPosition>> regroupFetchPositionsByLeader(
+            Map<TopicPartition, SubscriptionState.FetchPosition> partitionMap) {
         return partitionMap.entrySet()
                 .stream()
                 .filter(entry -> entry.getValue().currentLeader.leader.isPresent())
@@ -1254,7 +1173,7 @@ public class Fetcher<K, V> implements Closeable {
             } else if (error == Errors.NONE) {
                 // we are interested in this fetch only if the beginning offset matches the
                 // current consumed position
-                FetchPosition position = subscriptions.position(tp);
+                SubscriptionState.FetchPosition position = subscriptions.position(tp);
                 if (position == null || position.offset != fetchOffset) {
                     log.debug("Discarding stale fetch response for partition {} since its offset {} does not match " +
                             "the expected offset {}", tp, fetchOffset, position);
@@ -1323,12 +1242,14 @@ public class Fetcher<K, V> implements Closeable {
                 Optional<Integer> clearedReplicaId = subscriptions.clearPreferredReadReplica(tp);
                 if (!clearedReplicaId.isPresent()) {
                     // If there's no preferred replica to clear, we're fetching from the leader so handle this error normally
-                    FetchPosition position = subscriptions.position(tp);
-                    if (position == null || fetchOffset != position.offset) {
+                    if (fetchOffset != subscriptions.position(tp).offset) {
                         log.debug("Discarding stale fetch response for partition {} since the fetched offset {} " +
-                                "does not match the current offset {}", tp, fetchOffset, position);
+                                "does not match the current offset {}", tp, fetchOffset, subscriptions.position(tp));
+                    } else if (subscriptions.hasDefaultOffsetResetPolicy()) {
+                        log.info("Fetch offset {} is out of range for partition {}, resetting offset", fetchOffset, tp);
+                        subscriptions.requestOffsetReset(tp);
                     } else {
-                        handleOffsetOutOfRange(position, tp);
+                        throw new OffsetOutOfRangeException(Collections.singletonMap(tp, fetchOffset));
                     }
                 } else {
                     log.debug("Unset the preferred read replica {} for partition {} since we got {} when fetching {}",
@@ -1366,23 +1287,6 @@ public class Fetcher<K, V> implements Closeable {
         }
 
         return completedFetch;
-    }
-
-    private void handleOffsetOutOfRange(FetchPosition fetchPosition, TopicPartition topicPartition) {
-        String errorMessage = "Fetch position " + fetchPosition + " is out of range for partition " + topicPartition;
-        if (subscriptions.hasDefaultOffsetResetPolicy()) {
-            if (useNearestOffsetReset) {
-                log.info("{}, resetting offset with nearest offset", errorMessage);
-                subscriptions.requestOffsetReset(topicPartition, OffsetResetStrategy.NEAREST, fetchPosition.offset);
-            } else {
-                log.info("{}, resetting offset", errorMessage);
-                subscriptions.requestOffsetReset(topicPartition);
-            }
-        } else {
-            log.info("{}, raising error to the application since no reset policy is configured", errorMessage);
-            throw new OffsetOutOfRangeException(errorMessage,
-                Collections.singletonMap(topicPartition, fetchPosition.offset));
-        }
     }
 
     /**
@@ -1764,6 +1668,7 @@ public class Fetcher<K, V> implements Closeable {
         private final Sensor fetchLatency;
         private final Sensor recordsFetchLag;
         private final Sensor recordsFetchLead;
+        private final Sensor recordsFetchStatus;
 
         private int assignmentId = 0;
         private Set<TopicPartition> assignedPartitions = Collections.emptySet();
@@ -1794,6 +1699,10 @@ public class Fetcher<K, V> implements Closeable {
 
             this.recordsFetchLead = metrics.sensor("records-lead");
             this.recordsFetchLead.add(metrics.metricInstance(metricsRegistry.recordsLeadMin), new Min());
+
+            this.recordsFetchStatus = metrics.sensor("records-fetch-status",new MetricConfig());
+            this.recordsFetchStatus.add(Frequencies.forBooleanValues(metrics.metricInstance(metricsRegistry.fetchRequestFailurePercent),
+                    metrics.metricInstance(metricsRegistry.fetchRequestSuccessPercent)));
         }
 
         private void recordTopicFetchMetrics(String topic, int bytes, int records) {

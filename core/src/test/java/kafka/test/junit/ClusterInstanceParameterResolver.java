@@ -14,10 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test.junit;
 
 import kafka.test.ClusterInstance;
+
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.ParameterContext;
@@ -55,7 +55,8 @@ public class ClusterInstanceParameterResolver implements ParameterResolver {
             extensionContext.getRequiredTestClass();
             return true;
         } else {
-            // If we're injecting into a method, make sure it's a test method and not a lifecycle method
+            // If we're injecting into a method, make sure it's a test method and not a
+            // lifecycle method
             Executable parameterizedMethod = parameterContext.getParameter().getDeclaringExecutable();
             return isAnnotated(parameterizedMethod, TestTemplate.class);
         }
@@ -65,4 +66,5 @@ public class ClusterInstanceParameterResolver implements ParameterResolver {
     public Object resolveParameter(ParameterContext parameterContext, ExtensionContext extensionContext) {
         return clusterInstance;
     }
+
 }

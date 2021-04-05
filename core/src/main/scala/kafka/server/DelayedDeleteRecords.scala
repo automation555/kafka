@@ -48,6 +48,8 @@ class DelayedDeleteRecords(delayMs: Long,
                            responseCallback: Map[TopicPartition, DeleteRecordsResponseData.DeleteRecordsPartitionResult] => Unit)
   extends DelayedOperation(delayMs) {
 
+  import DelayedOperation._
+
   // first update the acks pending variable according to the error code
   deleteRecordsStatus.forKeyValue { (topicPartition, status) =>
     if (status.responseStatus.errorCode == Errors.NONE.code) {
@@ -83,9 +85,6 @@ class DelayedDeleteRecords(delayMs: Long,
               case None =>
                 (false, Errors.NOT_LEADER_OR_FOLLOWER, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
             }
-
-          case _: HostedPartition.Deferred =>
-            (false, Errors.UNKNOWN_TOPIC_OR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
 
           case HostedPartition.Offline =>
             (false, Errors.KAFKA_STORAGE_ERROR, DeleteRecordsResponse.INVALID_LOW_WATERMARK)

@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.clients.consumer.internals;
 
+import org.apache.kafka.clients.ApiVersion;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NodeApiVersions;
@@ -23,7 +24,6 @@ import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.clients.consumer.internals.SubscriptionState.LogTruncation;
-import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.OffsetForLeaderEpochResponseData.EpochEndOffset;
@@ -31,7 +31,7 @@ import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -44,11 +44,10 @@ import java.util.regex.Pattern;
 import static java.util.Collections.singleton;
 import static org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH;
 import static org.apache.kafka.common.requests.OffsetsForLeaderEpochResponse.UNDEFINED_EPOCH_OFFSET;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class SubscriptionStateTest {
 
@@ -256,14 +255,13 @@ public class SubscriptionStateTest {
         assertTrue(state.isFetchable(tp0));
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void invalidPositionUpdate() {
         state.subscribe(singleton(topic), rebalanceListener);
         assertTrue(state.checkAssignmentMatchedSubscription(singleton(tp0)));
         state.assignFromSubscribed(singleton(tp0));
 
-        assertThrows(IllegalStateException.class, () -> state.position(tp0,
-            new SubscriptionState.FetchPosition(0, Optional.empty(), leaderAndEpoch)));
+        state.position(tp0, new SubscriptionState.FetchPosition(0, Optional.empty(), leaderAndEpoch));
     }
 
     @Test
@@ -279,41 +277,40 @@ public class SubscriptionStateTest {
         assertFalse(state.checkAssignmentMatchedSubscription(Collections.singletonList(t1p0)));
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void cantChangePositionForNonAssignedPartition() {
-        assertThrows(IllegalStateException.class, () -> state.position(tp0,
-            new SubscriptionState.FetchPosition(1, Optional.empty(), leaderAndEpoch)));
+        state.position(tp0, new SubscriptionState.FetchPosition(1, Optional.empty(), leaderAndEpoch));
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void cantSubscribeTopicAndPattern() {
         state.subscribe(singleton(topic), rebalanceListener);
-        assertThrows(IllegalStateException.class, () -> state.subscribe(Pattern.compile(".*"), rebalanceListener));
+        state.subscribe(Pattern.compile(".*"), rebalanceListener);
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void cantSubscribePartitionAndPattern() {
         state.assignFromUser(singleton(tp0));
-        assertThrows(IllegalStateException.class, () -> state.subscribe(Pattern.compile(".*"), rebalanceListener));
+        state.subscribe(Pattern.compile(".*"), rebalanceListener);
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void cantSubscribePatternAndTopic() {
         state.subscribe(Pattern.compile(".*"), rebalanceListener);
-        assertThrows(IllegalStateException.class, () -> state.subscribe(singleton(topic), rebalanceListener));
+        state.subscribe(singleton(topic), rebalanceListener);
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void cantSubscribePatternAndPartition() {
         state.subscribe(Pattern.compile(".*"), rebalanceListener);
-        assertThrows(IllegalStateException.class, () -> state.assignFromUser(singleton(tp0)));
+        state.assignFromUser(singleton(tp0));
     }
 
     @Test
     public void patternSubscription() {
         state.subscribe(Pattern.compile(".*"), rebalanceListener);
         state.subscribeFromPattern(new HashSet<>(Arrays.asList(topic, topic1)));
-        assertEquals(2, state.subscription().size(), "Expected subscribed topics count is incorrect");
+        assertEquals("Expected subscribed topics count is incorrect", 2, state.subscription().size());
     }
 
     @Test
@@ -434,6 +431,8 @@ public class SubscriptionStateTest {
         Node broker1 = new Node(1, "localhost", 9092);
         ApiVersions apiVersions = new ApiVersions();
         apiVersions.update(broker1.idString(), NodeApiVersions.create());
+        apiVersions.update(broker1.idString(),
+                NodeApiVersions.create(Collections.singleton(new ApiVersion(ApiKeys.FETCH.id, (short) 10, (short) 10))));
 
         state.assignFromUser(Collections.singleton(tp0));
 
@@ -534,8 +533,26 @@ public class SubscriptionStateTest {
     }
 
     @Test
+    public void divergingOffsetDetectedByFetchShouldNotEnterValidationPhase() {
+        state.assignFromUser(Collections.singleton(tp0));
+
+        ApiVersions apiVersions = new ApiVersions();
+        apiVersions.update("1", NodeApiVersions.create(
+                Collections.singleton(new ApiVersion(ApiKeys.OFFSET_FOR_LEADER_EPOCH.id, (short) 0, (short) 2))));
+        state.seekUnvalidated(tp0, new SubscriptionState.FetchPosition(10L, Optional.of(5),
+                new Metadata.LeaderAndEpoch(Optional.of(new Node(1, "localhost", 9092)), Optional.of(10))));
+
+        // detecting diverging offset by fetch so we don't enter validation phase
+        assertFalse(state.maybeValidatePositionForCurrentLeader(apiVersions, tp0, new Metadata.LeaderAndEpoch(
+                Optional.of(new Node(1, "localhost", 9092)), Optional.of(10))));
+        assertTrue(state.hasValidPosition(tp0));
+    }
+
+    @Test
     public void testMaybeValidatePositionForCurrentLeader() {
-        NodeApiVersions oldApis = NodeApiVersions.create(ApiKeys.OFFSET_FOR_LEADER_EPOCH.id, (short) 0, (short) 2);
+        NodeApiVersions oldApis = NodeApiVersions.create(Arrays.asList(
+            new ApiVersion(ApiKeys.OFFSET_FOR_LEADER_EPOCH.id, (short) 0, (short) 2),
+            new ApiVersion(ApiKeys.FETCH.id, (short) 10, (short) 10)));
         ApiVersions apiVersions = new ApiVersions();
         apiVersions.update("1", oldApis);
 
@@ -551,7 +568,8 @@ public class SubscriptionStateTest {
         assertTrue(state.hasValidPosition(tp0));
 
         // New API
-        apiVersions.update("1", NodeApiVersions.create());
+        apiVersions.update("1", NodeApiVersions.create(
+                Collections.singleton(new ApiVersion(ApiKeys.FETCH.id, (short) 10, (short) 10))));
         state.seekUnvalidated(tp0, new SubscriptionState.FetchPosition(10L, Optional.of(5),
                 new Metadata.LeaderAndEpoch(Optional.of(broker1), Optional.of(10))));
 
@@ -793,20 +811,6 @@ public class SubscriptionStateTest {
         assertTrue(state.hasValidPosition(tp0));
         assertFalse(state.awaitingValidation(tp0));
         assertFalse(state.isOffsetResetNeeded(tp0));
-    }
-
-    @Test
-    public void nullPositionLagOnNoPosition() {
-        state.assignFromUser(Collections.singleton(tp0));
-
-        assertNull(state.partitionLag(tp0, IsolationLevel.READ_UNCOMMITTED));
-        assertNull(state.partitionLag(tp0, IsolationLevel.READ_COMMITTED));
-
-        state.updateHighWatermark(tp0, 1L);
-        state.updateLastStableOffset(tp0, 1L);
-
-        assertNull(state.partitionLag(tp0, IsolationLevel.READ_UNCOMMITTED));
-        assertNull(state.partitionLag(tp0, IsolationLevel.READ_COMMITTED));
     }
 
 }

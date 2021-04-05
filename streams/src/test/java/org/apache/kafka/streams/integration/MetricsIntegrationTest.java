@@ -44,16 +44,14 @@ import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.rules.TestName;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -71,18 +69,8 @@ public class MetricsIntegrationTest {
     private static final int NUM_BROKERS = 1;
     private static final int NUM_THREADS = 2;
 
+    @ClassRule
     public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(NUM_BROKERS);
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
-
     private final long timeout = 60000;
 
     // Metric group
@@ -272,7 +260,7 @@ public class MetricsIntegrationTest {
         final Topology topology = builder.build();
         kafkaStreams = new KafkaStreams(topology, streamsConfiguration);
 
-        verifyAliveStreamThreadsMetric();
+        verifyAliveStreamThreadsMetric(0);
         verifyStateMetric(State.CREATED);
         verifyTopologyDescriptionMetric(topology.describe().toString());
         verifyApplicationIdMetric();
@@ -283,7 +271,7 @@ public class MetricsIntegrationTest {
             timeout,
             () -> "Kafka Streams application did not reach state RUNNING in " + timeout + " ms");
 
-        verifyAliveStreamThreadsMetric();
+        verifyAliveStreamThreadsMetric(NUM_THREADS);
         verifyStateMetric(State.RUNNING);
     }
 
@@ -413,7 +401,7 @@ public class MetricsIntegrationTest {
         builder.stream(STREAM_INPUT, Consumed.with(Serdes.Integer(), Serdes.String()))
             .groupByKey()
             .windowedBy(TimeWindows.of(windowSize).grace(Duration.ZERO))
-            .aggregate(() -> 0L,
+            .aggregate((Integer key) -> 0L,
                 (aggKey, newValue, aggValue) -> aggValue,
                 Materialized.<Integer, Long, WindowStore<Bytes, byte[]>>as(TIME_WINDOWED_AGGREGATED_STREAM_STORE)
                     .withValueSerde(Serdes.Long())
@@ -452,7 +440,7 @@ public class MetricsIntegrationTest {
         builder.stream(STREAM_INPUT, Consumed.with(Serdes.Integer(), Serdes.String()))
             .groupByKey()
             .windowedBy(SessionWindows.with(inactivityGap).grace(Duration.ZERO))
-            .aggregate(() -> 0L,
+            .aggregate((Integer key) -> 0L,
                 (aggKey, newValue, aggValue) -> aggValue,
                 (aggKey, leftAggValue, rightAggValue) -> leftAggValue,
                 Materialized.<Integer, Long, SessionStore<Bytes, byte[]>>as(SESSION_AGGREGATED_STREAM_STORE)
@@ -475,13 +463,13 @@ public class MetricsIntegrationTest {
         checkMetricsDeregistration();
     }
 
-    private void verifyAliveStreamThreadsMetric() {
+    private void verifyAliveStreamThreadsMetric(final int numThreads) {
         final List<Metric> metricsList = new ArrayList<Metric>(kafkaStreams.metrics().values()).stream()
             .filter(m -> m.metricName().name().equals(ALIVE_STREAM_THREADS) &&
                 m.metricName().group().equals(STREAM_CLIENT_NODE_METRICS))
             .collect(Collectors.toList());
         assertThat(metricsList.size(), is(1));
-        assertThat(metricsList.get(0).metricValue(), is(NUM_THREADS));
+        assertThat(metricsList.get(0).metricValue(), is(numThreads));
     }
 
     private void verifyStateMetric(final State state) {

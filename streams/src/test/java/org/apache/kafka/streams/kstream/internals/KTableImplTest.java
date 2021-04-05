@@ -32,6 +32,7 @@ import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.Grouped;
 import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.KeyValueMapper;
+import org.apache.kafka.streams.kstream.KeyValueWithPreviousMapper;
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Produced;
 import org.apache.kafka.streams.kstream.ValueJoiner;
@@ -65,7 +66,6 @@ import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThrows;
 
 @SuppressWarnings("unchecked")
 public class KTableImplTest {
@@ -104,6 +104,8 @@ public class KTableImplTest {
         final KTable<String, String> table4 = builder.table(topic2, consumed);
         table4.toStream().process(supplier);
 
+        table2.toStream((key, oldValue, newValue) -> newValue - (oldValue != null ? oldValue : 0)).process(supplier);
+
         try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
             final TestInputTopic<String, String> inputTopic =
                 driver.createInputTopic(topic1, new StringSerializer(), new StringSerializer());
@@ -115,7 +117,7 @@ public class KTableImplTest {
             inputTopic.pipeInput("A", "06", 8L);
         }
 
-        final List<MockProcessor<String, Object>> processors = supplier.capturedProcessors(4);
+        final List<MockProcessor<String, Object>> processors = supplier.capturedProcessors(5);
         assertEquals(asList(
             new KeyValueTimestamp<>("A", "01", 5),
             new KeyValueTimestamp<>("B", "02", 100),
@@ -148,6 +150,14 @@ public class KTableImplTest {
             new KeyValueTimestamp<>("A", "05", 10),
             new KeyValueTimestamp<>("A", "06", 8)),
             processors.get(3).processed());
+        assertEquals(asList(
+            new KeyValueTimestamp<>("A", 1, 5),
+            new KeyValueTimestamp<>("B", 2, 100),
+            new KeyValueTimestamp<>("C", 3, 0),
+            new KeyValueTimestamp<>("D", 4, 0),
+            new KeyValueTimestamp<>("A", 4, 10),
+            new KeyValueTimestamp<>("A", 1, 8)),
+            processors.get(4).processed());
     }
 
     @Test
@@ -172,6 +182,8 @@ public class KTableImplTest {
         final KTable<String, String> table4 = builder.table(topic2, consumed);
         table4.toStream().process(supplier);
 
+        table2.toStream((key, oldValue, newValue) -> newValue - (oldValue != null ? oldValue : 0)).process(supplier);
+
         try (final TopologyTestDriver driver = new TopologyTestDriver(builder.build(), props)) {
             final TestInputTopic<String, String> inputTopic =
                 driver.createInputTopic(topic1, new StringSerializer(), new StringSerializer());
@@ -183,7 +195,7 @@ public class KTableImplTest {
             inputTopic.pipeInput("A", "06", 8L);
         }
 
-        final List<MockProcessor<String, Object>> processors = supplier.capturedProcessors(4);
+        final List<MockProcessor<String, Object>> processors = supplier.capturedProcessors(5);
         assertEquals(asList(
             new KeyValueTimestamp<>("A", "01", 5),
             new KeyValueTimestamp<>("B", "02", 100),
@@ -213,6 +225,14 @@ public class KTableImplTest {
             new KeyValueTimestamp<>("A", "05", 10),
             new KeyValueTimestamp<>("A", "06", 8)),
             processors.get(3).processed());
+        assertEquals(asList(
+            new KeyValueTimestamp<>("A", 1, 5),
+            new KeyValueTimestamp<>("B", 2, 100),
+            new KeyValueTimestamp<>("C", 3, 0),
+            new KeyValueTimestamp<>("D", 4, 0),
+            new KeyValueTimestamp<>("A", 4, 10),
+            new KeyValueTimestamp<>("A", 1, 8)),
+            processors.get(4).processed());
     }
 
     @Test
@@ -224,6 +244,7 @@ public class KTableImplTest {
         final KeyValueMapper<String, String, String> selector = (key, value) -> key;
         final ValueMapper<String, String> mapper = value -> value;
         final ValueJoiner<String, String, String> joiner = (value1, value2) -> value1;
+        final KeyValueWithPreviousMapper<String, String, String> mapperWithPrevious = (key, value1, value2) -> value2;
         final ValueTransformerWithKeySupplier<String, String, String> valueTransformerWithKeySupplier =
             () -> new ValueTransformerWithKey<String, String, String>() {
                 @Override
@@ -285,6 +306,11 @@ public class KTableImplTest {
         assertEquals(
             ((AbstractStream) table1.toStream(selector)).valueSerde(),
             consumedInternal.valueSerde());
+
+        assertEquals(
+            ((AbstractStream) table1.toStream(mapperWithPrevious)).keySerde(),
+            consumedInternal.keySerde());
+        assertNull(((AbstractStream) table1.toStream(mapperWithPrevious)).valueSerde());
 
         assertEquals(
             ((AbstractStream) table1.transformValues(valueTransformerWithKeySupplier)).keySerde(),
@@ -470,39 +496,44 @@ public class KTableImplTest {
         }
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullSelectorOnToStream() {
-        assertThrows(NullPointerException.class, () -> table.toStream((KeyValueMapper) null));
+        table.toStream((KeyValueMapper) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
+    public void shouldNotAllowNullSelectorOnToDiffStream() {
+        table.toStream((KeyValueWithPreviousMapper) null);
+    }
+
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullPredicateOnFilter() {
-        assertThrows(NullPointerException.class, () -> table.filter(null));
+        table.filter(null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullPredicateOnFilterNot() {
-        assertThrows(NullPointerException.class, () -> table.filterNot(null));
+        table.filterNot(null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullMapperOnMapValues() {
-        assertThrows(NullPointerException.class, () -> table.mapValues((ValueMapper) null));
+        table.mapValues((ValueMapper) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullMapperOnMapValueWithKey() {
-        assertThrows(NullPointerException.class, () -> table.mapValues((ValueMapperWithKey) null));
+        table.mapValues((ValueMapperWithKey) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullSelectorOnGroupBy() {
-        assertThrows(NullPointerException.class, () -> table.groupBy(null));
+        table.groupBy(null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnJoin() {
-        assertThrows(NullPointerException.class, () -> table.join(null, MockValueJoiner.TOSTRING_JOINER));
+        table.join(null, MockValueJoiner.TOSTRING_JOINER);
     }
 
     @Test
@@ -510,74 +541,74 @@ public class KTableImplTest {
         table.join(table, MockValueJoiner.TOSTRING_JOINER);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullJoinerJoin() {
-        assertThrows(NullPointerException.class, () -> table.join(table, null));
+        table.join(table, null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnOuterJoin() {
-        assertThrows(NullPointerException.class, () -> table.outerJoin(null, MockValueJoiner.TOSTRING_JOINER));
+        table.outerJoin(null, MockValueJoiner.TOSTRING_JOINER);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullJoinerOnOuterJoin() {
-        assertThrows(NullPointerException.class, () -> table.outerJoin(table, null));
+        table.outerJoin(table, null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullJoinerOnLeftJoin() {
-        assertThrows(NullPointerException.class, () -> table.leftJoin(table, null));
+        table.leftJoin(table, null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullOtherTableOnLeftJoin() {
-        assertThrows(NullPointerException.class, () -> table.leftJoin(null, MockValueJoiner.TOSTRING_JOINER));
+        table.leftJoin(null, MockValueJoiner.TOSTRING_JOINER);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnFilterWhenMaterializedIsNull() {
-        assertThrows(NullPointerException.class, () -> table.filter((key, value) -> false, (Materialized) null));
+        table.filter((key, value) -> false, (Materialized) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnFilterNotWhenMaterializedIsNull() {
-        assertThrows(NullPointerException.class, () -> table.filterNot((key, value) -> false, (Materialized) null));
+        table.filterNot((key, value) -> false, (Materialized) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnJoinWhenMaterializedIsNull() {
-        assertThrows(NullPointerException.class, () -> table.join(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null));
+        table.join(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnLeftJoinWhenMaterializedIsNull() {
-        assertThrows(NullPointerException.class, () -> table.leftJoin(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null));
+        table.leftJoin(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnOuterJoinWhenMaterializedIsNull() {
-        assertThrows(NullPointerException.class, () -> table.outerJoin(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null));
+        table.outerJoin(table, MockValueJoiner.TOSTRING_JOINER, (Materialized) null);
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnTransformValuesWithKeyWhenTransformerSupplierIsNull() {
-        assertThrows(NullPointerException.class, () -> table.transformValues(null));
+        table.transformValues((ValueTransformerWithKeySupplier) null);
     }
 
     @SuppressWarnings("unchecked")
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnTransformValuesWithKeyWhenMaterializedIsNull() {
         final ValueTransformerWithKeySupplier<String, String, ?> valueTransformerSupplier =
             mock(ValueTransformerWithKeySupplier.class);
-        assertThrows(NullPointerException.class, () -> table.transformValues(valueTransformerSupplier, (Materialized) null));
+        table.transformValues(valueTransformerSupplier, (Materialized) null);
     }
 
     @SuppressWarnings("unchecked")
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerOnTransformValuesWithKeyWhenStoreNamesNull() {
         final ValueTransformerWithKeySupplier<String, String, ?> valueTransformerSupplier =
             mock(ValueTransformerWithKeySupplier.class);
-        assertThrows(NullPointerException.class, () -> table.transformValues(valueTransformerSupplier, (String[]) null));
+        table.transformValues(valueTransformerSupplier, (String[]) null);
     }
 }

@@ -20,7 +20,6 @@ import org.apache.kafka.clients.consumer.CommitFailedException;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -30,6 +29,7 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.InvalidProducerEpochException;
 import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -237,7 +237,7 @@ public class StreamsProducer {
      * @throws IllegalStateException if EOS is disabled
      * @throws TaskMigratedException
      */
-    protected void commitTransaction(final Map<TopicPartition, OffsetAndMetadata> offsets,
+    void commitTransaction(final Map<TopicPartition, OffsetAndMetadata> offsets,
                            final ConsumerGroupMetadata consumerGroupMetadata) {
         if (!eosEnabled()) {
             throw new IllegalStateException(formatException("Exactly-once is not enabled"));
@@ -301,10 +301,7 @@ public class StreamsProducer {
         }
     }
 
-    /**
-     * Cf {@link KafkaProducer#partitionsFor(String)}
-     */
-    List<PartitionInfo> partitionsFor(final String topic) {
+    List<PartitionInfo> partitionsFor(final String topic) throws TimeoutException {
         return producer.partitionsFor(topic);
     }
 
@@ -320,7 +317,7 @@ public class StreamsProducer {
         producer.close();
     }
 
-    // for testing only
+    @VisibleForTesting
     Producer<byte[], byte[]> kafkaProducer() {
         return producer;
     }

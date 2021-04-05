@@ -46,8 +46,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V1;
-import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V2;
 import static org.apache.kafka.connect.runtime.distributed.WorkerCoordinator.WorkerLoad;
 import static org.hamcrest.CoreMatchers.hasItems;
 import static org.hamcrest.CoreMatchers.is;
@@ -76,7 +74,8 @@ public class IncrementalCooperativeAssignorTest {
 
     @Parameters
     public static Iterable<?> mode() {
-        return Arrays.asList(new Object[][] {{CONNECT_PROTOCOL_V1, CONNECT_PROTOCOL_V2}});
+        return Arrays.asList(new Object[][] {{ConnectProtocolCompatibility.COMPATIBLE.protocolVersion(),
+                ConnectProtocolCompatibility.SESSIONED.protocolVersion()}});
     }
 
     @Parameter
@@ -694,7 +693,7 @@ public class IncrementalCooperativeAssignorTest {
                 .collect(Collectors.toList());
         expectedAssignment.get(0).connectors().addAll(Arrays.asList("connector6", "connector9"));
         expectedAssignment.get(1).connectors().addAll(Arrays.asList("connector7", "connector10"));
-        expectedAssignment.get(2).connectors().addAll(Arrays.asList("connector8"));
+        expectedAssignment.get(2).connectors().addAll(Collections.singletonList("connector8"));
 
         List<String> newConnectors = newConnectors(6, 11);
         assignor.assignConnectors(existingAssignment, newConnectors);
@@ -714,11 +713,11 @@ public class IncrementalCooperativeAssignorTest {
 
         expectedAssignment.get(0).connectors().addAll(Arrays.asList("connector6", "connector9"));
         expectedAssignment.get(1).connectors().addAll(Arrays.asList("connector7", "connector10"));
-        expectedAssignment.get(2).connectors().addAll(Arrays.asList("connector8"));
+        expectedAssignment.get(2).connectors().addAll(Collections.singletonList("connector8"));
 
         expectedAssignment.get(0).tasks().addAll(Arrays.asList(new ConnectorTaskId("task", 6), new ConnectorTaskId("task", 9)));
         expectedAssignment.get(1).tasks().addAll(Arrays.asList(new ConnectorTaskId("task", 7), new ConnectorTaskId("task", 10)));
-        expectedAssignment.get(2).tasks().addAll(Arrays.asList(new ConnectorTaskId("task", 8)));
+        expectedAssignment.get(2).tasks().addAll(Collections.singletonList(new ConnectorTaskId("task", 8)));
 
         List<String> newConnectors = newConnectors(6, 11);
         assignor.assignConnectors(existingAssignment, newConnectors);
@@ -970,8 +969,7 @@ public class IncrementalCooperativeAssignorTest {
         assignor.handleLostAssignments(lostAssignments, newSubmissions,
                 new ArrayList<>(configuredAssignment.values()), memberConfigs);
 
-        Set<String> expectedWorkers = new HashSet<>();
-        expectedWorkers.addAll(Arrays.asList(newWorker, flakyWorker));
+        Set<String> expectedWorkers = new HashSet<>(Arrays.asList(newWorker, flakyWorker));
         assertThat("Wrong set of workers for reassignments",
                 expectedWorkers,
                 is(assignor.candidateWorkersForReassignment));
@@ -989,24 +987,18 @@ public class IncrementalCooperativeAssignorTest {
         assignor.handleLostAssignments(lostAssignments, newSubmissions,
                 new ArrayList<>(configuredAssignment.values()), memberConfigs);
 
-        // both the newWorkers would need to be considered for re assignment of connectors and tasks
-        List<String> listOfConnectorsInLast2Workers = new ArrayList<>();
-        listOfConnectorsInLast2Workers.addAll(configuredAssignment.getOrDefault(newWorker, new WorkerLoad.Builder(flakyWorker).build())
-            .connectors());
-        listOfConnectorsInLast2Workers.addAll(configuredAssignment.getOrDefault(flakyWorker, new WorkerLoad.Builder(flakyWorker).build())
-            .connectors());
-        List<ConnectorTaskId> listOfTasksInLast2Workers = new ArrayList<>();
-        listOfTasksInLast2Workers.addAll(configuredAssignment.getOrDefault(newWorker, new WorkerLoad.Builder(flakyWorker).build())
-            .tasks());
-        listOfTasksInLast2Workers.addAll(configuredAssignment.getOrDefault(flakyWorker, new WorkerLoad.Builder(flakyWorker).build())
-            .tasks());
+        // newWorker joined first, so should be picked up first as a candidate for reassignment
         assertTrue("Wrong assignment of lost connectors",
-            listOfConnectorsInLast2Workers.containsAll(lostAssignments.connectors()));
+                configuredAssignment.getOrDefault(newWorker, new WorkerLoad.Builder(flakyWorker).build())
+                        .connectors()
+                        .containsAll(lostAssignments.connectors()));
         assertTrue("Wrong assignment of lost tasks",
-            listOfTasksInLast2Workers.containsAll(lostAssignments.tasks()));
+                configuredAssignment.getOrDefault(newWorker, new WorkerLoad.Builder(flakyWorker).build())
+                        .tasks()
+                        .containsAll(lostAssignments.tasks()));
         assertThat("Wrong set of workers for reassignments",
-            Collections.emptySet(),
-            is(assignor.candidateWorkersForReassignment));
+                Collections.emptySet(),
+                is(assignor.candidateWorkersForReassignment));
         assertEquals(0, assignor.scheduledRebalance);
         assertEquals(0, assignor.delay);
     }
@@ -1355,7 +1347,7 @@ public class IncrementalCooperativeAssignorTest {
     private ExtendedAssignment newExpandableAssignment() {
         return new ExtendedAssignment(
                 protocolVersion,
-                ConnectProtocol.Assignment.NO_ERROR,
+                Assignment.NO_ERROR,
                 leader,
                 leaderUrl,
                 offset,
@@ -1405,9 +1397,7 @@ public class IncrementalCooperativeAssignorTest {
     }
 
     private void assertDelay(int expectedDelay, Map<String, ExtendedAssignment> newAssignments) {
-        newAssignments.values().stream()
-                .forEach(a -> assertEquals(
-                        "Wrong rebalance delay in " + a, expectedDelay, a.delay()));
+        newAssignments.values().forEach(a -> assertEquals("Wrong rebalance delay in " + a, expectedDelay, a.delay()));
     }
 
     private void assertNoReassignments(Map<String, ExtendedWorkerState> existingAssignments,

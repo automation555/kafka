@@ -27,6 +27,7 @@ import org.apache.kafka.clients.consumer.InvalidOffsetException;
 import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
@@ -162,7 +163,7 @@ public class StoreChangelogReader implements ChangelogReader {
                 " (currentOffset " + currentOffset + ", endOffset " + restoreEndOffset + ")";
         }
 
-        // for testing only below
+        @VisibleForTesting
         ChangelogState state() {
             return changelogState;
         }
@@ -442,9 +443,12 @@ public class StoreChangelogReader implements ChangelogReader {
                     "truncated or compacted on the broker, marking the corresponding tasks as corrupted and re-initializing" +
                     " it later.", e);
 
-                final Set<TaskId> corruptedTasks = new HashSet<>();
-                e.partitions().forEach(partition -> corruptedTasks.add(changelogs.get(partition).stateManager.taskId()));
-                throw new TaskCorruptedException(corruptedTasks, e);
+                final Map<TaskId, Collection<TopicPartition>> taskWithCorruptedChangelogs = new HashMap<>();
+                for (final TopicPartition partition : e.partitions()) {
+                    final TaskId taskId = changelogs.get(partition).stateManager.taskId();
+                    taskWithCorruptedChangelogs.computeIfAbsent(taskId, k -> new HashSet<>()).add(partition);
+                }
+                throw new TaskCorruptedException(taskWithCorruptedChangelogs, e);
             } catch (final KafkaException e) {
                 throw new StreamsException("Restore consumer get unexpected error polling records.", e);
             }
@@ -945,7 +949,7 @@ public class StoreChangelogReader implements ChangelogReader {
         return "StoreChangelogReader: " + changelogs + "\n";
     }
 
-    // for testing only
+    @VisibleForTesting
     ChangelogMetadata changelogMetadata(final TopicPartition partition) {
         return changelogs.get(partition);
     }

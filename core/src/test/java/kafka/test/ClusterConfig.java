@@ -14,10 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test;
 
 import kafka.test.annotation.Type;
+
 import org.apache.kafka.common.security.auth.SecurityProtocol;
 
 import java.io.File;
@@ -125,7 +125,8 @@ public class ClusterConfig {
     }
 
     public ClusterConfig copyOf() {
-        ClusterConfig copy = new ClusterConfig(type, brokers, controllers, name, autoStart, securityProtocol, listenerName, trustStoreFile);
+        ClusterConfig copy = new ClusterConfig(type, brokers, controllers, name, autoStart, securityProtocol,
+            listenerName, trustStoreFile);
         copy.serverProperties.putAll(serverProperties);
         copy.producerProperties.putAll(producerProperties);
         copy.consumerProperties.putAll(consumerProperties);
@@ -138,7 +139,8 @@ public class ClusterConfig {
         return new Builder(Type.ZK, 1, 1, true, SecurityProtocol.PLAINTEXT);
     }
 
-    public static Builder clusterBuilder(Type type, int brokers, int controllers, boolean autoStart, SecurityProtocol securityProtocol) {
+    public static Builder clusterBuilder(Type type, int brokers, int controllers, boolean autoStart,
+                                         SecurityProtocol securityProtocol) {
         return new Builder(type, brokers, controllers, autoStart, securityProtocol);
     }
 
@@ -201,7 +203,10 @@ public class ClusterConfig {
         }
 
         public ClusterConfig build() {
-            return new ClusterConfig(type, brokers, controllers, name, autoStart, securityProtocol, listenerName, trustStoreFile);
+            return new ClusterConfig(type, brokers, controllers, name, autoStart, securityProtocol,
+                listenerName, trustStoreFile);
         }
+
     }
+
 }

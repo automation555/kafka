@@ -135,7 +135,7 @@ public class ProcessorStateManagerTest {
                 put(StreamsConfig.STATE_DIR_CONFIG, baseDir.getPath());
             }
         }), new MockTime(), true);
-        checkpointFile = new File(stateDirectory.getOrCreateDirectoryForTask(taskId), CHECKPOINT_FILE_NAME);
+        checkpointFile = new File(stateDirectory.directoryForTask(taskId), CHECKPOINT_FILE_NAME);
         checkpoint = new OffsetCheckpoint(checkpointFile);
 
         expect(storeMetadata.changelogPartition()).andReturn(persistentStorePartition).anyTimes();
@@ -163,7 +163,7 @@ public class ProcessorStateManagerTest {
     @Test
     public void shouldReturnBaseDir() {
         final ProcessorStateManager stateMgr = getStateManager(Task.TaskType.ACTIVE);
-        assertEquals(stateDirectory.getOrCreateDirectoryForTask(taskId), stateMgr.baseDir());
+        assertEquals(stateDirectory.directoryForTask(taskId), stateMgr.baseDir());
     }
 
     // except this test for all other tests active / standby state managers acts the same, so
@@ -771,14 +771,12 @@ public class ProcessorStateManagerTest {
             stateMgr.updateChangelogOffsets(singletonMap(persistentStorePartition, 10L));
             stateMgr.checkpoint();
 
+
             boolean foundExpectedLogMessage = false;
             for (final LogCaptureAppender.Event event : appender.getEvents()) {
                 if ("WARN".equals(event.getLevel())
                     && event.getMessage().startsWith("process-state-manager-test Failed to write offset checkpoint file to [")
-                    && event.getMessage().endsWith(".checkpoint]." +
-                        " This may occur if OS cleaned the state.dir in case when it located in ${java.io.tmpdir} directory." +
-                        " This may also occur due to running multiple instances on the same machine using the same state dir." +
-                        " Changing the location of state.dir may resolve the problem.")
+                    && event.getMessage().endsWith(".checkpoint]")
                     && event.getThrowableInfo().get().startsWith("java.io.FileNotFoundException: ")) {
 
                     foundExpectedLogMessage = true;
@@ -904,8 +902,8 @@ public class ProcessorStateManagerTest {
                 () -> stateMgr.initializeStoreOffsetsFromCheckpoint(false));
 
             assertEquals(
-                Collections.singleton(taskId),
-                exception.corruptedTasks()
+                Collections.singletonMap(taskId, stateMgr.changelogPartitions()),
+                exception.corruptedTaskWithChangelogs()
             );
         } finally {
             stateMgr.close();

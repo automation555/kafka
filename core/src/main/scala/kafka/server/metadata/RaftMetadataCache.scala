@@ -197,6 +197,10 @@ class RaftMetadataCache(val brokerId: Int) extends MetadataCache with Logging {
     }.toSet
   }
 
+  override def getTopicId(topicName: String): Uuid = _currentImage.topicNameToId(topicName).getOrElse(Uuid.ZERO_UUID)
+
+  override def getTopicName(topicId: Uuid): Option[String] = _currentImage.topicIdToName(topicId)
+
   override def getNonExistingTopics(topics: Set[String]): Set[String] = {
     topics.diff(_currentImage.partitions.allTopicNames())
   }

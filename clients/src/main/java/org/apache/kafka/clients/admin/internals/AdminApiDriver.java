@@ -146,11 +146,8 @@ public class AdminApiDriver<K, V> {
 
     OptionalInt keyToBrokerId(K key) {
         Optional<FulfillmentScope> scope = fulfillmentMap.getKey(key);
-        if (scope.isPresent()) {
-            return OptionalInt.of(scope.get().destinationBrokerId);
-        } else {
-            return OptionalInt.empty();
-        }
+        return scope.map(fulfillmentScope ->
+            OptionalInt.of(fulfillmentScope.destinationBrokerId)).orElseGet(OptionalInt::empty);
     }
 
     /**

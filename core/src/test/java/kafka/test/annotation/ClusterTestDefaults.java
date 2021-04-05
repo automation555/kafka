@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test.annotation;
 
 import kafka.test.junit.ClusterTestExtensions;
@@ -39,4 +38,5 @@ public @interface ClusterTestDefaults {
     int brokers() default 1;
     int controllers() default 1;
     boolean autoStart() default true;
+
 }

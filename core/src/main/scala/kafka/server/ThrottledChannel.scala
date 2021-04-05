@@ -19,35 +19,37 @@ package kafka.server
 
 import java.util.concurrent.{Delayed, TimeUnit}
 
+import kafka.network
+import kafka.network.RequestChannel
+import kafka.network.RequestChannel.Response
 import kafka.utils.Logging
 import org.apache.kafka.common.utils.Time
 
-trait ThrottleCallback {
-  def startThrottling(): Unit
-  def endThrottling(): Unit
+object ThrottledChannel extends Logging {
+
 }
 
 /**
   * Represents a request whose response has been delayed.
+  * @param request The request that has been delayed
   * @param time Time instance to use
   * @param throttleTimeMs Delay associated with this request
-  * @param callback Callback for channel throttling
+  * @param channelThrottlingCallback Callback for channel throttling
   */
-class ThrottledChannel(
-  val time: Time,
-  val throttleTimeMs: Int,
-  val callback: ThrottleCallback
-) extends Delayed with Logging {
+class ThrottledChannel(val request: RequestChannel.Request, val time: Time, val throttleTimeMs: Int,
+                       channelThrottlingCallback: Response => Unit)
+  extends Delayed {
 
+  import ThrottledChannel._
   private val endTimeNanos = time.nanoseconds() + TimeUnit.MILLISECONDS.toNanos(throttleTimeMs)
 
   // Notify the socket server that throttling has started for this channel.
-  callback.startThrottling()
+  channelThrottlingCallback(new RequestChannel.StartThrottlingResponse(request))
 
   // Notify the socket server that throttling has been done for this channel.
   def notifyThrottlingDone(): Unit = {
     trace(s"Channel throttled for: $throttleTimeMs ms")
-    callback.endThrottling()
+    channelThrottlingCallback(new network.RequestChannel.EndThrottlingResponse(request))
   }
 
   override def getDelay(unit: TimeUnit): Long = {

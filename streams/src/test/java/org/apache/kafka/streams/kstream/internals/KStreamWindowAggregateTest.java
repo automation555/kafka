@@ -46,7 +46,6 @@ import org.apache.kafka.test.StreamsTestUtils;
 import org.hamcrest.Matcher;
 import org.junit.Test;
 
-import java.time.Duration;
 import java.util.List;
 import java.util.Properties;
 
@@ -318,21 +317,18 @@ public class KStreamWindowAggregateTest {
         shouldLogAndMeterWhenSkippingExpiredWindow(StreamsConfig.METRICS_0100_TO_24);
     }
 
+    @Deprecated // testing deprecated functionality (behavior of until)
     private void shouldLogAndMeterWhenSkippingExpiredWindow(final String builtInMetricsVersion) {
         final StreamsBuilder builder = new StreamsBuilder();
         final String topic = "topic";
 
         final KStream<String, String> stream1 = builder.stream(topic, Consumed.with(Serdes.String(), Serdes.String()));
         stream1.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
-               .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)).grace(ofMillis(90)))
+               .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(5)).until(100))
                .aggregate(
-                   () -> "",
+                   (String key) -> "",
                    MockAggregator.toStringInstance("+"),
-                   Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized")
-                       .withValueSerde(Serdes.String())
-                       .withCachingDisabled()
-                       .withLoggingDisabled()
-                       .withRetention(Duration.ofMillis(100))
+                   Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized").withValueSerde(Serdes.String()).withCachingDisabled().withLoggingDisabled()
                )
                .toStream()
                .map((key, value) -> new KeyValue<>(key.toString(), value))
@@ -401,7 +397,7 @@ public class KStreamWindowAggregateTest {
         stream1.groupByKey(Grouped.with(Serdes.String(), Serdes.String()))
                .windowedBy(TimeWindows.of(ofMillis(10)).advanceBy(ofMillis(10)).grace(ofMillis(90L)))
                .aggregate(
-                   () -> "",
+                   (String key) -> "",
                    MockAggregator.toStringInstance("+"),
                    Materialized.<String, String, WindowStore<Bytes, byte[]>>as("topic1-Canonicalized").withValueSerde(Serdes.String()).withCachingDisabled().withLoggingDisabled()
                )

@@ -145,7 +145,6 @@ public class MeteredTimestampedKeyValueStoreTest {
             .andStubReturn(new StreamsMetricsImpl(metrics, "test", builtInMetricsVersion, mockTime));
         expect(context.taskId()).andStubReturn(taskId);
         expect(context.changelogFor(STORE_NAME)).andStubReturn(CHANGELOG_TOPIC);
-        expectSerdes();
         expect(inner.name()).andStubReturn(STORE_NAME);
         storeLevelGroup =
             StreamsConfig.METRICS_0100_TO_24.equals(builtInMetricsVersion) ? STORE_LEVEL_GROUP_FROM_0100_TO_24 : STORE_LEVEL_GROUP;
@@ -157,12 +156,6 @@ public class MeteredTimestampedKeyValueStoreTest {
             mkEntry(STORE_TYPE + "-state-id", STORE_NAME)
         );
 
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private void expectSerdes() {
-        expect(context.keySerde()).andStubReturn((Serde) Serdes.String());
-        expect(context.valueSerde()).andStubReturn((Serde) Serdes.Long());
     }
 
     private void init() {
@@ -466,6 +459,8 @@ public class MeteredTimestampedKeyValueStoreTest {
     @Test
     @SuppressWarnings("unchecked")
     public void shouldNotThrowExceptionIfSerdesCorrectlySetFromProcessorContext() {
+        expect(context.keySerde()).andStubReturn((Serde) Serdes.String());
+        expect(context.valueSerde()).andStubReturn((Serde) Serdes.Long());
         final MeteredTimestampedKeyValueStore<String, Long> store = new MeteredTimestampedKeyValueStore<>(
             inner,
             STORE_TYPE,
@@ -480,13 +475,9 @@ public class MeteredTimestampedKeyValueStoreTest {
             store.put("key", ValueAndTimestamp.make(42L, 60000));
         } catch (final StreamsException exception) {
             if (exception.getCause() instanceof ClassCastException) {
-                throw new AssertionError(
-                    "Serdes are not correctly set from processor context.",
-                    exception
-                );
-            } else {
-                throw exception;
+                fail("Serdes are not correctly set from processor context.");
             }
+            throw exception;
         }
     }
 

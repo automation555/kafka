@@ -18,6 +18,7 @@ package kafka.server.epoch.util
 
 import java.net.SocketTimeoutException
 import java.util
+import java.util.Collections
 import kafka.cluster.BrokerEndPoint
 import kafka.server.BlockingSend
 import org.apache.kafka.clients.{ClientRequest, ClientResponse, MockClient, NetworkClientUtils}
@@ -27,7 +28,7 @@ import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.AbstractRequest.Builder
 import org.apache.kafka.common.requests.{AbstractRequest, FetchResponse, OffsetsForLeaderEpochResponse, FetchMetadata => JFetchMetadata}
 import org.apache.kafka.common.utils.{SystemTime, Time}
-import org.apache.kafka.common.{Node, TopicPartition}
+import org.apache.kafka.common.{Node, TopicPartition, Uuid}
 
 import scala.collection.Map
 
@@ -51,6 +52,7 @@ class ReplicaFetcherMockBlockingSend(offsets: java.util.Map[TopicPartition, Epoc
   var callback: Option[() => Unit] = None
   var currentOffsets: util.Map[TopicPartition, EpochEndOffset] = offsets
   var fetchPartitionData: Map[TopicPartition, FetchResponseData.PartitionData] = Map.empty
+  var topicIds: Map[String, Uuid] = Map.empty
   private val sourceNode = new Node(sourceBroker.id, sourceBroker.host, sourceBroker.port)
 
   def setEpochRequestCallback(postEpochFunction: () => Unit): Unit = {
@@ -63,6 +65,10 @@ class ReplicaFetcherMockBlockingSend(offsets: java.util.Map[TopicPartition, Epoc
 
   def setFetchPartitionDataForNextResponse(partitionData: Map[TopicPartition, FetchResponseData.PartitionData]): Unit = {
     fetchPartitionData = partitionData
+  }
+
+  def setIdsForNextResponse(topicIds: Map[String, Uuid]): Unit = {
+    this.topicIds = topicIds
   }
 
   override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse = {
@@ -96,10 +102,13 @@ class ReplicaFetcherMockBlockingSend(offsets: java.util.Map[TopicPartition, Epoc
       case ApiKeys.FETCH =>
         fetchCount += 1
         val partitionData = new util.LinkedHashMap[TopicPartition, FetchResponseData.PartitionData]
+        val topicIdsForRequest = new util.HashMap[String, Uuid]()
         fetchPartitionData.foreach { case (tp, data) => partitionData.put(tp, data) }
+        topicIds.foreach { case (name, id) => topicIdsForRequest.put(name, id)}
         fetchPartitionData = Map.empty
-        FetchResponse.of(Errors.NONE, 0,
-          if (partitionData.isEmpty) JFetchMetadata.INVALID_SESSION_ID else 1, partitionData)
+        topicIds = Map.empty
+        FetchResponse.prepareResponse(Errors.NONE, partitionData, Collections.emptyList(), topicIdsForRequest, 0,
+          if (partitionData.isEmpty) JFetchMetadata.INVALID_SESSION_ID else 1)
 
       case _ =>
         throw new UnsupportedOperationException

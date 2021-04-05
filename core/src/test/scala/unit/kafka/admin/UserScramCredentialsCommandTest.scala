@@ -21,10 +21,12 @@ import java.nio.charset.StandardCharsets
 
 import kafka.server.BaseRequestTest
 import kafka.utils.Exit
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.junit.Assert._
+import org.junit.Test
 
 class UserScramCredentialsCommandTest extends BaseRequestTest {
+  import kafka.api.IntegrationTestHarness._
+
   override def brokerCount = 1
   var exitStatus: Option[Int] = None
   var exitMessage: Option[String] = None
@@ -123,15 +125,15 @@ class UserScramCredentialsCommandTest extends BaseRequestTest {
   def testAlterWithEmptyPassword(): Unit = {
     val user1 = "user1"
     val result = runConfigCommandViaBroker(Array("--user", user1, "--alter", "--add-config", "SCRAM-SHA-256=[iterations=4096,password=]"))
-    assertTrue(result.exitStatus.isDefined, "Expected System.exit() to be called with an empty password")
-    assertEquals(1, result.exitStatus.get, "Expected empty password to cause failure with exit status=1")
+    assertTrue("Expected System.exit() to be called with an empty password", result.exitStatus.isDefined)
+    assertEquals("Expected empty password to cause failure with exit status=1", 1, result.exitStatus.get)
   }
 
   @Test
   def testDescribeUnknownUser(): Unit = {
     val unknownUser = "unknownUser"
     val result = runConfigCommandViaBroker(Array("--user", unknownUser, "--describe"))
-    assertTrue(result.exitStatus.isEmpty, "Expected System.exit() to not be called with an unknown user")
+    assertTrue("Expected System.exit() to not be called with an unknown user", result.exitStatus.isEmpty)
     assertEquals("", result.stdout)
   }
 }

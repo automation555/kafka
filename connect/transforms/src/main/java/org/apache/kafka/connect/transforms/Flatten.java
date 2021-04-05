@@ -106,7 +106,7 @@ public abstract class Flatten<R extends ConnectRecord<R>> implements Transformat
             Object value = entry.getValue();
             if (value == null) {
                 newRecord.put(fieldName(fieldNamePrefix, entry.getKey()), null);
-                continue;
+                return;
             }
 
             Schema.Type inferredType = ConnectSchema.schemaType(value.getClass());
@@ -124,6 +124,7 @@ public abstract class Flatten<R extends ConnectRecord<R>> implements Transformat
                 case BOOLEAN:
                 case STRING:
                 case BYTES:
+                case ARRAY:
                     newRecord.put(fieldName(fieldNamePrefix, entry.getKey()), entry.getValue());
                     break;
                 case MAP:
@@ -189,6 +190,7 @@ public abstract class Flatten<R extends ConnectRecord<R>> implements Transformat
                 case BOOLEAN:
                 case STRING:
                 case BYTES:
+                case ARRAY:
                     newSchema.field(fieldName, convertFieldSchema(field.schema(), fieldIsOptional, fieldDefaultValue));
                     break;
                 case STRUCT:
@@ -237,6 +239,7 @@ public abstract class Flatten<R extends ConnectRecord<R>> implements Transformat
                 case BOOLEAN:
                 case STRING:
                 case BYTES:
+                case ARRAY:
                     newRecord.put(fieldName, record.get(field));
                     break;
                 case STRUCT:

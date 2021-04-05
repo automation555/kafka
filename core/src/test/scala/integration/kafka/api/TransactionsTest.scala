@@ -22,24 +22,29 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import java.util.{Optional, Properties}
-
 import kafka.integration.KafkaServerTestHarness
 import kafka.server.KafkaConfig
-import kafka.utils.TestUtils
+import kafka.utils.{Logging, TestUtils}
 import kafka.utils.TestUtils.consumeRecords
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer, OffsetAndMetadata}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
 import org.apache.kafka.common.errors.{InvalidProducerEpochException, ProducerFencedException, TimeoutException}
 import org.apache.kafka.common.{KafkaException, TopicPartition}
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
 
 import scala.jdk.CollectionConverters._
 import scala.collection.Seq
 import scala.collection.mutable.Buffer
 import scala.concurrent.ExecutionException
 
+object TransactionsTest extends Logging {
+
+}
+
 class TransactionsTest extends KafkaServerTestHarness {
+  import TransactionsTest._
+
   val numServers = 3
   val transactionalProducerCount = 2
   val transactionalConsumerCount = 1
@@ -57,7 +62,7 @@ class TransactionsTest extends KafkaServerTestHarness {
     TestUtils.createBrokerConfigs(numServers, zkConnect).map(KafkaConfig.fromProps(_, serverProps()))
   }
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     val topicConfig = new Properties()
@@ -73,7 +78,7 @@ class TransactionsTest extends KafkaServerTestHarness {
       createReadUncommittedConsumer("non-transactional-group")
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     transactionalProducers.foreach(_.close())
     transactionalConsumers.foreach(_.close())
@@ -301,8 +306,8 @@ class TransactionsTest extends KafkaServerTestHarness {
       TestUtils.assertCommittedAndGetValue(record).toInt
     }
     val valueSet = valueSeq.toSet
-    assertEquals(numSeedMessages, valueSeq.size, s"Expected $numSeedMessages values in $topic2.")
-    assertEquals(valueSeq.size, valueSet.size, s"Expected ${valueSeq.size} unique messages in $topic2.")
+    assertEquals(s"Expected $numSeedMessages values in $topic2.", numSeedMessages, valueSeq.size)
+    assertEquals(s"Expected ${valueSeq.size} unique messages in $topic2.", valueSeq.size, valueSet.size)
   }
 
   @Test
@@ -324,7 +329,15 @@ class TransactionsTest extends KafkaServerTestHarness {
     producer2.send(TestUtils.producerRecordWithExpectedTransactionStatus(topic1, null, "2", "4", willBeCommitted = true))
     producer2.send(TestUtils.producerRecordWithExpectedTransactionStatus(topic2, null, "2", "4", willBeCommitted = true))
 
-    assertThrows(classOf[ProducerFencedException], () => producer1.commitTransaction())
+    try {
+      producer1.commitTransaction()
+      fail("Should not be able to commit transactions from a fenced producer.")
+    } catch {
+      case _: ProducerFencedException =>
+        // good!
+      case e: Exception =>
+        throw new AssertionError("Got an unexpected exception from a fenced producer.", e)
+    }
 
     producer2.commitTransaction()  // ok
 
@@ -354,8 +367,16 @@ class TransactionsTest extends KafkaServerTestHarness {
     producer2.send(TestUtils.producerRecordWithExpectedTransactionStatus(topic1, null, "2", "4", willBeCommitted = true))
     producer2.send(TestUtils.producerRecordWithExpectedTransactionStatus(topic2, null, "2", "4", willBeCommitted = true))
 
-    assertThrows(classOf[ProducerFencedException], () => producer1.sendOffsetsToTransaction(Map(new TopicPartition("foobartopic", 0)
-      -> new OffsetAndMetadata(110L)).asJava, "foobarGroup"))
+    try {
+      producer1.sendOffsetsToTransaction(Map(new TopicPartition("foobartopic", 0) -> new OffsetAndMetadata(110L)).asJava,
+        "foobarGroup")
+      fail("Should not be able to send offsets from a fenced producer.")
+    } catch {
+      case _: ProducerFencedException =>
+        // good!
+      case e: Exception =>
+        throw new AssertionError("Got an unexpected exception from a fenced producer.", e)
+    }
 
     producer2.commitTransaction()  // ok
 

@@ -17,6 +17,7 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.message.FetchResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.ByteBufferAccessor;
@@ -27,12 +28,15 @@ import org.apache.kafka.common.record.Records;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.apache.kafka.common.requests.FetchMetadata.INVALID_SESSION_ID;
 
@@ -71,6 +75,12 @@ public class FetchResponse extends AbstractResponse {
         return data;
     }
 
+    /**
+     * From version 3 or later, the authorized and existing entries in `FetchRequest.fetchData` should be in the same order in `responseData`.
+     * Version 13 introduces topic IDs which mean there may be unresolved partitions. Unresolved partitions are partitions
+     * whose topic IDs could not be found on the server. resolvedPartitionData and unresolvedPartitionData should be disjoint sets.
+     * Thus, a partition in the response will never appear in both resolvedPartitionData and unresolvedPartitionData.
+     */
     public FetchResponse(FetchResponseData fetchResponseData) {
         super(ApiKeys.FETCH);
         this.data = fetchResponseData;
@@ -80,15 +90,31 @@ public class FetchResponse extends AbstractResponse {
         return Errors.forCode(data.errorCode());
     }
 
-    public LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData() {
+    public LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData(Map<Uuid, String> topicNames, short version) {
+        if (version < 13)
+            return toResponseDataMap();
+        return toResponseDataMap(topicNames);
+
+    }
+
+    // TODO: Should be replaced or cleaned up. The idea is that in KafkaApis we need to reconstruct responseData even though we could have just passed in and out a map.
+    //  With topic IDs, recreating the map takes a little more time since we have to get the topic name from the topic ID to name map.
+    //  The refactor somewhat helps in KafkaApis, but we have to recompute the map instead of just returning it.
+    //  Can  be replaced when we remove toMessage and change sizeOf.
+    // Used when we can guarantee responseData is populated with all possible partitions
+    // This occurs when we have a response version < 13 or we built the FetchResponse with
+    // responseDataMap as a parameter and we have the same topic IDs available.
+    public LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> resolvedResponseData() {
         if (responseData == null) {
             synchronized (this) {
                 if (responseData == null) {
                     responseData = new LinkedHashMap<>();
-                    data.responses().forEach(topicResponse ->
+                    data.responses().forEach(topicResponse -> {
+                        if (!topicResponse.topic().equals("")) {
                             topicResponse.partitions().forEach(partition ->
-                                    responseData.put(new TopicPartition(topicResponse.topic(), partition.partitionIndex()), partition))
-                    );
+                                    responseData.put(new TopicPartition(topicResponse.topic(), partition.partitionIndex()), partition));
+                        }
+                    });
                 }
             }
         }
@@ -119,6 +145,47 @@ public class FetchResponse extends AbstractResponse {
         return new FetchResponse(new FetchResponseData(new ByteBufferAccessor(buffer), version));
     }
 
+    // Used for Fetch versions < 13.
+    private LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> toResponseDataMap() {
+        if (responseData == null) {
+            synchronized (this) {
+                if (responseData == null) {
+                    responseData = new LinkedHashMap<>();
+                    data.responses().forEach(topicResponse ->
+                            topicResponse.partitions().forEach(partition ->
+                                    responseData.put(new TopicPartition(topicResponse.topic(), partition.partitionIndex()), partition))
+                    );
+                }
+            }
+        }
+        return responseData;
+    }
+
+    // Used for Fetch version 13 and greater.
+    private LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> toResponseDataMap(Map<Uuid, String> topicIdToNameMap) {
+        if (responseData == null) {
+            synchronized (this) {
+                if (responseData == null) {
+                    responseData = new LinkedHashMap<>();
+                    data.responses().forEach(topicResponse -> {
+                        String name = topicIdToNameMap.get(topicResponse.topicId());
+                        if (name != null) {
+                            topicResponse.partitions().forEach(partition ->
+                                    responseData.put(new TopicPartition(name, partition.partitionIndex()), partition));
+                        }
+                    });
+                }
+            }
+        }
+        return responseData;
+    }
+
+    // Fetch versions 13 and above should have topic IDs for all topics.
+    // Fetch versions < 13 should return the empty set.
+    public Set<Uuid> topicIds() {
+        return data.responses().stream().map(resp -> resp.topicId()).filter(id -> !id.equals(Uuid.ZERO_UUID)).collect(Collectors.toSet());
+    }
+
     /**
      * Convenience method to find the size of a response.
      *
@@ -127,10 +194,13 @@ public class FetchResponse extends AbstractResponse {
      * @return              The response size in bytes.
      */
     public static int sizeOf(short version,
-                             Iterator<Map.Entry<TopicPartition, FetchResponseData.PartitionData>> partIterator) {
+                             Iterator<Map.Entry<TopicPartition,
+                             FetchResponseData.PartitionData>> partIterator,
+                             List<FetchResponseData.FetchableTopicResponse> unresolvedTopics,
+                             Map<String, Uuid> topicIds) {
         // Since the throttleTimeMs and metadata field sizes are constant and fixed, we can
         // use arbitrary values here without affecting the result.
-        FetchResponseData data = toMessage(Errors.NONE, 0, INVALID_SESSION_ID, partIterator);
+        FetchResponseData data = toMessage(Errors.NONE, 0, INVALID_SESSION_ID, partIterator, unresolvedTopics, topicIds);
         ObjectSerializationCache cache = new ObjectSerializationCache();
         return 4 + data.size(cache, version);
     }
@@ -138,6 +208,20 @@ public class FetchResponse extends AbstractResponse {
     @Override
     public boolean shouldClientThrottle(short version) {
         return version >= 8;
+    }
+
+    // TODO: After refactor, the use of this method changed.
+    //  Since we removed the constructor with these fields we can only easily build a response with topic IDs using this method.
+    //  This method has the same use case of the `of` method. When that is fully removed, this should be removed too.
+    //  We can add the unresolvedTopics (List<FetchResponseData.FetchableTopicResponse>) to the end of the other
+    //  List<FetchResponseData.FetchableTopicResponse> in the response data.
+    public static FetchResponse prepareResponse(Errors error,
+                                                LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData,
+                                                List<FetchResponseData.FetchableTopicResponse> unresolvedTopics,
+                                                Map<String, Uuid> topicIds,
+                                                int throttleTimeMs,
+                                                int sessionId) {
+        return new FetchResponse(toMessage(error, throttleTimeMs,  sessionId, responseData.entrySet().iterator(), unresolvedTopics, topicIds));
     }
 
     public static Optional<FetchResponseData.EpochEndOffset> divergingEpoch(FetchResponseData.PartitionData partitionResponse) {
@@ -189,17 +273,20 @@ public class FetchResponse extends AbstractResponse {
         return partition.records() == null ? 0 : partition.records().sizeInBytes();
     }
 
+    // TODO: likely remove
     public static FetchResponse of(Errors error,
                                    int throttleTimeMs,
                                    int sessionId,
                                    LinkedHashMap<TopicPartition, FetchResponseData.PartitionData> responseData) {
-        return new FetchResponse(toMessage(error, throttleTimeMs, sessionId, responseData.entrySet().iterator()));
+        return new FetchResponse(toMessage(error, throttleTimeMs, sessionId, responseData.entrySet().iterator(), Collections.emptyList(), Collections.emptyMap()));
     }
 
     private static FetchResponseData toMessage(Errors error,
                                                int throttleTimeMs,
                                                int sessionId,
-                                               Iterator<Map.Entry<TopicPartition, FetchResponseData.PartitionData>> partIterator) {
+                                               Iterator<Map.Entry<TopicPartition, FetchResponseData.PartitionData>> partIterator,
+                                               List<FetchResponseData.FetchableTopicResponse> unresolvedTopics,
+                                               Map<String, Uuid> topicIds) {
         List<FetchResponseData.FetchableTopicResponse> topicResponseList = new ArrayList<>();
         partIterator.forEachRemaining(entry -> {
             FetchResponseData.PartitionData partitionData = entry.getValue();
@@ -216,9 +303,13 @@ public class FetchResponse extends AbstractResponse {
                 partitionResponses.add(partitionData);
                 topicResponseList.add(new FetchResponseData.FetchableTopicResponse()
                     .setTopic(entry.getKey().topic())
+                    .setTopicId(topicIds.getOrDefault(entry.getKey().topic(), Uuid.ZERO_UUID))
                     .setPartitions(partitionResponses));
             }
         });
+
+        // Unresolved topics will be empty unless topic IDs are supported and there are topic ID errors.
+        topicResponseList.addAll(unresolvedTopics);
 
         return new FetchResponseData()
             .setThrottleTimeMs(throttleTimeMs)

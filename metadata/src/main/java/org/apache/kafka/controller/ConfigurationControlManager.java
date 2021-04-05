@@ -83,7 +83,7 @@ public class ConfigurationControlManager {
                 outputRecords,
                 outputResults);
         }
-        return ControllerResult.atomicOf(outputRecords, outputResults);
+        return new ControllerResult<>(outputRecords, outputResults);
     }
 
     private void incrementalAlterConfigResource(ConfigResource configResource,
@@ -171,7 +171,7 @@ public class ConfigurationControlManager {
                 outputRecords,
                 outputResults);
         }
-        return ControllerResult.atomicOf(outputRecords, outputResults);
+        return new ControllerResult<>(outputRecords, outputResults);
     }
 
     private void legacyAlterConfigResource(ConfigResource configResource,
@@ -259,6 +259,9 @@ public class ConfigurationControlManager {
                 }
                 return ApiError.NONE;
             case TOPIC:
+                if (configResource.name().isEmpty()) {
+                    return new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION, "Default configs are not supported for topic entities.");
+                }
                 try {
                     Topic.validate(configResource.name());
                 } catch (Exception e) {
@@ -303,7 +306,7 @@ public class ConfigurationControlManager {
      *
      * @param record            The ConfigRecord.
      */
-    public void replay(ConfigRecord record) {
+    void replay(ConfigRecord record) {
         Type type = Type.forId(record.resourceType());
         ConfigResource configResource = new ConfigResource(type, record.resourceName());
         TimelineHashMap<String, String> configs = configData.get(configResource);
@@ -363,9 +366,5 @@ public class ConfigurationControlManager {
             results.put(resource, new ResultOrError<>(foundConfigs));
         }
         return results;
-    }
-
-    void deleteTopicConfigs(String name) {
-        configData.remove(new ConfigResource(Type.TOPIC, name));
     }
 }

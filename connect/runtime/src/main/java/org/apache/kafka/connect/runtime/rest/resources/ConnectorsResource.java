@@ -21,6 +21,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import javax.ws.rs.core.HttpHeaders;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.connect.errors.NotFoundException;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
 import org.apache.kafka.connect.runtime.Herder;
@@ -100,7 +101,7 @@ public class ConnectorsResource {
         isTopicTrackingResetDisabled = !config.getBoolean(TOPIC_TRACKING_ALLOW_RESET_CONFIG);
     }
 
-    // For testing purposes only
+    @VisibleForTesting
     public static void setRequestTimeout(long requestTimeoutMs) {
         ConnectorsResource.requestTimeoutMs = requestTimeoutMs;
     }
@@ -186,17 +187,6 @@ public class ConnectorsResource {
         FutureCallback<Map<String, String>> cb = new FutureCallback<>();
         herder.connectorConfig(connector, cb);
         return completeOrForwardRequest(cb, "/connectors/" + connector + "/config", "GET", headers, null, forward);
-    }
-
-    @GET
-    @Path("/{connector}/tasks-config")
-    public Map<ConnectorTaskId, Map<String, String>> getTasksConfig(
-            final @PathParam("connector") String connector,
-            final @Context HttpHeaders headers,
-            final @QueryParam("forward") Boolean forward) throws Throwable {
-        FutureCallback<Map<ConnectorTaskId, Map<String, String>>> cb = new FutureCallback<>();
-        herder.tasksConfig(connector, cb);
-        return completeOrForwardRequest(cb, "/connectors/" + connector + "/tasks-config", "GET", headers, null, forward);
     }
 
     @GET
@@ -401,12 +391,12 @@ public class ConnectorsResource {
 
     private <T> T completeOrForwardRequest(FutureCallback<T> cb, String path, String method, HttpHeaders headers, Object body,
                                            TypeReference<T> resultType, Boolean forward) throws Throwable {
-        return completeOrForwardRequest(cb, path, method, headers, body, resultType, new IdentityTranslator<>(), forward);
+        return completeOrForwardRequest(cb, path, method, headers, body, resultType, new IdentityTranslator<T>(), forward);
     }
 
     private <T> T completeOrForwardRequest(FutureCallback<T> cb, String path, String method, HttpHeaders headers,
                                            Object body, Boolean forward) throws Throwable {
-        return completeOrForwardRequest(cb, path, method, headers, body, null, new IdentityTranslator<>(), forward);
+        return completeOrForwardRequest(cb, path, method, headers, body, null, new IdentityTranslator<T>(), forward);
     }
 
     private interface Translator<T, U> {

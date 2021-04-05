@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test.junit;
 
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -48,4 +47,5 @@ public class GenericParameterResolver<T> implements ParameterResolver {
     public Object resolveParameter(ParameterContext parameterContext, ExtensionContext extensionContext) {
         return instance;
     }
+
 }

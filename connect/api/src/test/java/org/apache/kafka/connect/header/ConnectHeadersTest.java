@@ -25,16 +25,17 @@ import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.data.Time;
 import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.data.TimestampMicros;
 import org.apache.kafka.connect.data.Values;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.header.Headers.HeaderTransform;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.GregorianCalendar;
@@ -42,15 +43,14 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.TimeZone;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ConnectHeadersTest {
 
@@ -72,17 +72,16 @@ public class ConnectHeadersTest {
     private String key;
     private String other;
 
-    @BeforeEach
+    @Before
     public void beforeEach() {
         headers = new ConnectHeaders();
         key = "k1";
         other = "other key";
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldNotAllowNullKey() {
-        assertThrows(NullPointerException.class,
-            () -> headers.add(null, "value", Schema.STRING_SCHEMA));
+        headers.add(null, "value", Schema.STRING_SCHEMA);
     }
 
     protected void populate(Headers headers) {
@@ -345,16 +344,24 @@ public class ConnectHeadersTest {
     }
 
     protected HeaderTransform appendToKey(final String suffix) {
-        return header -> header.rename(header.key() + suffix);
+        return new HeaderTransform() {
+            @Override
+            public Header apply(Header header) {
+                return header.rename(header.key() + suffix);
+            }
+        };
     }
 
     protected HeaderTransform removeHeadersOfType(final Type type) {
-        return header -> {
-            Schema schema = header.schema();
-            if (schema != null && schema.type() == type) {
-                return null;
+        return new HeaderTransform() {
+            @Override
+            public Header apply(Header header) {
+                Schema schema = header.schema();
+                if (schema != null && schema.type() == type) {
+                    return null;
+                }
+                return header;
             }
-            return header;
         };
     }
 
@@ -395,6 +402,7 @@ public class ConnectHeadersTest {
         assertSchemaMatches(Time.SCHEMA, new java.util.Date());
         assertSchemaMatches(Date.SCHEMA, new java.util.Date());
         assertSchemaMatches(Timestamp.SCHEMA, new java.util.Date());
+        assertSchemaMatches(TimestampMicros.SCHEMA, Instant.now());
     }
 
     @Test
@@ -475,6 +483,21 @@ public class ConnectHeadersTest {
     }
 
     @Test
+    public void shouldAddTimestampMicros() {
+        java.time.Instant dateObj = EPOCH_PLUS_TEN_THOUSAND_MILLIS.getTime().toInstant();
+        long micros = TimestampMicros.fromLogical(TimestampMicros.SCHEMA, dateObj);
+        headers.addTimestampMicros(key, dateObj);
+        Header header = headers.lastWithName(key);
+        assertEquals(micros, (long) Values.convertToLong(header.schema(), header.value()));
+        assertSame(dateObj, Values.convertToTimestampMicros(header.schema(), header.value()));
+
+        headers.addLong(other, micros);
+        header = headers.lastWithName(other);
+        assertEquals(micros, (long) Values.convertToLong(header.schema(), header.value()));
+        assertEquals(dateObj, Values.convertToTimestampMicros(header.schema(), header.value()));
+    }
+
+    @Test
     public void shouldAddDecimal() {
         BigDecimal value = new BigDecimal("3.038573478e+3");
         headers.addDecimal(key, value);
@@ -491,18 +514,6 @@ public class ConnectHeadersTest {
     public void shouldDuplicateAndAlwaysReturnEquivalentButDifferentObject() {
         assertEquals(headers, headers.duplicate());
         assertNotSame(headers, headers.duplicate());
-    }
-
-    @Test
-    public void shouldNotAllowToAddNullHeader() {
-        final ConnectHeaders headers = new ConnectHeaders();
-        assertThrows(NullPointerException.class, () -> headers.add(null));
-    }
-
-    @Test
-    public void shouldThrowNpeWhenAddingCollectionWithNullHeader() {
-        final Iterable<Header> header = Arrays.asList(new ConnectHeader[1]);
-        assertThrows(NullPointerException.class, () -> new ConnectHeaders(header));
     }
 
     protected void assertSchemaMatches(Schema schema, Object value) {

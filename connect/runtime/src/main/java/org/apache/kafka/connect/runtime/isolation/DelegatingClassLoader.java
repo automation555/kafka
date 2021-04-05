@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.connect.runtime.isolation;
 
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.provider.ConfigProvider;
 import org.apache.kafka.connect.components.Versioned;
 import org.apache.kafka.connect.connector.Connector;
@@ -293,29 +294,32 @@ public class DelegatingClassLoader extends URLClassLoader {
         // Apply here what java.sql.DriverManager does to discover and register classes
         // implementing the java.sql.Driver interface.
         AccessController.doPrivileged(
-            (PrivilegedAction<Void>) () -> {
-                ServiceLoader<Driver> loadedDrivers = ServiceLoader.load(
-                        Driver.class,
-                        loader
-                );
-                Iterator<Driver> driversIterator = loadedDrivers.iterator();
-                try {
-                    while (driversIterator.hasNext()) {
-                        Driver driver = driversIterator.next();
-                        log.debug(
-                                "Registered java.sql.Driver: {} to java.sql.DriverManager",
-                                driver
+                new PrivilegedAction<Void>() {
+                    @Override
+                    public Void run() {
+                        ServiceLoader<Driver> loadedDrivers = ServiceLoader.load(
+                                Driver.class,
+                                loader
                         );
+                        Iterator<Driver> driversIterator = loadedDrivers.iterator();
+                        try {
+                            while (driversIterator.hasNext()) {
+                                Driver driver = driversIterator.next();
+                                log.debug(
+                                        "Registered java.sql.Driver: {} to java.sql.DriverManager",
+                                        driver
+                                );
+                            }
+                        } catch (Throwable t) {
+                            log.debug(
+                                    "Ignoring java.sql.Driver classes listed in resources but not"
+                                            + " present in class loader's classpath: ",
+                                    t
+                            );
+                        }
+                        return null;
                     }
-                } catch (Throwable t) {
-                    log.debug(
-                            "Ignoring java.sql.Driver classes listed in resources but not"
-                                    + " present in class loader's classpath: ",
-                            t
-                    );
                 }
-                return null;
-            }
         );
     }
 
@@ -478,7 +482,7 @@ public class DelegatingClassLoader extends URLClassLoader {
         }
     }
 
-    //Visible for testing
+    @VisibleForTesting
     static boolean serviceLoaderManifestForPlugin(String name) {
         return PLUGIN_MANIFEST_FILES.contains(name);
     }

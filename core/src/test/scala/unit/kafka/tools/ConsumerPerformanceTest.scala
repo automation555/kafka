@@ -18,11 +18,12 @@
 package kafka.tools
 
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
 import java.text.SimpleDateFormat
 
-import kafka.utils.Exit
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
-import org.junit.jupiter.api.Test
+import kafka.utils.{Exit, TestUtils}
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class ConsumerPerformanceTest {
 
@@ -96,8 +97,31 @@ class ConsumerPerformanceTest {
     assertEquals("test", config.topic)
     assertEquals(10, config.numMessages)
   }
-
+  
   @Test
+  def testConfigWithRecognizedOptionOverride(): Unit = {
+    val propsFile = TestUtils.tempFile()
+    val propsStream = Files.newOutputStream(propsFile.toPath)
+    propsStream.write("group.id=test_group_id\n".getBytes())
+    propsStream.write("client.id=test_client_id".getBytes())
+    propsStream.close()
+    //Given
+    val args: Array[String] = Array(
+      "--broker-list", "localhost:9092",
+      "--topic", "test",
+      "--group", "test_group_id2",
+      "--messages", "10",
+      "--consumer.config", propsFile.getAbsolutePath
+    )
+    //When
+    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
+
+    //Then
+    assertEquals("test_group_id", config.props.getProperty("group.id"))
+    assertEquals("test_client_id", config.props.getProperty("client.id"))
+  }
+
+  @Test(expected = classOf[IllegalArgumentException])
   def testConfigWithUnrecognizedOption(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
@@ -107,8 +131,12 @@ class ConsumerPerformanceTest {
       "--messages", "10",
       "--new-consumer"
     )
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsumerPerformance.ConsumerPerfConfig(args))
-    finally Exit.resetExitProcedure()
+    try {
+      //When
+      new ConsumerPerformance.ConsumerPerfConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   private def testHeaderMatchContent(detailed: Boolean, expectedOutputLineCount: Int, fun: () => Unit): Unit = {

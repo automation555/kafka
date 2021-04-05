@@ -16,8 +16,6 @@
   */
 package kafka.server
 
-import integration.kafka.server.IntegrationTestUtils
-
 import java.net.Socket
 import java.util.Collections
 import kafka.api.{KafkaSasl, SaslSetup}
@@ -59,7 +57,7 @@ class SaslApiVersionsRequestTest(cluster: ClusterInstance) extends AbstractApiVe
     try {
       val apiVersionsResponse = IntegrationTestUtils.sendAndReceive[ApiVersionsResponse](
         new ApiVersionsRequest.Builder().build(0), socket)
-      validateApiVersionsResponse(apiVersionsResponse)
+      validateApiVersionsResponse(apiVersionsResponse, cluster.clientListener())
       sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
       socket.close()
@@ -88,7 +86,7 @@ class SaslApiVersionsRequestTest(cluster: ClusterInstance) extends AbstractApiVe
       assertEquals(Errors.UNSUPPORTED_VERSION.code, apiVersionsResponse.data.errorCode)
       val apiVersionsResponse2 = IntegrationTestUtils.sendAndReceive[ApiVersionsResponse](
         new ApiVersionsRequest.Builder().build(0), socket)
-      validateApiVersionsResponse(apiVersionsResponse2)
+      validateApiVersionsResponse(apiVersionsResponse2, cluster.clientListener())
       sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
       socket.close()

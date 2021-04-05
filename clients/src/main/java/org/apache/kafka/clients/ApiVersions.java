@@ -22,7 +22,6 @@ import org.apache.kafka.common.requests.ProduceRequest;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Maintains node api versions for access outside of NetworkClient (which is where the information is derived).
@@ -34,9 +33,23 @@ public class ApiVersions {
 
     private final Map<String, NodeApiVersions> nodeApiVersions = new HashMap<>();
     private byte maxUsableProduceMagic = RecordBatch.CURRENT_MAGIC_VALUE;
+    private byte forceProduceOldMessageVer = -1;
+    private short maxProduceVersion = -1;
+
+    public ApiVersions() {
+    }
+
+    public ApiVersions(int messageVer) {
+        this.forceProduceOldMessageVer = (byte) messageVer;
+        if (forceProduceOldMessageVer >= 0 && forceProduceOldMessageVer < RecordBatch.MAGIC_VALUE_V2) {
+            maxUsableProduceMagic = this.forceProduceOldMessageVer;
+            maxProduceVersion = 3;
+        }
+    }
 
     public synchronized void update(String nodeId, NodeApiVersions nodeApiVersions) {
         this.nodeApiVersions.put(nodeId, nodeApiVersions);
+
         this.maxUsableProduceMagic = computeMaxUsableProduceMagic();
     }
 
@@ -52,16 +65,23 @@ public class ApiVersions {
     private byte computeMaxUsableProduceMagic() {
         // use a magic version which is supported by all brokers to reduce the chance that
         // we will need to convert the messages when they are ready to be sent.
-        Optional<Byte> knownBrokerNodesMinRequiredMagicForProduce = this.nodeApiVersions.values().stream()
-            .filter(versions -> versions.apiVersion(ApiKeys.PRODUCE) != null) // filter out Raft controller nodes
-            .map(versions -> ProduceRequest.requiredMagicForVersion(versions.latestUsableVersion(ApiKeys.PRODUCE)))
-            .min(Byte::compare);
-        return (byte) Math.min(RecordBatch.CURRENT_MAGIC_VALUE,
-            knownBrokerNodesMinRequiredMagicForProduce.orElse(RecordBatch.CURRENT_MAGIC_VALUE));
+        byte maxUsableMagic = RecordBatch.CURRENT_MAGIC_VALUE;
+        for (NodeApiVersions versions : this.nodeApiVersions.values()) {
+            byte nodeMaxUsableMagic = ProduceRequest.requiredMagicForVersion(versions.latestUsableVersion(ApiKeys.PRODUCE));
+            maxUsableMagic = (byte) Math.min(nodeMaxUsableMagic, maxUsableMagic);
+        }
+
+        if (forceProduceOldMessageVer >= 0) {
+            maxUsableMagic = (byte) Math.min(maxUsableMagic, forceProduceOldMessageVer);
+        }
+        return maxUsableMagic;
     }
 
     public synchronized byte maxUsableProduceMagic() {
         return maxUsableProduceMagic;
     }
 
+    public short getMaxProduceVersion() {
+        return maxProduceVersion;
+    }
 }

@@ -21,20 +21,21 @@ import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 
 public class ValueToKeyTest {
     private final ValueToKey<SinkRecord> xform = new ValueToKey<>();
 
-    @AfterEach
+    @After
     public void teardown() {
         xform.close();
     }
@@ -105,5 +106,24 @@ public class ValueToKeyTest {
 
         DataException actual = assertThrows(DataException.class, () -> xform.apply(record));
         assertEquals("Field does not exist: not_exist", actual.getMessage());
+    }
+
+    @Test
+    public void skipNullValue() {
+        Map<String, Object> props = new HashMap<>();
+        props.put("fields", "mock_field");
+        props.put("skip.missing.or.null", Boolean.TRUE);
+
+        xform.configure(props);
+
+        final Schema valueSchema = SchemaBuilder.struct()
+                .field("a", Schema.INT32_SCHEMA)
+                .build();
+
+        final SinkRecord record = new SinkRecord("", 0, null, null, valueSchema, null, 0);
+        final SinkRecord transformedRecord = xform.apply(record);
+
+        assertEquals(record.keySchema(), transformedRecord.keySchema());
+        assertEquals(record.key(), transformedRecord.key());
     }
 }

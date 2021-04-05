@@ -70,17 +70,14 @@ object AlterIsrManager {
     time: Time,
     metrics: Metrics,
     threadNamePrefix: Option[String],
-    brokerEpochSupplier: () => Long,
-    brokerId: Int
+    brokerEpochSupplier: () => Long
   ): AlterIsrManager = {
-    val nodeProvider = MetadataCacheControllerNodeProvider(config, metadataCache)
-
-    val channelManager = BrokerToControllerChannelManager(
-      controllerNodeProvider = nodeProvider,
+    val channelManager = new BrokerToControllerChannelManager(
+      metadataCache = metadataCache,
       time = time,
       metrics = metrics,
       config = config,
-      channelName = "alterIsr",
+      channelName = "alterIsrChannel",
       threadNamePrefix = threadNamePrefix,
       retryTimeoutMs = Long.MaxValue
     )
@@ -88,7 +85,7 @@ object AlterIsrManager {
       controllerChannelManager = channelManager,
       scheduler = scheduler,
       time = time,
-      brokerId = brokerId,
+      brokerId = config.brokerId,
       brokerEpochSupplier = brokerEpochSupplier
     )
   }
@@ -106,14 +103,18 @@ object AlterIsrManager {
 
 }
 
+object DefaultAlterIsrManager extends Logging {
+
+}
+
 class DefaultAlterIsrManager(
   val controllerChannelManager: BrokerToControllerChannelManager,
   val scheduler: Scheduler,
   val time: Time,
   val brokerId: Int,
   val brokerEpochSupplier: () => Long
-) extends AlterIsrManager with Logging with KafkaMetricsGroup {
-
+) extends AlterIsrManager with KafkaMetricsGroup {
+  import DefaultAlterIsrManager._
   // Used to allow only one pending ISR update per partition (visible for testing)
   private[server] val unsentIsrUpdates: util.Map[TopicPartition, AlterIsrItem] = new ConcurrentHashMap[TopicPartition, AlterIsrItem]()
 
@@ -165,19 +166,9 @@ class DefaultAlterIsrManager(
       new ControllerRequestCompletionHandler {
         override def onComplete(response: ClientResponse): Unit = {
           debug(s"Received AlterIsr response $response")
+          val body = response.responseBody().asInstanceOf[AlterIsrResponse]
           val error = try {
-            if (response.authenticationException != null) {
-              // For now we treat authentication errors as retriable. We use the
-              // `NETWORK_EXCEPTION` error code for lack of a good alternative.
-              // Note that `BrokerToControllerChannelManager` will still log the
-              // authentication errors so that users have a chance to fix the problem.
-              Errors.NETWORK_EXCEPTION
-            } else if (response.versionMismatch != null) {
-              Errors.UNSUPPORTED_VERSION
-            } else {
-              val body = response.responseBody().asInstanceOf[AlterIsrResponse]
-              handleAlterIsrResponse(body, message.brokerEpoch, inflightAlterIsrItems)
-            }
+            handleAlterIsrResponse(body, message.brokerEpoch, inflightAlterIsrItems)
           } finally {
             // clear the flag so future requests can proceed
             clearInFlightRequest()

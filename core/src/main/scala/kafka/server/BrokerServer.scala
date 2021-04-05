@@ -29,6 +29,7 @@ import kafka.log.LogManager
 import kafka.metrics.KafkaYammerMetrics
 import kafka.network.SocketServer
 import kafka.security.CredentialProvider
+import kafka.server.KafkaBroker.metricsPrefix
 import kafka.server.metadata.{BrokerMetadataListener, CachedConfigRepository, ClientQuotaCache, ClientQuotaMetadataManager, RaftMetadataCache}
 import kafka.utils.{CoreUtils, KafkaScheduler}
 import org.apache.kafka.common.internals.Topic
@@ -44,14 +45,13 @@ import org.apache.kafka.common.{ClusterResource, Endpoint, KafkaException}
 import org.apache.kafka.metadata.{BrokerState, VersionRange}
 import org.apache.kafka.metalog.MetaLogManager
 import org.apache.kafka.raft.RaftConfig
-import org.apache.kafka.raft.RaftConfig.AddressSpec
 import org.apache.kafka.server.authorizer.Authorizer
 
 import scala.collection.{Map, Seq}
 import scala.jdk.CollectionConverters._
 
 /**
- * A Kafka broker that runs in KRaft (Kafka Raft) mode.
+ * A KIP-500 Kafka broker.
  */
 class BrokerServer(
                     val config: KafkaConfig,
@@ -61,7 +61,7 @@ class BrokerServer(
                     val metrics: Metrics,
                     val threadNamePrefix: Option[String],
                     val initialOfflineDirs: Seq[String],
-                    val controllerQuorumVotersFuture: CompletableFuture[util.Map[Integer, AddressSpec]],
+                    val controllerQuorumVotersFuture: CompletableFuture[util.List[String]],
                     val supportedFeatures: util.Map[String, VersionRange]
                   ) extends KafkaBroker {
 
@@ -108,6 +108,8 @@ class BrokerServer(
 
   var alterIsrManager: AlterIsrManager = null
 
+  var logDirEventManager: LogDirEventManager = null
+
   var autoTopicCreationManager: AutoTopicCreationManager = null
 
   var kafkaScheduler: KafkaScheduler = null
@@ -123,7 +125,7 @@ class BrokerServer(
 
   val featureCache: FinalizedFeatureCache = new FinalizedFeatureCache(brokerFeatures)
 
-  val clusterId: String = metaProps.clusterId
+  val clusterId: String = metaProps.clusterId.toString
 
   val configRepository = new CachedConfigRepository()
 
@@ -178,7 +180,7 @@ class BrokerServer(
       tokenCache = new DelegationTokenCache(ScramMechanism.mechanismNames)
       credentialProvider = new CredentialProvider(ScramMechanism.mechanismNames, tokenCache)
 
-      val controllerNodes = RaftConfig.voterConnectionsToNodes(controllerQuorumVotersFuture.get()).asScala
+      val controllerNodes = RaftConfig.quorumVoterStringsToNodes(controllerQuorumVotersFuture.get()).asScala
       val controllerNodeProvider = RaftControllerNodeProvider(metaLogManager, config, controllerNodes)
 
       clientToControllerChannelManager = BrokerToControllerChannelManager(
@@ -186,11 +188,10 @@ class BrokerServer(
         time,
         metrics,
         config,
-        channelName = "forwarding",
+        channelName = "controllerForwardingChannel",
         threadNamePrefix,
         retryTimeoutMs = 60000
       )
-      clientToControllerChannelManager.start()
       forwardingManager = new ForwardingManagerImpl(clientToControllerChannelManager)
 
       val apiVersionManager = ApiVersionManager(
@@ -212,7 +213,7 @@ class BrokerServer(
         time,
         metrics,
         config,
-        channelName = "alterIsr",
+        channelName = "alterisr",
         threadNamePrefix,
         retryTimeoutMs = Long.MaxValue
       )
@@ -223,12 +224,26 @@ class BrokerServer(
         brokerId = config.nodeId,
         brokerEpochSupplier = () => lifecycleManager.brokerEpoch()
       )
-      alterIsrManager.start()
+
+      val alterReplicaStateChannelManager = new BrokerToControllerChannelManagerImpl(
+        controllerNodeProvider = MetadataCacheControllerNodeProvider(config, metadataCache),
+        time = time,
+        metrics = metrics,
+        config = config,
+        channelName = "alterReplicaStateChannel",
+        threadNamePrefix = threadNamePrefix,
+        retryTimeoutMs = Long.MaxValue)
+      if (config.interBrokerProtocolVersion >= kafka.api.KAFKA_2_8_IV2) {
+        alterReplicaStateChannelManager.start()
+      }
+
+      logDirEventManager = new LogDirEventManagerImpl(alterReplicaStateChannelManager, kafkaScheduler, time,
+        config.brokerId, () => lifecycleManager.brokerEpoch())
 
       this.replicaManager = new RaftReplicaManager(config, metrics, time,
         kafkaScheduler, logManager, isShuttingDown, quotaManagers,
         brokerTopicStats, metadataCache, logDirFailureChannel, alterIsrManager,
-        configRepository, threadNamePrefix)
+        configRepository, threadNamePrefix, logDirEventManager)
 
       /* start token manager */
       if (config.tokenAuthEnabled) {
@@ -450,6 +465,9 @@ class BrokerServer(
       if (clientToControllerChannelManager != null)
         CoreUtils.swallow(clientToControllerChannelManager.shutdown(), this)
 
+      if (logDirEventManager != null)
+        CoreUtils.swallow(logDirEventManager.shutdown(), this)
+
       if (logManager != null)
         CoreUtils.swallow(logManager.shutdown(), this)
 
@@ -470,7 +488,7 @@ class BrokerServer(
 
       CoreUtils.swallow(lifecycleManager.close(), this)
 
-      CoreUtils.swallow(AppInfoParser.unregisterAppInfo(MetricsPrefix, config.nodeId.toString, metrics), this)
+      CoreUtils.swallow(AppInfoParser.unregisterAppInfo(metricsPrefix, config.nodeId.toString, metrics), this)
       info("shut down completed")
     } catch {
       case e: Throwable =>

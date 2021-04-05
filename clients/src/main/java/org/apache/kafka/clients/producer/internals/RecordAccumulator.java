@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
@@ -508,11 +509,15 @@ public final class RecordAccumulator {
                 return true;
 
             if (!first.hasSequence()) {
-                if (transactionManager.hasInflightBatches(tp) && transactionManager.hasStaleProducerIdAndEpoch(tp)) {
+                if (transactionManager.hasInflightBatches(tp)) {
                     // Don't drain any new batches while the partition has in-flight batches with a different epoch
                     // and/or producer ID. Otherwise, a batch with a new epoch and sequence number
                     // 0 could be written before earlier batches complete, which would cause out of sequence errors
-                    return true;
+                    ProducerBatch firstInFlightBatch = transactionManager.nextBatchBySequence(tp);
+
+                    if (firstInFlightBatch != null && transactionManager.producerIdOrEpochNotMatch(firstInFlightBatch)) {
+                        return true;
+                    }
                 }
 
                 if (transactionManager.hasUnresolvedSequence(first.topicPartition))
@@ -578,12 +583,6 @@ public final class RecordAccumulator {
                         transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
                     ProducerBatch batch = deque.pollFirst();
                     if (producerIdAndEpoch != null && !batch.hasSequence()) {
-                        // If the producer id/epoch of the partition do not match the latest one
-                        // of the producer, we update it and reset the sequence. This should be
-                        // only done when all its in-flight batches have completed. This is guarantee
-                        // in `shouldStopDrainBatchesForPartition`.
-                        transactionManager.maybeUpdateProducerIdAndEpoch(batch.topicPartition);
-
                         // If the batch already has an assigned sequence, then we should not change the producer id and
                         // sequence number, since this may introduce duplicates. In particular, the previous attempt
                         // may actually have been accepted, and if we change the producer id and sequence here, this
@@ -679,14 +678,13 @@ public final class RecordAccumulator {
 
     /**
      * Are there any threads currently waiting on a flush?
-     *
-     * package private for test
      */
+    @VisibleForTesting
     boolean flushInProgress() {
         return flushesInProgress.get() > 0;
     }
 
-    /* Visible for testing */
+    @VisibleForTesting
     Map<TopicPartition, Deque<ProducerBatch>> batches() {
         return Collections.unmodifiableMap(batches);
     }

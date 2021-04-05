@@ -51,6 +51,7 @@ import static org.apache.kafka.streams.processor.internals.StreamThread.Processi
 class ActiveTaskCreator {
     private final InternalTopologyBuilder builder;
     private final StreamsConfig config;
+    private final long metadataStalenessBound;
     private final StreamsMetricsImpl streamsMetrics;
     private final StateDirectory stateDirectory;
     private final ChangelogReader storeChangelogReader;
@@ -66,6 +67,7 @@ class ActiveTaskCreator {
 
     ActiveTaskCreator(final InternalTopologyBuilder builder,
                       final StreamsConfig config,
+                      final long metadataStalenessBound,
                       final StreamsMetricsImpl streamsMetrics,
                       final StateDirectory stateDirectory,
                       final ChangelogReader storeChangelogReader,
@@ -77,6 +79,7 @@ class ActiveTaskCreator {
                       final Logger log) {
         this.builder = builder;
         this.config = config;
+        this.metadataStalenessBound = metadataStalenessBound;
         this.streamsMetrics = streamsMetrics;
         this.stateDirectory = stateDirectory;
         this.storeChangelogReader = storeChangelogReader;
@@ -132,10 +135,8 @@ class ActiveTaskCreator {
         return threadProducer;
     }
 
-    // TODO: change return type to `StreamTask`
     Collection<Task> createTasks(final Consumer<byte[], byte[]> consumer,
                                  final Map<TaskId, Set<TopicPartition>> tasksToBeCreated) {
-        // TODO: change type to `StreamTask`
         final List<Task> createdTasks = new ArrayList<>();
         for (final Map.Entry<TaskId, Set<TopicPartition>> newTaskAndPartitions : tasksToBeCreated.entrySet()) {
             final TaskId taskId = newTaskAndPartitions.getKey();
@@ -180,7 +181,7 @@ class ActiveTaskCreator {
     }
 
     StreamTask createActiveTaskFromStandby(final StandbyTask standbyTask,
-                                           final Set<TopicPartition> inputPartitions,
+                                           final Set<TopicPartition> partitions,
                                            final Consumer<byte[], byte[]> consumer) {
         final InternalProcessorContext context = standbyTask.processorContext();
         final ProcessorStateManager stateManager = standbyTask.stateMgr;
@@ -191,7 +192,7 @@ class ActiveTaskCreator {
 
         return createActiveTask(
             standbyTask.id,
-            inputPartitions,
+            partitions,
             consumer,
             logContext,
             builder.buildSubtopology(standbyTask.id.topicGroupId),
@@ -201,7 +202,7 @@ class ActiveTaskCreator {
     }
 
     private StreamTask createActiveTask(final TaskId taskId,
-                                        final Set<TopicPartition> inputPartitions,
+                                        final Set<TopicPartition> partitions,
                                         final Consumer<byte[], byte[]> consumer,
                                         final LogContext logContext,
                                         final ProcessorTopology topology,
@@ -232,21 +233,21 @@ class ActiveTaskCreator {
 
         final StreamTask task = new StreamTask(
             taskId,
-            inputPartitions,
+            partitions,
             topology,
             consumer,
             config,
+            metadataStalenessBound,
             streamsMetrics,
             stateDirectory,
             cache,
             time,
             stateManager,
             recordCollector,
-            context,
-            logContext
+            context
         );
 
-        log.trace("Created task {} with assigned partitions {}", taskId, inputPartitions);
+        log.trace("Created task {} with assigned partitions {}", taskId, partitions);
         createTaskSensor.record();
         return task;
     }

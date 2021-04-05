@@ -373,10 +373,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         Set<TopicPartition> assignedPartitions = new HashSet<>(assignment.partitions());
 
         if (!subscriptions.checkAssignmentMatchedSubscription(assignedPartitions)) {
-            final String reason = String.format("received assignment %s does not match the current subscription %s; " +
-                    "it is likely that the subscription has changed since we joined the group, will re-join with current subscription",
-                    assignment.partitions(), subscriptions.prettyString());
-            requestRejoin(reason);
+            log.warn("We received an assignment {} that doesn't match our current subscription {}; it is likely " +
+                "that the subscription has changed since we joined the group. Will try re-join the group with current subscription",
+                assignment.partitions(), subscriptions.prettyString());
+
+            requestRejoin();
 
             return;
         }
@@ -407,9 +408,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 firstException.compareAndSet(null, invokePartitionsRevoked(revokedPartitions));
 
                 // If revoked any partitions, need to re-join the group afterwards
-                final String reason = String.format("need to revoke partitions %s as indicated " +
-                        "by the current assignment and re-join", revokedPartitions);
-                requestRejoin(reason);
+                log.info("Need to revoke partitions {} and re-join the group", revokedPartitions);
+                requestRejoin();
             }
         }
 
@@ -465,11 +465,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * @return true iff the operation succeeded
      */
     public boolean poll(Timer timer, boolean waitForJoinGroup) {
+//        System.err.print("cc poll");
         maybeUpdateSubscriptionMetadata();
 
         invokeCompletedOffsetCommitCallbacks();
 
         if (subscriptions.hasAutoAssignedPartitions()) {
+//            System.err.println("!!! hasAutoAssignedPartitions");
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
@@ -478,6 +480,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
             pollHeartbeat(timer.currentTimeMs());
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
+                System.err.println("f1:");
                 return false;
             }
 
@@ -498,9 +501,10 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     }
 
                     if (!client.ensureFreshMetadata(timer)) {
+                        System.err.println("f2:");
                         return false;
                     }
-
+               
                     maybeUpdateSubscriptionMetadata();
                 }
 
@@ -509,7 +513,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call
                     timer.update(time.milliseconds());
-
+                    System.err.println("f3:");
                     return false;
                 }
             }
@@ -769,17 +773,21 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // we need to rejoin if we performed the assignment and metadata has changed;
         // also for those owned-but-no-longer-existed partitions we should drop them as lost
         if (assignmentSnapshot != null && !assignmentSnapshot.matches(metadataSnapshot)) {
-            final String reason = String.format("cached metadata has changed from %s at the beginning of the rebalance to %s",
-                assignmentSnapshot, metadataSnapshot);
-            requestRejoin(reason);
+            System.err.println("assignment metadata has changed:" + assignmentSnapshot + metadataSnapshot);
+            log.info("Requesting to re-join the group and trigger rebalance since the assignment metadata has changed from {} to {}",
+                    assignmentSnapshot, metadataSnapshot);
+
+            requestRejoin();
             return true;
         }
 
         // we need to join if our subscription has changed since the last join
         if (joinedSubscription != null && !joinedSubscription.equals(subscriptions.subscription())) {
-            final String reason = String.format("subscription has changed from %s at the beginning of the rebalance to %s",
+            System.err.println("subscription has changed from:" + joinedSubscription + subscriptions.subscription());
+            log.info("Requesting to re-join the group and trigger rebalance since the subscription has changed from {} to {}",
                 joinedSubscription, subscriptions.subscription());
-            requestRejoin(reason);
+
+            requestRejoin();
             return true;
         }
 
@@ -1234,7 +1242,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                              * request re-join but do not reset generations. If the callers decide to retry they
                              * can go ahead and call poll to finish up the rebalance first, and then try commit again.
                              */
-                            requestRejoin("offset commit failed since group is already rebalancing");
+                            requestRejoin();
                             future.raise(new RebalanceInProgressException("Offset commit cannot be completed since the " +
                                 "consumer group is executing a rebalance at the moment. You can try completing the rebalance " +
                                 "by calling poll() and then retry commit again"));

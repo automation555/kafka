@@ -34,6 +34,7 @@ import kafka.cluster.{Broker, EndPoint, IsrChangeListener}
 import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.log._
 import kafka.metrics.KafkaYammerMetrics
+import kafka.security.auth.{Acl, Resource, Authorizer => LegacyAuthorizer}
 import kafka.server._
 import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.server.metadata.{CachedConfigRepository, ConfigRepository, MetadataBroker}
@@ -1161,6 +1162,17 @@ object TestUtils extends Logging {
     configRepository
   }
 
+  class MockLogDirEventManager extends LogDirEventManager {
+    override def start(): Unit = {}
+    override def pendingAlterReplicaStateItemCount(): Int = 0
+    override def handleAlterReplicaStateChanges(logDirEventItem: AlterReplicaStateItem): Unit = {}
+    override def shutdown(): Unit = {}
+  }
+
+  def createMockLogDirEventManager(): MockLogDirEventManager = {
+    new MockLogDirEventManager
+  }
+
   def produceMessages(servers: Seq[KafkaServer],
                       records: Seq[ProducerRecord[Array[Byte], Array[Byte]]],
                       acks: Int = -1): Unit = {
@@ -1322,6 +1334,15 @@ object TestUtils extends Logging {
     waitUntilTrue(() => authorizer.acls(filter).asScala.map(_.entry).toSet == expected,
       s"expected acls:${expected.mkString(newLine + "\t", newLine + "\t", newLine)}" +
         s"but got:${authorizer.acls(filter).asScala.map(_.entry).mkString(newLine + "\t", newLine + "\t", newLine)}")
+  }
+
+  @deprecated("Use org.apache.kafka.server.authorizer.Authorizer", "Since 2.5")
+  def waitAndVerifyAcls(expected: Set[Acl], authorizer: LegacyAuthorizer, resource: Resource): Unit = {
+    val newLine = scala.util.Properties.lineSeparator
+
+    waitUntilTrue(() => authorizer.getAcls(resource) == expected,
+      s"expected acls:${expected.mkString(newLine + "\t", newLine + "\t", newLine)}" +
+        s"but got:${authorizer.getAcls(resource).mkString(newLine + "\t", newLine + "\t", newLine)}")
   }
 
   /**

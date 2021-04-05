@@ -29,7 +29,7 @@ import scala.jdk.CollectionConverters._
 trait ApiVersionManager {
   def listenerType: ListenerType
   def enabledApis: collection.Set[ApiKeys]
-  def apiVersionResponse(throttleTimeMs: Int): ApiVersionsResponse
+  def apiVersionResponse(throttleTimeMs: Int)(requestVersion: Short): ApiVersionsResponse
   def isApiEnabled(apiKey: ApiKeys): Boolean = enabledApis.contains(apiKey)
   def newRequestMetrics: RequestChannel.Metrics = new network.RequestChannel.Metrics(enabledApis)
 }
@@ -63,7 +63,7 @@ class SimpleApiVersionManager(
 
   private val apiVersions = ApiVersionsResponse.collectApis(enabledApis.asJava)
 
-  override def apiVersionResponse(requestThrottleMs: Int): ApiVersionsResponse = {
+  override def apiVersionResponse(requestThrottleMs: Int)(requestVersion: Short): ApiVersionsResponse = {
     ApiVersionsResponse.createApiVersionsResponse(0, apiVersions)
   }
 }
@@ -76,30 +76,35 @@ class DefaultApiVersionManager(
   featureCache: FinalizedFeatureCache
 ) extends ApiVersionManager {
 
-  override def apiVersionResponse(throttleTimeMs: Int): ApiVersionsResponse = {
+  override def apiVersionResponse(throttleTimeMs: Int)(requestVersion: Short): ApiVersionsResponse = {
     val supportedFeatures = features.supportedFeatures
     val finalizedFeaturesOpt = featureCache.get
     val controllerApiVersions = forwardingManager.flatMap(_.controllerApiVersions)
 
-    val response = finalizedFeaturesOpt match {
-      case Some(finalizedFeatures) => ApiVersion.apiVersionsResponse(
-        throttleTimeMs,
-        interBrokerProtocolVersion.recordVersion,
-        supportedFeatures,
-        finalizedFeatures.features,
-        finalizedFeatures.epoch,
-        controllerApiVersions,
-        listenerType)
-      case None => ApiVersion.apiVersionsResponse(
-        throttleTimeMs,
-        interBrokerProtocolVersion.recordVersion,
-        supportedFeatures,
-        controllerApiVersions,
-        listenerType)
+    // Features info available in ApiVersionsResponse since v3
+    val response = if (requestVersion < 3) {
+      ApiVersion.apiVersionsResponse(throttleTimeMs, interBrokerProtocolVersion.recordVersion, controllerApiVersions, listenerType)
+    } else {
+      finalizedFeaturesOpt match {
+        case Some(finalizedFeatures) => ApiVersion.apiVersionsResponse(
+          throttleTimeMs,
+          interBrokerProtocolVersion.recordVersion,
+          supportedFeatures,
+          finalizedFeatures.features,
+          finalizedFeatures.epoch,
+          controllerApiVersions,
+          listenerType)
+        case None => ApiVersion.apiVersionsResponse(
+          throttleTimeMs,
+          interBrokerProtocolVersion.recordVersion,
+          supportedFeatures,
+          controllerApiVersions,
+          listenerType)
+      }
     }
 
     // This is a temporary workaround in order to allow testing of forwarding
-    // in integration tests. We can remove this after the KRaft controller
+    // in integration tests. We can remove this after the self-managed controller
     // is available for integration testing.
     if (forwardingManager.isDefined) {
       response.data.apiKeys.add(

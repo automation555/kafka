@@ -18,6 +18,8 @@ package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.streams.kstream.Named;
 
+import java.util.Optional;
+
 public class NamedInternal extends Named {
 
     public static NamedInternal empty() {
@@ -57,40 +59,28 @@ public class NamedInternal extends Named {
     public NamedInternal withName(final String name) {
         return new NamedInternal(name);
     }
-    
+
     String suffixWithOrElseGet(final String suffix, final String other) {
-        if (name != null) {
-            return name + suffix;
-        } else {
-            return other;
-        }
+        return Optional.ofNullable(name)
+                // Re-validate generated name as suffixed string could be too large.
+                .map(x -> withName(name + suffix).name)
+                .orElse(other);
     }
 
     String suffixWithOrElseGet(final String suffix, final InternalNameProvider provider, final String prefix) {
         // We actually do not need to generate processor names for operation if a name is specified.
         // But before returning, we still need to burn index for the operation to keep topology backward compatibility.
-        if (name != null) {
-            provider.newProcessorName(prefix);
+        final String defaultName = provider.newProcessorName(prefix);
 
-            final String suffixed = name + suffix;
-            // Re-validate generated name as suffixed string could be too large.
-            Named.validate(suffixed);
-
-            return suffixed;
-        } else {
-            return provider.newProcessorName(prefix);
-        }
+        return suffixWithOrElseGet(suffix, defaultName);
     }
 
     String orElseGenerateWithPrefix(final InternalNameProvider provider, final String prefix) {
         // We actually do not need to generate processor names for operation if a name is specified.
         // But before returning, we still need to burn index for the operation to keep topology backward compatibility.
-        if (name != null) {
-            provider.newProcessorName(prefix);
-            return name;
-        }  else {
-            return provider.newProcessorName(prefix);
-        }
+        final String defaultName = provider.newProcessorName(prefix);
+
+        return Optional.ofNullable(name).orElse(defaultName);
     }
 
 }

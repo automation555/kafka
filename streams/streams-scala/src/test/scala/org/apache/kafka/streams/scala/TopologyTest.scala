@@ -1,4 +1,7 @@
 /*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2017-2018 Alexis Seigneurin.
+ *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -43,8 +46,8 @@ import org.apache.kafka.streams.scala.serialization.{Serdes => NewSerdes}
 import org.apache.kafka.streams.scala.serialization.Serdes._
 import org.apache.kafka.streams.scala.kstream._
 import org.apache.kafka.streams.{KeyValue, StreamsConfig, TopologyDescription, StreamsBuilder => StreamsBuilderJ}
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api._
+import org.junit.Assert._
+import org.junit._
 
 import scala.jdk.CollectionConverters._
 
@@ -139,7 +142,7 @@ class TopologyTest {
         .mapValues(v => v.length)
         .groupByKey
         .cogroup((_, v1, v2: Long) => v1 + v2)
-        .aggregate(0L)
+        .aggregate(_ => 0L)
 
       streamBuilder.build().describe()
     }
@@ -158,7 +161,7 @@ class TopologyTest {
 
       splits.groupByKey
         .cogroup((k: String, v: Int, a: Long) => a + v)
-        .aggregate(() => 0L)
+        .aggregate(_ => 0L)
 
       streamBuilder.build().describe()
     }
@@ -183,7 +186,7 @@ class TopologyTest {
         .groupByKey
         .cogroup((_, v1, v2: Long) => v1 + v2)
         .cogroup(textLines2.groupByKey, (_, v: String, a) => v.length + a)
-        .aggregate(0L)
+        .aggregate(_ => 0L)
 
       streamBuilder.build().describe()
     }
@@ -204,7 +207,7 @@ class TopologyTest {
       splits.groupByKey
         .cogroup((k: String, v: Int, a: Long) => a + v)
         .cogroup(textLines2.groupByKey(), (k: String, v: String, a: Long) => v.length + a)
-        .aggregate(() => 0L)
+        .aggregate(_ => 0L)
 
       streamBuilder.build().describe()
     }
@@ -362,7 +365,7 @@ class TopologyTest {
         .process(() => new SimpleProcessor(processorValueCollector))
 
       val stream2 = mappedStream.groupByKey
-        .aggregate(0)(aggregator)(Materialized.`with`(NewSerdes.stringSerde, NewSerdes.intSerde))
+        .aggregate(_ => 0)(aggregator)(Materialized.`with`(NewSerdes.stringSerde, NewSerdes.intSerde))
         .toStream
       stream2.to(AGGREGATION_TOPIC)(Produced.`with`(NewSerdes.stringSerde, NewSerdes.intSerde))
 
@@ -397,7 +400,7 @@ class TopologyTest {
 
       val keyValueMapper: KeyValueMapper[String, String, KeyValue[String, String]] =
         (key, value) => KeyValue.pair(key.toUpperCase(Locale.getDefault), value)
-      val initializer: Initializer[Integer] = () => 0
+      val initializer: Initializer[String, Integer] = _ => 0
       val aggregator: Aggregator[String, String, Integer] = (_, value, aggregate) => aggregate + value.length
       val reducer: Reducer[String] = (v1, v2) => v1 + ":" + v2
       val valueMapper: ValueMapper[String, String] = v => v.toUpperCase(Locale.getDefault)

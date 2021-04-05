@@ -18,15 +18,19 @@ package kafka.common
 
 import java.util.Map.Entry
 import java.util.{ArrayDeque, ArrayList, Collection, Collections, HashMap, Iterator}
-import kafka.utils.ShutdownableThread
+import kafka.utils.{Logging, ShutdownableThread}
 import org.apache.kafka.clients.{ClientRequest, ClientResponse, KafkaClient, RequestCompletionHandler}
 import org.apache.kafka.common.Node
-import org.apache.kafka.common.errors.{AuthenticationException, DisconnectException}
+import org.apache.kafka.common.errors.AuthenticationException
 import org.apache.kafka.common.internals.FatalExitError
 import org.apache.kafka.common.requests.AbstractRequest
 import org.apache.kafka.common.utils.Time
 
 import scala.jdk.CollectionConverters._
+
+object InterBrokerSendThread extends Logging {
+
+}
 
 /**
  *  Class for inter-broker send thread that utilize a non-blocking network client.
@@ -39,6 +43,8 @@ abstract class InterBrokerSendThread(
   isInterruptible: Boolean = true
 ) extends ShutdownableThread(name, isInterruptible) {
 
+  import InterBrokerSendThread._
+
   private val unsentRequests = new UnsentRequests
 
   def generateRequests(): Iterable[RequestAndCompletionHandler]
@@ -47,9 +53,9 @@ abstract class InterBrokerSendThread(
 
   override def shutdown(): Unit = {
     initiateShutdown()
-    networkClient.initiateClose()
+    // wake up the thread in case it is blocked inside poll
+    networkClient.wakeup()
     awaitShutdown()
-    networkClient.close()
   }
 
   private def drainGeneratedRequests(): Unit = {
@@ -77,8 +83,6 @@ abstract class InterBrokerSendThread(
       failExpiredRequests(now)
       unsentRequests.clean()
     } catch {
-      case _: DisconnectException if !networkClient.active() =>
-        // DisconnectException is expected when NetworkClient#initiateClose is called
       case e: FatalExitError => throw e
       case t: Throwable =>
         error(s"unhandled exception caught in InterBrokerSendThread", t)

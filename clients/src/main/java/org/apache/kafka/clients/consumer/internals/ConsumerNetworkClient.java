@@ -22,6 +22,7 @@ import org.apache.kafka.clients.KafkaClient;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.RequestCompletionHandler;
 import org.apache.kafka.common.Node;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.DisconnectException;
 import org.apache.kafka.common.errors.InterruptException;
@@ -483,7 +484,7 @@ public class ConsumerNetworkClient implements Closeable {
         }
     }
 
-    // Visible for testing
+    @VisibleForTesting
     long trySend(long now) {
         long pollDelayMs = maxPollTimeoutMs;
 
@@ -634,7 +635,7 @@ public class ConsumerNetworkClient implements Closeable {
     /*
      * A thread-safe helper class to hold requests per node that have not been sent yet
      */
-    private static final class UnsentRequests {
+    private final static class UnsentRequests {
         private final ConcurrentMap<Node, ConcurrentLinkedQueue<ClientRequest>> unsent;
 
         private UnsentRequests() {
@@ -644,7 +645,11 @@ public class ConsumerNetworkClient implements Closeable {
         public void put(Node node, ClientRequest request) {
             // the lock protects the put from a concurrent removal of the queue for the node
             synchronized (unsent) {
-                ConcurrentLinkedQueue<ClientRequest> requests = unsent.computeIfAbsent(node, key -> new ConcurrentLinkedQueue<>());
+                ConcurrentLinkedQueue<ClientRequest> requests = unsent.get(node);
+                if (requests == null) {
+                    requests = new ConcurrentLinkedQueue<>();
+                    unsent.put(node, requests);
+                }
                 requests.add(request);
             }
         }

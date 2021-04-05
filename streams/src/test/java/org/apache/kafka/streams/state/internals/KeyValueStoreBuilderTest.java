@@ -120,25 +120,24 @@ public class KeyValueStoreBuilderTest {
     }
 
     @SuppressWarnings("all")
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfInnerIsNull() {
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(null, Serdes.String(),
-            Serdes.String(), new MockTime()));
+        new KeyValueStoreBuilder<>(null, Serdes.String(), Serdes.String(), new MockTime());
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfKeySerdeIsNull() {
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(supplier, null, Serdes.String(), new MockTime()));
+        new KeyValueStoreBuilder<>(supplier, null, Serdes.String(), new MockTime());
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfValueSerdeIsNull() {
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(supplier, Serdes.String(), null, new MockTime()));
+        new KeyValueStoreBuilder<>(supplier, Serdes.String(), null, new MockTime());
     }
 
-    @Test
+    @Test(expected = NullPointerException.class)
     public void shouldThrowNullPointerIfTimeIsNull() {
-        assertThrows(NullPointerException.class, () -> new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), null));
+        new KeyValueStoreBuilder<>(supplier, Serdes.String(), Serdes.String(), null);
     }
 
     @Test

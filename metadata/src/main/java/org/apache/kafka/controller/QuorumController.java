@@ -40,6 +40,8 @@ import org.apache.kafka.common.message.AlterIsrRequestData;
 import org.apache.kafka.common.message.AlterIsrResponseData;
 import org.apache.kafka.common.message.BrokerHeartbeatRequestData;
 import org.apache.kafka.common.message.BrokerRegistrationRequestData;
+import org.apache.kafka.common.message.CreatePartitionsRequestData.CreatePartitionsTopic;
+import org.apache.kafka.common.message.CreatePartitionsResponseData.CreatePartitionsTopicResult;
 import org.apache.kafka.common.message.CreateTopicsRequestData;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.message.ElectLeadersRequestData;
@@ -82,7 +84,7 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 
 /**
- * QuorumController implements the main logic of the KRaft (Kafka Raft Metadata) mode controller.
+ * QuorumController implements the main logic of the self-managed controller (aka KIP-500).
  *
  * The node which is the leader of the metadata log becomes the active controller.  All
  * other nodes remain in standby mode.  Standby controllers cannot create new metadata log
@@ -952,6 +954,16 @@ public final class QuorumController implements Controller {
                 return result;
             }
         });
+    }
+
+    @Override
+    public CompletableFuture<List<CreatePartitionsTopicResult>>
+            createPartitions(List<CreatePartitionsTopic> topics) {
+        if (topics.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+        return appendWriteEvent("createPartitions", () ->
+            replicationControl.createPartitions(topics));
     }
 
     @Override

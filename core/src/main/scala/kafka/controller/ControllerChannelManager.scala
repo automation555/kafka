@@ -37,13 +37,13 @@ import org.apache.kafka.common.requests._
 import org.apache.kafka.common.security.JaasContext
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.common.{KafkaException, Node, Reconfigurable, TopicPartition, Uuid}
+import org.apache.kafka.common.{KafkaException, Node, Reconfigurable, TopicPartition}
 
 import scala.jdk.CollectionConverters._
 import scala.collection.mutable.HashMap
 import scala.collection.{Seq, Set, mutable}
 
-object ControllerChannelManager {
+object ControllerChannelManager extends Logging {
   val QueueSizeMetricName = "QueueSize"
   val RequestRateAndQueueTimeMetricName = "RequestRateAndQueueTimeMs"
 }
@@ -53,12 +53,12 @@ class ControllerChannelManager(controllerContext: ControllerContext,
                                time: Time,
                                metrics: Metrics,
                                stateChangeLogger: StateChangeLogger,
-                               threadNamePrefix: Option[String] = None) extends Logging with KafkaMetricsGroup {
+                               threadNamePrefix: Option[String] = None) extends KafkaMetricsGroup {
   import ControllerChannelManager._
 
   protected val brokerStateInfo = new HashMap[Int, ControllerBrokerStateInfo]
   private val brokerLock = new Object
-  this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
+  protected implicit val logIdent = Some(LogIdent("[Channel manager on controller " + config.brokerId + "]: "))
 
   newGauge("TotalQueueSize",
     () => brokerLock synchronized {
@@ -156,6 +156,7 @@ class ControllerChannelManager(controllerContext: ControllerContext,
         config.requestTimeoutMs,
         config.connectionSetupTimeoutMs,
         config.connectionSetupTimeoutMaxMs,
+        ClientDnsLookup.USE_ALL_DNS_IPS,
         time,
         false,
         new ApiVersions,
@@ -212,6 +213,10 @@ class ControllerChannelManager(controllerContext: ControllerContext,
 case class QueueItem(apiKey: ApiKeys, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                      callback: AbstractResponse => Unit, enqueueTimeMs: Long)
 
+object RequestSendThread extends Logging {
+
+}
+
 class RequestSendThread(val controllerId: Int,
                         val controllerContext: ControllerContext,
                         val queue: BlockingQueue[QueueItem],
@@ -224,7 +229,8 @@ class RequestSendThread(val controllerId: Int,
                         name: String)
   extends ShutdownableThread(name = name) {
 
-  logIdent = s"[RequestSendThread controllerId=$controllerId] "
+  import RequestSendThread._
+  override protected implicit val logIdent = Some(LogIdent(s"[RequestSendThread controllerId=$controllerId] "))
 
   private val socketTimeoutMs = config.controllerSocketTimeoutMs
 
@@ -331,9 +337,15 @@ class ControllerBrokerRequestBatch(config: KafkaConfig,
 
 }
 
+object AbstractControllerBrokerRequestBatch extends Logging {
+
+}
+
 abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
                                                     controllerContext: ControllerContext,
-                                                    stateChangeLogger: StateChangeLogger) extends Logging {
+                                                    stateChangeLogger: StateChangeLogger) {
+  import AbstractControllerBrokerRequestBatch._
+
   val controllerId: Int = config.brokerId
   val leaderAndIsrRequestMap = mutable.Map.empty[Int, mutable.Map[TopicPartition, LeaderAndIsrPartitionState]]
   val stopReplicaRequestMap = mutable.Map.empty[Int, mutable.Map[TopicPartition, StopReplicaPartitionState]]
@@ -485,7 +497,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
         val topicIds = leaderAndIsrPartitionStates.keys
           .map(_.topic)
           .toSet[String]
-          .map(topic => (topic, controllerContext.topicIds.getOrElse(topic, Uuid.ZERO_UUID)))
+          .map(topic => (topic, controllerContext.topicIds(topic)))
           .toMap
         val leaderAndIsrRequestBuilder = new LeaderAndIsrRequest.Builder(leaderAndIsrRequestVersion, controllerId,
           controllerEpoch, brokerEpoch, leaderAndIsrPartitionStates.values.toBuffer.asJava, topicIds.asJava, leaders.asJava)

@@ -17,6 +17,7 @@
 package org.apache.kafka.connect.runtime;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.annotation.VisibleForTesting;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.Config;
 import org.apache.kafka.common.config.ConfigDef;
@@ -229,9 +230,9 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
     }
 
     /*
-     * Retrieves raw config map by connector name.
+     * Retrieves config map by connector name
      */
-    protected abstract Map<String, String> rawConfig(String connName);
+    protected abstract Map<String, String> config(String connName);
 
     @Override
     public void connectorConfig(String connName, Callback<Map<String, String>> callback) {
@@ -265,20 +266,6 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
         );
     }
 
-    protected Map<ConnectorTaskId, Map<String, String>> buildTasksConfig(String connector) {
-        final ClusterConfigState configState = configBackingStore.snapshot();
-
-        if (!configState.contains(connector))
-            return Collections.emptyMap();
-
-        Map<ConnectorTaskId, Map<String, String>> configs = new HashMap<>();
-        for (ConnectorTaskId cti : configState.tasks(connector)) {
-            configs.put(cti, configState.taskConfig(cti));
-        }
-
-        return configs;
-    }
-
     @Override
     public ConnectorStateInfo connectorStatus(String connName) {
         ConnectorStatus connector = statusBackingStore.get(connName);
@@ -298,7 +285,7 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
 
         Collections.sort(taskStates);
 
-        Map<String, String> conf = rawConfig(connName);
+        Map<String, String> conf = config(connName);
         return new ConnectorStateInfo(connName, connectorState, taskStates,
             conf == null ? ConnectorType.UNKNOWN : connectorTypeForClass(conf.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG)));
     }
@@ -517,7 +504,7 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
         return new ConfigInfos(connectorClass.toString(), errorCount, new ArrayList<>(groups), configInfoList);
     }
 
-    // public for testing
+    @VisibleForTesting
     public static ConfigInfos generateResult(String connType, Map<String, ConfigKey> configKeys, List<ConfigValue> configValues, List<String> groups) {
         int errorCount = 0;
         List<ConfigInfo> configInfoList = new LinkedList<>();
@@ -646,7 +633,7 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try {
             t.printStackTrace(new PrintStream(output, false, StandardCharsets.UTF_8.name()));
-            return output.toString(StandardCharsets.UTF_8.name());
+            return output.toString("UTF-8");
         } catch (UnsupportedEncodingException e) {
             return null;
         }
@@ -676,7 +663,7 @@ public abstract class AbstractHerder implements Herder, TaskStatus.Listener, Con
         return result;
     }
 
-    // Visible for testing
+    @VisibleForTesting
     static Set<String> keysWithVariableValues(Map<String, String> rawConfig, Pattern pattern) {
         Set<String> keys = new HashSet<>();
         for (Map.Entry<String, String> config : rawConfig.entrySet()) {

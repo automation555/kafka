@@ -132,7 +132,7 @@ public class WorkerConfig extends AbstractConfig {
     private static final String TASK_SHUTDOWN_GRACEFUL_TIMEOUT_MS_DOC =
             "Amount of time to wait for tasks to shutdown gracefully. This is the total amount of time,"
                     + " not per task. All task have shutdown triggered, then they are waited on sequentially.";
-    private static final String TASK_SHUTDOWN_GRACEFUL_TIMEOUT_MS_DEFAULT = "5000";
+    private static final String TASK_SHUTDOWN_GRACEFUL_TIMEOUT_MS_DEFAULT = "30000";
 
     public static final String OFFSET_COMMIT_INTERVAL_MS_CONFIG = "offset.flush.interval.ms";
     private static final String OFFSET_COMMIT_INTERVAL_MS_DOC
@@ -285,7 +285,8 @@ public class WorkerConfig extends AbstractConfig {
                 .define(CLIENT_DNS_LOOKUP_CONFIG,
                         Type.STRING,
                         ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
-                        in(ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                        in(ClientDnsLookup.DEFAULT.toString(),
+                           ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
                            ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
                         Importance.MEDIUM,
                         CLIENT_DNS_LOOKUP_DOC)

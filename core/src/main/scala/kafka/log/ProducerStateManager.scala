@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentSkipListMap
 import kafka.log.Log.offsetFromFile
 import kafka.server.LogOffsetMetadata
 import kafka.utils.{Logging, nonthreadsafe, threadsafe}
+import org.apache.kafka.common.annotation.VisibleForTesting
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.errors._
 import org.apache.kafka.common.protocol.types._
@@ -201,8 +202,8 @@ private[log] class ProducerAppendInfo(val topicPartition: TopicPartition,
 
   private def checkProducerEpoch(producerEpoch: Short, offset: Long): Unit = {
     if (producerEpoch < updatedEntry.producerEpoch) {
-      val message = s"Epoch of producer $producerId at offset $offset in $topicPartition is $producerEpoch, " +
-        s"which is smaller than the last seen epoch ${updatedEntry.producerEpoch}"
+      val message = s"Producer's epoch at offset $offset in $topicPartition is $producerEpoch, which is " +
+        s"smaller than the last seen epoch ${updatedEntry.producerEpoch}"
 
       if (origin == AppendOrigin.Replication) {
         warn(message)
@@ -219,9 +220,8 @@ private[log] class ProducerAppendInfo(val topicPartition: TopicPartition,
     if (producerEpoch != updatedEntry.producerEpoch) {
       if (appendFirstSeq != 0) {
         if (updatedEntry.producerEpoch != RecordBatch.NO_PRODUCER_EPOCH) {
-          throw new OutOfOrderSequenceException(s"Invalid sequence number for new epoch of producer $producerId " +
-            s"at offset $offset in partition $topicPartition: $producerEpoch (request epoch), $appendFirstSeq (seq. number), " +
-            s"${updatedEntry.producerEpoch} (current producer epoch)")
+          throw new OutOfOrderSequenceException(s"Invalid sequence number for new epoch at offset $offset in " +
+            s"partition $topicPartition: $producerEpoch (request epoch), $appendFirstSeq (seq. number)")
         }
       }
     } else {
@@ -235,7 +235,7 @@ private[log] class ProducerAppendInfo(val topicPartition: TopicPartition,
       // If there is no current producer epoch (possibly because all producer records have been deleted due to
       // retention or the DeleteRecords API) accept writes with any sequence number
       if (!(currentEntry.producerEpoch == RecordBatch.NO_PRODUCER_EPOCH || inSequence(currentLastSeq, appendFirstSeq))) {
-        throw new OutOfOrderSequenceException(s"Out of order sequence number for producer $producerId at " +
+        throw new OutOfOrderSequenceException(s"Out of order sequence number for producerId $producerId at " +
           s"offset $offset in partition $topicPartition: $appendFirstSeq (incoming seq. number), " +
           s"$currentLastSeq (current end sequence number)")
       }
@@ -455,14 +455,10 @@ object ProducerStateManager {
 
   private def isSnapshotFile(file: File): Boolean = file.getName.endsWith(Log.ProducerSnapshotFileSuffix)
 
-  // visible for testing
-  private[log] def listSnapshotFiles(dir: File): Seq[SnapshotFile] = {
-    if (dir.exists && dir.isDirectory) {
-      Option(dir.listFiles).map { files =>
-        files.filter(f => f.isFile && isSnapshotFile(f)).map(SnapshotFile(_)).toSeq
-      }.getOrElse(Seq.empty)
-    } else Seq.empty
-  }
+  @VisibleForTesting
+  private[log] def listSnapshotFiles(dir: File) = if (dir.exists && dir.isDirectory) Option(dir.listFiles).map { files =>
+      files.filter(f => f.isFile && isSnapshotFile(f)).map(SnapshotFile(_)).toSeq
+    }.getOrElse(Seq.empty) else Seq.empty
 }
 
 /**
@@ -626,7 +622,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
     }
   }
 
-  // visible for testing
+  @VisibleForTesting
   private[log] def loadProducerEntry(entry: ProducerStateEntry): Unit = {
     val producerId = entry.producerId
     producers.put(producerId, entry)
@@ -771,7 +767,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
   /**
    * Truncate the producer id mapping and remove all snapshots. This resets the state of the mapping.
    */
-  def truncateFullyAndStartAt(offset: Long): Unit = {
+  def truncate(): Unit = {
     producers.clear()
     ongoingTxns.clear()
     unreplicatedTxns.clear()
@@ -779,7 +775,7 @@ class ProducerStateManager(val topicPartition: TopicPartition,
       removeAndDeleteSnapshot(snapshot.offset)
     }
     lastSnapOffset = 0L
-    lastMapOffset = offset
+    lastMapOffset = 0L
   }
 
   /**

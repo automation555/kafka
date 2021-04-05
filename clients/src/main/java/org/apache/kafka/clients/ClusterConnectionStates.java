@@ -107,6 +107,7 @@ final class ClusterConnectionStates {
         if (state == null) return 0;
         if (state.state.isDisconnected()) {
             long timeWaited = now - state.lastConnectAttemptMs;
+//            System.err.println("!!! timeWait:" + timeWaited + "," + state.lastConnectAttemptMs);
             return Math.max(state.reconnectBackoffMs - timeWaited, 0);
         } else {
             // When connecting or connected, we should be able to delay indefinitely since other events (connection or
@@ -140,8 +141,9 @@ final class ClusterConnectionStates {
      * @param id the id of the connection
      * @param now the current time in ms
      * @param host the host of the connection, to be resolved internally if needed
+     * @param clientDnsLookup the mode of DNS lookup to use when resolving the {@code host}
      */
-    public void connecting(String id, long now, String host) {
+    public void connecting(String id, long now, String host, ClientDnsLookup clientDnsLookup) {
         NodeConnectionState connectionState = nodeState.get(id);
         if (connectionState != null && connectionState.host().equals(host)) {
             connectionState.lastConnectAttemptMs = now;
@@ -157,7 +159,8 @@ final class ClusterConnectionStates {
         // Create a new NodeConnectionState if nodeState does not already contain one
         // for the specified id or if the hostname associated with the node id changed.
         nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
-                reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host, hostResolver));
+                reconnectBackoff.backoff(0), connectionSetupTimeout.backoff(0), host,
+                clientDnsLookup, hostResolver));
         connectingNodes.add(id);
     }
 
@@ -176,6 +179,15 @@ final class ClusterConnectionStates {
      * @param now the current time in ms
      */
     public void disconnected(String id, long now) {
+//        if (Integer.parseInt(id) < 5) {
+//            System.err.println("disconnected:" + id);
+////            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+////            for (int i = 1; i < elements.length; i++) {
+////                final StackTraceElement s = elements[i];
+////                System.err.print(" - at " + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+////            }
+//        }
+        
         NodeConnectionState nodeState = nodeState(id);
         nodeState.lastConnectAttemptMs = now;
         updateReconnectBackoff(nodeState);
@@ -319,6 +331,7 @@ final class ClusterConnectionStates {
      */
     public boolean isDisconnected(String id) {
         NodeConnectionState state = nodeState.get(id);
+//        System.err.println("!!! state:" + state);
         return state != null && state.state.isDisconnected();
     }
 
@@ -475,10 +488,12 @@ final class ClusterConnectionStates {
         private List<InetAddress> addresses;
         private int addressIndex;
         private final String host;
+        private final ClientDnsLookup clientDnsLookup;
         private final HostResolver hostResolver;
 
         private NodeConnectionState(ConnectionState state, long lastConnectAttempt, long reconnectBackoffMs,
-                long connectionSetupTimeoutMs, String host, HostResolver hostResolver) {
+                long connectionSetupTimeoutMs, String host, ClientDnsLookup clientDnsLookup,
+                HostResolver hostResolver) {
             this.state = state;
             this.addresses = Collections.emptyList();
             this.addressIndex = -1;
@@ -489,6 +504,7 @@ final class ClusterConnectionStates {
             this.connectionSetupTimeoutMs = connectionSetupTimeoutMs;
             this.throttleUntilTimeMs = 0;
             this.host = host;
+            this.clientDnsLookup = clientDnsLookup;
             this.hostResolver = hostResolver;
         }
 
@@ -504,7 +520,7 @@ final class ClusterConnectionStates {
         private InetAddress currentAddress() throws UnknownHostException {
             if (addresses.isEmpty()) {
                 // (Re-)initialize list
-                addresses = ClientUtils.resolve(host, hostResolver);
+                addresses = ClientUtils.resolve(host, clientDnsLookup, hostResolver);
                 addressIndex = 0;
             }
 

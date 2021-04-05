@@ -207,7 +207,7 @@ class FinalizedFeatureChangeListener(private val finalizedFeatureCache: Finalize
    * will exit eventually.
    *
    * @param waitOnceForCacheUpdateMs   # of milli seconds to wait for feature cache to be updated once.
-   *                                   (should be > 0)
+   *                                   If this parameter <= 0, no wait operation happens.
    *
    * @throws Exception if feature incompatibility check could not be finished in a timely manner
    */

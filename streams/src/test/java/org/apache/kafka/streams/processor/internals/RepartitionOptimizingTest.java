@@ -88,7 +88,7 @@ public class RepartitionOptimizingTest {
     private Properties streamsConfiguration;
     private TopologyTestDriver topologyTestDriver;
 
-    private final Initializer<Integer> initializer = () -> 0;
+    private final Initializer<String, Integer> initializer = (String key) -> 0;
     private final Aggregator<String, String, Integer> aggregator = (k, v, agg) -> agg + v.length();
     private final Reducer<String> reducer = (v1, v2) -> v1 + ":" + v2;
 
@@ -185,8 +185,8 @@ public class RepartitionOptimizingTest {
             .filter((k, v) -> k.equals("A"), Named.as("join-filter"))
             .join(countStream, (v1, v2) -> v1 + ":" + v2.toString(),
                   JoinWindows.of(ofMillis(5000)),
-                  StreamJoined.<String, String, Long>with(Stores.inMemoryWindowStore("join-store", ofDays(1).plus(ofMillis(10000)), ofMillis(10000), true),
-                                                          Stores.inMemoryWindowStore("other-join-store", ofDays(1).plus(ofMillis(10000)), ofMillis(10000), true))
+                  StreamJoined.<String, String, Long>with(Stores.inMemoryWindowStore("join-store", ofDays(1), ofMillis(10000), true),
+                                                          Stores.inMemoryWindowStore("other-join-store",  ofDays(1), ofMillis(10000), true))
                                                     .withName("join")
                                                     .withKeySerde(Serdes.String())
                                                     .withValueSerde(Serdes.String())

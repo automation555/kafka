@@ -37,6 +37,7 @@ import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetric
 
 public class ProcessorNode<KIn, VIn, KOut, VOut> {
 
+    // TODO: 'children' can be removed when #forward() via index is removed
     private final List<ProcessorNode<KOut, VOut, ?, ?>> children;
     private final Map<String, ProcessorNode<KOut, VOut, ?, ?>> childByName;
 

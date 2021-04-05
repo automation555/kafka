@@ -396,6 +396,42 @@ public class SubscriptionState {
             log.debug("Skipping reset of partition {} since an alternative reset has been requested", tp);
         } else {
             log.info("Resetting offset for partition {} to position {}.", tp, position);
+            if (position.offset <= 1) {
+                final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+                for (int i = 1; i < elements.length; i++) {
+                    final StackTraceElement s = elements[i];
+                    if ((i == 1 && s.getFileName().equals("SubscriptionState.java") && s.getLineNumber() == 400) ||
+                        (i == 2 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 755) ||
+                        (i == 3 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 779) ||
+                        (i == 4 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 767) ||
+                        (i == 5 && s.getFileName().equals("RequestFuture.java") && s.getLineNumber() == 169) ||
+                        (i == 6 && s.getFileName().equals("RequestFuture.java") && s.getLineNumber() == 129) ||
+                        (i == 7 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 1107) ||
+                        (i == 8 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 133) ||
+                        (i == 9 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 1014) ||
+                        (i == 10 && s.getFileName().equals("Fetcher.java") && s.getLineNumber() == 1009) ||
+                        (i == 11 && s.getFileName().equals("RequestFuture.java") && s.getLineNumber() == 206) ||
+                        (i == 12 && s.getFileName().equals("RequestFuture.java") && s.getLineNumber() == 169) ||
+                        (i == 13 && s.getFileName().equals("RequestFuture.java") && s.getLineNumber() == 129) ||
+                        (i == 14 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 602) ||
+                        (i == 15 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 412) ||
+                        (i == 16 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 297) ||
+                        (i == 17 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 236) ||
+                        (i == 18 && s.getFileName().equals("KafkaConsumer.java") && s.getLineNumber() == 1299) ||
+                        (i == 19 && s.getFileName().equals("KafkaConsumer.java") && s.getLineNumber() == 1237) ||
+                        (i == 20 && s.getFileName().equals("KafkaConsumer.java") && s.getLineNumber() == 1210)) {
+//                        (i == 1 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 247) ||
+//                        (i == 1 && s.getFileName().equals("ConsumerNetworkClient.java") && s.getLineNumber() == 306) ||
+//                        (i == 1 && s.getFileName().equals("AbstractCoordinator.java") && s.getLineNumber() == 1009) ||) {
+                        continue;
+                    }
+//                    System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+                    if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+                        break;
+                    }
+                }
+            }
+            System.err.print(tp + ":" + position.offset + " ");
             state.seekUnvalidated(position);
         }
     }
@@ -440,6 +476,16 @@ public class SubscriptionState {
     }
 
     public synchronized void position(TopicPartition tp, FetchPosition position) {
+//        System.err.print("u p:" + tp);
+//        final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+//        for (int i = 1; i < elements.length; i++) {
+//            final StackTraceElement s = elements[i];
+//            System.err.print(" at " + s.getClassName() + "." + s.getMethodName() + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+//            if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+//                break;
+//            }
+//        }
+//        System.err.println("");
         assignedState(tp).position(position);
     }
 
@@ -537,15 +583,12 @@ public class SubscriptionState {
         return assignedState(tp).position;
     }
 
-    public synchronized Long partitionLag(TopicPartition tp, IsolationLevel isolationLevel) {
+    synchronized Long partitionLag(TopicPartition tp, IsolationLevel isolationLevel) {
         TopicPartitionState topicPartitionState = assignedState(tp);
-        if (topicPartitionState.position == null) {
-            return null;
-        } else if (isolationLevel == IsolationLevel.READ_COMMITTED) {
+        if (isolationLevel == IsolationLevel.READ_COMMITTED)
             return topicPartitionState.lastStableOffset == null ? null : topicPartitionState.lastStableOffset - topicPartitionState.position.offset;
-        } else {
+        else
             return topicPartitionState.highWatermark == null ? null : topicPartitionState.highWatermark - topicPartitionState.position.offset;
-        }
     }
 
     synchronized Long partitionLead(TopicPartition tp) {
@@ -767,6 +810,7 @@ public class SubscriptionState {
         }
 
         private void transitionState(FetchState newState, Runnable runIfTransitioned) {
+//            System.err.println("!!! crr state:" + this.fetchState + ", next state:" + newState);
             FetchState nextState = this.fetchState.transitionTo(newState);
             if (nextState.equals(newState)) {
                 this.fetchState = nextState;
@@ -807,6 +851,13 @@ public class SubscriptionState {
         }
 
         private void reset(OffsetResetStrategy strategy) {
+//            System.err.println("!!! AWAIT_RESET");
+//            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+//            for (int i = 1; i < elements.length; i++) {
+//                final StackTraceElement s = elements[i];
+//                System.err.print("\tat " + s.getClassName() + "." + s.getMethodName() + "(" + s.getFileName() + ":" + s.getLineNumber() + ")");
+//            }
+//            System.err.println("");
             transitionState(FetchStates.AWAIT_RESET, () -> {
                 this.resetStrategy = strategy;
                 this.nextRetryTimeMs = null;
@@ -844,6 +895,17 @@ public class SubscriptionState {
             if (position != null) {
                 transitionState(FetchStates.FETCHING, () -> {
                     this.position = new FetchPosition(position.offset, position.offsetEpoch, currentLeaderAndEpoch);
+                    if (this.position.offset <= 0) {
+                        final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+                        for (int i = 1; i < elements.length; i++) {
+                            final StackTraceElement s = elements[i];
+                            System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+                            if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+                                break;
+                            }
+                        }
+                        System.err.println(" po1:" + this.position.offset);
+                    }
                     this.nextRetryTimeMs = null;
                 });
             }
@@ -852,12 +914,34 @@ public class SubscriptionState {
         private void validatePosition(FetchPosition position) {
             if (position.offsetEpoch.isPresent() && position.currentLeader.epoch.isPresent()) {
                 transitionState(FetchStates.AWAIT_VALIDATION, () -> {
+                    if (position.offset <= 0) {
+                        final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+                        for (int i = 1; i < elements.length; i++) {
+                            final StackTraceElement s = elements[i];
+                            System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+                            if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+                                break;
+                            }
+                        }
+                        System.err.println(" po2:" + position.offset);
+                    }
                     this.position = position;
                     this.nextRetryTimeMs = null;
                 });
             } else {
                 // If we have no epoch information for the current position, then we can skip validation
                 transitionState(FetchStates.FETCHING, () -> {
+                    if (position.offset <= 1) {
+                        final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+                        for (int i = 1; i < elements.length; i++) {
+                            final StackTraceElement s = elements[i];
+//                            System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+                            if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+                                break;
+                            }
+                        }
+                        System.err.print(" po3:" + position.offset);
+                    }
                     this.position = position;
                     this.nextRetryTimeMs = null;
                 });
@@ -907,6 +991,17 @@ public class SubscriptionState {
 
         private void seekValidated(FetchPosition position) {
             transitionState(FetchStates.FETCHING, () -> {
+                if (position.offset <= 1) {
+//                    final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+//                    for (int i = 1; i < elements.length; i++) {
+//                        final StackTraceElement s = elements[i];
+//                        System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+//                        if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+//                            break;
+//                        }
+//                    }
+                    System.err.print(" po4 " + position.offset);
+                }
                 this.position = position;
                 this.resetStrategy = null;
                 this.nextRetryTimeMs = null;
@@ -922,6 +1017,18 @@ public class SubscriptionState {
             if (!hasValidPosition())
                 throw new IllegalStateException("Cannot set a new position without a valid current position");
             this.position = position;
+
+            final StackTraceElement[] elements = Thread.currentThread().getStackTrace();
+            if (position.offset <= 0) {
+                for (int i = 1; i < elements.length; i++) {
+                    final StackTraceElement s = elements[i];
+//                    System.err.print(" - " + s.getFileName() + ":" + s.getLineNumber());
+                    if (s.getFileName() != null && s.getFileName().equals("PlaintextConsumerTest.scala")) {
+                        break;
+                    }
+                }
+                System.err.println(" po:" + position.offset);
+            }
         }
 
         private FetchPosition validPosition() {

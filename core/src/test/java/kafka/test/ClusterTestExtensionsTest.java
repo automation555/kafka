@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.test;
 
 import kafka.test.annotation.AutoStart;
@@ -25,20 +24,20 @@ import kafka.test.annotation.ClusterTestDefaults;
 import kafka.test.annotation.ClusterTests;
 import kafka.test.annotation.Type;
 import kafka.test.junit.ClusterTestExtensions;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 
-
-@ClusterTestDefaults(clusterType = Type.ZK)   // Set defaults for a few params in @ClusterTest(s)
+@ClusterTestDefaults(clusterType = Type.ZK) // Set defaults for a few params in @ClusterTest(s)
 @ExtendWith(ClusterTestExtensions.class)
 public class ClusterTestExtensionsTest {
 
     private final ClusterInstance clusterInstance;
     private final ClusterConfig config;
 
-    ClusterTestExtensionsTest(ClusterInstance clusterInstance, ClusterConfig config) {     // Constructor injections
+    ClusterTestExtensionsTest(ClusterInstance clusterInstance, ClusterConfig config) { // Constructor injections
         this.clusterInstance = clusterInstance;
         this.config = config;
     }
@@ -48,7 +47,8 @@ public class ClusterTestExtensionsTest {
         clusterGenerator.accept(ClusterConfig.defaultClusterBuilder().name("Generated Test").build());
     }
 
-    // BeforeEach run after class construction, but before cluster initialization and test invocation
+    // BeforeEach run after class construction, but before cluster initialization
+    // and test invocation
     @BeforeEach
     public void beforeEach(ClusterConfig config) {
         Assertions.assertSame(this.config, config, "Injected objects should be the same");
@@ -61,12 +61,15 @@ public class ClusterTestExtensionsTest {
         Assertions.assertSame(this.config, config, "Injected objects should be the same");
     }
 
-    // With no params, configuration comes from the annotation defaults as well as @ClusterTestDefaults (if present)
+    // With no params, configuration comes from the annotation defaults as well as
+    // @ClusterTestDefaults (if present)
     @ClusterTest
     public void testClusterTest(ClusterConfig config, ClusterInstance clusterInstance) {
         Assertions.assertSame(this.config, config, "Injected objects should be the same");
         Assertions.assertSame(this.clusterInstance, clusterInstance, "Injected objects should be the same");
-        Assertions.assertEquals(clusterInstance.clusterType(), ClusterInstance.ClusterType.ZK); // From the class level default
+        Assertions.assertEquals(clusterInstance.clusterType(), ClusterInstance.ClusterType.ZK); // From the
+                                                                                                // class level
+                                                                                                // default
         Assertions.assertEquals(clusterInstance.config().serverProperties().getProperty("before"), "each");
     }
 
@@ -84,13 +87,10 @@ public class ClusterTestExtensionsTest {
     @ClusterTests({
         @ClusterTest(name = "cluster-tests-1", clusterType = Type.ZK, serverProperties = {
             @ClusterConfigProperty(key = "foo", value = "bar"),
-            @ClusterConfigProperty(key = "spam", value = "eggs")
-        }),
+            @ClusterConfigProperty(key = "spam", value = "eggs")}),
         @ClusterTest(name = "cluster-tests-2", clusterType = Type.RAFT, serverProperties = {
             @ClusterConfigProperty(key = "foo", value = "baz"),
-            @ClusterConfigProperty(key = "spam", value = "eggz")
-        })
-    })
+            @ClusterConfigProperty(key = "spam", value = "eggz")})})
     public void testClusterTests() {
         if (clusterInstance.clusterType().equals(ClusterInstance.ClusterType.ZK)) {
             Assertions.assertEquals(clusterInstance.config().serverProperties().getProperty("foo"), "bar");
@@ -109,4 +109,5 @@ public class ClusterTestExtensionsTest {
         clusterInstance.start();
         Assertions.assertNotNull(clusterInstance.anyBrokerSocketServer());
     }
+
 }

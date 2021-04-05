@@ -164,7 +164,7 @@ public class SaslServerAuthenticatorTest {
             ApiMessageType.ListenerType.ZK_BROKER);
         return new SaslServerAuthenticator(configs, callbackHandlers, "node", subjects, null,
                 new ListenerName("ssl"), SecurityProtocol.SASL_SSL, transportLayer, Collections.emptyMap(),
-                metadataRegistry, Time.SYSTEM, () -> apiVersionsResponse);
+                metadataRegistry, Time.SYSTEM, requestVersion -> apiVersionsResponse);
     }
 
 }

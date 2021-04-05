@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package kafka.testkit;
 
 public class ControllerNode implements TestKitNode {
@@ -41,6 +40,7 @@ public class ControllerNode implements TestKitNode {
             }
             return new ControllerNode(id, metadataDirectory);
         }
+
     }
 
     private final int id;
@@ -60,4 +60,5 @@ public class ControllerNode implements TestKitNode {
     public String metadataDirectory() {
         return metadataDirectory;
     }
+
 }

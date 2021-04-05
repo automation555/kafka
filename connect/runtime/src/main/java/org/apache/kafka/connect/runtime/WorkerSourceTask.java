@@ -60,7 +60,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -87,7 +86,6 @@ class WorkerSourceTask extends WorkerTask {
     private final TopicAdmin admin;
     private final CloseableOffsetStorageReader offsetReader;
     private final OffsetStorageWriter offsetWriter;
-    private final Executor closeExecutor;
     private final SourceTaskMetricsGroup sourceTaskMetricsGroup;
     private final AtomicReference<Exception> producerSendException;
     private final boolean isTopicTrackingEnabled;
@@ -104,7 +102,9 @@ class WorkerSourceTask extends WorkerTask {
     private CountDownLatch stopRequestedLatch;
 
     private Map<String, String> taskConfig;
-    private boolean started = false;
+    private boolean finishedStart = false;
+    private boolean startedShutdownBeforeStartCompleted = false;
+    private boolean stopped = false;
 
     public WorkerSourceTask(ConnectorTaskId id,
                             SourceTask task,
@@ -125,8 +125,7 @@ class WorkerSourceTask extends WorkerTask {
                             ClassLoader loader,
                             Time time,
                             RetryWithToleranceOperator retryWithToleranceOperator,
-                            StatusBackingStore statusBackingStore,
-                            Executor closeExecutor) {
+                            StatusBackingStore statusBackingStore) {
 
         super(id, statusListener, initialState, loader, connectMetrics,
                 retryWithToleranceOperator, time, statusBackingStore);
@@ -142,7 +141,6 @@ class WorkerSourceTask extends WorkerTask {
         this.admin = admin;
         this.offsetReader = offsetReader;
         this.offsetWriter = offsetWriter;
-        this.closeExecutor = closeExecutor;
 
         this.toSend = null;
         this.lastSendFailed = false;
@@ -168,16 +166,16 @@ class WorkerSourceTask extends WorkerTask {
 
     @Override
     protected void close() {
-        if (started) {
+        if (!shouldPause()) {
+            tryStop();
+        }
+        if (producer != null) {
             try {
-                task.stop();
+                producer.close(Duration.ofSeconds(30));
             } catch (Throwable t) {
-                log.warn("Could not stop task", t);
+                log.warn("Could not close producer", t);
             }
         }
-
-        closeProducer(Duration.ofSeconds(30));
-
         if (admin != null) {
             try {
                 admin.close(Duration.ofSeconds(30));
@@ -202,35 +200,45 @@ class WorkerSourceTask extends WorkerTask {
     public void cancel() {
         super.cancel();
         offsetReader.close();
-        // We proactively close the producer here as the main work thread for the task may
-        // be blocked indefinitely in a call to Producer::send if automatic topic creation is
-        // not enabled on either the connector or the Kafka cluster. Closing the producer should
-        // unblock it in that case and allow shutdown to proceed normally.
-        // With a duration of 0, the producer's own shutdown logic should be fairly quick,
-        // but closing user-pluggable classes like interceptors may lag indefinitely. So, we
-        // call close on a separate thread in order to avoid blocking the herder's tick thread.
-        closeExecutor.execute(() -> closeProducer(Duration.ZERO));
     }
 
     @Override
     public void stop() {
         super.stop();
         stopRequestedLatch.countDown();
+        synchronized (this) {
+            if (finishedStart)
+                tryStop();
+            else
+                startedShutdownBeforeStartCompleted = true;
+        }
+    }
+
+    private synchronized void tryStop() {
+        if (!stopped) {
+            try {
+                task.stop();
+                stopped = true;
+            } catch (Throwable t) {
+                log.warn("Could not stop task", t);
+            }
+        }
     }
 
     @Override
     public void execute() {
         try {
-            // If we try to start the task at all by invoking initialize, then count this as
-            // "started" and expect a subsequent call to the task's stop() method
-            // to properly clean up any resources allocated by its initialize() or 
-            // start() methods. If the task throws an exception during stop(),
-            // the worst thing that happens is another exception gets logged for an already-
-            // failed task
-            started = true;
             task.initialize(new WorkerSourceTaskContext(offsetReader, this, configState));
             task.start(taskConfig);
             log.info("{} Source task finished initialization and start", this);
+            synchronized (this) {
+                if (startedShutdownBeforeStartCompleted) {
+                    tryStop();
+                    return;
+                }
+                finishedStart = true;
+            }
+
             while (!isStopping()) {
                 if (shouldPause()) {
                     onPause();
@@ -267,16 +275,6 @@ class WorkerSourceTask extends WorkerTask {
         }
     }
 
-    private void closeProducer(Duration duration) {
-        if (producer != null) {
-            try {
-                producer.close(duration);
-            } catch (Throwable t) {
-                log.warn("Could not close producer for {}", id, t);
-            }
-        }
-    }
-
     private void maybeThrowProducerSendException() {
         if (producerSendException.get() != null) {
             throw new ConnectException(
@@ -310,10 +308,10 @@ class WorkerSourceTask extends WorkerTask {
 
         RecordHeaders headers = retryWithToleranceOperator.execute(() -> convertHeaderFor(record), Stage.HEADER_CONVERTER, headerConverter.getClass());
 
-        byte[] key = retryWithToleranceOperator.execute(() -> keyConverter.fromConnectData(record.topic(), headers, record.keySchema(), record.key()),
+        byte[] key = retryWithToleranceOperator.execute(() -> convertKey(record, headers),
                 Stage.KEY_CONVERTER, keyConverter.getClass());
 
-        byte[] value = retryWithToleranceOperator.execute(() -> valueConverter.fromConnectData(record.topic(), headers, record.valueSchema(), record.value()),
+        byte[] value = retryWithToleranceOperator.execute(() -> convertValue(record, headers),
                 Stage.VALUE_CONVERTER, valueConverter.getClass());
 
         if (retryWithToleranceOperator.failed()) {
@@ -430,15 +428,10 @@ class WorkerSourceTask extends WorkerTask {
         log.debug("Topic '{}' matched topic creation group: {}", topic, topicGroup);
         NewTopic newTopic = topicGroup.newTopic(topic);
 
-        TopicAdmin.TopicCreationResponse response = admin.createOrFindTopics(newTopic);
-        if (response.isCreated(newTopic.name())) {
+        if (admin.createTopic(newTopic)) {
             topicCreation.addTopic(topic);
             log.info("Created topic '{}' using creation group {}", newTopic, topicGroup);
-        } else if (response.isExisting(newTopic.name())) {
-            topicCreation.addTopic(topic);
-            log.info("Found existing topic '{}'", newTopic);
         } else {
-            // The topic still does not exist and could not be created, so treat it as a task failure
             log.warn("Request to create new topic '{}' failed", topic);
             throw new ConnectException("Task failed to create new topic " + newTopic + ". Ensure "
                     + "that the task is authorized to create topics or that the topic exists and "
@@ -506,9 +499,7 @@ class WorkerSourceTask extends WorkerTask {
             while (!outstandingMessages.isEmpty()) {
                 try {
                     long timeoutMs = timeout - time.milliseconds();
-                    // If the task has been cancelled, no more records will be sent from the producer; in that case, if any outstanding messages remain,
-                    // we can stop flushing immediately
-                    if (isCancelled() || timeoutMs <= 0) {
+                    if (timeoutMs <= 0) {
                         log.error("{} Failed to flush, timed out while waiting for producer to flush outstanding {} messages", this, outstandingMessages.size());
                         finishFailedFlush();
                         recordCommitFailure(time.milliseconds() - started, null);
@@ -612,6 +603,30 @@ class WorkerSourceTask extends WorkerTask {
         outstandingMessages = outstandingMessagesBacklog;
         outstandingMessagesBacklog = temp;
         flushing = false;
+    }
+
+    private byte[] convertKey(SourceRecord record, RecordHeaders headers) {
+        try {
+            return keyConverter.fromConnectData(record.topic(), headers, record.keySchema(), record.key());
+        } catch (Exception e) {
+            String errorMessage = String.format("Error while serializing the key for a source record to topic: %s. Check the key.converter and key.converter.* " +
+                    "settings in the connector configuration, or in the worker configuration if the connector is inheriting the connector configuration. " +
+                    "Underlying converter error: %s", record.topic(), e.getMessage());
+            log.error(errorMessage, e);
+            throw new RetriableException(errorMessage, e);
+        }
+    }
+
+    private byte[] convertValue(SourceRecord record, RecordHeaders headers) {
+        try {
+            return valueConverter.fromConnectData(record.topic(), headers, record.valueSchema(), record.value());
+        } catch (Exception e) {
+            String errorMessage = String.format("Error while serializing the value for a source record to topic: %s. Check the value.converter and value.converter.* " +
+                    "settings in the connector configuration, or in the worker configuration if the connector is inheriting the connector configuration. " +
+                    "Underlying converter error: %s", record.topic(), e.getMessage());
+            log.error(errorMessage, e);
+            throw new RetriableException(errorMessage, e);
+        }
     }
 
     @Override

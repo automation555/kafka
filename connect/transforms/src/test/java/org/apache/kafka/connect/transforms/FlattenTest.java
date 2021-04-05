@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -136,8 +135,8 @@ public class FlattenTest {
         supportedTypes.put("string", "stringy");
         supportedTypes.put("bytes", "bytes".getBytes());
 
-        Map<String, Object> oneLevelNestedMap = Collections.singletonMap("B", supportedTypes);
-        Map<String, Object> twoLevelNestedMap = Collections.singletonMap("A", oneLevelNestedMap);
+        Map<String, Object> oneLevelNestedMap = Collections.singletonMap("B", (Object) supportedTypes);
+        Map<String, Object> twoLevelNestedMap = Collections.singletonMap("A", (Object) oneLevelNestedMap);
 
         SourceRecord transformed = xformValue.apply(new SourceRecord(null, null,
                 "topic", 0,
@@ -233,7 +232,7 @@ public class FlattenTest {
         Map<String, Object> supportedTypes = new HashMap<>();
         supportedTypes.put("opt_int32", null);
 
-        Map<String, Object> oneLevelNestedMap = Collections.singletonMap("B", supportedTypes);
+        Map<String, Object> oneLevelNestedMap = Collections.singletonMap("B", (Object) supportedTypes);
 
         SourceRecord transformed = xformValue.apply(new SourceRecord(null, null,
                 "topic", 0,
@@ -263,11 +262,23 @@ public class FlattenTest {
     }
 
     @Test
-    public void testUnsupportedTypeInMap() {
-        xformValue.configure(Collections.<String, String>emptyMap());
+    public void testSchemalessArray() {
+        xformValue.configure(Collections.emptyMap());
         Object value = Collections.singletonMap("foo", Arrays.asList("bar", "baz"));
-        assertThrows(DataException.class, () -> xformValue.apply(new SourceRecord(null, null,
-                "topic", 0, null, value)));
+        assertEquals(value, xformValue.apply(new SourceRecord(null, null, "topic", null, null, null, value)).value());
+    }
+
+    @Test
+    public void testArrayWithSchema() {
+        xformValue.configure(Collections.emptyMap());
+        Schema structSchema = SchemaBuilder.struct()
+            .field("foo", SchemaBuilder.array(Schema.STRING_SCHEMA).doc("durk").build())
+            .build();
+        Struct value = new Struct(structSchema);
+        value.put("foo", Arrays.asList("bar", "baz"));
+        SourceRecord transformed = xformValue.apply(new SourceRecord(null, null, "topic", null, null, structSchema, value)); 
+        assertEquals(value, transformed.value());
+        assertEquals(structSchema, transformed.valueSchema());
     }
 
     @Test
@@ -326,48 +337,5 @@ public class FlattenTest {
 
         assertNull(transformedRecord.value());
         assertEquals(simpleStructSchema, transformedRecord.valueSchema());
-    }
-
-    @Test
-    public void testMapWithNullFields() {
-        xformValue.configure(Collections.emptyMap());
-
-        // Use a LinkedHashMap to ensure the SMT sees entries in a specific order
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("firstNull", null);
-        value.put("firstNonNull", "nonNull");
-        value.put("secondNull", null);
-        value.put("secondNonNull", "alsoNonNull");
-        value.put("thirdNonNull", null);
-
-        final SourceRecord record = new SourceRecord(null, null, "test", 0, null, value);
-        final SourceRecord transformedRecord = xformValue.apply(record);
-
-        assertEquals(value, transformedRecord.value());
-    }
-
-    @Test
-    public void testStructWithNullFields() {
-        xformValue.configure(Collections.emptyMap());
-
-        final Schema structSchema = SchemaBuilder.struct()
-            .field("firstNull", Schema.OPTIONAL_STRING_SCHEMA)
-            .field("firstNonNull", Schema.OPTIONAL_STRING_SCHEMA)
-            .field("secondNull", Schema.OPTIONAL_STRING_SCHEMA)
-            .field("secondNonNull", Schema.OPTIONAL_STRING_SCHEMA)
-            .field("thirdNonNull", Schema.OPTIONAL_STRING_SCHEMA)
-            .build();
-
-        final Struct value = new Struct(structSchema);
-        value.put("firstNull", null);
-        value.put("firstNonNull", "nonNull");
-        value.put("secondNull", null);
-        value.put("secondNonNull", "alsoNonNull");
-        value.put("thirdNonNull", null);
-
-        final SourceRecord record = new SourceRecord(null, null, "test", 0, structSchema, value);
-        final SourceRecord transformedRecord = xformValue.apply(record);
-
-        assertEquals(value, transformedRecord.value());
     }
 }

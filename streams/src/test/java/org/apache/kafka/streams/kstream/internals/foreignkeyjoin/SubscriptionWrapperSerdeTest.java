@@ -18,12 +18,11 @@ package org.apache.kafka.streams.kstream.internals.foreignkeyjoin;
 
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.streams.state.internals.Murmur3;
+import org.apache.kafka.common.utils.Murmur3;
 import org.junit.Test;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 public class SubscriptionWrapperSerdeTest {
@@ -58,21 +57,24 @@ public class SubscriptionWrapperSerdeTest {
         assertEquals(originalKey, deserialized.getPrimaryKey());
     }
 
-    @Test
+    @Test (expected = NullPointerException.class)
     @SuppressWarnings("unchecked")
     public void shouldThrowExceptionOnNullKeyTest() {
         final String originalKey = null;
+        final SubscriptionWrapperSerde swSerde = new SubscriptionWrapperSerde<>(() -> "pkTopic", Serdes.String());
         final long[] hashedValue = Murmur3.hash128(new byte[] {(byte) 0xFF, (byte) 0xAA, (byte) 0x00, (byte) 0x19});
-        assertThrows(NullPointerException.class, () -> new SubscriptionWrapper<>(hashedValue,
-            SubscriptionWrapper.Instruction.PROPAGATE_ONLY_IF_FK_VAL_AVAILABLE, originalKey));
+        final SubscriptionWrapper wrapper = new SubscriptionWrapper<>(hashedValue, SubscriptionWrapper.Instruction.PROPAGATE_ONLY_IF_FK_VAL_AVAILABLE, originalKey);
+        swSerde.serializer().serialize(null, wrapper);
     }
 
-    @Test
+    @Test (expected = NullPointerException.class)
     @SuppressWarnings("unchecked")
     public void shouldThrowExceptionOnNullInstructionTest() {
         final String originalKey = "originalKey";
+        final SubscriptionWrapperSerde swSerde = new SubscriptionWrapperSerde<>(() -> "pkTopic", Serdes.String());
         final long[] hashedValue = Murmur3.hash128(new byte[] {(byte) 0xFF, (byte) 0xAA, (byte) 0x00, (byte) 0x19});
-        assertThrows(NullPointerException.class, () -> new SubscriptionWrapper<>(hashedValue, null, originalKey));
+        final SubscriptionWrapper wrapper = new SubscriptionWrapper<>(hashedValue, null, originalKey);
+        swSerde.serializer().serialize(null, wrapper);
     }
 
     @Test (expected = UnsupportedVersionException.class)

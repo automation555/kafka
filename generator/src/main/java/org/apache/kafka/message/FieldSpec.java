@@ -60,6 +60,8 @@ public final class FieldSpec {
 
     private final boolean zeroCopy;
 
+    private final FieldNameStrategy jsonFieldNameStrategy;
+
     @JsonCreator
     public FieldSpec(@JsonProperty("name") String name,
                      @JsonProperty("versions") String versions,
@@ -74,7 +76,8 @@ public final class FieldSpec {
                      @JsonProperty("taggedVersions") String taggedVersions,
                      @JsonProperty("flexibleVersions") String flexibleVersions,
                      @JsonProperty("tag") Integer tag,
-                     @JsonProperty("zeroCopy") boolean zeroCopy) {
+                     @JsonProperty("zeroCopy") boolean zeroCopy,
+                     @JsonProperty("jsonFieldNameStrategy") FieldNameStrategy jsonFieldNameStrategy) {
         this.name = Objects.requireNonNull(name);
         if (!VALID_FIELD_NAMES.matcher(this.name).matches()) {
             throw new RuntimeException("Invalid field name " + this.name);
@@ -133,6 +136,8 @@ public final class FieldSpec {
             throw new RuntimeException("Invalid zeroCopy value for " + name +
                 ". Only fields of type bytes can use zeroCopy flag.");
         }
+
+        this.jsonFieldNameStrategy = jsonFieldNameStrategy == null ? FieldNameStrategy.CAMEL : jsonFieldNameStrategy;
     }
 
     private void checkTagInvariants() {
@@ -275,6 +280,11 @@ public final class FieldSpec {
         return zeroCopy;
     }
 
+    @JsonProperty("jsonFieldStrategy")
+    public FieldNameStrategy jsonFieldNameStrategy() {
+        return jsonFieldNameStrategy;
+    }
+
     /**
      * Get a string representation of the field default.
      *
@@ -299,7 +309,6 @@ public final class FieldSpec {
             }
         } else if ((type instanceof FieldType.Int8FieldType) ||
             (type instanceof FieldType.Int16FieldType) ||
-            (type instanceof FieldType.Uint16FieldType) ||
             (type instanceof FieldType.Int32FieldType) ||
             (type instanceof FieldType.Int64FieldType)) {
             int base = 10;
@@ -331,22 +340,6 @@ public final class FieldSpec {
                             name + ": " + defaultString, e);
                     }
                     return "(short) " + fieldDefault;
-                }
-            } else if (type instanceof FieldType.Uint16FieldType) {
-                if (defaultString.isEmpty()) {
-                    return "0";
-                } else {
-                    try {
-                        int value = Integer.valueOf(defaultString, base);
-                        if (value < 0 || value > 65535) {
-                            throw new RuntimeException("Invalid default for uint16 field " +
-                                    name + ": out of range.");
-                        }
-                    } catch (NumberFormatException e) {
-                        throw new RuntimeException("Invalid default for uint16 field " +
-                            name + ": " + defaultString, e);
-                    }
-                    return fieldDefault;
                 }
             } else if (type instanceof FieldType.Int32FieldType) {
                 if (defaultString.isEmpty()) {
@@ -474,8 +467,6 @@ public final class FieldSpec {
             return "byte";
         } else if (type instanceof FieldType.Int16FieldType) {
             return "short";
-        } else if (type instanceof FieldType.Uint16FieldType) {
-            return "int";
         } else if (type instanceof FieldType.Int32FieldType) {
             return "int";
         } else if (type instanceof FieldType.Int64FieldType) {
@@ -589,7 +580,7 @@ public final class FieldSpec {
                         fieldPrefix, camelCaseName(), fieldPrefix, camelCaseName());
                 }
             }
-        } else if (type().isString() || type().isStruct() || type() instanceof FieldType.UUIDFieldType) {
+        } else if (type().isString() || type().isStruct()) {
             if (fieldDefault.equals("null")) {
                 buffer.printf("if (%s%s != null) {%n", fieldPrefix, camelCaseName());
             } else if (nullableVersions.empty()) {

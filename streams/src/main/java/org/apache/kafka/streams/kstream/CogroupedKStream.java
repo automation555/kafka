@@ -24,7 +24,6 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
-import org.apache.kafka.streams.state.TimestampedKeyValueStore;
 
 /**
  * {@code CogroupedKStream} is an abstraction of multiple <i>grouped</i> record streams of {@link KeyValue} pairs.
@@ -109,7 +108,7 @@ public interface CogroupedKStream<K, VOut> {
      * @return a {@link KTable} that contains "update" records with unmodified keys, and values that
      * represent the latest (rolling) aggregate for each key
      */
-    KTable<K, VOut> aggregate(final Initializer<VOut> initializer);
+    KTable<K, VOut> aggregate(final Initializer<K, VOut> initializer);
 
     /**
      * Aggregate the values of records in these streams by the grouped key.
@@ -160,7 +159,7 @@ public interface CogroupedKStream<K, VOut> {
      * @return a {@link KTable} that contains "update" records with unmodified keys, and values that
      * represent the latest (rolling) aggregate for each key
      */
-    KTable<K, VOut> aggregate(final Initializer<VOut> initializer,
+    KTable<K, VOut> aggregate(final Initializer<K, VOut> initializer,
                               final Named named);
 
     /**
@@ -212,7 +211,7 @@ public interface CogroupedKStream<K, VOut> {
      * @return a {@link KTable} that contains "update" records with unmodified keys, and values that
      * represent the latest (rolling) aggregate for each key
      */
-    KTable<K, VOut> aggregate(final Initializer<VOut> initializer,
+    KTable<K, VOut> aggregate(final Initializer<K, VOut> initializer,
                               final Materialized<K, VOut, KeyValueStore<Bytes, byte[]>> materialized);
 
     /**
@@ -266,7 +265,7 @@ public interface CogroupedKStream<K, VOut> {
      * @return a {@link KTable} that contains "update" records with unmodified keys, and values that
      * represent the latest (rolling) aggregate for each key
      */
-    KTable<K, VOut> aggregate(final Initializer<VOut> initializer,
+    KTable<K, VOut> aggregate(final Initializer<K, VOut> initializer,
                               final Named named,
                               final Materialized<K, VOut, KeyValueStore<Bytes, byte[]>> materialized);
 

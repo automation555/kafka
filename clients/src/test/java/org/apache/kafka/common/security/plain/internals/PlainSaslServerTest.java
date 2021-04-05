@@ -17,15 +17,15 @@
 package org.apache.kafka.common.security.plain.internals;
 
 import org.apache.kafka.common.security.plain.PlainLoginModule;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 import org.apache.kafka.common.errors.SaslAuthenticationException;
 import org.apache.kafka.common.security.JaasContext;
@@ -40,7 +40,7 @@ public class PlainSaslServerTest {
 
     private PlainSaslServer saslServer;
 
-    @BeforeEach
+    @Before
     public void setUp() {
         TestJaasConfig jaasConfig = new TestJaasConfig();
         Map<String, Object> options = new HashMap<>();
@@ -65,9 +65,9 @@ public class PlainSaslServerTest {
         assertEquals(0, nextChallenge.length);
     }
 
-    @Test
-    public void authorizatonIdNotEqualsAuthenticationId() {
-        assertThrows(SaslAuthenticationException.class, () -> saslServer.evaluateResponse(saslMessage(USER_B, USER_A, PASSWORD_A)));
+    @Test(expected = SaslAuthenticationException.class)
+    public void authorizatonIdNotEqualsAuthenticationId() throws Exception {
+        saslServer.evaluateResponse(saslMessage(USER_B, USER_A, PASSWORD_A));
     }
 
     @Test
@@ -82,7 +82,7 @@ public class PlainSaslServerTest {
 
         e = assertThrows(SaslAuthenticationException.class, () ->
             saslServer.evaluateResponse(saslMessage("", "u", "")));
-        assertEquals("Authentication failed: password not specified", e.getMessage());
+        assertEquals("Authentication failed: password not specified for user u", e.getMessage());
 
         e = assertThrows(SaslAuthenticationException.class, () ->
             saslServer.evaluateResponse(saslMessage("a", "", "")));
@@ -94,7 +94,7 @@ public class PlainSaslServerTest {
 
         e = assertThrows(SaslAuthenticationException.class, () ->
             saslServer.evaluateResponse(saslMessage("a", "u", "")));
-        assertEquals("Authentication failed: password not specified", e.getMessage());
+        assertEquals("Authentication failed: password not specified for user u", e.getMessage());
 
         String nul = "\u0000";
 

@@ -45,7 +45,8 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
     private boolean initialized;
     protected ProcessorRecordContext recordContext;
     protected ProcessorNode<?, ?, ?, ?> currentNode;
-    private long cachedSystemTimeMs;
+    private long currentSystemTimeMs;
+
     protected ThreadCache cache;
 
     public AbstractProcessorContext(final TaskId taskId,
@@ -65,12 +66,12 @@ public abstract class AbstractProcessorContext implements InternalProcessorConte
 
     @Override
     public void setSystemTimeMs(final long timeMs) {
-        cachedSystemTimeMs = timeMs;
+        currentSystemTimeMs = timeMs;
     }
 
     @Override
     public long currentSystemTimeMs() {
-        return cachedSystemTimeMs;
+        return currentSystemTimeMs;
     }
 
     @Override

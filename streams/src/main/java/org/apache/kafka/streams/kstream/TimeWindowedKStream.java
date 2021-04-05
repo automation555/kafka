@@ -24,7 +24,6 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.state.ReadOnlyWindowStore;
 import org.apache.kafka.streams.state.WindowStore;
-import org.apache.kafka.streams.state.TimestampedWindowStore;
 
 import java.time.Duration;
 
@@ -255,7 +254,7 @@ public interface TimeWindowedKStream<K, V> {
      * @return a windowed {@link KTable} that contains "update" records with unmodified keys, and values that represent
      * the latest (rolling) aggregate for each key within a window
      */
-    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                            final Aggregator<? super K, ? super V, VR> aggregator);
 
     /**
@@ -301,7 +300,7 @@ public interface TimeWindowedKStream<K, V> {
      * @return a windowed {@link KTable} that contains "update" records with unmodified keys, and values that represent
      * the latest (rolling) aggregate for each key within a window
      */
-    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                            final Aggregator<? super K, ? super V, VR> aggregator,
                                            final Named named);
 
@@ -362,7 +361,7 @@ public interface TimeWindowedKStream<K, V> {
      * @return a windowed {@link KTable} that contains "update" records with unmodified keys, and values that represent
      * the latest (rolling) aggregate for each key within a window
      */
-    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                            final Aggregator<? super K, ? super V, VR> aggregator,
                                            final Materialized<K, VR, WindowStore<Bytes, byte[]>> materialized);
 
@@ -424,7 +423,7 @@ public interface TimeWindowedKStream<K, V> {
      * @return a windowed {@link KTable} that contains "update" records with unmodified keys, and values that represent
      * the latest (rolling) aggregate for each key within a window
      */
-    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<VR> initializer,
+    <VR> KTable<Windowed<K>, VR> aggregate(final Initializer<K, VR> initializer,
                                            final Aggregator<? super K, ? super V, VR> aggregator,
                                            final Named named,
                                            final Materialized<K, VR, WindowStore<Bytes, byte[]>> materialized);

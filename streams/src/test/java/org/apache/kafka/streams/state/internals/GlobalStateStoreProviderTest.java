@@ -17,7 +17,6 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.streams.StreamsConfig;
@@ -52,7 +51,6 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 
@@ -110,17 +108,10 @@ public class GlobalStateStoreProviderTest {
             );
         expect(mockContext.taskId()).andStubReturn(new TaskId(0, 0));
         expect(mockContext.recordCollector()).andStubReturn(null);
-        expectSerdes(mockContext);
         replay(mockContext);
         for (final StateStore store : stores.values()) {
             store.init((StateStoreContext) mockContext, null);
         }
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void expectSerdes(final ProcessorContextImpl context) {
-        expect(context.keySerde()).andStubReturn((Serde) Serdes.String());
-        expect(context.valueSerde()).andStubReturn((Serde) Serdes.Long());
     }
 
     @Test
@@ -140,14 +131,13 @@ public class GlobalStateStoreProviderTest {
         assertTrue(stores.isEmpty());
     }
 
-    @Test
+    @Test(expected = InvalidStateStoreException.class)
     public void shouldThrowExceptionIfStoreIsntOpen() {
         final NoOpReadOnlyStore<Object, Object> store = new NoOpReadOnlyStore<>();
         store.close();
         final GlobalStateStoreProvider provider =
             new GlobalStateStoreProvider(Collections.singletonMap("global", store));
-        assertThrows(InvalidStateStoreException.class, () -> provider.stores("global",
-            QueryableStoreTypes.keyValueStore()));
+        provider.stores("global", QueryableStoreTypes.keyValueStore());
     }
 
     @Test

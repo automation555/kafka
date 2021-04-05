@@ -45,6 +45,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -340,6 +341,47 @@ public class PluginsTest {
         Map<String, SamplingTestPlugin> samples = ((SamplingTestPlugin) plugin).flatten();
         assertTrue(samples.containsKey("configure")); // Configurable::configure was called
         assertPluginClassLoaderAlwaysActive(samples);
+    }
+
+    @Test
+    public void pluginClassLoaderReadVersionFromResource() {
+        TestPlugins.assertAvailable();
+
+        Map<String, String> pluginProps = new HashMap<>();
+        pluginProps.put(WorkerConfig.PLUGIN_PATH_CONFIG,
+                TestPlugins.pluginPath().stream()
+                        .filter(s -> s.contains("read-version-from-resource-v1"))
+                        .collect(Collectors.joining()));
+        plugins = new Plugins(pluginProps);
+
+        Converter converter = plugins.newPlugin(
+                TestPlugins.READ_VERSION_FROM_RESOURCE,
+                new AbstractConfig(new ConfigDef(), Collections.emptyMap()),
+                Converter.class
+        );
+        assertEquals("1.0.0",
+                new String(converter.fromConnectData(null, null, null)));
+        PluginClassLoader pluginClassLoader = plugins.delegatingLoader()
+                .pluginClassLoader(TestPlugins.READ_VERSION_FROM_RESOURCE);
+        assertNotNull(pluginClassLoader);
+
+
+        // Re-initialize Plugins object with plugin class loader in the class loader tree. This is
+        // to simulate the situation where jars exist on both system classpath and plugin path.
+        pluginProps.put(WorkerConfig.PLUGIN_PATH_CONFIG,
+                TestPlugins.pluginPath().stream()
+                        .filter(s -> s.contains("read-version-from-resource-v2"))
+                        .collect(Collectors.joining()));
+        plugins = new Plugins(pluginProps, pluginClassLoader);
+
+        converter = plugins.newPlugin(
+                TestPlugins.READ_VERSION_FROM_RESOURCE,
+                new AbstractConfig(new ConfigDef(), Collections.emptyMap()),
+                Converter.class
+        );
+        // Verify the version was read from the correct resource
+        assertEquals("2.0.0",
+                new String(converter.fromConnectData(null, null, null)));
     }
 
     public static void assertPluginClassLoaderAlwaysActive(Map<String, SamplingTestPlugin> samples) {

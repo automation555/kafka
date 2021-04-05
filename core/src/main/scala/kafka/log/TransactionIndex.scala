@@ -20,9 +20,10 @@ import java.io.{File, IOException}
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.{Files, StandardOpenOption}
-import kafka.utils.{Logging, nonthreadsafe}
+
+import kafka.utils.{nonthreadsafe}
 import org.apache.kafka.common.KafkaException
-import org.apache.kafka.common.message.FetchResponseData
+import org.apache.kafka.common.requests.FetchResponse.AbortedTransaction
 import org.apache.kafka.common.utils.Utils
 
 import scala.collection.mutable.ListBuffer
@@ -41,7 +42,7 @@ private[log] case class TxnIndexSearchResult(abortedTransactions: List[AbortedTx
  * order to find the start of the transactions.
  */
 @nonthreadsafe
-class TransactionIndex(val startOffset: Long, @volatile private var _file: File) extends Logging {
+class TransactionIndex(val startOffset: Long, @volatile private var _file: File) {
 
   // note that the file is not created until we need it
   @volatile private var maybeChannel: Option[FileChannel] = None
@@ -109,7 +110,7 @@ class TransactionIndex(val startOffset: Long, @volatile private var _file: File)
   def renameTo(f: File): Unit = {
     try {
       if (file.exists)
-        Utils.atomicMoveWithFallback(file.toPath, f.toPath, false)
+        Utils.atomicMoveWithFallback(file.toPath, f.toPath)
     } finally _file = f
   }
 
@@ -244,9 +245,7 @@ private[log] class AbortedTxn(val buffer: ByteBuffer) {
 
   def lastStableOffset: Long = buffer.getLong(LastStableOffsetOffset)
 
-  def asAbortedTransaction: FetchResponseData.AbortedTransaction = new FetchResponseData.AbortedTransaction()
-    .setProducerId(producerId)
-    .setFirstOffset(firstOffset)
+  def asAbortedTransaction: AbortedTransaction = new AbortedTransaction(producerId, firstOffset)
 
   override def toString: String =
     s"AbortedTxn(version=$version, producerId=$producerId, firstOffset=$firstOffset, " +

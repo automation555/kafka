@@ -17,7 +17,7 @@ import json
 import os.path
 import requests
 from requests.adapters import HTTPAdapter
-from requests.packages.urllib3 import Retry
+from urllib3 import Retry
 
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
@@ -151,7 +151,7 @@ class TrogdorService(KafkaPathResolverMixin, Service):
 
     def _start_agent_node(self, node):
         node.account.create_file(TrogdorService.AGENT_LOG4J_PROPERTIES,
-                                 self.render('log4j2.properties',
+                                 self.render('log4j.properties',
                                              log_path=TrogdorService.AGENT_LOG))
         self._start_trogdor_daemon("agent", TrogdorService.AGENT_STDOUT_STDERR,
                                    TrogdorService.AGENT_LOG4J_PROPERTIES,
@@ -160,7 +160,7 @@ class TrogdorService(KafkaPathResolverMixin, Service):
 
     def _start_trogdor_daemon(self, daemon_name, stdout_stderr_capture_path,
                               log4j_properties_path, log_path, node):
-        cmd = "export KAFKA_LOG4J_OPTS='-Dlog4j.configurationFile=file:%s'; " % log4j_properties_path
+        cmd = "export KAFKA_LOG4J_OPTS='-Dlog4j.configuration=file:%s'; " % log4j_properties_path
         cmd += "%s %s --%s.config %s --node-name %s 1>> %s 2>> %s &" % \
                (self.path.script("trogdor.sh", node),
                 daemon_name,

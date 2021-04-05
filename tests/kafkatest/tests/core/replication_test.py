@@ -93,11 +93,9 @@ class ReplicationTest(EndToEndTest):
     indicator that nothing is left to consume.
     """
 
-    PARTITIONS = 3
-    REPLICATION_FACTOR = 3
     TOPIC_CONFIG = {
-        "partitions": PARTITIONS,
-        "replication-factor": REPLICATION_FACTOR,
+        "partitions": 3,
+        "replication-factor": 3,
         "configs": {"min.insync.replicas": 2}
     }
  
@@ -107,7 +105,7 @@ class ReplicationTest(EndToEndTest):
  
     def min_cluster_size(self):
         """Override this since we're adding services outside of the constructor"""
-        return super(ReplicationTest, self).min_cluster_size() + self.num_producers + self.num_consumers
+        return super(ReplicationTest, self).min_cluster_size() + 2
 
     @cluster(num_nodes=7)
     @matrix(failure_mode=["clean_shutdown", "hard_shutdown", "clean_bounce", "hard_bounce"],
@@ -127,10 +125,10 @@ class ReplicationTest(EndToEndTest):
             broker_type="leader",
             security_protocol="SASL_SSL", client_sasl_mechanism="SCRAM-SHA-256", interbroker_sasl_mechanism="SCRAM-SHA-512")
     @matrix(failure_mode=["clean_shutdown", "hard_shutdown", "clean_bounce", "hard_bounce"],
-            security_protocol=["PLAINTEXT"], broker_type=["leader"], compression_type=["gzip"], tls_version=["TLSv1.2", "TLSv1.3"])
+            security_protocol=["PLAINTEXT"], broker_type=["leader"], compression_type=["gzip"])
     def test_replication_with_broker_failure(self, failure_mode, security_protocol, broker_type,
                                              client_sasl_mechanism="GSSAPI", interbroker_sasl_mechanism="GSSAPI",
-                                             compression_type=None, enable_idempotence=False, tls_version=None):
+                                             compression_type=None, enable_idempotence=False):
         """Replication tests.
         These tests verify that replication provides simple durability guarantees by checking that data acked by
         brokers is still available for consumption in the face of various failure scenarios.
@@ -151,8 +149,7 @@ class ReplicationTest(EndToEndTest):
                           security_protocol=security_protocol,
                           interbroker_security_protocol=security_protocol,
                           client_sasl_mechanism=client_sasl_mechanism,
-                          interbroker_sasl_mechanism=interbroker_sasl_mechanism,
-                          tls_version=tls_version)
+                          interbroker_sasl_mechanism=interbroker_sasl_mechanism)
         self.kafka.start()
 
         compression_types = None if not compression_type else [compression_type]
@@ -165,6 +162,3 @@ class ReplicationTest(EndToEndTest):
         self.await_startup()
         failures[failure_mode](self, broker_type)
         self.run_validation(enable_idempotence=enable_idempotence)
-
-        if security_protocol != "SASL_SSL":
-            self.kafka.replica_leader_epochs_match(self.topic, range(0, self.REPLICATION_FACTOR))

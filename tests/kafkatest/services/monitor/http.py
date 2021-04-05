@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from collections import defaultdict, namedtuple
 import json
 from threading import Thread
@@ -64,6 +64,7 @@ class HttpMetricsCollector(object):
         self._http_metrics_thread.start()
 
         self._forwarders = {}
+        self.logger = None
 
     @property
     def http_metrics_url(self):
@@ -86,16 +87,15 @@ class HttpMetricsCollector(object):
             "metrics.period": self._http_metrics_period,
         }
 
+    def idx(self, node):
+        raise NotImplementedError()
+
     def start_node(self, node):
         local_port = self._httpd.socket.getsockname()[1]
         self.logger.debug('HttpMetricsCollector listening on %s', local_port)
         self._forwarders[self.idx(node)] = _ReverseForwarder(self.logger, node, self.REMOTE_PORT, local_port)
 
-        super(HttpMetricsCollector, self).start_node(node)
-
     def stop(self):
-        super(HttpMetricsCollector, self).stop()
-
         if self._http_metrics_thread:
             self.logger.debug("Shutting down metrics httpd")
             self._httpd.shutdown()
@@ -103,8 +103,6 @@ class HttpMetricsCollector(object):
             self.logger.debug("Finished shutting down metrics httpd")
 
     def stop_node(self, node):
-        super(HttpMetricsCollector, self).stop_node(node)
-
         idx = self.idx(node)
         self._forwarders[idx].stop()
         del self._forwarders[idx]
@@ -114,7 +112,7 @@ class HttpMetricsCollector(object):
         Get any collected metrics that match the specified parameters, yielding each as a tuple of
         (key, [<timestamp, value>, ...]) values.
         """
-        for k, values in self._http_metrics.items():
+        for k, values in self._http_metrics.iteritems():
             if ((host is None or host == k.host) and
                     (client_id is None or client_id == k.client_id) and
                     (name is None or name == k.name) and
@@ -154,7 +152,7 @@ class _MetricsReceiver(BaseHTTPRequestHandler):
             name = raw_metric['name']
             group = raw_metric['group']
             # Convert to tuple of pairs because dicts & lists are unhashable
-            tags = tuple((k, v) for k, v in raw_metric['tags'].items()),
+            tags = tuple([(k, v) for k, v in raw_metric['tags'].iteritems()]),
             value = raw_metric['value']
 
             key = MetricKey(host=host, client_id=client_id, name=name, group=group, tags=tags)

@@ -21,10 +21,12 @@ import java.util.Locale
 import java.util.concurrent.locks.{ReentrantLock, ReentrantReadWriteLock}
 import java.util.concurrent._
 import java.util.{List => JList}
+
 import com.yammer.metrics.core.MetricName
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.CoreUtils.{inLock, inReadLock, inWriteLock}
-import kafka.utils.{KafkaScheduler, LogIdent, Logging}
+import kafka.utils.{KafkaScheduler, Logging}
+import kafka.zookeeper.ZooKeeperClient._
 import org.apache.kafka.common.utils.Time
 import org.apache.zookeeper.AsyncCallback.{Children2Callback, DataCallback, StatCallback}
 import org.apache.zookeeper.KeeperException.Code
@@ -38,7 +40,7 @@ import scala.jdk.CollectionConverters._
 import scala.collection.Seq
 import scala.collection.mutable.Set
 
-object ZooKeeperClient extends Logging {
+object ZooKeeperClient {
   val RetryBackoffMs = 1000
 }
 
@@ -60,7 +62,7 @@ class ZooKeeperClient(connectString: String,
                       metricGroup: String,
                       metricType: String,
                       name: Option[String],
-                      zkClientConfig: Option[ZKClientConfig]) extends KafkaMetricsGroup {
+                      zkClientConfig: Option[ZKClientConfig]) extends Logging with KafkaMetricsGroup {
 
   def this(connectString: String,
            sessionTimeoutMs: Int,
@@ -73,13 +75,10 @@ class ZooKeeperClient(connectString: String,
       None)
   }
 
-  import kafka.zookeeper.ZooKeeperClient._
-
-  protected implicit val logIdent = Some(LogIdent(name match {
+  this.logIdent = name match {
     case Some(n) => s"[ZooKeeperClient $n] "
     case _ => "[ZooKeeperClient] "
-  }))
-
+  }
   private val initializationLock = new ReentrantReadWriteLock()
   private val isConnectedOrExpiredLock = new ReentrantLock()
   private val isConnectedOrExpiredCondition = isConnectedOrExpiredLock.newCondition()
@@ -434,7 +433,7 @@ class ZooKeeperClient(connectString: String,
     reinitializeScheduler.schedule(name, () => {
       info(message)
       reinitialize()
-    }, delayMs, period = -1L, unit = TimeUnit.MILLISECONDS)
+    }, delayMs)
   }
 
   private def threadPrefix: String = name.map(n => n.replaceAll("\\s", "") + "-").getOrElse("")

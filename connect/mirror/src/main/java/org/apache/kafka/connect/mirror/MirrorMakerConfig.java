@@ -220,6 +220,9 @@ public class MirrorMakerConfig extends AbstractConfig {
         props.putIfAbsent(TARGET_CLUSTER_ALIAS, sourceAndTarget.target());
 
         // override with connector-level properties
+        Map<String, String> p = stringsWithPrefixStripped(sourceAndTarget.source() + "->"
+                + sourceAndTarget.target() + ".");
+        System.out.println(p);
         props.putAll(stringsWithPrefixStripped(sourceAndTarget.source() + "->"
             + sourceAndTarget.target() + "."));
 

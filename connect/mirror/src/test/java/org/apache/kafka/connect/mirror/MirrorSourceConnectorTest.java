@@ -183,16 +183,10 @@ public class MirrorSourceConnectorTest {
         connector.initialize(mock(ConnectorContext.class));
         connector = spy(connector);
 
-        Config topicConfig = new Config(Arrays.asList(
-                new ConfigEntry("cleanup.policy", "compact"),
-                new ConfigEntry("segment.bytes", "100")));
-        Map<String, Config> configs = Collections.singletonMap("topic", topicConfig);
-
         List<TopicPartition> sourceTopicPartitions = Collections.singletonList(new TopicPartition("topic", 0));
         doReturn(sourceTopicPartitions).when(connector).findSourceTopicPartitions();
         doReturn(Collections.emptyList()).when(connector).findTargetTopicPartitions();
-        doReturn(configs).when(connector).describeTopicConfigs(Collections.singleton("topic"));
-        doNothing().when(connector).createNewTopics(any());
+        doNothing().when(connector).createTopicPartitions(any(), any(), any());
 
         connector.refreshTopicPartitions();
         // if target topic is not created, refreshTopicPartitions() will call createTopicPartitions() again
@@ -200,15 +194,13 @@ public class MirrorSourceConnectorTest {
 
         Map<String, Long> expectedPartitionCounts = new HashMap<>();
         expectedPartitionCounts.put("source.topic", 1L);
-        Map<String, String> configMap = MirrorSourceConnector.configToMap(topicConfig);
-        assertEquals(2, configMap.size());
-
-        Map<String, NewTopic> expectedNewTopics = new HashMap<>();
-        expectedNewTopics.put("source.topic", new NewTopic("source.topic", 1, (short) 0).configs(configMap));
+        List<NewTopic> expectedNewTopics = Arrays.asList(new NewTopic("source.topic", 1, (short) 0));
 
         verify(connector, times(2)).computeAndCreateTopicPartitions();
-        verify(connector, times(2)).createNewTopics(eq(expectedNewTopics));
-        verify(connector, times(0)).createNewPartitions(any());
+        verify(connector, times(2)).createTopicPartitions(
+                eq(expectedPartitionCounts),
+                eq(expectedNewTopics),
+                eq(Collections.emptyMap()));
 
         List<TopicPartition> targetTopicPartitions = Collections.singletonList(new TopicPartition("source.topic", 0));
         doReturn(targetTopicPartitions).when(connector).findTargetTopicPartitions();
@@ -225,19 +217,11 @@ public class MirrorSourceConnectorTest {
         connector.initialize(mock(ConnectorContext.class));
         connector = spy(connector);
 
-        Config topicConfig = new Config(Arrays.asList(
-                new ConfigEntry("cleanup.policy", "compact"),
-                new ConfigEntry("segment.bytes", "100")));
-        Map<String, Config> configs = Collections.singletonMap("source.topic", topicConfig);
-
         List<TopicPartition> sourceTopicPartitions = Collections.emptyList();
         List<TopicPartition> targetTopicPartitions = Collections.singletonList(new TopicPartition("source.topic", 0));
         doReturn(sourceTopicPartitions).when(connector).findSourceTopicPartitions();
         doReturn(targetTopicPartitions).when(connector).findTargetTopicPartitions();
-        doReturn(configs).when(connector).describeTopicConfigs(Collections.singleton("source.topic"));
-        doReturn(Collections.emptyMap()).when(connector).describeTopicConfigs(Collections.emptySet());
-        doNothing().when(connector).createNewTopics(any());
-        doNothing().when(connector).createNewPartitions(any());
+        doNothing().when(connector).createTopicPartitions(any(), any(), any());
 
         // partitions appearing on the target cluster should not cause reconfiguration
         connector.refreshTopicPartitions();
@@ -251,4 +235,5 @@ public class MirrorSourceConnectorTest {
         connector.refreshTopicPartitions();
         verify(connector, times(1)).computeAndCreateTopicPartitions();
     }
+
 }

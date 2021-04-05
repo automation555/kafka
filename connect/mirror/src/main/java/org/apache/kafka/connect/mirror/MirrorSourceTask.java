@@ -68,14 +68,10 @@ public class MirrorSourceTask extends SourceTask {
     public MirrorSourceTask() {}
 
     // for testing
-    MirrorSourceTask(KafkaConsumer<byte[], byte[]> consumer, MirrorMetrics metrics, String sourceClusterAlias,
-                     ReplicationPolicy replicationPolicy, long maxOffsetLag) {
-        this.consumer = consumer;
-        this.metrics = metrics;
+    MirrorSourceTask(String sourceClusterAlias, ReplicationPolicy replicationPolicy, long maxOffsetLag) {
         this.sourceClusterAlias = sourceClusterAlias;
         this.replicationPolicy = replicationPolicy;
         this.maxOffsetLag = maxOffsetLag;
-        consumerAccess = new Semaphore(1);
     }
 
     @Override
@@ -91,7 +87,7 @@ public class MirrorSourceTask extends SourceTask {
         partitionStates = new HashMap<>();
         offsetSyncsTopic = config.offsetSyncsTopic();
         consumer = MirrorUtils.newConsumer(config.sourceConsumerConfig());
-        offsetProducer = MirrorUtils.newProducer(config.sourceProducerConfig());
+        offsetProducer = MirrorUtils.newProducer(config.offsetSyncsTopicProducerConfig());
         Set<TopicPartition> taskTopicPartitions = config.taskTopicPartitions();
         Map<TopicPartition, Long> topicPartitionOffsets = loadOffsets(taskTopicPartitions);
         consumer.assign(topicPartitionOffsets.keySet());

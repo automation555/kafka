@@ -68,7 +68,7 @@
               files="(Utils|Topic|KafkaLZ4BlockOutputStream|AclData|JoinGroupRequest).java"/>
 
     <suppress checks="CyclomaticComplexity"
-              files="(ConsumerCoordinator|Fetcher|Sender|KafkaProducer|BufferPool|ConfigDef|RecordAccumulator|KerberosLogin|AbstractRequest|AbstractResponse|Selector|SslFactory|SslTransportLayer|SaslClientAuthenticator|SaslClientCallbackHandler|SaslServerAuthenticator|AbstractCoordinator|TransactionManager|AbstractStickyAssignor|DefaultSslEngineFactory|Authorizer|KafkaRaftClient).java"/>
+              files="(ConsumerCoordinator|Fetcher|Sender|KafkaProducer|BufferPool|ConfigDef|RecordAccumulator|KerberosLogin|AbstractRequest|AbstractResponse|Selector|SslFactory|SslTransportLayer|SaslClientAuthenticator|SaslClientCallbackHandler|SaslServerAuthenticator|AbstractCoordinator|TransactionManager|AbstractStickyAssignor|DefaultSslEngineFactory|Authorizer).java"/>
 
     <suppress checks="JavaNCSS"
               files="(AbstractRequest|AbstractResponse|KerberosLogin|WorkerSinkTaskTest|TransactionManagerTest|SenderTest|KafkaAdminClient|ConsumerCoordinatorTest|KafkaAdminClientTest).java"/>
@@ -101,7 +101,10 @@
               files="RequestResponseTest.java|FetcherTest.java|KafkaAdminClientTest.java"/>
 
     <suppress checks="NPathComplexity"
-              files="MemoryRecordsTest|MetricsTest|RequestResponseTest|TestSslUtils|AclAuthorizerBenchmark"/>
+              files="MemoryRecordsTest|MetricsTest|RequestResponseTest|TestSslUtils|AclAuthorizerBenchmark|MockConsumer"/>
+
+    <suppress checks="CyclomaticComplexity"
+              files="MockConsumer"/>
 
     <suppress checks="(WhitespaceAround|LocalVariableName|ImportControl|AvoidStarImport)"
               files="Murmur3Test.java"/>
@@ -137,7 +140,7 @@
 
     <!-- connect tests-->
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(DistributedHerder|KafkaBasedLog|WorkerSourceTaskWithTopicCreation|WorkerSourceTask)Test.java"/>
+              files="(DistributedHerder|KafkaBasedLog|WorkerSourceTaskWithTopicCreation)Test.java"/>
 
     <suppress checks="ClassFanOutComplexity"
               files="(WorkerSink|WorkerSource|ErrorHandling)Task(|WithTopicCreation)Test.java"/>
@@ -184,8 +187,6 @@
               files="streams[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
     <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
               files="raft[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
-    <suppress checks="(NPathComplexity|ClassFanOutComplexity|CyclomaticComplexity|ClassDataAbstractionCoupling|FinalLocalVariable|LocalVariableName|MemberName|ParameterName|MethodLength|JavaNCSS|AvoidStarImport)"
-              files="remote-storage[\\/]src[\\/](generated|generated-test)[\\/].+.java$"/>
 
     <suppress checks="ImportControl" files="FetchResponseData.java"/>
     <suppress checks="ImportControl" files="RecordsSerdeTest.java"/>
@@ -265,9 +266,15 @@
     <suppress checks="JavaNCSS"
               files="RequestResponseTest.java"/>
 
+    <!-- Log4J2-Appender -->
+    <suppress checks="CyclomaticComplexity"
+              files="KafkaAppender.java"/>
+    <suppress checks="NPathComplexity"
+              files="KafkaAppender.java"/>
+
     <!-- metadata -->
     <suppress checks="ClassDataAbstractionCoupling"
-              files="(ReplicationControlManager|ReplicationControlManagerTest).java"/>
+              files="(ReplicationControlManager).java"/>
     <suppress checks="ClassFanOutComplexity"
               files="(QuorumController|ReplicationControlManager).java"/>
     <suppress checks="CyclomaticComplexity"

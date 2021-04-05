@@ -21,8 +21,9 @@ import java.nio.ByteBuffer
 import java.util
 import java.util.Optional
 import java.util.concurrent.locks.ReentrantLock
+
 import kafka.cluster.BrokerEndPoint
-import kafka.utils.{DelayedItem, Logging, Pool, ShutdownableThread}
+import kafka.utils.{DelayedItem, Pool, ShutdownableThread}
 import kafka.utils.Implicits._
 import org.apache.kafka.common.errors._
 import kafka.common.ClientIdAndBroker
@@ -35,7 +36,10 @@ import scala.compat.java8.OptionConverters._
 import scala.jdk.CollectionConverters._
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+
 import kafka.log.LogAppendInfo
+import kafka.server.AbstractFetcherThread.ReplicaFetch
+import kafka.server.AbstractFetcherThread.ResultWithPartitions
 import org.apache.kafka.common.{InvalidRecordException, TopicPartition}
 import org.apache.kafka.common.internals.PartitionStates
 import org.apache.kafka.common.message.OffsetForLeaderEpochRequestData
@@ -57,8 +61,6 @@ abstract class AbstractFetcherThread(name: String,
                                      isInterruptible: Boolean = true,
                                      val brokerTopicStats: BrokerTopicStats) //BrokerTopicStats's lifecycle managed by ReplicaManager
   extends ShutdownableThread(name, isInterruptible) {
-
-  import AbstractFetcherThread._
 
   type FetchData = FetchResponse.PartitionData[Records]
   type EpochData = OffsetForLeaderEpochRequestData.OffsetForLeaderPartition
@@ -673,12 +675,18 @@ abstract class AbstractFetcherThread(name: String,
        * and the current leader's log start offset.
        */
       val leaderStartOffset = fetchEarliestOffsetFromLeader(topicPartition, currentLeaderEpoch)
-      warn(s"Reset fetch offset for partition $topicPartition from $replicaEndOffset to current " +
-        s"leader's start offset $leaderStartOffset")
+
       val offsetToFetch = Math.max(leaderStartOffset, replicaEndOffset)
       // Only truncate log when current leader's log start offset is greater than follower's log end offset.
-      if (leaderStartOffset > replicaEndOffset)
+      if (leaderStartOffset > replicaEndOffset) {
+        warn(s"Reset fetch offset for partition $topicPartition from $replicaEndOffset to current " +
+          s"leader's start offset $leaderStartOffset")
         truncateFullyAndStartAt(topicPartition, leaderStartOffset)
+      } else {
+        warn(s"Keep fetch offset for partition $topicPartition from $replicaEndOffset to $replicaEndOffset " +
+          s"because it's still between leader's start offset $leaderStartOffset and leader's end offset $leaderEndOffset")
+      }
+
 
       val initialLag = leaderEndOffset - offsetToFetch
       fetcherLagStats.getAndMaybePut(topicPartition).lag = initialLag
@@ -743,7 +751,7 @@ abstract class AbstractFetcherThread(name: String,
   }
 }
 
-object AbstractFetcherThread extends Logging {
+object AbstractFetcherThread {
 
   case class ReplicaFetch(partitionData: util.Map[TopicPartition, FetchRequest.PartitionData], fetchRequest: FetchRequest.Builder)
   case class ResultWithPartitions[R](result: R, partitionsWithError: Set[TopicPartition])

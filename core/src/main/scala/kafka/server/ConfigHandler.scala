@@ -17,14 +17,12 @@
 
 package kafka.server
 
-import java.net.{InetAddress, UnknownHostException}
 import java.util.Properties
 
 import DynamicConfig.Broker._
 import kafka.api.ApiVersion
 import kafka.controller.KafkaController
 import kafka.log.{LogConfig, LogManager}
-import kafka.network.ConnectionQuotas
 import kafka.security.CredentialProvider
 import kafka.server.Constants._
 import kafka.server.QuotaFactory.QuotaManagers
@@ -47,16 +45,11 @@ trait ConfigHandler {
   def processConfigChanges(entityName: String, value: Properties): Unit
 }
 
-object TopicConfigHandler extends Logging {
-
-}
-
 /**
   * The TopicConfigHandler will process topic config changes in ZK.
   * The callback provides the topic name and the full properties set read from ZK
   */
-class TopicConfigHandler(private val logManager: LogManager, kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController) extends ConfigHandler {
-  import TopicConfigHandler._
+class TopicConfigHandler(private val logManager: LogManager, kafkaConfig: KafkaConfig, val quotas: QuotaManagers, kafkaController: KafkaController) extends ConfigHandler with Logging  {
 
   private def updateLogConfig(topic: String,
                               topicConfig: Properties,
@@ -192,31 +185,13 @@ class UserConfigHandler(private val quotaManagers: QuotaManagers, val credential
   }
 }
 
-class IpConfigHandler(private val connectionQuotas: ConnectionQuotas) extends ConfigHandler {
-
-  def processConfigChanges(ip: String, config: Properties): Unit = {
-    val ipConnectionRateQuota = Option(config.getProperty(DynamicConfig.Ip.IpConnectionRateOverrideProp)).map(_.toInt)
-    val updatedIp = {
-      if (ip != ConfigEntityName.Default) {
-        try {
-          Some(InetAddress.getByName(ip))
-        } catch {
-          case _: UnknownHostException => throw new IllegalArgumentException(s"Unable to resolve address $ip")
-        }
-      } else
-        None
-    }
-    connectionQuotas.updateIpConnectionRateQuota(updatedIp, ipConnectionRateQuota)
-  }
-}
-
 /**
   * The BrokerConfigHandler will process individual broker config changes in ZK.
   * The callback provides the brokerId and the full properties set read from ZK.
   * This implementation reports the overrides to the respective ReplicationQuotaManager objects
   */
 class BrokerConfigHandler(private val brokerConfig: KafkaConfig,
-                          private val quotaManagers: QuotaManagers) extends ConfigHandler {
+                          private val quotaManagers: QuotaManagers) extends ConfigHandler with Logging {
 
   def processConfigChanges(brokerId: String, properties: Properties): Unit = {
     def getOrDefault(prop: String): Long = {
@@ -228,7 +203,13 @@ class BrokerConfigHandler(private val brokerConfig: KafkaConfig,
     if (brokerId == ConfigEntityName.Default)
       brokerConfig.dynamicConfig.updateDefaultConfig(properties)
     else if (brokerConfig.brokerId == brokerId.trim.toInt) {
-      brokerConfig.dynamicConfig.updateBrokerConfig(brokerConfig.brokerId, properties)
+      val persistentProps = brokerConfig.dynamicConfig.fromPersistentProps(properties, perBrokerConfig = true)
+      // The filepath was changed for equivalent replacement, which means we should reload
+      if (brokerConfig.dynamicConfig.trimSslStorePaths(persistentProps)) {
+        brokerConfig.dynamicConfig.reloadUpdatedFilesWithoutConfigChange(persistentProps)
+      }
+
+      brokerConfig.dynamicConfig.updateBrokerConfig(brokerConfig.brokerId, persistentProps, fromPersisted = true)
       quotaManagers.leader.updateQuota(upperBound(getOrDefault(LeaderReplicationThrottledRateProp).toDouble))
       quotaManagers.follower.updateQuota(upperBound(getOrDefault(FollowerReplicationThrottledRateProp).toDouble))
       quotaManagers.alterLogDirs.updateQuota(upperBound(getOrDefault(ReplicaAlterLogDirsIoMaxBytesPerSecondProp).toDouble))
@@ -243,7 +224,7 @@ object ThrottledReplicaListValidator extends Validator {
   override def ensureValid(name: String, value: Any): Unit = {
     def check(proposed: Seq[Any]): Unit = {
       if (!(proposed.forall(_.toString.trim.matches("([0-9]+:[0-9]+)?"))
-        || proposed.mkString.trim.equals("*")))
+        || proposed.headOption.exists(_.toString.trim.equals("*"))))
         throw new ConfigException(name, value,
           s"$name must be the literal '*' or a list of replicas in the following format: [partitionId]:[brokerId],[partitionId]:[brokerId],...")
     }

@@ -57,7 +57,7 @@ class LogManager(logDirs: Seq[File],
                  val flushRecoveryOffsetCheckpointMs: Long,
                  val flushStartOffsetCheckpointMs: Long,
                  val retentionCheckMs: Long,
-                 val maxPidExpirationMs: Long,
+                 val maxPidExpirationMs: Int,
                  scheduler: Scheduler,
                  val brokerState: BrokerState,
                  brokerTopicStats: BrokerTopicStats,
@@ -931,6 +931,21 @@ class LogManager(logDirs: Seq[File],
       throw new KafkaStorageException(s"Failed to delete log for ${if (isFuture) "future" else ""} $topicPartition because it may be in one of the offline directories ${offlineLogDirs.mkString(",")}")
     }
     removedLog
+  }
+
+  def deleteStrayLogs(allReplicas: Set[TopicPartition]): Unit = logCreationOrDeletionLock synchronized {
+    def deleteStrayLogs(partitionsWithOpenLog: Set[TopicPartition],
+                        allReplicas: Set[TopicPartition],
+                        isFuture: Boolean): Unit = {
+      partitionsWithOpenLog.filterNot { topicPartition =>
+        allReplicas.contains(topicPartition)
+      }.foreach { toDelete =>
+        asyncDelete(toDelete, isFuture)
+      }
+    }
+
+    deleteStrayLogs(currentLogs.keys, allReplicas, isFuture = false)
+    deleteStrayLogs(futureLogs.keys, allReplicas, isFuture = true)
   }
 
   /**

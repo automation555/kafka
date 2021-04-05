@@ -20,7 +20,6 @@ package kafka.log
 import java.io._
 import java.nio.ByteBuffer
 import java.nio.file.{Files, Paths}
-import java.util.concurrent.{Callable, Executors}
 import java.util.regex.Pattern
 import java.util.{Collections, Optional, Properties}
 
@@ -47,7 +46,7 @@ import org.junit.{After, Before, Test}
 import org.scalatest.Assertions
 
 import scala.collection.{Iterable, mutable}
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 import org.scalatest.Assertions.{assertThrows, intercept, withClue}
 
@@ -469,41 +468,6 @@ class LogTest {
     assertEquals(101L, log.logEndOffset)
   }
 
-  /**
-   * Test the values returned by the logSegments call
-   */
-  @Test
-  def testLogSegmentsCallCorrect(): Unit = {
-    // Create 3 segments and make sure we get the right values from various logSegments calls.
-    def createRecords = TestUtils.singletonRecords(value = "test".getBytes, timestamp = mockTime.milliseconds)
-    def getSegmentOffsets(log :Log, from: Long, to: Long) = log.logSegments(from, to).map { _.baseOffset }
-    val setSize = createRecords.sizeInBytes
-    val msgPerSeg = 10
-    val segmentSize = msgPerSeg * setSize  // each segment will be 10 messages
-    // create a log
-    val logConfig = LogTest.createLogConfig(segmentBytes = segmentSize)
-    val log = createLog(logDir, logConfig)
-    assertEquals("There should be exactly 1 segment.", 1, log.numberOfSegments)
-
-    // segments expire in size
-    for (_ <- 1 to (2 * msgPerSeg + 2))
-      log.appendAsLeader(createRecords, leaderEpoch = 0)
-    assertEquals("There should be exactly 3 segments.", 3, log.numberOfSegments)
-
-    // from == to should always be null
-    assertEquals(List.empty[LogSegment], getSegmentOffsets(log, 10, 10))
-    assertEquals(List.empty[LogSegment], getSegmentOffsets(log, 15, 15))
-
-    assertEquals(List[Long](0, 10, 20), getSegmentOffsets(log, 0, 21))
-
-    assertEquals(List[Long](0), getSegmentOffsets(log, 1, 5))
-    assertEquals(List[Long](10, 20), getSegmentOffsets(log, 13, 21))
-    assertEquals(List[Long](10), getSegmentOffsets(log, 13, 17))
-
-    // from < to is bad
-    assertThrows[IllegalArgumentException]({ log.logSegments(10, 0) })
-  }
-
   @Test
   def testInitializationOfProducerSnapshotsUpgradePath(): Unit = {
     // simulate the upgrade path by creating a new log with several segments, deleting the
@@ -613,7 +577,7 @@ class LogTest {
     // Increment the log start offset
     val startOffset = 4
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(startOffset, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(startOffset)
     assertTrue(log.logEndOffset > log.logStartOffset)
 
     // Append garbage to a segment below the current log start offset
@@ -763,7 +727,7 @@ class LogTest {
 
         override def addSegment(segment: LogSegment): LogSegment = {
           val wrapper = new LogSegment(segment.log, segment.lazyOffsetIndex, segment.lazyTimeIndex, segment.txnIndex, segment.baseOffset,
-            segment.indexIntervalBytes, segment.rollJitterMs, mockTime, _ => 0) {
+            segment.indexIntervalBytes, segment.rollJitterMs, mockTime, null) {
 
             override def read(startOffset: Long, maxSize: Int, maxPosition: Long, minOneMessage: Boolean): FetchDataInfo = {
               segmentsWithReads += this
@@ -1043,7 +1007,7 @@ class LogTest {
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "b".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "c".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "d".getBytes)))
-    records.batches.forEach(_.setPartitionLeaderEpoch(0))
+    records.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
 
     val filtered = ByteBuffer.allocate(2048)
     records.filterTo(new TopicPartition("foo", 0), new RecordFilter {
@@ -1059,7 +1023,7 @@ class LogTest {
     val moreRecords = TestUtils.records(baseOffset = baseOffset + 4, records = List(
       new SimpleRecord(mockTime.milliseconds(), "e".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "f".getBytes)))
-    moreRecords.batches.forEach(_.setPartitionLeaderEpoch(0))
+    moreRecords.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
     log.appendAsFollower(moreRecords)
 
     log.truncateTo(baseOffset + 4)
@@ -1084,7 +1048,7 @@ class LogTest {
     val records = TestUtils.records(producerId = pid, producerEpoch = epoch, sequence = seq, baseOffset = baseOffset, records = List(
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "a".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "b".getBytes)))
-    records.batches.forEach(_.setPartitionLeaderEpoch(0))
+    records.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
 
     val filtered = ByteBuffer.allocate(2048)
     records.filterTo(new TopicPartition("foo", 0), new RecordFilter {
@@ -1100,7 +1064,7 @@ class LogTest {
     val moreRecords = TestUtils.records(baseOffset = baseOffset + 2, records = List(
       new SimpleRecord(mockTime.milliseconds(), "e".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "f".getBytes)))
-    moreRecords.batches.forEach(_.setPartitionLeaderEpoch(0))
+    moreRecords.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
     log.appendAsFollower(moreRecords)
 
     log.truncateTo(baseOffset + 2)
@@ -1127,7 +1091,7 @@ class LogTest {
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "b".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "c".getBytes),
       new SimpleRecord(mockTime.milliseconds(), "key".getBytes, "d".getBytes)))
-    records.batches.forEach(_.setPartitionLeaderEpoch(0))
+    records.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
 
     val filtered = ByteBuffer.allocate(2048)
     records.filterTo(new TopicPartition("foo", 0), new RecordFilter {
@@ -1209,7 +1173,7 @@ class LogTest {
     assertEquals(2, log.activeProducersWithLastSequence.size)
 
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(1L, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(1L)
 
     // Deleting records should not remove producer state
     assertEquals(2, log.activeProducersWithLastSequence.size)
@@ -1244,7 +1208,7 @@ class LogTest {
     assertEquals(2, log.activeProducersWithLastSequence.size)
 
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(1L, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(1L)
     log.deleteOldSegments()
 
     // Deleting records should not remove producer state
@@ -1409,9 +1373,9 @@ class LogTest {
                             producerId: Long,
                             epoch: Short,
                             offset: Long = 0L,
-                            coordinatorEpoch: Int,
+                            coordinatorEpoch: Int = 0,
                             partitionLeaderEpoch: Int = 0,
-                            timestamp: Long): MemoryRecords = {
+                            timestamp: Long = mockTime.milliseconds()): MemoryRecords = {
     val marker = new EndTransactionMarker(controlRecordType, coordinatorEpoch)
     MemoryRecords.withEndTransactionMarker(offset, timestamp, partitionLeaderEpoch, producerId, epoch, marker)
   }
@@ -1622,7 +1586,7 @@ class LogTest {
     buffer.flip()
 
     val records = MemoryRecords.readableRecords(buffer)
-    records.batches.forEach(_.setPartitionLeaderEpoch(0))
+    records.batches.asScala.foreach(_.setPartitionLeaderEpoch(0))
 
     // Ensure that batches with duplicates are accepted on the follower.
     assertEquals(0L, log.logEndOffset)
@@ -1664,7 +1628,7 @@ class LogTest {
     assertEquals(2, ProducerStateManager.listSnapshotFiles(log.producerStateManager.logDir).size)
 
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(2L, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(2L)
 
     // Deleting records should not remove producer state but should delete snapshots
     assertEquals(2, log.activeProducersWithLastSequence.size)
@@ -2078,22 +2042,6 @@ class LogTest {
       case _: RecordTooLargeException => // this is good
     }
   }
-
-  @Test
-  def testMessageSizeCheckInAppendAsFollower(): Unit = {
-    val first = MemoryRecords.withRecords(0, CompressionType.NONE, 0,
-      new SimpleRecord("You".getBytes), new SimpleRecord("bethe".getBytes))
-    val second = MemoryRecords.withRecords(5, CompressionType.NONE, 0,
-      new SimpleRecord("change (I need more bytes)... blah blah blah.".getBytes),
-      new SimpleRecord("More padding boo hoo".getBytes))
-
-    val log = createLog(logDir, LogTest.createLogConfig(maxMessageBytes = second.sizeInBytes - 1))
-
-    log.appendAsFollower(first)
-    // the second record is larger then limit but appendAsFollower does not validate the size.
-    log.appendAsFollower(second)
-  }
-
   /**
    * Append a bunch of messages to a log and then re-open it both with and without recovery and check that the log re-initializes correctly.
    */
@@ -3171,7 +3119,7 @@ class LogTest {
   def testParseTopicPartitionNameForMissingPartition(): Unit = {
     val topic = "test_topic"
     val partition = ""
-    val dir = new File(logDir.getPath + topicPartitionName(topic, partition))
+    val dir = new File(logDir + topicPartitionName(topic, partition))
     try {
       Log.parseTopicPartitionName(dir)
       fail("KafkaException should have been thrown for dir: " + dir.getCanonicalPath)
@@ -3211,14 +3159,14 @@ class LogTest {
 
   @Test
   def testParseTopicPartitionNameForExistingInvalidDir(): Unit = {
-    val dir1 = new File(logDir.getPath + "/non_kafka_dir")
+    val dir1 = new File(logDir + "/non_kafka_dir")
     try {
       Log.parseTopicPartitionName(dir1)
       fail("KafkaException should have been thrown for dir: " + dir1.getCanonicalPath)
     } catch {
       case _: KafkaException => // should only throw KafkaException
     }
-    val dir2 = new File(logDir.getPath + "/non_kafka_dir-delete")
+    val dir2 = new File(logDir + "/non_kafka_dir-delete")
     try {
       Log.parseTopicPartitionName(dir2)
       fail("KafkaException should have been thrown for dir: " + dir2.getCanonicalPath)
@@ -3310,17 +3258,17 @@ class LogTest {
     assertEquals(log.logStartOffset, 0)
     log.updateHighWatermark(log.logEndOffset)
 
-    log.maybeIncrementLogStartOffset(1, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(1)
     log.deleteOldSegments()
     assertEquals("should have 3 segments", 3, log.numberOfSegments)
     assertEquals(log.logStartOffset, 1)
 
-    log.maybeIncrementLogStartOffset(6, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(6)
     log.deleteOldSegments()
     assertEquals("should have 2 segments", 2, log.numberOfSegments)
     assertEquals(log.logStartOffset, 6)
 
-    log.maybeIncrementLogStartOffset(15, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(15)
     log.deleteOldSegments()
     assertEquals("should have 1 segments", 1, log.numberOfSegments)
     assertEquals(log.logStartOffset, 15)
@@ -3438,7 +3386,7 @@ class LogTest {
     // Three segments should be created
     assertEquals(3, log.logSegments.count(_ => true))
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(recordsPerSegment, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(recordsPerSegment)
 
     // The first segment, which is entirely before the log start offset, should be deleted
     // Of the remaining the segments, the first can overlap the log start offset and the rest must have a base offset
@@ -3481,7 +3429,7 @@ class LogTest {
     //Given each message has an offset & epoch, as msgs from leader would
     def recordsForEpoch(i: Int): MemoryRecords = {
       val recs = MemoryRecords.withRecords(messageIds(i), CompressionType.NONE, records(i))
-      recs.batches.forEach{record =>
+      recs.batches.asScala.foreach{record =>
         record.setPartitionLeaderEpoch(42)
         record.setLastOffset(i)
       }
@@ -3699,59 +3647,6 @@ class LogTest {
 
     // now there should be no first unstable offset
     assertEquals(None, log.firstUnstableOffset)
-  }
-
-  @Test
-  def testReadCommittedWithConcurrentHighWatermarkUpdates(): Unit = {
-    val logConfig = LogTest.createLogConfig(segmentBytes = 1024 * 1024 * 5)
-    val log = createLog(logDir, logConfig)
-    val lastOffset = 50L
-
-    val producerEpoch = 0.toShort
-    val producerId = 15L
-    val appendProducer = appendTransactionalAsLeader(log, producerId, producerEpoch)
-
-    // Thread 1 writes single-record transactions and attempts to read them
-    // before they have been aborted, and then aborts them
-    val txnWriteAndReadLoop: Callable[Int] = () => {
-      var nonEmptyReads = 0
-      while (log.logEndOffset < lastOffset) {
-        val currentLogEndOffset = log.logEndOffset
-
-        appendProducer(1)
-
-        val readInfo = log.read(
-          startOffset = currentLogEndOffset,
-          maxLength = Int.MaxValue,
-          isolation = FetchTxnCommitted,
-          minOneMessage = false)
-
-        if (readInfo.records.sizeInBytes() > 0)
-          nonEmptyReads += 1
-
-        appendEndTxnMarkerAsLeader(log, producerId, producerEpoch, ControlRecordType.ABORT)
-      }
-      nonEmptyReads
-    }
-
-    // Thread 2 watches the log and updates the high watermark
-    val hwUpdateLoop: Runnable = () => {
-      while (log.logEndOffset < lastOffset) {
-        log.updateHighWatermark(log.logEndOffset)
-      }
-    }
-
-    val executor = Executors.newFixedThreadPool(2)
-    try {
-      executor.submit(hwUpdateLoop)
-
-      val future = executor.submit(txnWriteAndReadLoop)
-      val nonEmptyReads = future.get()
-
-      assertEquals(0, nonEmptyReads)
-    } finally {
-      executor.shutdownNow()
-    }
   }
 
   @Test
@@ -4128,7 +4023,7 @@ class LogTest {
     assertEquals(Some(0L), log.firstUnstableOffset)
 
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(5L, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(5L)
 
     // the first unstable offset should be lower bounded by the log start offset
     assertEquals(Some(5L), log.firstUnstableOffset)
@@ -4153,7 +4048,7 @@ class LogTest {
     assertEquals(Some(0L), log.firstUnstableOffset)
 
     log.updateHighWatermark(log.logEndOffset)
-    log.maybeIncrementLogStartOffset(8L, ClientRecordDeletion)
+    log.maybeIncrementLogStartOffset(8L)
     log.updateHighWatermark(log.logEndOffset)
     log.deleteOldSegments()
     assertEquals(1, log.logSegments.size)
@@ -4327,6 +4222,27 @@ class LogTest {
     assertEquals(1, log.numberOfSegments)
   }
 
+  @Test
+  def testMetricsRemovedOnLogDeletion(): Unit = {
+    TestUtils.clearYammerMetrics()
+
+    val logConfig = LogTest.createLogConfig(segmentBytes = 1024 * 1024)
+    val log = createLog(logDir, logConfig)
+    val topicPartition = Log.parseTopicPartitionName(logDir)
+    val metricTag = s"topic=${topicPartition.topic},partition=${topicPartition.partition}"
+
+    val logMetrics = metricsKeySet.filter(_.getType == "Log")
+    assertEquals(LogMetricNames.allMetricNames.size, logMetrics.size)
+    logMetrics.foreach { metric =>
+      assertTrue(metric.getMBeanName.contains(metricTag))
+    }
+
+    // Delete the log and validate that corresponding metrics were removed.
+    log.delete()
+    val logMetricsAfterDeletion = metricsKeySet.filter(_.getType == "Log")
+    assertTrue(logMetricsAfterDeletion.isEmpty)
+  }
+
   private def allAbortedTransactions(log: Log) = log.logSegments.flatMap(_.txnIndex.allAbortedTxns)
 
   private def appendTransactionalAsLeader(log: Log, producerId: Long, producerEpoch: Short): Int => Unit = {
@@ -4400,7 +4316,7 @@ class LogTest {
   }
 
   private def appendAsFollower(log: Log, records: MemoryRecords, leaderEpoch: Int = 0): Unit = {
-    records.batches.forEach(_.setPartitionLeaderEpoch(leaderEpoch))
+    records.batches.asScala.foreach(_.setPartitionLeaderEpoch(leaderEpoch))
     log.appendAsFollower(records)
   }
 

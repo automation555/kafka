@@ -59,12 +59,12 @@ public class AbstractConfig {
             if (!(entry.getKey() instanceof String))
                 throw new ConfigException(entry.getKey().toString(), entry.getValue(), "Key must be a string.");
         this.originals = (Map<String, ?>) originals;
-        this.values = definition.parse(this.originals);
-        Map<String, Object> configUpdates = postProcessParsedConfig(Collections.unmodifiableMap(this.values));
+        Map<String, Object> values = definition.parse(this.originals);
+        Map<String, Object> configUpdates = postProcessParsedConfig(Collections.unmodifiableMap(values));
         for (Map.Entry<String, Object> update : configUpdates.entrySet()) {
-            this.values.put(update.getKey(), update.getValue());
+            values.put(update.getKey(), update.getValue());
         }
-        definition.parse(this.values);
+        this.values = definition.parse(values);
         this.used = Collections.synchronizedSet(new HashSet<String>());
         this.definition = definition;
         if (doLog)
@@ -86,7 +86,7 @@ public class AbstractConfig {
         return Collections.emptyMap();
     }
 
-    public Object get(String key) {
+    protected Object get(String key) {
         if (!values.containsKey(key))
             throw new ConfigException(String.format("Unknown configuration '%s'", key));
         used.add(key);
@@ -176,25 +176,10 @@ public class AbstractConfig {
      * @return a Map containing the settings with the prefix
      */
     public Map<String, Object> originalsWithPrefix(String prefix) {
-        return originalsWithPrefix(prefix, true);
-    }
-
-    /**
-     * Gets all original settings with the given prefix.
-     *
-     * @param prefix the prefix to use as a filter
-     * @param strip strip the prefix before adding to the output if set true
-     * @return a Map containing the settings with the prefix
-     */
-    public Map<String, Object> originalsWithPrefix(String prefix, boolean strip) {
         Map<String, Object> result = new RecordingMap<>(prefix, false);
         for (Map.Entry<String, ?> entry : originals.entrySet()) {
-            if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length()) {
-                if (strip)
-                    result.put(entry.getKey().substring(prefix.length()), entry.getValue());
-                else
-                    result.put(entry.getKey(), entry.getValue());
-            }
+            if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length())
+                result.put(entry.getKey().substring(prefix.length()), entry.getValue());
         }
         return result;
     }
@@ -209,10 +194,13 @@ public class AbstractConfig {
         Map<String, Object> result = new RecordingMap<>(values(), prefix, true);
         for (Map.Entry<String, ?> entry : originals.entrySet()) {
             if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length()) {
-                String keyWithNoPrefix = entry.getKey().substring(prefix.length());
+                String prefixedName = entry.getKey();
+                String keyWithNoPrefix = prefixedName.substring(prefix.length());
                 ConfigDef.ConfigKey configKey = definition.configKeys().get(keyWithNoPrefix);
-                if (configKey != null)
-                    result.put(keyWithNoPrefix, definition.parseValue(configKey, entry.getValue(), true));
+                if (configKey != null) {
+                    result.put(configKey.name, ConfigDef.
+                        parseType(prefixedName, entry.getValue(), configKey.type));
+                }
             }
         }
         return result;
@@ -275,7 +263,7 @@ public class AbstractConfig {
      * @return The list of configured instances
      */
     public <T> List<T> getConfiguredInstances(String key, Class<T> t) {
-        return getConfiguredInstances(key, t, Collections.<String, Object>emptyMap());
+        return getConfiguredInstances(key, t, Collections.EMPTY_MAP);
     }
 
     /**

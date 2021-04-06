@@ -35,7 +35,7 @@ import scala.collection.JavaConverters._
 
 object ConsoleProducer {
 
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
 
     try {
         val config = new ProducerConfig(args)
@@ -50,7 +50,7 @@ object ConsoleProducer {
           }
 
         Runtime.getRuntime.addShutdownHook(new Thread() {
-          override def run(): Unit = {
+          override def run() {
             producer.close()
           }
         })
@@ -112,23 +112,25 @@ object ConsoleProducer {
   }
 
   def getNewProducerProps(config: ProducerConfig): Properties = {
-    val props = producerProps(config)
-
-    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.brokerList)
-    props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, config.compressionCodec)
+    val props = new Properties
+    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.brokerList) 
+    props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, config.compressionCodec) 
     props.put(ProducerConfig.SEND_BUFFER_CONFIG, config.socketBuffer.toString)
     props.put(ProducerConfig.RETRY_BACKOFF_MS_CONFIG, config.retryBackoffMs.toString)
     props.put(ProducerConfig.METADATA_MAX_AGE_CONFIG, config.metadataExpiryMs.toString)
-    props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, config.maxBlockMs.toString)
+    props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, config.maxBlockMs.toString) 
     props.put(ProducerConfig.ACKS_CONFIG, config.requestRequiredAcks)
-    props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, config.requestTimeoutMs.toString)
+    props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, config.requestTimeoutMs.toString) 
     props.put(ProducerConfig.RETRIES_CONFIG, config.messageSendMaxRetries.toString)
-    props.put(ProducerConfig.LINGER_MS_CONFIG, config.sendTimeout.toString)
-    props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, config.maxMemoryBytes.toString)
-    props.put(ProducerConfig.BATCH_SIZE_CONFIG, config.maxPartitionMemoryBytes.toString)
+    props.put(ProducerConfig.LINGER_MS_CONFIG, config.sendTimeout.toString) 
+    props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, config.maxMemoryBytes.toString) 
+    props.put(ProducerConfig.BATCH_SIZE_CONFIG, config.maxPartitionMemoryBytes.toString) 
     props.put(ProducerConfig.CLIENT_ID_CONFIG, "console-producer")
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer")
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer")
+
+    val propsConfig = producerProps(config)
+    props ++= propsConfig
 
     props
   }
@@ -295,7 +297,7 @@ object ConsoleProducer {
     var ignoreError = false
     var lineNumber = 0
 
-    override def init(inputStream: InputStream, props: Properties): Unit = {
+    override def init(inputStream: InputStream, props: Properties) {
       topic = props.getProperty("topic")
       if (props.containsKey("parse.key"))
         parseKey = props.getProperty("parse.key").trim.equalsIgnoreCase("true")

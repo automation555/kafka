@@ -16,69 +16,62 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
+import org.apache.kafka.clients.producer.MockProducer;
+import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.streams.kstream.Reducer;
 import org.apache.kafka.streams.processor.Processor;
-import org.apache.kafka.streams.processor.internals.ProcessorNode;
-import org.apache.kafka.streams.state.TimestampedKeyValueStore;
-import org.apache.kafka.streams.state.ValueAndTimestamp;
-import org.apache.kafka.test.GenericInMemoryTimestampedKeyValueStore;
-import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.streams.processor.StateStore;
+import org.apache.kafka.streams.processor.internals.RecordCollectorImpl;
+import org.apache.kafka.streams.state.StateSerdes;
+import org.apache.kafka.streams.state.internals.InMemoryKeyValueStore;
+import org.apache.kafka.test.MockProcessorContext;
 import org.junit.Test;
 
-import java.util.HashSet;
-import java.util.Set;
-
-import static java.util.Collections.emptySet;
-import static java.util.Collections.singleton;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.fail;
 
 public class KTableReduceTest {
 
     @Test
-    public void shouldAddAndSubtract() {
-        final InternalMockProcessorContext context = new InternalMockProcessorContext();
+    public void shouldNotSubtractOldValueOnlyIfStateIsNull() {
+        final Processor<Long, Change<Long>> reducer = new KTableReduce<Long, Long>(
+            "corruptedStore",
+            new Reducer<Long>() {
+                @Override
+                public Long apply(final Long value1, final Long value2) {
+                    throw new RuntimeException("Subtractro#apply() should never be called for subtraction case.");
+                }
+            },
+            new Reducer<Long>() {
+                @Override
+                public Long apply(final Long value1, final Long value2) {
+                    throw new RuntimeException("Adder#apply() should never be called for subtraction case.");
+                }
+            }
+        ).get();
 
-        final Processor<String, Change<Set<String>>> reduceProcessor =
-            new KTableReduce<String, Set<String>>(
-                "myStore",
-                this::unionNotNullArgs,
-                this::differenceNotNullArgs
-            ).get();
+        reducer.init(
+            new MockProcessorContext(
+                StateSerdes.withBuiltinTypes("anyName", Long.class, Long.class),
+                new RecordCollectorImpl(
+                    new MockProducer<>(true, Serdes.ByteArray().serializer(), Serdes.ByteArray().serializer()),
+                    null)) {
 
-        final TimestampedKeyValueStore<String, Set<String>> myStore =
-            new GenericInMemoryTimestampedKeyValueStore<>("myStore");
+                @Override
+                public StateStore getStateStore(final String storeName) {
+                    return new InMemoryKeyValueStore<>(
+                        "corruptedStore",
+                        Serdes.Long(),
+                        Serdes.Long());
+                }
 
-        context.register(myStore, null);
-        reduceProcessor.init(context);
-        context.setCurrentNode(new ProcessorNode<>("reduce", reduceProcessor, singleton("myStore")));
+                @SuppressWarnings("unchecked")
+                @Override
+                public void forward(final Object key, final Object value) {
+                    fail("Should not forward anything for subtraction on empty state.");
+                }
+            });
 
-        context.setTime(10L);
-        reduceProcessor.process("A", new Change<>(singleton("a"), null));
-        assertEquals(ValueAndTimestamp.make(singleton("a"), 10L), myStore.get("A"));
-        context.setTime(15L);
-        reduceProcessor.process("A", new Change<>(singleton("b"), singleton("a")));
-        assertEquals(ValueAndTimestamp.make(singleton("b"), 15L), myStore.get("A"));
-        context.setTime(12L);
-        reduceProcessor.process("A", new Change<>(null, singleton("b")));
-        assertEquals(ValueAndTimestamp.make(emptySet(), 15L), myStore.get("A"));
+        reducer.process(21L, new Change<>(null, 42L));
     }
 
-    private Set<String> differenceNotNullArgs(final Set<String> left, final Set<String> right) {
-        assertNotNull(left);
-        assertNotNull(right);
-
-        final HashSet<String> strings = new HashSet<>(left);
-        strings.removeAll(right);
-        return strings;
-    }
-
-    private Set<String> unionNotNullArgs(final Set<String> left, final Set<String> right) {
-        assertNotNull(left);
-        assertNotNull(right);
-
-        final HashSet<String> strings = new HashSet<>();
-        strings.addAll(left);
-        strings.addAll(right);
-        return strings;
-    }
 }

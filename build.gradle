@@ -17,31 +17,28 @@ import org.ajoberstar.grgit.Grgit
 
 buildscript {
   repositories {
+    mavenCentral()
     jcenter()
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
 
   dependencies {
     // For Apache Rat plugin to ignore non-Git files
-    classpath "org.ajoberstar:grgit:1.9.3"
-    classpath 'com.github.ben-manes:gradle-versions-plugin:0.15.0'
+    classpath "org.ajoberstar:grgit:1.7.0"
+    classpath 'com.github.ben-manes:gradle-versions-plugin:0.13.0'
     classpath 'org.scoverage:gradle-scoverage:2.1.0'
-    classpath 'com.github.jengelman.gradle.plugins:shadow:2.0.1'
-    classpath 'org.owasp:dependency-check-gradle:3.0.1'
+    classpath 'com.github.jengelman.gradle.plugins:shadow:1.2.4'
   }
 }
 
-apply from: "$rootDir/gradle/dependencies.gradle"
-
 allprojects {
-
-  repositories {
-    jcenter()
-  }
-  
   apply plugin: 'idea'
   apply plugin: "jacoco"
-  apply plugin: 'org.owasp.dependencycheck'
+
+  repositories {
+    mavenCentral()
+  }
+
   apply plugin: 'com.github.ben-manes.versions'
 
   dependencyUpdates {
@@ -58,13 +55,6 @@ allprojects {
         }
       }
     }
-    configurations {
-      runtime {
-        resolutionStrategy {
-          force "com.fasterxml.jackson.core:jackson-annotations:$versions.jackson"
-        }
-      }
-    }
   }
 
   if (JavaVersion.current().isJava8Compatible()) {
@@ -78,12 +68,12 @@ allprojects {
 }
 
 ext {
-  gradleVersion = "4.2.1"
+  gradleVersion = "3.2.1"
   buildVersionFileName = "kafka-version.properties"
 
   maxPermSizeArgs = []
   if (!JavaVersion.current().isJava8Compatible())
-    maxPermSizeArgs += '-XX:MaxPermSize=512m'
+    maxPermSizeArgs = ['-XX:MaxPermSize=512m']
 
   userMaxForks = project.hasProperty('maxParallelForks') ? maxParallelForks.toInteger() : null
 
@@ -99,10 +89,9 @@ ext {
   userTestLoggingEvents = project.hasProperty("testLoggingEvents") ? Arrays.asList(testLoggingEvents.split(",")) : null
 
   generatedDocsDir = new File("${project.rootDir}/docs/generated")
-
-  commitId = project.hasProperty('commitId') ? commitId : null
 }
 
+apply from: "$rootDir/gradle/dependencies.gradle"
 apply from: file('wrapper.gradle')
 
 if (new File('.git').exists()) {
@@ -122,8 +111,7 @@ if (new File('.git').exists()) {
         '**/README.md',
         '**/id_rsa',
         '**/id_rsa.pub',
-        'checkstyle/suppressions.xml',
-        'streams/quickstart/java/src/test/resources/projects/basic/goal.txt'
+        'checkstyle/suppressions.xml'
     ])
   }
 }
@@ -138,24 +126,14 @@ subprojects {
   apply plugin: 'maven'
   apply plugin: 'signing'
   apply plugin: 'checkstyle'
-
-  if (!JavaVersion.current().isJava9Compatible())
-    apply plugin: 'findbugs'
+  apply plugin: 'findbugs'
 
   sourceCompatibility = 1.7
-  targetCompatibility = 1.7
 
   compileJava {
     options.encoding = 'UTF-8'
+    // Add unchecked once we drop support for Java 7 as @SuppressWarnings("unchecked") is too buggy in Java 7
     options.compilerArgs << "-Xlint:deprecation"
-    // -Xlint:unchecked is too buggy in Java 7, so we only enable for Java 8 or higher
-    if (JavaVersion.current().isJava8Compatible())
-      options.compilerArgs << "-Xlint:unchecked"
-    // --release is the recommended way to select the target release, but it's only supported in Java 9 so we also
-    // set --source and --target via `sourceCompatibility` and `targetCompatibility`. If/when Gradle supports `--release`
-    // natively (https://github.com/gradle/gradle/issues/2510), we should switch to that.
-    if (JavaVersion.current().isJava9Compatible())
-      options.compilerArgs << "--release" << "7"
   }
 
   uploadArchives {
@@ -190,10 +168,6 @@ subprojects {
     }
   }
 
-  def testLoggingEvents = ["passed", "skipped", "failed"]
-  def testShowStandardStreams = false
-  def testExceptionFormat = 'full'
-
   test {
     maxParallelForks = userMaxForks ?: Runtime.runtime.availableProcessors()
 
@@ -202,49 +176,11 @@ subprojects {
     jvmArgs = maxPermSizeArgs
 
     testLogging {
-      events = userTestLoggingEvents ?: testLoggingEvents
-      showStandardStreams = userShowStandardStreams ?: testShowStandardStreams
-      exceptionFormat = testExceptionFormat
+      events = userTestLoggingEvents ?: ["passed", "skipped", "failed"]
+      showStandardStreams = userShowStandardStreams ?: false
+      exceptionFormat = 'full'
     }
 
-  }
-
-  task integrationTest(type: Test, dependsOn: compileJava) {
-    maxParallelForks = userMaxForks ?: Runtime.runtime.availableProcessors()
-
-    minHeapSize = "256m"
-    maxHeapSize = "2048m"
-    jvmArgs = maxPermSizeArgs
-
-    testLogging {
-      events = userTestLoggingEvents ?: testLoggingEvents
-      showStandardStreams = userShowStandardStreams ?: testShowStandardStreams
-      exceptionFormat = testExceptionFormat
-    }
-
-    useJUnit {
-      includeCategories 'org.apache.kafka.test.IntegrationTest'
-    }
-
-  }
-
-  task unitTest(type: Test, dependsOn: compileJava) {
-    maxParallelForks = userMaxForks ?: Runtime.runtime.availableProcessors()
-
-    minHeapSize = "256m"
-    maxHeapSize = "2048m"
-    jvmArgs = maxPermSizeArgs
-
-    testLogging {
-      events = userTestLoggingEvents ?: testLoggingEvents
-      showStandardStreams = userShowStandardStreams ?: testShowStandardStreams
-      exceptionFormat = testExceptionFormat
-    }
-
-    useJUnit {
-      excludeCategories 'org.apache.kafka.test.IntegrationTest'
-    }
-    
   }
 
   jar {
@@ -327,28 +263,8 @@ subprojects {
       "-feature",
       "-language:postfixOps",
       "-language:implicitConversions",
-      "-language:existentials",
-      "-Xlint:by-name-right-associative",
-      "-Xlint:delayedinit-select",
-      "-Xlint:doc-detached",
-      "-Xlint:missing-interpolator",
-      "-Xlint:nullary-override",
-      "-Xlint:nullary-unit",
-      "-Xlint:option-implicit",
-      "-Xlint:package-object-classes",
-      "-Xlint:poly-implicit-overload",
-      "-Xlint:private-shadow",
-      "-Xlint:stars-align",
-      "-Xlint:type-parameter-shadow",
-      "-Xlint:unsound-match",
+      "-language:existentials"
     ]
-
-    if (versions.baseScala != '2.11') {
-      scalaCompileOptions.additionalParameters += [
-        "-Xlint:constant",
-        "-Xlint:unused"
-      ]
-    }
 
     configure(scalaCompileOptions.forkOptions) {
       memoryMaximumSize = '1g'
@@ -364,19 +280,16 @@ subprojects {
   }
   test.dependsOn('checkstyleMain', 'checkstyleTest')
 
-  if (!JavaVersion.current().isJava9Compatible()) {
-    findbugs {
-      toolVersion = "3.0.1"
-      excludeFilter = file("$rootDir/gradle/findbugs-exclude.xml")
-      ignoreFailures = false
-    }
-    test.dependsOn('findbugsMain')
+  findbugs {
+    toolVersion = "3.0.1"
+    excludeFilter = file("$rootDir/gradle/findbugs-exclude.xml")
+    ignoreFailures = true
+  }
 
-    tasks.withType(FindBugs) {
-      reports {
-        xml.enabled(project.hasProperty('xmlFindBugsReport'))
-        html.enabled(!project.hasProperty('xmlFindBugsReport'))
-      }
+  tasks.withType(FindBugs) {
+    reports {
+      xml.enabled false
+      html.enabled true
     }
   }
 
@@ -399,12 +312,6 @@ subprojects {
   def coverageGen = it.path == ':core' ? 'reportScoverage' : 'jacocoTestReport'
   task reportCoverage(dependsOn: [coverageGen])
 
-}
-
-gradle.taskGraph.whenReady { taskGraph ->
-  taskGraph.getAllTasks().findAll { it.name.contains('findbugsScoverage') || it.name.contains('findbugsTest') }.each { task ->
-    task.enabled = false
-  }
 }
 
 def fineTuneEclipseClasspathFile(eclipse, project) {
@@ -464,48 +371,48 @@ task jacocoRootReport(type: org.gradle.testing.jacoco.tasks.JacocoReport) {
 
 task reportCoverage(dependsOn: ['jacocoRootReport', 'core:reportCoverage'])
 
-for ( sv in availableScalaVersions ) {
-  String taskSuffix = sv.replaceAll("\\.", "_")
+for ( sv in ['2_10', '2_11', '2_12'] ) {
+  String svInDot = sv.replaceAll( "_", ".")
 
-  tasks.create(name: "jar_core_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "jar_core_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['core:jar']
   }
 
-  tasks.create(name: "test_core_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "test_core_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['core:test']
   }
 
-  tasks.create(name: "srcJar_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "srcJar_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['core:srcJar']
   }
 
-  tasks.create(name: "docsJar_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "docsJar_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['core:docsJar']
   }
 
-  tasks.create(name: "install_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "install_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['install']
   }
 
-  tasks.create(name: "releaseTarGz_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "releaseTarGz_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['releaseTarGz']
   }
 
-  tasks.create(name: "uploadCoreArchives_${taskSuffix}", type: GradleBuild) {
+  tasks.create(name: "uploadCoreArchives_${sv}", type: GradleBuild) {
     startParameter = project.getGradle().getStartParameter().newInstance()
-    startParameter.projectProperties += [scalaVersion: "${sv}"]
+    startParameter.projectProperties += [scalaVersion: "${svInDot}"]
     tasks = ['core:uploadArchives']
   }
 }
@@ -513,26 +420,21 @@ for ( sv in availableScalaVersions ) {
 def connectPkgs = ['connect:api', 'connect:runtime', 'connect:transforms', 'connect:json', 'connect:file']
 def pkgs = ['clients', 'examples', 'log4j-appender', 'tools', 'streams', 'streams:examples'] + connectPkgs
 
-/** Create one task per default Scala version */
-def withDefScalaVersions(taskName) {
-  defaultScalaVersions.collect { taskName + '_' + it.replaceAll('\\.', '_') }
-}
-
 tasks.create(name: "jarConnect", dependsOn: connectPkgs.collect { it + ":jar" }) {}
-tasks.create(name: "jarAll", dependsOn: withDefScalaVersions('jar_core') + pkgs.collect { it + ":jar" }) { }
+tasks.create(name: "jarAll", dependsOn: ['jar_core_2_10', 'jar_core_2_11'] + pkgs.collect { it + ":jar" }) { }
 
-tasks.create(name: "srcJarAll", dependsOn: withDefScalaVersions('srcJar') + pkgs.collect { it + ":srcJar" }) { }
+tasks.create(name: "srcJarAll", dependsOn: ['srcJar_2_10', 'srcJar_2_11'] + pkgs.collect { it + ":srcJar" }) { }
 
-tasks.create(name: "docsJarAll", dependsOn: withDefScalaVersions('docsJar') + pkgs.collect { it + ":docsJar" }) { }
+tasks.create(name: "docsJarAll", dependsOn: ['docsJar_2_10', 'docsJar_2_11'] + pkgs.collect { it + ":docsJar" }) { }
 
 tasks.create(name: "testConnect", dependsOn: connectPkgs.collect { it + ":test" }) {}
-tasks.create(name: "testAll", dependsOn: withDefScalaVersions('test_core') + pkgs.collect { it + ":test" }) { }
+tasks.create(name: "testAll", dependsOn: ['test_core_2_10', 'test_core_2_11'] + pkgs.collect { it + ":test" }) { }
 
-tasks.create(name: "installAll", dependsOn: withDefScalaVersions('install') + pkgs.collect { it + ":install" }) { }
+tasks.create(name: "installAll", dependsOn: ['install_2_10', 'install_2_11'] + pkgs.collect { it + ":install" }) { }
 
-tasks.create(name: "releaseTarGzAll", dependsOn: withDefScalaVersions('releaseTarGz')) { }
+tasks.create(name: "releaseTarGzAll", dependsOn: ['releaseTarGz_2_10', 'releaseTarGz_2_11']) { }
 
-tasks.create(name: "uploadArchivesAll", dependsOn: withDefScalaVersions('uploadCoreArchives') + pkgs.collect { it + ":uploadArchives" }) { }
+tasks.create(name: "uploadArchivesAll", dependsOn: ['uploadCoreArchives_2_10', 'uploadCoreArchives_2_11'] + pkgs.collect { it + ":uploadArchives" }) { }
 
 project(':core') {
   println "Building project 'core' with Scala version ${versions.scala}"
@@ -543,13 +445,17 @@ project(':core') {
 
   dependencies {
     compile project(':clients')
-    compile libs.jacksonDatabind
+    compile libs.ipMath
     compile libs.joptSimple
     compile libs.metrics
     compile libs.scala
     compile libs.slf4jlog4j
     compile libs.zkclient
     compile libs.zookeeper
+    // These modules were broken out of core scala in 2.10. We can remove special handling when 2.10 support is dropped.
+    if (versions.baseScala != '2.10') {
+      compile libs.scalaParserCombinators
+    }
 
     testCompile project(':clients').sourceSets.test.output
     testCompile libs.bcpkix
@@ -566,7 +472,7 @@ project(':core') {
     testCompile libs.apachedsMavibotPartition
     testCompile libs.apachedsJdbmPartition
     testCompile libs.junit
-    testCompile libs.scalatest
+    testCompile libs.scalaTest
     testCompile libs.jfreechart
 
     scoverage libs.scoveragePlugin
@@ -629,13 +535,6 @@ project(':core') {
     standardOutput = new File(generatedDocsDir, "protocol_messages.html").newOutputStream()
   }
 
-  task genAdminClientConfigDocs(type: JavaExec) {
-    classpath = sourceSets.main.runtimeClasspath
-    main = 'org.apache.kafka.clients.admin.AdminClientConfig'
-    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
-    standardOutput = new File(generatedDocsDir, "admin_client_config.html").newOutputStream()
-  }
-
   task genProducerConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.clients.producer.ProducerConfig'
@@ -664,26 +563,10 @@ project(':core') {
     standardOutput = new File(generatedDocsDir, "topic_config.html").newOutputStream()
   }
 
-  task genConsumerMetricsDocs(type: JavaExec) {
-    classpath = sourceSets.test.runtimeClasspath
-    main = 'org.apache.kafka.clients.consumer.internals.ConsumerMetrics'
-    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
-    standardOutput = new File(generatedDocsDir, "consumer_metrics.html").newOutputStream()
-  }
-
-  task genProducerMetricsDocs(type: JavaExec) {
-    classpath = sourceSets.test.runtimeClasspath
-    main = 'org.apache.kafka.clients.producer.internals.ProducerMetrics'
-    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
-    standardOutput = new File(generatedDocsDir, "producer_metrics.html").newOutputStream()
-  }
-
   task siteDocsTar(dependsOn: ['genProtocolErrorDocs', 'genProtocolApiKeyDocs', 'genProtocolMessageDocs',
-                               'genAdminClientConfigDocs', 'genProducerConfigDocs', 'genConsumerConfigDocs',
-                               'genKafkaConfigDocs', 'genTopicConfigDocs',
-                               ':connect:runtime:genConnectConfigDocs', ':connect:runtime:genConnectTransformationDocs',
-                               ':streams:genStreamsConfigDocs', 'genConsumerMetricsDocs', 'genProducerMetricsDocs',
-                               ':connect:runtime:genConnectMetricsDocs'], type: Tar) {
+                               'genProducerConfigDocs', 'genConsumerConfigDocs', 'genKafkaConfigDocs',
+                               'genTopicConfigDocs', ':connect:runtime:genConnectConfigDocs', ':connect:runtime:genConnectTransformationDocs',
+                               ':streams:genStreamsConfigDocs'], type: Tar) {
     classifier = 'site-docs'
     compression = Compression.GZIP
     from project.file("$rootDir/docs")
@@ -772,29 +655,27 @@ project(':clients') {
     testCompile libs.bcpkix
     testCompile libs.junit
     testCompile libs.easymock
-    testCompile libs.powermockJunit4
+    testCompile libs.powermock
     testCompile libs.powermockEasymock
 
     testRuntime libs.slf4jlog4j
   }
 
   task determineCommitId {
+    ext.commitId = "unknown"
     def takeFromHash = 16
-    if (commitId) {
-      commitId = commitId.take(takeFromHash)
-    } else if (file("$rootDir/.git/HEAD").exists()) {
+    if (file("$rootDir/.git/HEAD").exists()) {
       def headRef = file("$rootDir/.git/HEAD").text
       if (headRef.contains('ref: ')) {
         headRef = headRef.replaceAll('ref: ', '').trim()
         if (file("$rootDir/.git/$headRef").exists()) {
-          commitId = file("$rootDir/.git/$headRef").text.trim().take(takeFromHash)
+        commitId = file("$rootDir/.git/$headRef").text.trim().take(takeFromHash)
         }
       } else {
         commitId = headRef.trim().take(takeFromHash)
       }
-    } else {
-      commitId = "unknown"
     }
+    commitId
   }
 
   task createVersionFile(dependsOn: determineCommitId) {
@@ -803,7 +684,7 @@ project(':clients') {
     outputs.upToDateWhen { false }
     doLast {
       def data = [
-        commitId: commitId,
+        commitId: determineCommitId.commitId,
         version: version,
       ]
 
@@ -825,19 +706,12 @@ project(':clients') {
   }
 
   javadoc {
-    include "**/org/apache/kafka/clients/admin/*"
     include "**/org/apache/kafka/clients/consumer/*"
     include "**/org/apache/kafka/clients/producer/*"
     include "**/org/apache/kafka/common/*"
-    include "**/org/apache/kafka/common/acl/*"
-    include "**/org/apache/kafka/common/annotation/*"
     include "**/org/apache/kafka/common/errors/*"
-    include "**/org/apache/kafka/common/header/*"
-    include "**/org/apache/kafka/common/resource/*"
     include "**/org/apache/kafka/common/serialization/*"
     include "**/org/apache/kafka/common/config/*"
-    include "**/org/apache/kafka/common/security/auth/*"
-    include "**/org/apache/kafka/server/policy/*"
   }
 }
 
@@ -851,15 +725,8 @@ project(':tools') {
     compile libs.jacksonDatabind
     compile libs.slf4jlog4j
 
-    compile libs.jacksonJaxrsJsonProvider
-    compile libs.jerseyContainerServlet
-    compile libs.jettyServer
-    compile libs.jettyServlet
-    compile libs.jettyServlets
-
     testCompile project(':clients')
     testCompile libs.junit
-    testCompile project(':clients').sourceSets.test.output
   }
 
   javadoc {
@@ -895,8 +762,6 @@ project(':streams') {
     testCompile project(':core')
     testCompile project(':core').sourceSets.test.output
     testCompile libs.junit
-    testCompile libs.easymock
-    testCompile libs.bcpkix
 
     testRuntime libs.slf4jlog4j
   }
@@ -970,11 +835,11 @@ project(':jmh-benchmarks') {
   }
 
   dependencies {
-    compile project(':clients')
-    compile project(':streams')
-    compile libs.jmhCore
-    compile libs.jmhGeneratorAnnProcess
-    compile libs.jmhCoreBenchmarks
+      compile project(':clients')
+      compile project(':streams')
+      compile 'org.openjdk.jmh:jmh-core:1.17.5'
+      compile 'org.openjdk.jmh:jmh-generator-annprocess:1.17.5'
+      compile 'org.openjdk.jmh:jmh-core-benchmarks:1.17.5'
   }
 
   jar {
@@ -1028,7 +893,6 @@ project(':connect:api') {
     testCompile libs.junit
 
     testRuntime libs.slf4jlog4j
-    testCompile project(':clients').sourceSets.test.output
   }
 
   javadoc {
@@ -1062,11 +926,10 @@ project(':connect:transforms') {
 
     testCompile libs.easymock
     testCompile libs.junit
-    testCompile libs.powermockJunit4
+    testCompile libs.powermock
     testCompile libs.powermockEasymock
 
     testRuntime libs.slf4jlog4j
-    testCompile project(':clients').sourceSets.test.output
   }
 
   javadoc {
@@ -1100,11 +963,10 @@ project(':connect:json') {
 
     testCompile libs.easymock
     testCompile libs.junit
-    testCompile libs.powermockJunit4
+    testCompile libs.powermock
     testCompile libs.powermockEasymock
 
     testRuntime libs.slf4jlog4j
-    testCompile project(':clients').sourceSets.test.output
   }
 
   javadoc {
@@ -1143,17 +1005,18 @@ project(':connect:runtime') {
     compile libs.jettyServer
     compile libs.jettyServlet
     compile libs.jettyServlets
-    compile(libs.reflections)
-    compile(libs.mavenArtifact)
+    compile(libs.reflections) {
+      // Exclude because of LGPL license
+      exclude group: 'com.google.code.findbugs', module: 'annotations'
+    }
 
     testCompile project(':clients').sourceSets.test.output
     testCompile libs.easymock
     testCompile libs.junit
-    testCompile libs.powermockJunit4
+    testCompile libs.powermock
     testCompile libs.powermockEasymock
 
     testCompile project(":connect:json")
-    testCompile project(':clients').sourceSets.test.output
 
     testRuntime libs.slf4jlog4j
   }
@@ -1191,14 +1054,6 @@ project(':connect:runtime') {
     if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "connect_transforms.html").newOutputStream()
   }
-
-  task genConnectMetricsDocs(type: JavaExec) {
-    classpath = sourceSets.test.runtimeClasspath
-    main = 'org.apache.kafka.connect.runtime.ConnectMetrics'
-    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
-    standardOutput = new File(generatedDocsDir, "connect_metrics.html").newOutputStream()
-  }
-
 }
 
 project(':connect:file') {
@@ -1210,11 +1065,10 @@ project(':connect:file') {
 
     testCompile libs.easymock
     testCompile libs.junit
-    testCompile libs.powermockJunit4
+    testCompile libs.powermock
     testCompile libs.powermockEasymock
 
     testRuntime libs.slf4jlog4j
-    testCompile project(':clients').sourceSets.test.output
   }
 
   javadoc {

@@ -18,19 +18,20 @@ package kafka.security.auth
 
 import java.util
 import java.util.concurrent.locks.ReentrantReadWriteLock
-import kafka.common.{NotificationHandler, ZkNodeChangeNotificationListener}
 
+import kafka.common.{NotificationHandler, ZkNodeChangeNotificationListener}
 import kafka.network.RequestChannel.Session
 import kafka.security.auth.SimpleAclAuthorizer.VersionedAcls
 import kafka.server.KafkaConfig
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils._
-import org.I0Itec.zkclient.exception.{ZkNodeExistsException, ZkNoNodeException}
+import net.ripe.commons.ip.{Ipv4, Ipv4Range, Ipv6, Ipv6Range}
+import org.I0Itec.zkclient.exception.{ZkNoNodeException, ZkNodeExistsException}
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.security.auth.KafkaPrincipal
-import scala.collection.JavaConverters._
 import org.apache.log4j.Logger
 
+import scala.collection.JavaConverters._
 import scala.util.Random
 
 object SimpleAclAuthorizer {
@@ -64,25 +65,25 @@ object SimpleAclAuthorizer {
   //prefix of all the change notification sequence node.
   val AclChangedPrefix = "acl_changes_"
 
-  case class VersionedAcls(acls: Set[Acl], zkVersion: Int)
+  private case class VersionedAcls(acls: Set[Acl], zkVersion: Int)
 }
 
 class SimpleAclAuthorizer extends Authorizer with Logging {
-  protected val authorizerLogger: Logger = Logger.getLogger("kafka.authorizer.logger")
-  protected var superUsers = Set.empty[KafkaPrincipal]
-  protected var shouldAllowEveryoneIfNoAclIsFound = false
-  protected var zkUtils: ZkUtils = null
-  protected var aclChangeListener: ZkNodeChangeNotificationListener = null
+  private val authorizerLogger = Logger.getLogger("kafka.authorizer.logger")
+  private var superUsers = Set.empty[KafkaPrincipal]
+  private var shouldAllowEveryoneIfNoAclIsFound = false
+  private var zkUtils: ZkUtils = null
+  private var aclChangeListener: ZkNodeChangeNotificationListener = null
 
-  protected val aclCache = new scala.collection.mutable.HashMap[Resource, VersionedAcls]
-  protected val lock = new ReentrantReadWriteLock()
+  private val aclCache = new scala.collection.mutable.HashMap[Resource, VersionedAcls]
+  private val lock = new ReentrantReadWriteLock()
 
   // The maximum number of times we should try to update the resource acls in zookeeper before failing;
   // This should never occur, but is a safeguard just in case.
   protected[auth] var maxUpdateRetries = 10
 
-  protected val retryBackoffMs = 100
-  protected val retryBackoffJitterMs = 50
+  private val retryBackoffMs = 100
+  private val retryBackoffJitterMs = 50
 
   /**
    * Guaranteed to be called before any authorize call is made.
@@ -109,7 +110,7 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     zkUtils = ZkUtils(zkUrl,
                       sessionTimeout = zkSessionTimeOutMs,
                       connectionTimeout = zkConnectionTimeoutMs,
-                      kafkaConfig.zkEnableSecureAcls)
+                      JaasUtils.isZkSecurityEnabled())
     zkUtils.makeSurePersistentPathExists(SimpleAclAuthorizer.AclZkPath)
 
     loadCache()
@@ -124,18 +125,17 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     val host = session.clientAddress.getHostAddress
     val acls = getAcls(resource) ++ getAcls(new Resource(resource.resourceType, Resource.WildCardResource))
 
-    // Check if there is any Deny acl match that would disallow this operation.
-    val denyMatch = aclMatch(operation, resource, principal, host, Deny, acls)
+    //check if there is any Deny acl match that would disallow this operation.
+    val denyMatch = aclMatch(session, operation, resource, principal, host, Deny, acls)
 
-    // Check if there are any Allow ACLs which would allow this operation.
-    // Allowing read, write, delete, or alter implies allowing describe.
-    // See #{org.apache.kafka.common.acl.AclOperation} for more details about ACL inheritance.
-    val allowOps = operation match {
-      case Describe => Set[Operation](Describe, Read, Write, Delete, Alter)
-      case DescribeConfigs => Set[Operation](DescribeConfigs, AlterConfigs)
-      case _ => Set[Operation](operation)
-    }
-    val allowMatch = allowOps.exists(operation => aclMatch(operation, resource, principal, host, Allow, acls))
+    //if principal is allowed to read, write or delete we allow describe by default, the reverse does not apply to Deny.
+    val ops = if (Describe == operation)
+      Set[Operation](operation, Read, Write, Delete)
+    else
+      Set[Operation](operation)
+
+    //now check if there is any allow acl that will allow this operation.
+    val allowMatch = ops.exists(operation => aclMatch(session, operation, resource, principal, host, Allow, acls))
 
     //we allow an operation if a user is a super user or if no acls are found and user has configured to allow all users
     //when no acls are found or if no deny acls are found and at least one allow acls matches.
@@ -161,16 +161,32 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     } else false
   }
 
-  private def aclMatch(operations: Operation, resource: Resource, principal: KafkaPrincipal, host: String, permissionType: PermissionType, acls: Set[Acl]): Boolean = {
+  private def aclMatch(session: Session, operations: Operation, resource: Resource, principal: KafkaPrincipal, host: String, permissionType: PermissionType, acls: Set[Acl]): Boolean = {
     acls.find { acl =>
       acl.permissionType == permissionType &&
         (acl.principal == principal || acl.principal == Acl.WildCardPrincipal) &&
         (operations == acl.operation || acl.operation == All) &&
-        (acl.host == host || acl.host == Acl.WildCardHost)
+        aclHostMatch(acl, host)
     }.exists { acl =>
       authorizerLogger.debug(s"operation = $operations on resource = $resource from host = $host is $permissionType based on acl = $acl")
       true
     }
+  }
+
+  private def aclHostMatch(acl: Acl, host: String): Boolean = {
+    if (acl.host == host || acl.host == Acl.WildCardHost) return true
+    if (acl.host.contains("/")) {
+      return try {
+        if (acl.host.contains(":")) {
+          Ipv6Range.parseCidr(acl.host).contains(Ipv6.of(host))
+        } else {
+          Ipv4Range.parseCidr(acl.host).contains(Ipv4.of(host))
+        }
+      } catch {
+        case _: Throwable => false
+      }
+    }
+    false
   }
 
   override def addAcls(acls: Set[Acl], resource: Resource) {
@@ -253,7 +269,7 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
 
   /**
     * Safely updates the resources ACLs by ensuring reads and writes respect the expected zookeeper version.
-    * Continues to retry until it successfully updates zookeeper.
+    * Continues to retry until it succesfully updates zookeeper.
     *
     * Returns a boolean indicating if the content of the ACLs was actually changed.
     *

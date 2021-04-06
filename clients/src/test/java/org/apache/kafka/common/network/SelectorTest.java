@@ -27,6 +27,7 @@ import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.test.TestCondition;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -84,7 +85,7 @@ public class SelectorTest {
         this.server = new EchoServer(SecurityProtocol.PLAINTEXT, configs);
         this.server.start();
         this.time = new MockTime();
-        this.channelBuilder = new PlaintextChannelBuilder(ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT));
+        this.channelBuilder = new PlaintextChannelBuilder(Mode.CLIENT, ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT));
         this.channelBuilder.configure(configs);
         this.metrics = new Metrics();
         this.selector = new Selector(5000, this.metrics, time, "MetricGroup", channelBuilder, new LogContext());
@@ -120,12 +121,15 @@ public class SelectorTest {
 
         // disconnect
         this.server.closeConnections();
-        TestUtils.waitForCondition(() -> {
-            try {
-                selector.poll(1000L);
-                return selector.disconnected().containsKey(node);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
+        TestUtils.waitForCondition(new TestCondition() {
+            @Override
+            public boolean conditionMet() {
+                try {
+                    selector.poll(1000L);
+                    return selector.disconnected().containsKey(node);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
             }
         }, 5000, "Failed to observe disconnected node in disconnected set");
 
@@ -306,7 +310,7 @@ public class SelectorTest {
 
     @Test
     public void registerFailure() throws Exception {
-        ChannelBuilder channelBuilder = new PlaintextChannelBuilder(null) {
+        ChannelBuilder channelBuilder = new PlaintextChannelBuilder(Mode.CLIENT, null) {
             @Override
             public KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize,
                     MemoryPool memoryPool) throws KafkaException {
@@ -489,10 +493,8 @@ public class SelectorTest {
             do {
                 selector.poll(1000);
             } while (selector.completedReceives().isEmpty());
-        } while ((selector.numStagedReceives(channel) == 0 || channel.hasBytesBuffered()) && --retries > 0);
+        } while (selector.numStagedReceives(channel) == 0 && --retries > 0);
         assertTrue("No staged receives after 100 attempts", selector.numStagedReceives(channel) > 0);
-        // We want to return without any bytes buffered to ensure that channel will be closed after idle time
-        assertFalse("Channel has bytes buffered", channel.hasBytesBuffered());
 
         return channel;
     }
@@ -531,7 +533,7 @@ public class SelectorTest {
         selector.close();
         MemoryPool pool = new SimpleMemoryPool(900, 900, false, null);
         selector = new Selector(NetworkReceive.UNLIMITED, 5000, metrics, time, "MetricGroup",
-                new HashMap<>(), true, false, channelBuilder, pool, new LogContext());
+            new HashMap<String, String>(), true, false, channelBuilder, pool, new LogContext());
 
         try (ServerSocketChannel ss = ServerSocketChannel.open()) {
             ss.bind(new InetSocketAddress(0));
@@ -683,36 +685,6 @@ public class SelectorTest {
         assertEquals((double) conns, getMetric("connection-creation-total").metricValue());
         assertEquals((double) conns, getMetric("connection-count").metricValue());
     }
-
-    @SuppressWarnings("unchecked")
-    @Test
-    public void testLowestPriorityChannel() throws Exception {
-        int conns = 5;
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        for (int i = 0; i < conns; i++) {
-            connect(String.valueOf(i), addr);
-        }
-        assertNotNull(selector.lowestPriorityChannel());
-        for (int i = conns - 1; i >= 0; i--) {
-            if (i != 2)
-              assertEquals("", blockingRequest(String.valueOf(i), ""));
-            time.sleep(10);
-        }
-        assertEquals("2", selector.lowestPriorityChannel().id());
-
-        Field field = Selector.class.getDeclaredField("closingChannels");
-        field.setAccessible(true);
-        Map<String, KafkaChannel> closingChannels = (Map<String, KafkaChannel>) field.get(selector);
-        closingChannels.put("3", selector.channel("3"));
-        assertEquals("3", selector.lowestPriorityChannel().id());
-        closingChannels.remove("3");
-
-        for (int i = 0; i < conns; i++) {
-            selector.close(String.valueOf(i));
-        }
-        assertNull(selector.lowestPriorityChannel());
-    }
-
 
     private String blockingRequest(String node, String s) throws IOException {
         selector.send(createSend(node, s));

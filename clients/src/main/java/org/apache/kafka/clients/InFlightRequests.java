@@ -72,6 +72,11 @@ final class InFlightRequests {
         return inFlightRequest;
     }
 
+    public NetworkClient.InFlightRequest peekNext(String node) {
+        NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).peekLast();
+        return inFlightRequest;
+    }
+
     /**
      * Get the last request we sent to the given node (but don't remove it from the queue)
      * @param node The node id
@@ -152,7 +157,7 @@ final class InFlightRequests {
         } else {
             final Deque<NetworkClient.InFlightRequest> clearedRequests = requests.remove(node);
             inFlightRequestCount.getAndAdd(-clearedRequests.size());
-            return clearedRequests::descendingIterator;
+            return () -> clearedRequests.descendingIterator();
         }
     }
 

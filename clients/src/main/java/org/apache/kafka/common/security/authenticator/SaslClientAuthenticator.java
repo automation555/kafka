@@ -23,8 +23,6 @@ import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.errors.IllegalSaslStateException;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
 import org.apache.kafka.common.errors.UnsupportedSaslMechanismException;
-import org.apache.kafka.common.message.SaslAuthenticateRequestData;
-import org.apache.kafka.common.message.SaslHandshakeRequestData;
 import org.apache.kafka.common.network.Authenticator;
 import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.ReauthenticationContext;
@@ -330,8 +328,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
     // Visible to override for testing
     protected SaslHandshakeRequest createSaslHandshakeRequest(short version) {
-        return new SaslHandshakeRequest.Builder(
-                new SaslHandshakeRequestData().setMechanism(mechanism)).build(version);
+        return new SaslHandshakeRequest.Builder(mechanism).build(version);
     }
 
     // Visible to override for testing
@@ -374,9 +371,7 @@ public class SaslClientAuthenticator implements Authenticator {
             if (saslToken != null) {
                 ByteBuffer tokenBuf = ByteBuffer.wrap(saslToken);
                 if (saslAuthenticateVersion != DISABLE_KAFKA_SASL_AUTHENTICATE_HEADER) {
-                    SaslAuthenticateRequestData data = new SaslAuthenticateRequestData()
-                            .setAuthBytes(tokenBuf.array());
-                    SaslAuthenticateRequest request = new SaslAuthenticateRequest.Builder(data).build(saslAuthenticateVersion);
+                    SaslAuthenticateRequest request = new SaslAuthenticateRequest.Builder(tokenBuf).build(saslAuthenticateVersion);
                     tokenBuf = request.serialize(nextRequestHeader(ApiKeys.SASL_AUTHENTICATE, saslAuthenticateVersion));
                 }
                 send(new NetworkSend(node, tokenBuf));
@@ -409,7 +404,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
     private byte[] receiveResponseOrToken() throws IOException {
         if (netInBuffer == null) netInBuffer = new NetworkReceive(node);
-        netInBuffer.readFrom(transportLayer);
+        netInBuffer.readFrom(transportLayer, false);
         byte[] serverPacket = null;
         if (netInBuffer.complete()) {
             netInBuffer.payload().rewind();
@@ -448,7 +443,7 @@ public class SaslClientAuthenticator implements Authenticator {
                 long sessionLifetimeMs = response.sessionLifetimeMs();
                 if (sessionLifetimeMs > 0L)
                     reauthInfo.positiveSessionLifetimeMs = sessionLifetimeMs;
-                return Utils.copyArray(response.saslAuthBytes());
+                return Utils.readBytes(response.saslAuthBytes());
             } else
                 return null;
         }
@@ -620,7 +615,7 @@ public class SaslClientAuthenticator implements Authenticator {
                 double pctWindowJitterToAvoidReauthenticationStormAcrossManyChannelsSimultaneously = 0.10;
                 double pctToUse = pctWindowFactorToTakeNetworkLatencyAndClockDriftIntoAccount + RNG.nextDouble()
                         * pctWindowJitterToAvoidReauthenticationStormAcrossManyChannelsSimultaneously;
-                sessionLifetimeMsToUse = (long) (positiveSessionLifetimeMs * pctToUse);
+                sessionLifetimeMsToUse = (long) (positiveSessionLifetimeMs.longValue() * pctToUse);
                 clientSessionReauthenticationTimeNanos = authenticationEndNanos + 1000 * 1000 * sessionLifetimeMsToUse;
                 LOG.debug(
                         "Finished {} with session expiration in {} ms and session re-authentication on or after {} ms",
@@ -632,7 +627,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
         public Long reauthenticationLatencyMs() {
             return reauthenticating()
-                    ? Math.round((authenticationEndNanos - reauthenticationBeginNanos) / 1000.0 / 1000.0)
+                    ? Long.valueOf(Math.round((authenticationEndNanos - reauthenticationBeginNanos) / 1000.0 / 1000.0))
                     : null;
         }
 

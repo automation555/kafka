@@ -1,12 +1,13 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.kafka.common.security.kerberos;
 
 import javax.security.auth.kerberos.KerberosPrincipal;
@@ -33,16 +35,11 @@ import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.security.AccessController;
-import java.util.Comparator;
-
 import java.util.Date;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.Map;
-import java.util.SortedSet;
-import java.util.TreeSet;
 
 /**
  * This class is responsible for refreshing Kerberos credentials for
@@ -85,9 +82,25 @@ public class KerberosLogin extends AbstractLogin {
 
     public void configure(Map<String, ?> configs, JaasContext jaasContext) {
         super.configure(configs, jaasContext);
-        this.ticketRenewWindowFactor = (Double) configs.get(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_WINDOW_FACTOR);
-        this.ticketRenewJitter = (Double) configs.get(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_JITTER);
-        this.minTimeBeforeRelogin = (Long) configs.get(SaslConfigs.SASL_KERBEROS_MIN_TIME_BEFORE_RELOGIN);
+
+        if (configs.containsKey(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_WINDOW_FACTOR)) {
+            this.ticketRenewWindowFactor = (Double) configs.get(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_WINDOW_FACTOR);
+        } else {
+            throw new IllegalArgumentException("Configuration value for " + SaslConfigs.SASL_KERBEROS_TICKET_RENEW_WINDOW_FACTOR + " is missing");
+        }
+
+        if (configs.containsKey(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_JITTER)) {
+            this.ticketRenewJitter = (Double) configs.get(SaslConfigs.SASL_KERBEROS_TICKET_RENEW_JITTER);
+        } else {
+            throw new IllegalArgumentException("Configuration value for " + SaslConfigs.SASL_KERBEROS_TICKET_RENEW_JITTER + " is missing");
+        }
+
+        if (configs.containsKey(SaslConfigs.SASL_KERBEROS_MIN_TIME_BEFORE_RELOGIN)) {
+            this.minTimeBeforeRelogin = (Long) configs.get(SaslConfigs.SASL_KERBEROS_MIN_TIME_BEFORE_RELOGIN);
+        } else {
+            throw new IllegalArgumentException("Configuration value for " + SaslConfigs.SASL_KERBEROS_MIN_TIME_BEFORE_RELOGIN + " is missing");
+        }
+
         this.kinitCmd = (String) configs.get(SaslConfigs.SASL_KERBEROS_KINIT_CMD);
         this.serviceName = getServiceName(configs, jaasContext);
     }
@@ -98,30 +111,6 @@ public class KerberosLogin extends AbstractLogin {
      */
     @Override
     public LoginContext login() throws LoginException {
-        Subject existingSubject = Subject.getSubject(AccessController.getContext());
-        if (existingSubject != null) {
-            // Found a subject in the threads access control context. Check if it has a valid Kerberos ticket
-            SortedSet<KerberosTicket> tickets = new TreeSet<>(new Comparator<KerberosTicket>() {
-                @Override
-                public int compare(KerberosTicket ticket1, KerberosTicket ticket2) {
-                    return Long.compare(ticket1.getEndTime().getTime(), ticket2.getEndTime().getTime());
-                }
-            });
-            for (KerberosTicket ticket : existingSubject.getPrivateCredentials(KerberosTicket.class)) {
-                // Filter out Kerberos TGTs
-                KerberosPrincipal principal = ticket.getServer();
-                String principalName = "krbtgt/" + principal.getRealm() + "@" + principal.getRealm();
-                if (principalName.equals(principal.getName())) {
-                    tickets.add(ticket);
-                }
-            }
-            if (!tickets.isEmpty() && tickets.last().isCurrent()) {
-                log.debug("Found Subject with a valid Kerberos ticket");
-                subject = existingSubject;
-                // Note that it is the responsibility of the application to renew ticket and update the subject
-                return loginContext;
-            }
-        }
 
         this.lastLogin = currentElapsedTime();
         loginContext = super.login();
@@ -380,8 +369,8 @@ public class KerberosLogin extends AbstractLogin {
         if (!hasSufficientTimeElapsed()) {
             return;
         }
+        log.info("Initiating logout for {}", principal);
         synchronized (KerberosLogin.class) {
-            log.info("Initiating logout for {}", principal);
             // register most recent relogin attempt
             lastLogin = currentElapsedTime();
             //clear up the kerberos state. But the tokens are not cleared! As per

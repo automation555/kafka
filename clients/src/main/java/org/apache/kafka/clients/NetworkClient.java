@@ -17,7 +17,6 @@
 package org.apache.kafka.clients;
 
 import org.apache.kafka.common.Cluster;
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
@@ -106,6 +105,9 @@ public class NetworkClient implements KafkaClient {
     /* time in ms to wait before retrying to create connection to a server */
     private final long reconnectBackoffMs;
 
+    /* default timeout for the connection can not recieve the ApiVersionsResponse from servers */
+    private final long defaultConnectReadyTimeOutMs;
+
     private final ClientDnsLookup clientDnsLookup;
 
     private final Time time;
@@ -131,6 +133,7 @@ public class NetworkClient implements KafkaClient {
                          int maxInFlightRequestsPerConnection,
                          long reconnectBackoffMs,
                          long reconnectBackoffMax,
+                         long defaultConnectReadyTimeOutMs,
                          int socketSendBuffer,
                          int socketReceiveBuffer,
                          int defaultRequestTimeoutMs,
@@ -146,6 +149,7 @@ public class NetworkClient implements KafkaClient {
              maxInFlightRequestsPerConnection,
              reconnectBackoffMs,
              reconnectBackoffMax,
+             defaultConnectReadyTimeOutMs,
              socketSendBuffer,
              socketReceiveBuffer,
              defaultRequestTimeoutMs,
@@ -163,6 +167,7 @@ public class NetworkClient implements KafkaClient {
             int maxInFlightRequestsPerConnection,
             long reconnectBackoffMs,
             long reconnectBackoffMax,
+            long defaultConnectReadyTimeOutMs,
             int socketSendBuffer,
             int socketReceiveBuffer,
             int defaultRequestTimeoutMs,
@@ -179,6 +184,7 @@ public class NetworkClient implements KafkaClient {
              maxInFlightRequestsPerConnection,
              reconnectBackoffMs,
              reconnectBackoffMax,
+             defaultConnectReadyTimeOutMs,
              socketSendBuffer,
              socketReceiveBuffer,
              defaultRequestTimeoutMs,
@@ -196,6 +202,7 @@ public class NetworkClient implements KafkaClient {
                          int maxInFlightRequestsPerConnection,
                          long reconnectBackoffMs,
                          long reconnectBackoffMax,
+                         long defaultConnectReadyTimeOutMs,
                          int socketSendBuffer,
                          int socketReceiveBuffer,
                          int defaultRequestTimeoutMs,
@@ -211,6 +218,7 @@ public class NetworkClient implements KafkaClient {
              maxInFlightRequestsPerConnection,
              reconnectBackoffMs,
              reconnectBackoffMax,
+             defaultConnectReadyTimeOutMs,
              socketSendBuffer,
              socketReceiveBuffer,
              defaultRequestTimeoutMs,
@@ -229,6 +237,7 @@ public class NetworkClient implements KafkaClient {
                           int maxInFlightRequestsPerConnection,
                           long reconnectBackoffMs,
                           long reconnectBackoffMax,
+                          long defaultConnectReadyTimeOutMs,
                           int socketSendBuffer,
                           int socketReceiveBuffer,
                           int defaultRequestTimeoutMs,
@@ -252,13 +261,14 @@ public class NetworkClient implements KafkaClient {
         this.selector = selector;
         this.clientId = clientId;
         this.inFlightRequests = new InFlightRequests(maxInFlightRequestsPerConnection);
-        this.connectionStates = new ClusterConnectionStates(reconnectBackoffMs, reconnectBackoffMax, logContext);
+        this.connectionStates = new ClusterConnectionStates(reconnectBackoffMs, reconnectBackoffMax, defaultConnectReadyTimeOutMs, logContext);
         this.socketSendBuffer = socketSendBuffer;
         this.socketReceiveBuffer = socketReceiveBuffer;
         this.correlation = 0;
         this.randOffset = new Random();
         this.defaultRequestTimeoutMs = defaultRequestTimeoutMs;
         this.reconnectBackoffMs = reconnectBackoffMs;
+        this.defaultConnectReadyTimeOutMs = defaultConnectReadyTimeOutMs;
         this.time = time;
         this.discoverBrokerVersions = discoverBrokerVersions;
         this.apiVersions = apiVersions;
@@ -420,8 +430,14 @@ public class NetworkClient implements KafkaClient {
      * @param now the current timestamp
      */
     private boolean canSendRequest(String node, long now) {
-        return connectionStates.isReady(node, now) && selector.isChannelReady(node) &&
-            inFlightRequests.canSendMore(node);
+        boolean connectionReady = connectionStates.isReady(node, now);
+        if ((!connectionReady) && connectionStates.checkReadyTimeOut(node)) {
+            log.debug("node:{} is not read,and connection is timeOut,refresh the metaData", node);
+            metadataUpdater.requestUpdate();
+            connectionStates.disconnected(node, time.milliseconds());
+            selector.closeOnGraceful(node);
+        }
+        return connectionReady && selector.isChannelReady(node) && inFlightRequests.canSendMore(node);
     }
 
     /**
@@ -434,8 +450,8 @@ public class NetworkClient implements KafkaClient {
         doSend(request, false, now);
     }
 
-    // package-private for testing
-    void sendInternalMetadataRequest(MetadataRequest.Builder builder, String nodeConnectionId, long now) {
+    private void sendInternalMetadataRequest(MetadataRequest.Builder builder,
+                                             String nodeConnectionId, long now) {
         ClientRequest clientRequest = newClientRequest(nodeConnectionId, builder, now, true);
         doSend(clientRequest, true, now);
     }
@@ -481,9 +497,6 @@ public class NetworkClient implements KafkaClient {
                     clientRequest.callback(), clientRequest.destination(), now, now,
                     false, unsupportedVersionException, null, null);
             abortedSends.add(clientResponse);
-
-            if (isInternalRequest && clientRequest.apiKey() == ApiKeys.METADATA)
-                metadataUpdater.handleFatalException(unsupportedVersionException);
         }
     }
 
@@ -639,8 +652,7 @@ public class NetworkClient implements KafkaClient {
      * Choose the node with the fewest outstanding requests which is at least eligible for connection. This method will
      * prefer a node with an existing connection, but will potentially choose a node for which we don't yet have a
      * connection if all existing connections are in use. This method will never choose a node for which there is no
-     * existing connection and from which we have disconnected within the reconnect backoff period, or an active
-     * connection which is being throttled.
+     * existing connection and from which we have disconnected within the reconnect backoff period.
      *
      * @return The node with the fewest in-flight requests.
      */
@@ -650,79 +662,32 @@ public class NetworkClient implements KafkaClient {
         if (nodes.isEmpty())
             throw new IllegalStateException("There are no nodes in the Kafka cluster");
         int inflight = Integer.MAX_VALUE;
-
-        Node foundConnecting = null;
-        Node foundCanConnect = null;
-        Node foundReady = null;
+        Node found = null;
 
         int offset = this.randOffset.nextInt(nodes.size());
         for (int i = 0; i < nodes.size(); i++) {
             int idx = (offset + i) % nodes.size();
             Node node = nodes.get(idx);
-            if (canSendRequest(node.idString(), now)) {
-                int currInflight = this.inFlightRequests.count(node.idString());
-                if (currInflight == 0) {
-                    // if we find an established connection with no in-flight requests we can stop right away
-                    log.trace("Found least loaded node {} connected with no in-flight requests", node);
-                    return node;
-                } else if (currInflight < inflight) {
-                    // otherwise if this is the best we have found so far, record that
-                    inflight = currInflight;
-                    foundReady = node;
-                }
-            } else if (connectionStates.isPreparingConnection(node.idString())) {
-                foundConnecting = node;
-            } else if (canConnect(node, now)) {
-                foundCanConnect = node;
-            } else {
-                log.trace("Removing node {} from least loaded node selection since it is neither ready " +
-                        "for sending or connecting", node);
+            int currInflight = this.inFlightRequests.count(node.idString());
+            if (currInflight == 0 && isReady(node, now)) {
+                // if we find an established connection with no in-flight requests we can stop right away
+                log.trace("Found least loaded node {} connected with no in-flight requests", node);
+                return node;
+            } else if (!this.connectionStates.isBlackedOut(node.idString(), now) && currInflight < inflight) {
+                // otherwise if this is the best we have found so far, record that
+                inflight = currInflight;
+                found = node;
+            } else if (log.isTraceEnabled()) {
+                log.trace("Removing node {} from least loaded node selection: is-blacked-out: {}, in-flight-requests: {}",
+                        node, this.connectionStates.isBlackedOut(node.idString(), now), currInflight);
             }
         }
 
-        // We prefer established connections if possible. Otherwise, we will wait for connections
-        // which are being established before connecting to new nodes.
-        if (foundReady != null) {
-            log.trace("Found least loaded node {} with {} inflight requests", foundReady, inflight);
-            return foundReady;
-        } else if (foundConnecting != null) {
-            log.trace("Found least loaded connecting node {}", foundConnecting);
-            return foundConnecting;
-        } else if (foundCanConnect != null) {
-            log.trace("Found least loaded node {} with no active connection", foundCanConnect);
-            return foundCanConnect;
-        } else {
-            // instead of giving up get one of the bootstrap nodes
-            Node foundBootStrap = getBootStrapNodeForMetadata();
-            if (foundBootStrap != null) {
-                return foundBootStrap;
-            }
+        if (found != null)
+            log.trace("Found least loaded node {}", found);
+        else
             log.trace("Least loaded node selection failed to find an available node");
-            return null;
-        }
-    }
 
-    /**
-     * Get one bootstrap node to query the metadata info.
-     */
-    private Node getBootStrapNodeForMetadata() {
-        List<Node> allNodes = this.metadataUpdater.fetchNodes();
-        List<Node> bootStrapNodes = this.metadataUpdater.fetchBootStrapNodes();
-        if (bootStrapNodes == null || bootStrapNodes.isEmpty()) {
-            log.warn("No bootstrap nodes found");
-            return null;
-        }
-
-        // if bootstrap list is just a subset of the existing nodes on the
-        // cluster, then we have no choice but to just return null.
-        boolean isSubset = allNodes.containsAll(bootStrapNodes);
-        if (isSubset) {
-            return null;
-        }
-
-        int idx = this.randOffset.nextInt(bootStrapNodes.size());
-        Node found = bootStrapNodes.get(idx);
-        log.info("Found bootstrap node for metadata request {}", found);
         return found;
     }
 
@@ -762,7 +727,7 @@ public class NetworkClient implements KafkaClient {
             case AUTHENTICATION_FAILED:
                 AuthenticationException exception = disconnectState.exception();
                 connectionStates.authenticationFailed(nodeId, now, exception);
-                metadataUpdater.handleFatalException(exception);
+                metadataUpdater.handleAuthenticationFailure(exception);
                 log.error("Connection to node {} ({}) failed authentication due to: {}", nodeId,
                     disconnectState.remoteAddress(), exception.getMessage());
                 break;
@@ -1003,11 +968,6 @@ public class NetworkClient implements KafkaClient {
         }
 
         @Override
-        public List<Node> fetchBootStrapNodes() {
-            return metadata.getBootStrapNodes();
-        }
-
-        @Override
         public boolean isUpdateDue(long now) {
             return !hasFetchInProgress() && this.metadata.timeToNextUpdate(now) == 0;
         }
@@ -1057,9 +1017,9 @@ public class NetworkClient implements KafkaClient {
         }
 
         @Override
-        public void handleFatalException(KafkaException fatalException) {
+        public void handleAuthenticationFailure(AuthenticationException exception) {
             if (metadata.updateRequested())
-                metadata.failedUpdate(time.milliseconds(), fatalException);
+                metadata.failedUpdate(time.milliseconds(), exception);
             inProgressRequestVersion = null;
         }
 

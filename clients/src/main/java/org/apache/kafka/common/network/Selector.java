@@ -23,14 +23,13 @@ import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Avg;
-import org.apache.kafka.common.metrics.stats.CumulativeSum;
+import org.apache.kafka.common.metrics.stats.Count;
 import org.apache.kafka.common.metrics.stats.Max;
 import org.apache.kafka.common.metrics.stats.Meter;
-import org.apache.kafka.common.metrics.stats.WindowedCount;
 import org.apache.kafka.common.metrics.stats.SampledStat;
+import org.apache.kafka.common.metrics.stats.Total;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -53,7 +52,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A nioSelector interface for doing non-blocking multi-connection network I/O.
@@ -360,24 +358,15 @@ public class Selector implements Selectable, AutoCloseable {
     @Override
     public void close() {
         List<String> connections = new ArrayList<>(channels.keySet());
+        for (String id : connections)
+            close(id);
         try {
-            for (String id : connections)
-                close(id);
-        } finally {
-            // If there is any exception thrown in close(id), we should still be able
-            // to close the remaining objects, especially the sensors because keeping
-            // the sensors may lead to failure to start up the ReplicaFetcherThread if
-            // the old sensors with the same names has not yet been cleaned up.
-            AtomicReference<Throwable> firstException = new AtomicReference<>();
-            Utils.closeQuietly(nioSelector, "nioSelector", firstException);
-            Utils.closeQuietly(sensors, "sensors", firstException);
-            Utils.closeQuietly(channelBuilder, "channelBuilder", firstException);
-            Throwable exception = firstException.get();
-            if (exception instanceof RuntimeException && !(exception instanceof SecurityException)) {
-                throw (RuntimeException) exception;
-            }
-
+            this.nioSelector.close();
+        } catch (IOException | SecurityException e) {
+            log.error("Exception closing nioSelector:", e);
         }
+        sensors.close();
+        channelBuilder.close();
     }
 
     /**
@@ -812,6 +801,14 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
+    @Override
+    public void closeOnGraceful(String id) {
+        KafkaChannel channel = this.channels.get(id);
+        if (channel != null) {
+            close(channel, CloseMode.GRACEFUL);
+        }
+    }
+
     private void maybeDelayCloseOnAuthenticationFailure(KafkaChannel channel) {
         DelayedAuthenticationFailureClose delayedClose = new DelayedAuthenticationFailureClose(channel, failedAuthenticationDelayMs);
         if (delayedClosingChannels != null)
@@ -883,20 +880,10 @@ public class Selector implements Selectable, AutoCloseable {
             key.attach(null);
         }
         this.sensors.connectionClosed.record();
-        String connectionId = channel.id();
-        removeSensor("node-" + connectionId + ".bytes-sent");
-        removeSensor("node-" + connectionId + ".bytes-received");
-        removeSensor("node-" + connectionId + ".latency");
         this.stagedReceives.remove(channel);
         this.explicitlyMutedChannels.remove(channel);
         if (notifyDisconnect)
             this.disconnected.put(channel.id(), channel.state());
-    }
-
-    private void removeSensor(String name) {
-        Sensor sensor = this.sensors.metrics.getSensor(name);
-        this.sensors.metrics.removeSensor(name);
-        this.sensors.sensors.remove(sensor);
     }
 
     /**
@@ -1094,7 +1081,7 @@ public class Selector implements Selectable, AutoCloseable {
                     "successful-authentication-no-reauth-total", metricGrpName,
                     "The total number of connections with successful authentication where the client does not support re-authentication",
                     metricTags);
-            this.successfulAuthenticationNoReauth.add(successfulAuthenticationNoReauthMetricName, new CumulativeSum());
+            this.successfulAuthenticationNoReauth.add(successfulAuthenticationNoReauthMetricName, new Total());
 
             this.failedAuthentication = sensor("failed-authentication:" + tagsSuffix);
             this.failedAuthentication.add(createMeter(metrics, metricGrpName, metricTags,
@@ -1115,13 +1102,13 @@ public class Selector implements Selectable, AutoCloseable {
             this.reauthenticationLatency.add(reauthenticationLatencyAvgMetricName, new Avg());
 
             this.bytesTransferred = sensor("bytes-sent-received:" + tagsSuffix);
-            bytesTransferred.add(createMeter(metrics, metricGrpName, metricTags, new WindowedCount(),
+            bytesTransferred.add(createMeter(metrics, metricGrpName, metricTags, new Count(),
                     "network-io", "network operations (reads or writes) on all connections"));
 
             this.bytesSent = sensor("bytes-sent:" + tagsSuffix, bytesTransferred);
             this.bytesSent.add(createMeter(metrics, metricGrpName, metricTags,
                     "outgoing-byte", "outgoing bytes sent to all servers"));
-            this.bytesSent.add(createMeter(metrics, metricGrpName, metricTags, new WindowedCount(),
+            this.bytesSent.add(createMeter(metrics, metricGrpName, metricTags, new Count(),
                     "request", "requests sent"));
             MetricName metricName = metrics.metricName("request-size-avg", metricGrpName, "The average size of requests sent.", metricTags);
             this.bytesSent.add(metricName, new Avg());
@@ -1132,11 +1119,11 @@ public class Selector implements Selectable, AutoCloseable {
             this.bytesReceived.add(createMeter(metrics, metricGrpName, metricTags,
                     "incoming-byte", "bytes read off all sockets"));
             this.bytesReceived.add(createMeter(metrics, metricGrpName, metricTags,
-                    new WindowedCount(), "response", "responses received"));
+                    new Count(), "response", "responses received"));
 
             this.selectTime = sensor("select-time:" + tagsSuffix);
             this.selectTime.add(createMeter(metrics, metricGrpName, metricTags,
-                    new WindowedCount(), "select", "times the I/O layer checked for new I/O to perform"));
+                    new Count(), "select", "times the I/O layer checked for new I/O to perform"));
             metricName = metrics.metricName("io-wait-time-ns-avg", metricGrpName, "The average length of time the I/O thread spent waiting for a socket ready for reads or writes in nanoseconds.", metricTags);
             this.selectTime.add(metricName, new Avg());
             this.selectTime.add(createIOThreadRatioMeter(metrics, metricGrpName, metricTags, "io-wait", "waiting"));
@@ -1197,7 +1184,7 @@ public class Selector implements Selectable, AutoCloseable {
 
                     nodeRequest = sensor(nodeRequestName);
                     nodeRequest.add(createMeter(metrics, metricGrpName, tags, "outgoing-byte", "outgoing bytes"));
-                    nodeRequest.add(createMeter(metrics, metricGrpName, tags, new WindowedCount(), "request", "requests sent"));
+                    nodeRequest.add(createMeter(metrics, metricGrpName, tags, new Count(), "request", "requests sent"));
                     MetricName metricName = metrics.metricName("request-size-avg", metricGrpName, "The average size of requests sent.", tags);
                     nodeRequest.add(metricName, new Avg());
                     metricName = metrics.metricName("request-size-max", metricGrpName, "The maximum size of any request sent.", tags);
@@ -1206,7 +1193,7 @@ public class Selector implements Selectable, AutoCloseable {
                     String nodeResponseName = "node-" + connectionId + ".bytes-received";
                     Sensor nodeResponse = sensor(nodeResponseName);
                     nodeResponse.add(createMeter(metrics, metricGrpName, tags, "incoming-byte", "incoming bytes"));
-                    nodeResponse.add(createMeter(metrics, metricGrpName, tags, new WindowedCount(), "response", "responses received"));
+                    nodeResponse.add(createMeter(metrics, metricGrpName, tags, new Count(), "response", "responses received"));
 
                     String nodeTimeName = "node-" + connectionId + ".latency";
                     Sensor nodeRequestTime = sensor(nodeTimeName);
@@ -1246,10 +1233,6 @@ public class Selector implements Selectable, AutoCloseable {
             for (Sensor sensor : sensors)
                 metrics.removeSensor(sensor.name());
         }
-    }
-
-    int numberOfSensors() {
-        return sensors.sensors.size();
     }
 
     /**

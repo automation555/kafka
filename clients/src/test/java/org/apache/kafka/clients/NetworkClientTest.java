@@ -16,10 +16,8 @@
  */
 package org.apache.kafka.clients;
 
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.network.NetworkReceive;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.CommonFields;
@@ -57,45 +55,31 @@ public class NetworkClientTest {
     protected final MockTime time = new MockTime();
     protected final MockSelector selector = new MockSelector(time);
     protected final Node node = TestUtils.singletonCluster().nodes().iterator().next();
-    protected final Node bootStrapNode = TestUtils.getRandomNode();
     protected final long reconnectBackoffMsTest = 10 * 1000;
     protected final long reconnectBackoffMaxMsTest = 10 * 10000;
+    protected final long defaultConnectReadyTimeOutMs = 30 * 10000;
 
-    private final TestMetadataUpdater metadataUpdater = new TestMetadataUpdater(Collections.singletonList(node));
-    private final TestMetadataUpdater metadataUpdaterWithBootStrap = new TestMetadataUpdater(Collections.singletonList(node));
-    private final TestMetadataUpdater metadataUpdaterWithSubBootStrap = new TestMetadataUpdater(Collections.singletonList(node));
     private final NetworkClient client = createNetworkClient(reconnectBackoffMaxMsTest);
-    private final NetworkClient clientWithBootStrap = createNetworkClientWithBootStrap(metadataUpdaterWithBootStrap, Collections.singletonList(bootStrapNode));
-    private final NetworkClient clientWithSubBootStrap = createNetworkClientWithBootStrap(metadataUpdaterWithSubBootStrap, Collections.singletonList(node));
     private final NetworkClient clientWithNoExponentialBackoff = createNetworkClient(reconnectBackoffMsTest);
     private final NetworkClient clientWithStaticNodes = createNetworkClientWithStaticNodes();
     private final NetworkClient clientWithNoVersionDiscovery = createNetworkClientWithNoVersionDiscovery();
 
     private NetworkClient createNetworkClient(long reconnectBackoffMaxMs) {
-        return new NetworkClient(selector, metadataUpdater, "mock", Integer.MAX_VALUE,
-                reconnectBackoffMsTest, reconnectBackoffMaxMs, 64 * 1024, 64 * 1024,
-                defaultRequestTimeoutMs, ClientDnsLookup.DEFAULT, time, true, new ApiVersions(), new LogContext());
-    }
-
-    private NetworkClient createNetworkClientWithBootStrap(TestMetadataUpdater localMetadataUpdater, List<Node> nodes) {
-        // set the bootstrap node
-        localMetadataUpdater.setBootStrapNodes(nodes);
-        long reconnectBackoffMsTest = 10 * 1000;
-        return new NetworkClient(selector, localMetadataUpdater, "mock", Integer.MAX_VALUE,
-                reconnectBackoffMsTest, reconnectBackoffMsTest, 64 * 1024, 64 * 1024,
+        return new NetworkClient(selector, new ManualMetadataUpdater(Collections.singletonList(node)), "mock", Integer.MAX_VALUE,
+                reconnectBackoffMsTest, reconnectBackoffMaxMs, defaultConnectReadyTimeOutMs, 64 * 1024, 64 * 1024,
                 defaultRequestTimeoutMs, ClientDnsLookup.DEFAULT, time, true, new ApiVersions(), new LogContext());
     }
 
     private NetworkClient createNetworkClientWithStaticNodes() {
-        return new NetworkClient(selector, metadataUpdater,
-                "mock-static", Integer.MAX_VALUE, 0, 0, 64 * 1024, 64 * 1024, defaultRequestTimeoutMs,
+        return new NetworkClient(selector, new ManualMetadataUpdater(Collections.singletonList(node)),
+                "mock-static", Integer.MAX_VALUE, 0, 0, defaultConnectReadyTimeOutMs, 64 * 1024, 64 * 1024, defaultRequestTimeoutMs,
                 ClientDnsLookup.DEFAULT, time, true, new ApiVersions(), new LogContext());
     }
 
     private NetworkClient createNetworkClientWithNoVersionDiscovery() {
-        return new NetworkClient(selector, metadataUpdater, "mock", Integer.MAX_VALUE,
+        return new NetworkClient(selector, new ManualMetadataUpdater(Collections.singletonList(node)), "mock", Integer.MAX_VALUE,
                 reconnectBackoffMsTest, reconnectBackoffMaxMsTest,
-                64 * 1024, 64 * 1024, defaultRequestTimeoutMs,
+                defaultConnectReadyTimeOutMs, 64 * 1024, 64 * 1024, defaultRequestTimeoutMs,
                 ClientDnsLookup.DEFAULT, time, false, new ApiVersions(), new LogContext());
     }
 
@@ -155,16 +139,6 @@ public class NetworkClientTest {
         assertFalse(client.hasInFlightRequests(node.idString()));
         assertFalse(client.hasInFlightRequests());
         assertFalse("Connection should not be ready after close", client.isReady(node, 0));
-    }
-
-    @Test
-    public void testUnsupportedVersionDuringInternalMetadataRequest() {
-        List<String> topics = Arrays.asList("topic_1");
-
-        // disabling auto topic creation for versions less than 4 is not supported
-        MetadataRequest.Builder builder = new MetadataRequest.Builder(topics, false, (short) 3);
-        client.sendInternalMetadataRequest(builder, node.idString(), time.milliseconds());
-        assertEquals(UnsupportedVersionException.class, metadataUpdater.getAndClearFailure().getClass());
     }
 
     private void checkSimpleRequestResponse(NetworkClient networkClient) {
@@ -286,11 +260,12 @@ public class NetworkClientTest {
 
     // Creates expected ApiVersionsResponse from the specified node, where the max protocol version for the specified
     // key is set to the specified version.
-    private ApiVersionsResponse createExpectedApiVersionsResponse(ApiKeys key, short maxVersion) {
+    private ApiVersionsResponse createExpectedApiVersionsResponse(Node node, ApiKeys key,
+        short apiVersionsMaxProtocolVersion) {
         List<ApiVersionsResponse.ApiVersion> versionList = new ArrayList<>();
         for (ApiKeys apiKey : ApiKeys.values()) {
             if (apiKey == key) {
-                versionList.add(new ApiVersionsResponse.ApiVersion(apiKey, (short) 0, maxVersion));
+                versionList.add(new ApiVersionsResponse.ApiVersion(apiKey.id, (short) 0, apiVersionsMaxProtocolVersion));
             } else {
                 versionList.add(new ApiVersionsResponse.ApiVersion(apiKey));
             }
@@ -302,15 +277,29 @@ public class NetworkClientTest {
     public void testThrottlingNotEnabledForConnectionToOlderBroker() {
         // Instrument the test so that the max protocol version for PRODUCE returned from the node is 5 and thus
         // client-side throttling is not enabled. Also, return a response with a 100ms throttle delay.
-        setExpectedApiVersionsResponse(createExpectedApiVersionsResponse(ApiKeys.PRODUCE, (short) 5));
+        setExpectedApiVersionsResponse(createExpectedApiVersionsResponse(node, ApiKeys.PRODUCE, (short) 5));
         while (!client.ready(node, time.milliseconds()))
             client.poll(1, time.milliseconds());
         selector.clear();
 
-        int correlationId = sendEmptyProduceRequest();
+        ProduceRequest.Builder builder = ProduceRequest.Builder.forCurrentMagic((short) 1, 1000,
+            Collections.emptyMap());
+        TestCallbackHandler handler = new TestCallbackHandler();
+        ClientRequest request = client.newClientRequest(node.idString(), builder, time.milliseconds(), true,
+                defaultRequestTimeoutMs, handler);
+        client.send(request, time.milliseconds());
         client.poll(1, time.milliseconds());
-
-        sendThrottledProduceResponse(correlationId, 100);
+        ResponseHeader respHeader = new ResponseHeader(request.correlationId());
+        Struct resp = new Struct(ApiKeys.PRODUCE.responseSchema(ApiKeys.PRODUCE.latestVersion()));
+        resp.set("responses", new Object[0]);
+        resp.set(CommonFields.THROTTLE_TIME_MS, 100);
+        Struct responseHeaderStruct = respHeader.toStruct();
+        int size = responseHeaderStruct.sizeOf() + resp.sizeOf();
+        ByteBuffer buffer = ByteBuffer.allocate(size);
+        responseHeaderStruct.writeTo(buffer);
+        resp.writeTo(buffer);
+        buffer.flip();
+        selector.completeReceive(new NetworkReceive(node.idString(), buffer));
         client.poll(1, time.milliseconds());
 
         // Since client-side throttling is disabled, the connection is ready even though the response indicated a
@@ -319,41 +308,9 @@ public class NetworkClientTest {
         assertEquals(0, client.throttleDelayMs(node, time.milliseconds()));
     }
 
-    private int sendEmptyProduceRequest() {
-        ProduceRequest.Builder builder = ProduceRequest.Builder.forCurrentMagic((short) 1, 1000,
-                Collections.emptyMap());
-        TestCallbackHandler handler = new TestCallbackHandler();
-        ClientRequest request = client.newClientRequest(node.idString(), builder, time.milliseconds(), true,
-                defaultRequestTimeoutMs, handler);
-        client.send(request, time.milliseconds());
-        return request.correlationId();
-    }
-
-
-    private void sendResponse(int correlationId, Struct response) {
-        ResponseHeader respHeader = new ResponseHeader(correlationId);
-        Struct responseHeaderStruct = respHeader.toStruct();
-        int size = responseHeaderStruct.sizeOf() + response.sizeOf();
-        ByteBuffer buffer = ByteBuffer.allocate(size);
-        responseHeaderStruct.writeTo(buffer);
-        response.writeTo(buffer);
-        buffer.flip();
-        selector.completeReceive(new NetworkReceive(node.idString(), buffer));
-    }
-
-    private void sendThrottledProduceResponse(int correlationId, int throttleMs) {
-        Struct resp = new Struct(ApiKeys.PRODUCE.responseSchema(ApiKeys.PRODUCE.latestVersion()));
-        resp.set("responses", new Object[0]);
-        resp.set(CommonFields.THROTTLE_TIME_MS, throttleMs);
-        sendResponse(correlationId, resp);
-    }
-
     @Test
     public void testLeastLoadedNode() {
         client.ready(node, time.milliseconds());
-        assertFalse(client.isReady(node, time.milliseconds()));
-        assertEquals(node, client.leastLoadedNode(time.milliseconds()));
-
         awaitReady(client, node);
         client.poll(1, time.milliseconds());
         assertTrue("The client should be ready", client.isReady(node, time.milliseconds()));
@@ -372,75 +329,6 @@ public class NetworkClientTest {
         assertFalse("After we forced the disconnection the client is no longer ready.", client.ready(node, time.milliseconds()));
         leastNode = client.leastLoadedNode(time.milliseconds());
         assertNull("There should be NO leastloadednode", leastNode);
-    }
-
-    @Test
-    public void testLeastLoadedNodeWithBootstrap() {
-        clientWithBootStrap.ready(node, time.milliseconds());
-        assertFalse(clientWithBootStrap.isReady(node, time.milliseconds()));
-        assertEquals(node, clientWithBootStrap.leastLoadedNode(time.milliseconds()));
-
-        awaitReady(clientWithBootStrap, node);
-        clientWithBootStrap.poll(1, time.milliseconds());
-        assertTrue("The client should be ready", clientWithBootStrap.isReady(node, time.milliseconds()));
-
-        // leastloadednode should be our single node
-        Node leastNode = clientWithBootStrap.leastLoadedNode(time.milliseconds());
-        assertEquals("There should be one leastloadednode", leastNode.id(), node.id());
-
-        // sleep for longer than reconnect backoff
-        time.sleep(reconnectBackoffMsTest);
-
-        // CLOSE node
-        selector.serverDisconnect(node.idString());
-
-        clientWithBootStrap.poll(1, time.milliseconds());
-        assertFalse("After we forced the disconnection the client is no longer ready.", clientWithBootStrap.ready(node, time.milliseconds()));
-        leastNode = clientWithBootStrap.leastLoadedNode(time.milliseconds());
-        assertEquals("We should have the bootstrap node now", leastNode.id(), bootStrapNode.id());
-    }
-
-    @Test
-    public void testLeastLoadedNodeWithSubsetBootstrap() {
-        clientWithSubBootStrap.ready(node, time.milliseconds());
-        assertFalse(clientWithSubBootStrap.isReady(node, time.milliseconds()));
-        assertEquals(node, clientWithSubBootStrap.leastLoadedNode(time.milliseconds()));
-
-        awaitReady(clientWithSubBootStrap, node);
-        clientWithSubBootStrap.poll(1, time.milliseconds());
-        assertTrue("The client should be ready", clientWithSubBootStrap.isReady(node, time.milliseconds()));
-
-        // leastloadednode should be our single node
-        Node leastNode = clientWithSubBootStrap.leastLoadedNode(time.milliseconds());
-        assertEquals("There should be one leastloadednode", leastNode.id(), node.id());
-
-        // sleep for longer than reconnect backoff
-        time.sleep(reconnectBackoffMsTest);
-
-        // CLOSE node
-        selector.serverDisconnect(node.idString());
-
-        clientWithSubBootStrap.poll(1, time.milliseconds());
-        assertFalse("After we forced the disconnection the client is no longer ready.", clientWithSubBootStrap.ready(node, time.milliseconds()));
-        leastNode = clientWithSubBootStrap.leastLoadedNode(time.milliseconds());
-        assertNull("There should be NO leastloadednode", leastNode);
-    }
-
-    @Test
-    public void testLeastLoadedNodeConsidersThrottledConnections() {
-        client.ready(node, time.milliseconds());
-        awaitReady(client, node);
-        client.poll(1, time.milliseconds());
-        assertTrue("The client should be ready", client.isReady(node, time.milliseconds()));
-
-        int correlationId = sendEmptyProduceRequest();
-        client.poll(1, time.milliseconds());
-
-        sendThrottledProduceResponse(correlationId, 100);
-        client.poll(1, time.milliseconds());
-
-        // leastloadednode should return null since the node is throttled
-        assertNull(client.leastLoadedNode(time.milliseconds()));
     }
 
     @Test
@@ -662,37 +550,6 @@ public class NetworkClientTest {
         public void onComplete(ClientResponse response) {
             this.executed = true;
             this.response = response;
-        }
-    }
-
-    // ManualMetadataUpdater with ability to keep track of failures
-    private static class TestMetadataUpdater extends ManualMetadataUpdater {
-        KafkaException failure;
-        private List<Node> bootStrapNodes;
-
-        public TestMetadataUpdater(List<Node> nodes) {
-            super(nodes);
-        }
-
-        public void setBootStrapNodes(List<Node> nodes) {
-            this.bootStrapNodes = nodes;
-        }
-
-        @Override
-        public List<Node> fetchBootStrapNodes() {
-            return this.bootStrapNodes;
-        }
-
-        @Override
-        public void handleFatalException(KafkaException exception) {
-            failure = exception;
-            super.handleFatalException(exception);
-        }
-
-        public KafkaException getAndClearFailure() {
-            KafkaException failure = this.failure;
-            this.failure = null;
-            return failure;
         }
     }
 }

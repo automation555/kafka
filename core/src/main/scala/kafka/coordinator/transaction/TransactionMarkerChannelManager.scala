@@ -22,7 +22,7 @@ import kafka.metrics.KafkaMetricsGroup
 import kafka.server.{DelayedOperationPurgatory, KafkaConfig, MetadataCache}
 import kafka.utils.{CoreUtils, Logging}
 import org.apache.kafka.clients._
-import org.apache.kafka.common.{Node, Reconfigurable, TopicPartition}
+import org.apache.kafka.common.{Node, TopicPartition}
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network._
 import org.apache.kafka.common.requests.{TransactionResult, WriteTxnMarkersRequest}
@@ -30,6 +30,7 @@ import org.apache.kafka.common.security.JaasContext
 import org.apache.kafka.common.utils.{LogContext, Time}
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.WriteTxnMarkersRequest.TxnMarkerEntry
+import com.yammer.metrics.core.Gauge
 import java.util
 import java.util.concurrent.{BlockingQueue, ConcurrentHashMap, LinkedBlockingQueue}
 
@@ -53,10 +54,6 @@ object TransactionMarkerChannelManager {
       time,
       config.saslInterBrokerHandshakeRequestEnable
     )
-    channelBuilder match {
-      case reconfigurable: Reconfigurable => config.addReconfigurable(reconfigurable)
-      case _ =>
-    }
     val selector = new Selector(
       NetworkReceive.UNLIMITED,
       config.connectionsMaxIdleMs,
@@ -75,6 +72,7 @@ object TransactionMarkerChannelManager {
       1,
       50,
       50,
+      30000,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       config.socketReceiveBufferBytes,
       config.requestTimeoutMs,
@@ -142,9 +140,19 @@ class TransactionMarkerChannelManager(config: KafkaConfig,
 
   override val requestTimeoutMs: Int = config.requestTimeoutMs
 
-  newGauge[Int]("UnknownDestinationQueueSize", () => markersQueueForUnknownBroker.totalNumMarkers)
+  newGauge(
+    "UnknownDestinationQueueSize",
+    new Gauge[Int] {
+      def value: Int = markersQueueForUnknownBroker.totalNumMarkers
+    }
+  )
 
-  newGauge[Int]("LogAppendRetryQueueSize", () => txnLogAppendRetryQueue.size)
+  newGauge(
+    "LogAppendRetryQueueSize",
+    new Gauge[Int] {
+      def value: Int = txnLogAppendRetryQueue.size
+    }
+  )
 
   override def generateRequests() = drainQueuedTransactionMarkers()
 
@@ -162,7 +170,7 @@ class TransactionMarkerChannelManager(config: KafkaConfig,
   // visible for testing
   private[transaction] def queueForUnknownBroker = markersQueueForUnknownBroker
 
-  private[transaction] def addMarkersForBroker(broker: Node, txnTopicPartition: Int, txnIdAndMarker: TxnIdAndMarkerEntry): Unit = {
+  private[transaction] def addMarkersForBroker(broker: Node, txnTopicPartition: Int, txnIdAndMarker: TxnIdAndMarkerEntry) {
     val brokerId = broker.id
 
     // we do not synchronize on the update of the broker node with the enqueuing,

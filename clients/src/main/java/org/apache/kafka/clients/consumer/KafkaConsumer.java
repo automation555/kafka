@@ -28,7 +28,6 @@ import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.clients.consumer.internals.Fetcher;
 import org.apache.kafka.clients.consumer.internals.FetcherMetricsRegistry;
 import org.apache.kafka.clients.consumer.internals.Heartbeat;
-import org.apache.kafka.clients.consumer.internals.ListOffsetsClient;
 import org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.internals.PartitionAssignor;
 import org.apache.kafka.clients.consumer.internals.SubscriptionState;
@@ -737,6 +736,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     100, // a fixed large enough value will suffice for max in-flight requests
                     config.getLong(ConsumerConfig.RECONNECT_BACKOFF_MS_CONFIG),
                     config.getLong(ConsumerConfig.RECONNECT_BACKOFF_MAX_MS_CONFIG),
+                    config.getLong(ConsumerConfig.DEFAULT_CONNECT_READY_TIMEOUT_MS_CONFIG),
                     config.getInt(ConsumerConfig.SEND_BUFFER_CONFIG),
                     config.getInt(ConsumerConfig.RECEIVE_BUFFER_CONFIG),
                     config.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG),
@@ -797,8 +797,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     this.time,
                     this.retryBackoffMs,
                     this.requestTimeoutMs,
-                    isolationLevel,
-                    new ListOffsetsClient(client, logContext));
+                    isolationLevel);
 
             config.logUnused();
             AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics);

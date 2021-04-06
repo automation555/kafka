@@ -91,8 +91,6 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
 
 import java.io.DataOutputStream;
 import java.lang.reflect.Field;
@@ -151,6 +149,8 @@ public class FetcherTest {
     private int fetchSize = 1000;
     private long retryBackoffMs = 100;
     private long requestTimeoutMs = 30000;
+    protected final long defaultConnectReadyTimeOutMs = 30 * 10000;
+
     private MockTime time = new MockTime(1);
     private SubscriptionState subscriptions;
     private ConsumerMetadata metadata;
@@ -159,7 +159,6 @@ public class FetcherTest {
     private Metrics metrics;
     private ConsumerNetworkClient consumerClient;
     private Fetcher<?, ?> fetcher;
-    private ListOffsetsClient listOffsetsClient;
 
     private MemoryRecords records;
     private MemoryRecords nextRecords;
@@ -1310,23 +1309,20 @@ public class FetcherTest {
     private void testListOffsetsSendsIsolationLevel(IsolationLevel isolationLevel) {
         buildFetcher(OffsetResetStrategy.EARLIEST, new ByteArrayDeserializer(), new ByteArrayDeserializer(),
                 Integer.MAX_VALUE, isolationLevel);
+
         assignFromUser(singleton(tp0));
-        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("dummy", 1,
-                Collections.emptyMap(), Collections.singletonMap(topicName, 1), tp -> 99);
-        client.updateMetadata(metadataResponse);
         subscriptions.requestOffsetReset(tp0, OffsetResetStrategy.LATEST);
 
-        // Set up mockito capture
-        ArgumentCaptor<ListOffsetsClient.RequestData> captor = ArgumentCaptor.forClass(ListOffsetsClient.RequestData.class);
-        Mockito.doCallRealMethod().when(listOffsetsClient).prepareRequest(Mockito.any(Node.class), captor.capture());
+        client.prepareResponse(body -> {
+            ListOffsetRequest request = (ListOffsetRequest) body;
+            return request.isolationLevel() == isolationLevel;
+        }, listOffsetResponse(Errors.NONE, 1L, 5L));
         fetcher.resetOffsetsIfNeeded();
+        consumerClient.pollNoWakeup();
 
-        // Verify correct arguments got passed to ListOffsetsClient#prepareRequest
-        assertEquals(captor.getValue().isolationLevel, isolationLevel);
-        assertTrue(captor.getValue().timestampsToSearch.containsKey(tp0));
-        assertEquals(captor.getValue().timestampsToSearch.get(tp0).timestamp, ListOffsetRequest.LATEST_TIMESTAMP);
-        assertOptional(captor.getValue().timestampsToSearch.get(tp0).currentLeaderEpoch,
-            epoch -> assertEquals(epoch.longValue(), 99));
+        assertFalse(subscriptions.isOffsetResetNeeded(tp0));
+        assertTrue(subscriptions.isFetchable(tp0));
+        assertEquals(5, subscriptions.position(tp0).offset);
     }
 
     @Test
@@ -1757,7 +1753,7 @@ public class FetcherTest {
         Cluster cluster = TestUtils.singletonCluster("test", 1);
         Node node = cluster.nodes().get(0);
         NetworkClient client = new NetworkClient(selector, metadata, "mock", Integer.MAX_VALUE,
-                1000, 1000, 64 * 1024, 64 * 1024, 1000,  ClientDnsLookup.DEFAULT,
+                1000, 1000, defaultConnectReadyTimeOutMs, 64 * 1024, 64 * 1024, 1000,  ClientDnsLookup.DEFAULT,
                 time, true, new ApiVersions(), throttleTimeSensor, new LogContext());
 
         short apiVersionsResponseVersion = ApiKeys.API_VERSIONS.latestVersion();
@@ -2838,8 +2834,7 @@ public class FetcherTest {
                 time,
                 retryBackoffMs,
                 requestTimeoutMs,
-                IsolationLevel.READ_UNCOMMITTED,
-                listOffsetsClient) {
+                IsolationLevel.READ_UNCOMMITTED) {
             @Override
             protected FetchSessionHandler sessionHandler(int id) {
                 final FetchSessionHandler handler = super.sessionHandler(id);
@@ -3395,8 +3390,7 @@ public class FetcherTest {
                 time,
                 retryBackoffMs,
                 requestTimeoutMs,
-                isolationLevel,
-                listOffsetsClient);
+                isolationLevel);
     }
 
     private void buildDependencies(MetricConfig metricConfig, OffsetResetStrategy offsetResetStrategy) {
@@ -3410,7 +3404,6 @@ public class FetcherTest {
         consumerClient = new ConsumerNetworkClient(logContext, client, metadata, time,
                 100, 1000, Integer.MAX_VALUE);
         metricsRegistry = new FetcherMetricsRegistry(metricConfig.tags().keySet(), "consumer" + groupId);
-        listOffsetsClient = Mockito.spy(new ListOffsetsClient(consumerClient, new LogContext()));
     }
 
     private <T> List<Long> collectRecordOffsets(List<ConsumerRecord<T, T>> records) {

@@ -26,7 +26,7 @@ import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.ManualMetadataUpdater;
 import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.clients.NetworkClientUtils;
-import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.Cluster;
@@ -36,11 +36,11 @@ import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.network.ChannelBuilder;
 import org.apache.kafka.common.network.Selector;
 import org.apache.kafka.common.utils.LogContext;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.trogdor.common.JsonUtil;
 import org.apache.kafka.trogdor.common.Platform;
+import org.apache.kafka.trogdor.common.ThreadUtils;
 import org.apache.kafka.trogdor.common.WorkerUtils;
 import org.apache.kafka.trogdor.task.TaskWorker;
 import org.apache.kafka.trogdor.task.WorkerStatusTracker;
@@ -137,15 +137,12 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         boolean tryConnect();
-
-        void close();
     }
 
     static class ConnectStressor implements Stressor {
         private final AdminClientConfig conf;
         private final ManualMetadataUpdater updater;
         private final ChannelBuilder channelBuilder;
-        private final LogContext logContext = new LogContext();
 
         ConnectStressor(ConnectionStressSpec spec) {
             Properties props = new Properties();
@@ -156,7 +153,7 @@ public class ConnectionStressWorker implements TaskWorker {
                 conf.getList(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG),
                 conf.getString(AdminClientConfig.CLIENT_DNS_LOOKUP_CONFIG));
             this.updater = new ManualMetadataUpdater(Cluster.bootstrap(addresses).nodes());
-            this.channelBuilder = ClientUtils.createChannelBuilder(conf, TIME, logContext);
+            this.channelBuilder = ClientUtils.createChannelBuilder(conf, TIME);
         }
 
         @Override
@@ -165,6 +162,7 @@ public class ConnectionStressWorker implements TaskWorker {
                 List<Node> nodes = updater.fetchNodes();
                 Node targetNode = nodes.get(ThreadLocalRandom.current().nextInt(nodes.size()));
                 try (Metrics metrics = new Metrics()) {
+                    LogContext logContext = new LogContext();
                     try (Selector selector = new Selector(conf.getLong(AdminClientConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG),
                         metrics, TIME, "", channelBuilder, logContext)) {
                         try (NetworkClient client = new NetworkClient(selector,
@@ -173,11 +171,10 @@ public class ConnectionStressWorker implements TaskWorker {
                             1,
                             1000,
                             1000,
+                            30000,
                             4096,
                             4096,
                             1000,
-                            10 * 1000,
-                            127 * 1000,
                             ClientDnsLookup.forConfig(conf.getString(AdminClientConfig.CLIENT_DNS_LOOKUP_CONFIG)),
                             TIME,
                             false,
@@ -194,7 +191,7 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         @Override
-        public void close() {
+        public void close() throws Exception {
             Utils.closeQuietly(updater, "ManualMetadataUpdater");
             Utils.closeQuietly(channelBuilder, "ChannelBuilder");
         }
@@ -211,7 +208,7 @@ public class ConnectionStressWorker implements TaskWorker {
 
         @Override
         public boolean tryConnect() {
-            try (Admin client = Admin.create(this.props)) {
+            try (AdminClient client = AdminClient.create(this.props)) {
                 client.describeCluster().nodes().get();
             } catch (RuntimeException e) {
                 return false;
@@ -222,7 +219,7 @@ public class ConnectionStressWorker implements TaskWorker {
         }
 
         @Override
-        public void close() {
+        public void close() throws Exception {
         }
     }
 

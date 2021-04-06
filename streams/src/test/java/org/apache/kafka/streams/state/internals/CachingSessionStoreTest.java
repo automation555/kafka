@@ -17,43 +17,39 @@
 package org.apache.kafka.streams.state.internals;
 
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.KeyValueTimestamp;
-import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.kstream.SessionWindowedDeserializer;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.kstream.internals.Change;
 import org.apache.kafka.streams.kstream.internals.SessionWindow;
+import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
 import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
-import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.test.InternalMockProcessorContext;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
-import static java.util.Arrays.asList;
+import static org.apache.kafka.common.utils.Utils.mkEntry;
+import static org.apache.kafka.common.utils.Utils.mkMap;
 import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.apache.kafka.test.StreamsTestUtils.toList;
 import static org.apache.kafka.test.StreamsTestUtils.verifyKeyValueList;
 import static org.apache.kafka.test.StreamsTestUtils.verifyWindowedKeyValue;
-import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertArrayEquals;
@@ -75,16 +71,14 @@ public class CachingSessionStoreTest {
     private CachingSessionStore cachingStore;
     private ThreadCache cache;
 
-    public CachingSessionStoreTest() {
+    @Before
+    public void setUp() {
         final SessionKeySchema schema = new SessionKeySchema();
         final RocksDBSegmentedBytesStore root =
             new RocksDBSegmentedBytesStore("test", "metrics-scope", 0L, SEGMENT_INTERVAL, schema);
         final RocksDBSessionStore sessionStore = new RocksDBSessionStore(root);
         cachingStore = new CachingSessionStore(sessionStore, SEGMENT_INTERVAL);
-        cache = new ThreadCache(
-            new LogContext("testCache "),
-            MAX_CACHE_SIZE_BYTES,
-            new StreamsMetricsImpl(new Metrics(), "test", StreamsConfig.METRICS_LATEST));
+        cache = new ThreadCache(new LogContext("testCache "), MAX_CACHE_SIZE_BYTES, new MockStreamsMetrics(new Metrics()));
         final InternalMockProcessorContext context = new InternalMockProcessorContext(TestUtils.tempDirectory(), null, null, null, cache);
         context.setRecordContext(new ProcessorRecordContext(DEFAULT_TIMESTAMP, 0, 0, "topic", null));
         cachingStore.init(context, cachingStore);
@@ -125,6 +119,8 @@ public class CachingSessionStoreTest {
         verifyWindowedKeyValue(all.next(), new Windowed<>(keyAA, new SessionWindow(0, 0)), "1");
         verifyWindowedKeyValue(all.next(), new Windowed<>(keyB, new SessionWindow(0, 0)), "1");
         assertFalse(all.hasNext());
+
+
     }
 
     @Test
@@ -143,7 +139,7 @@ public class CachingSessionStoreTest {
 
     @Test
     public void shouldFetchAllSessionsWithSameRecordKey() {
-        final List<KeyValue<Windowed<Bytes>, byte[]>> expected = asList(
+        final List<KeyValue<Windowed<Bytes>, byte[]>> expected = Arrays.asList(
             KeyValue.pair(new Windowed<>(keyA, new SessionWindow(0, 0)), "1".getBytes()),
             KeyValue.pair(new Windowed<>(keyA, new SessionWindow(10, 10)), "2".getBytes()),
             KeyValue.pair(new Windowed<>(keyA, new SessionWindow(100, 100)), "3".getBytes()),
@@ -250,8 +246,8 @@ public class CachingSessionStoreTest {
         final Windowed<Bytes> b = new Windowed<>(keyA, new SessionWindow(1, 2));
         final Windowed<String> aDeserialized = new Windowed<>("a", new SessionWindow(2, 4));
         final Windowed<String> bDeserialized = new Windowed<>("a", new SessionWindow(1, 2));
-        final CacheFlushListenerStub<Windowed<String>, String> flushListener =
-            new CacheFlushListenerStub<>(
+        final CachingKeyValueStoreTest.CacheFlushListenerStub<Windowed<String>, String> flushListener =
+            new CachingKeyValueStoreTest.CacheFlushListenerStub<>(
                 new SessionWindowedDeserializer<>(new StringDeserializer()),
                 new StringDeserializer());
         cachingStore.setFlushListener(flushListener, true);
@@ -260,11 +256,7 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.singletonList(
-                new KeyValueTimestamp<>(
-                    bDeserialized,
-                    new Change<>("1", null),
-                    DEFAULT_TIMESTAMP)),
+            Collections.singletonMap(bDeserialized, new Change<>("1", null)),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -273,11 +265,7 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.singletonList(
-                new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>("1", null),
-                    DEFAULT_TIMESTAMP)),
+            Collections.singletonMap(aDeserialized, new Change<>("1", null)),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -286,11 +274,7 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.singletonList(
-                new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>("2", "1"),
-                    DEFAULT_TIMESTAMP)),
+            Collections.singletonMap(aDeserialized, new Change<>("2", "1")),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -299,11 +283,7 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.singletonList(
-                new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>(null, "2"),
-                    DEFAULT_TIMESTAMP)),
+            Collections.singletonMap(aDeserialized, new Change<>(null, "2")),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -314,7 +294,7 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.emptyList(),
+            Collections.emptyMap(),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -324,8 +304,8 @@ public class CachingSessionStoreTest {
     public void shouldNotForwardChangedValuesDuringFlushWhenSendOldValuesDisabled() {
         final Windowed<Bytes> a = new Windowed<>(keyA, new SessionWindow(0, 0));
         final Windowed<String> aDeserialized = new Windowed<>("a", new SessionWindow(0, 0));
-        final CacheFlushListenerStub<Windowed<String>, String> flushListener =
-            new CacheFlushListenerStub<>(
+        final CachingKeyValueStoreTest.CacheFlushListenerStub<Windowed<String>, String> flushListener =
+            new CachingKeyValueStoreTest.CacheFlushListenerStub<>(
                 new SessionWindowedDeserializer<>(new StringDeserializer()),
                 new StringDeserializer());
         cachingStore.setFlushListener(flushListener, false);
@@ -340,18 +320,11 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            asList(new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>("1", null),
-                    DEFAULT_TIMESTAMP),
-                new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>("2", null),
-                    DEFAULT_TIMESTAMP),
-                new KeyValueTimestamp<>(
-                    aDeserialized,
-                    new Change<>(null, null),
-                    DEFAULT_TIMESTAMP)),
+            mkMap(
+                mkEntry(aDeserialized, new Change<>("1", null)),
+                mkEntry(aDeserialized, new Change<>("2", null)),
+                mkEntry(aDeserialized, new Change<>(null, null))
+            ),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
@@ -362,26 +335,10 @@ public class CachingSessionStoreTest {
         cachingStore.flush();
 
         assertEquals(
-            Collections.emptyList(),
+            Collections.emptyMap(),
             flushListener.forwarded
         );
         flushListener.forwarded.clear();
-    }
-
-    @Test
-    public void shouldReturnSameResultsForSingleKeyFindSessionsAndEqualKeyRangeFindSessions() {
-        cachingStore.put(new Windowed<>(keyA, new SessionWindow(0, 1)), "1".getBytes());
-        cachingStore.put(new Windowed<>(keyAA, new SessionWindow(2, 3)), "2".getBytes());
-        cachingStore.put(new Windowed<>(keyAA, new SessionWindow(4, 5)), "3".getBytes());
-        cachingStore.put(new Windowed<>(keyB, new SessionWindow(6, 7)), "4".getBytes());
-
-        final KeyValueIterator<Windowed<Bytes>, byte[]> singleKeyIterator = cachingStore.findSessions(keyAA, 0L, 10L);
-        final KeyValueIterator<Windowed<Bytes>, byte[]> keyRangeIterator = cachingStore.findSessions(keyAA, keyAA, 0L, 10L);
-
-        assertEquals(singleKeyIterator.next(), keyRangeIterator.next());
-        assertEquals(singleKeyIterator.next(), keyRangeIterator.next());
-        assertFalse(singleKeyIterator.hasNext());
-        assertFalse(keyRangeIterator.hasNext());
     }
 
     @Test
@@ -457,23 +414,6 @@ public class CachingSessionStoreTest {
         cachingStore.put(null, "1".getBytes());
     }
 
-    @Test
-    public void shouldNotThrowInvalidRangeExceptionWithNegativeFromKey() {
-        LogCaptureAppender.setClassLoggerToDebug(InMemoryWindowStore.class);
-        final LogCaptureAppender appender = LogCaptureAppender.createAndRegister();
-
-        final Bytes keyFrom = Bytes.wrap(Serdes.Integer().serializer().serialize("", -1));
-        final Bytes keyTo = Bytes.wrap(Serdes.Integer().serializer().serialize("", 1));
-
-        final KeyValueIterator<Windowed<Bytes>, byte[]> iterator = cachingStore.findSessions(keyFrom, keyTo, 0L, 10L);
-        assertFalse(iterator.hasNext());
-
-        final List<String> messages = appender.getMessages();
-        assertThat(messages, hasItem("Returning empty iterator for fetch with invalid key range: from > to. "
-            + "This may be due to serdes that don't preserve ordering when lexicographically comparing the serialized bytes. "
-            + "Note that the built-in numerical serdes do not follow this for negative numbers"));
-    }
-
     private List<KeyValue<Windowed<Bytes>, byte[]>> addSessionsUntilOverflow(final String... sessionIds) {
         final Random random = new Random();
         final List<KeyValue<Windowed<Bytes>, byte[]>> results = new ArrayList<>();
@@ -492,29 +432,4 @@ public class CachingSessionStoreTest {
         allSessions.add(KeyValue.pair(key, value));
     }
 
-    public static class CacheFlushListenerStub<K, V> implements CacheFlushListener<byte[], byte[]> {
-        final Deserializer<K> keyDeserializer;
-        final Deserializer<V> valueDesializer;
-        final List<KeyValueTimestamp<K, Change<V>>> forwarded = new LinkedList<>();
-
-        CacheFlushListenerStub(final Deserializer<K> keyDeserializer,
-                               final Deserializer<V> valueDesializer) {
-            this.keyDeserializer = keyDeserializer;
-            this.valueDesializer = valueDesializer;
-        }
-
-        @Override
-        public void apply(final byte[] key,
-                          final byte[] newValue,
-                          final byte[] oldValue,
-                          final long timestamp) {
-            forwarded.add(
-                new KeyValueTimestamp<>(
-                    keyDeserializer.deserialize(null, key),
-                    new Change<>(
-                        valueDesializer.deserialize(null, newValue),
-                        valueDesializer.deserialize(null, oldValue)),
-                    timestamp));
-        }
-    }
 }

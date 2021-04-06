@@ -70,12 +70,15 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]> {
 
     private static final Pattern SST_FILE_EXTENSION = Pattern.compile(".*\\.sst");
 
-    private static final CompressionType COMPRESSION_TYPE = CompressionType.NO_COMPRESSION;
-    private static final CompactionStyle COMPACTION_STYLE = CompactionStyle.UNIVERSAL;
-    private static final long WRITE_BUFFER_SIZE = 16 * 1024 * 1024L;
+    private static final CompressionType COMPRESSION_TYPE = CompressionType.LZ4_COMPRESSION;
+    private static final CompactionStyle COMPACTION_STYLE = CompactionStyle.LEVEL;
+    private static final long WRITE_BUFFER_SIZE = 32 * 1024 * 1024L;
     private static final long BLOCK_CACHE_SIZE = 50 * 1024 * 1024L;
+    private static final long TARGET_FILE_SIZE_BASE = 64 * 1024 * 1024L;
+    private static final long MAX_BYTES_FOR_LEVEL_BASE = 512 * 1024 * 1024L;
     private static final long BLOCK_SIZE = 4096L;
-    private static final int MAX_WRITE_BUFFERS = 3;
+    private static final int MAX_WRITE_BUFFERS = 5;
+    private static final int MIN_WRITE_BUFFER_NUMBER_TO_MERGE = 2;
     private static final String DB_FILE_DIR = "rocksdb";
 
     final String name;
@@ -90,7 +93,6 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]> {
     private RocksDBGenericOptionsToDbOptionsColumnFamilyOptionsAdapter userSpecifiedOptions;
     WriteOptions wOptions;
     FlushOptions fOptions;
-    private BloomFilter filter;
 
     private volatile boolean prepareForBulkload = false;
     ProcessorContext internalProcessorContext;
@@ -121,9 +123,8 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]> {
         final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig();
         tableConfig.setBlockCacheSize(BLOCK_CACHE_SIZE);
         tableConfig.setBlockSize(BLOCK_SIZE);
-        
-        filter = new BloomFilter();
-        tableConfig.setFilter(filter);
+
+        tableConfig.setFilter(new BloomFilter());
 
         userSpecifiedOptions.optimizeFiltersForHits();
         userSpecifiedOptions.setTableFormatConfig(tableConfig);
@@ -131,6 +132,9 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]> {
         userSpecifiedOptions.setCompressionType(COMPRESSION_TYPE);
         userSpecifiedOptions.setCompactionStyle(COMPACTION_STYLE);
         userSpecifiedOptions.setMaxWriteBufferNumber(MAX_WRITE_BUFFERS);
+        userSpecifiedOptions.setMinWriteBufferNumberToMerge(MIN_WRITE_BUFFER_NUMBER_TO_MERGE);
+        userSpecifiedOptions.setMaxBytesForLevelBase(MAX_BYTES_FOR_LEVEL_BASE);
+        userSpecifiedOptions.setTargetFileSizeBase(TARGET_FILE_SIZE_BASE);
         userSpecifiedOptions.setCreateIfMissing(true);
         userSpecifiedOptions.setErrorIfExists(false);
         userSpecifiedOptions.setInfoLogLevel(InfoLogLevel.ERROR_LEVEL);
@@ -375,11 +379,10 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]> {
         open = false;
         closeOpenIterators();
         dbAccessor.close();
-        db.close();
         userSpecifiedOptions.close();
         wOptions.close();
         fOptions.close();
-        filter.close();
+        db.close();
 
         dbAccessor = null;
         userSpecifiedOptions = null;

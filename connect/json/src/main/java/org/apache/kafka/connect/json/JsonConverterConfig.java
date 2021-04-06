@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.connect.json;
 
-import java.util.Locale;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
@@ -40,11 +39,10 @@ public class JsonConverterConfig extends ConverterConfig {
     private static final String SCHEMAS_CACHE_SIZE_DOC = "The maximum number of schemas that can be cached in this converter instance.";
     private static final String SCHEMAS_CACHE_SIZE_DISPLAY = "Schema Cache Size";
 
-    public static final String DECIMAL_FORMAT_CONFIG = "decimal.format";
-    public static final String DECIMAL_FORMAT_DEFAULT = DecimalFormat.BASE64.name();
-    private static final String DECIMAL_FORMAT_DOC = "Controls which format this converter will serialize decimals in."
-        + " This value is case insensitive and can be either 'BASE64' (default) or 'NUMERIC'";
-    private static final String DECIMAL_FORMAT_DISPLAY = "Decimal Format";
+    public static final String SCHEMAS_INFER_ENABLE_CONFIG = "schemas.infer.enable";
+    public static final boolean SCHEMAS_INFER_ENABLE_DEFAULT = false;
+    private static final String SCHEMAS_INFER_ENABLE_DOC = "Infer the schemas when they are missing within each of the serialized values and keys. Only applied when " + SCHEMAS_ENABLE_CONFIG + " is false.";
+    private static final String SCHEMAS_INFER_ENABLE_DISPLAY = "Enable Infer Schemas";
 
     private final static ConfigDef CONFIG;
 
@@ -56,32 +54,16 @@ public class JsonConverterConfig extends ConverterConfig {
                       orderInGroup++, Width.MEDIUM, SCHEMAS_ENABLE_DISPLAY);
         CONFIG.define(SCHEMAS_CACHE_SIZE_CONFIG, Type.INT, SCHEMAS_CACHE_SIZE_DEFAULT, Importance.HIGH, SCHEMAS_CACHE_SIZE_DOC, group,
                       orderInGroup++, Width.MEDIUM, SCHEMAS_CACHE_SIZE_DISPLAY);
-
-        group = "Serialization";
-        orderInGroup = 0;
-        CONFIG.define(
-            DECIMAL_FORMAT_CONFIG, Type.STRING, DECIMAL_FORMAT_DEFAULT,
-            ConfigDef.CaseInsensitiveValidString.in(
-                DecimalFormat.BASE64.name(),
-                DecimalFormat.NUMERIC.name()),
-            Importance.LOW, DECIMAL_FORMAT_DOC, group, orderInGroup++,
-            Width.MEDIUM, DECIMAL_FORMAT_DISPLAY);
+        CONFIG.define(SCHEMAS_INFER_ENABLE_CONFIG, Type.BOOLEAN, SCHEMAS_INFER_ENABLE_DEFAULT, Importance.HIGH, SCHEMAS_INFER_ENABLE_DOC, group,
+                orderInGroup++, Width.MEDIUM, SCHEMAS_INFER_ENABLE_DISPLAY);
     }
 
     public static ConfigDef configDef() {
         return CONFIG;
     }
 
-    // cached config values
-    private final boolean schemasEnabled;
-    private final int schemaCacheSize;
-    private final DecimalFormat decimalFormat;
-
     public JsonConverterConfig(Map<String, ?> props) {
         super(CONFIG, props);
-        this.schemasEnabled = getBoolean(SCHEMAS_ENABLE_CONFIG);
-        this.schemaCacheSize = getInt(SCHEMAS_CACHE_SIZE_CONFIG);
-        this.decimalFormat = DecimalFormat.valueOf(getString(DECIMAL_FORMAT_CONFIG).toUpperCase(Locale.ROOT));
     }
 
     /**
@@ -90,7 +72,7 @@ public class JsonConverterConfig extends ConverterConfig {
      * @return true if enabled, or false otherwise
      */
     public boolean schemasEnabled() {
-        return schemasEnabled;
+        return getBoolean(SCHEMAS_ENABLE_CONFIG);
     }
 
     /**
@@ -99,16 +81,15 @@ public class JsonConverterConfig extends ConverterConfig {
      * @return the cache size
      */
     public int schemaCacheSize() {
-        return schemaCacheSize;
+        return getInt(SCHEMAS_CACHE_SIZE_CONFIG);
     }
 
     /**
-     * Get the serialization format for decimal types.
+     * Return whether schema inferencing is enabled.
      *
-     * @return the decimal serialization format
+     * @return true if enabled, or false otherwise
      */
-    public DecimalFormat decimalFormat() {
-        return decimalFormat;
+    public boolean schemasInferEnabled() {
+        return getBoolean(SCHEMAS_INFER_ENABLE_CONFIG);
     }
-
 }

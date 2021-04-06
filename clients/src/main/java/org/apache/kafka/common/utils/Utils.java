@@ -16,15 +16,7 @@
  */
 package org.apache.kafka.common.utils;
 
-import java.nio.BufferUnderflowException;
-import java.nio.file.StandardOpenOption;
-import java.util.AbstractMap;
-import java.util.EnumSet;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.network.TransferableChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,25 +24,27 @@ import java.io.Closeable;
 import java.io.DataOutput;
 import java.io.EOFException;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.io.StringReader;
 import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
+import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -60,24 +54,12 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
-import java.util.function.BinaryOperator;
-import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 
 public final class Utils {
 
@@ -87,11 +69,8 @@ public final class Utils {
     // IPv6 is supported with [ip] pattern
     private static final Pattern HOST_PORT_PATTERN = Pattern.compile(".*?\\[?([0-9a-zA-Z\\-%._:]*)\\]?:([0-9]+)");
 
-    private static final Pattern VALID_HOST_CHARACTERS = Pattern.compile("([0-9a-zA-Z\\-%._:]*)");
-
     // Prints up to 2 decimal digits. Used for human readable printing
-    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##",
-        DecimalFormatSymbols.getInstance(Locale.ENGLISH));
+    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##");
 
     private static final String[] BYTE_SCALE_SUFFIXES = new String[] {"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
 
@@ -131,17 +110,6 @@ public final class Utils {
      */
     public static String utf8(ByteBuffer buffer, int length) {
         return utf8(buffer, 0, length);
-    }
-
-    /**
-     * Read a UTF8 string from the current position till the end of a byte buffer. The position of the byte buffer is
-     * not affected by this method.
-     *
-     * @param buffer The buffer to read from
-     * @return The UTF8 string
-     */
-    public static String utf8(ByteBuffer buffer) {
-        return utf8(buffer, buffer.remaining());
     }
 
     /**
@@ -292,43 +260,17 @@ public final class Utils {
     }
 
     /**
-     * Starting from the current position, read an integer indicating the size of the byte array to read,
-     * then read the array. Consumes the buffer: upon returning, the buffer's position is after the array
-     * that is returned.
-     * @param buffer The buffer to read a size-prefixed array from
-     * @return The array
+     * Check that the parameter t is not null
+     *
+     * @param t The object to check
+     * @return t if it isn't null
+     * @throws NullPointerException if t is null.
      */
-    public static byte[] getNullableSizePrefixedArray(final ByteBuffer buffer) {
-        final int size = buffer.getInt();
-        return getNullableArray(buffer, size);
-    }
-
-    /**
-     * Read a byte array of the given size. Consumes the buffer: upon returning, the buffer's position
-     * is after the array that is returned.
-     * @param buffer The buffer to read a size-prefixed array from
-     * @param size The number of bytes to read out of the buffer
-     * @return The array
-     */
-    public static byte[] getNullableArray(final ByteBuffer buffer, final int size) {
-        if (size > buffer.remaining()) {
-            // preemptively throw this when the read is doomed to fail, so we don't have to allocate the array.
-            throw new BufferUnderflowException();
-        }
-        final byte[] oldBytes = size == -1 ? null : new byte[size];
-        if (oldBytes != null) {
-            buffer.get(oldBytes);
-        }
-        return oldBytes;
-    }
-
-    /**
-     * Returns a copy of src byte array
-     * @param src The byte array to copy
-     * @return The copy
-     */
-    public static byte[] copyArray(byte[] src) {
-        return Arrays.copyOf(src, src.length);
+    public static <T> T notNull(T t) {
+        if (t == null)
+            throw new NullPointerException();
+        else
+            return t;
     }
 
     /**
@@ -382,18 +324,6 @@ public final class Utils {
     }
 
     /**
-     * Cast {@code klass} to {@code base} and instantiate it.
-     * @param klass The class to instantiate
-     * @param base A know baseclass of klass.
-     * @param <T> the type of the base class
-     * @throws ClassCastException If {@code klass} is not a subclass of {@code base}.
-     * @return the new instance.
-     */
-    public static <T> T newInstance(Class<?> klass, Class<T> base) {
-        return Utils.newInstance(klass.asSubclass(base));
-    }
-
-    /**
      * Construct a new object using a class name and parameters.
      *
      * @param className                 The full name of the class to construct.
@@ -435,7 +365,6 @@ public final class Utils {
      * @param data byte array to hash
      * @return 32 bit hash of the given array
      */
-    @SuppressWarnings("fallthrough")
     public static int murmur2(final byte[] data) {
         int length = data.length;
         int seed = 0x9747b28c;
@@ -497,15 +426,6 @@ public final class Utils {
     }
 
     /**
-     * Basic validation of the supplied address. checks for valid characters
-     * @param address hostname string to validate
-     * @return true if address contains valid characters
-     */
-    public static boolean validHostPattern(String address) {
-        return VALID_HOST_CHARACTERS.matcher(address).matches();
-    }
-
-    /**
      * Formats hostname and port number as a "host:port" address string,
      * surrounding IPv6 addresses with braces '[', ']'
      * @param host hostname
@@ -551,15 +471,15 @@ public final class Utils {
     }
 
     /**
-     * Create a string representation of a collection joined by the given separator
-     * @param collection The list of items
+     * Create a string representation of a list joined by the given separator
+     * @param list The list of items
      * @param separator The separator
      * @return The string representation.
      */
-    public static <T> String join(Collection<T> collection, String separator) {
-        Objects.requireNonNull(collection);
+    public static <T> String join(Collection<T> list, String separator) {
+        Objects.requireNonNull(list);
         StringBuilder sb = new StringBuilder();
-        Iterator<T> iter = collection.iterator();
+        Iterator<T> iter = list.iterator();
         while (iter.hasNext()) {
             sb.append(iter.next());
             if (iter.hasNext())
@@ -568,12 +488,6 @@ public final class Utils {
         return sb.toString();
     }
 
-    /**
-     *  Converts a {@code Map} class into a string, concatenating keys and values
-     *  Example:
-     *      {@code mkString({ key: "hello", keyTwo: "hi" }, "|START|", "|END|", "=", ",")
-     *          => "|START|key=hello,keyTwo=hi|END|"}
-     */
     public static <K, V> String mkString(Map<K, V> map, String begin, String end,
                                          String keyValueSeparator, String elementSeparator) {
         StringBuilder bld = new StringBuilder();
@@ -589,60 +503,31 @@ public final class Utils {
     }
 
     /**
-     *  Converts an extensions string into a {@code Map<String, String>}.
-     *
-     *  Example:
-     *      {@code parseMap("key=hey,keyTwo=hi,keyThree=hello", "=", ",") => { key: "hey", keyTwo: "hi", keyThree: "hello" }}
-     *
-     */
-    public static Map<String, String> parseMap(String mapStr, String keyValueSeparator, String elementSeparator) {
-        Map<String, String> map = new HashMap<>();
-
-        if (!mapStr.isEmpty()) {
-            String[] attrvals = mapStr.split(elementSeparator);
-            for (String attrval : attrvals) {
-                String[] array = attrval.split(keyValueSeparator, 2);
-                map.put(array[0], array[1]);
-            }
-        }
-        return map;
-    }
-
-    /**
      * Read a properties file from the given path
      * @param filename The path of the file to read
-     * @return the loaded properties
      */
     public static Properties loadProps(String filename) throws IOException {
-        return loadProps(filename, null);
-    }
-
-    /**
-     * Read a properties file from the given path
-     * @param filename The path of the file to read
-     * @param onlyIncludeKeys When non-null, only return values associated with these keys and ignore all others
-     * @return the loaded properties
-     */
-    public static Properties loadProps(String filename, List<String> onlyIncludeKeys) throws IOException {
         Properties props = new Properties();
 
         if (filename != null) {
-            try (InputStream propStream = Files.newInputStream(Paths.get(filename))) {
+            try (InputStream propStream = new FileInputStream(filename)) {
                 props.load(propStream);
             }
         } else {
             System.out.println("Did not load any properties since the property file is not specified");
         }
 
-        if (onlyIncludeKeys == null || onlyIncludeKeys.isEmpty())
-            return props;
-        Properties requestedProps = new Properties();
-        onlyIncludeKeys.forEach(key -> {
-            String value = props.getProperty(key);
-            if (value != null)
-                requestedProps.setProperty(key, value);
-        });
-        return requestedProps;
+        return props;
+    }
+
+    /**
+     * Convert a list of key=value strings into a Properties object.
+     */
+    public static Properties loadPropOverrides(List<String> overrides) throws IOException {
+        Properties props = new Properties();
+        String overridesStr = join(overrides, System.lineSeparator());
+        props.load(new StringReader(overridesStr));
+        return props;
     }
 
     /**
@@ -667,6 +552,15 @@ public final class Utils {
     }
 
     /**
+     * Print an error message and shutdown the JVM
+     * @param message The error message
+     */
+    public static void croak(String message) {
+        System.err.println(message);
+        Exit.exit(1);
+    }
+
+    /**
      * Read a buffer into a Byte array for the given offset and length
      */
     public static byte[] readBytes(ByteBuffer buffer, int offset, int length) {
@@ -676,7 +570,7 @@ public final class Utils {
         } else {
             buffer.mark();
             buffer.position(offset);
-            buffer.get(dest);
+            buffer.get(dest, 0, length);
             buffer.reset();
         }
         return dest;
@@ -690,16 +584,22 @@ public final class Utils {
     }
 
     /**
-     * Read a file as string and return the content. The file is treated as a stream and no seek is performed.
-     * This allows the program to read from a regular file as well as from a pipe/fifo.
+     * Attempt to read a file as a string
+     * @throws IOException
      */
-    public static String readFileAsString(String path) throws IOException {
-        try {
-            byte[] allBytes = Files.readAllBytes(Paths.get(path));
-            return new String(allBytes, StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            throw new IOException("Unable to read file " + path, ex);
+    public static String readFileAsString(String path, Charset charset) throws IOException {
+        if (charset == null) charset = Charset.defaultCharset();
+
+        try (FileInputStream stream = new FileInputStream(new File(path))) {
+            FileChannel fc = stream.getChannel();
+            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
+            return charset.decode(bb).toString();
         }
+
+    }
+
+    public static String readFileAsString(String path) throws IOException {
+        return Utils.readFileAsString(path, Charset.defaultCharset());
     }
 
     /**
@@ -718,7 +618,7 @@ public final class Utils {
         return existingBuffer;
     }
 
-    /**
+    /*
      * Creates a set
      * @param elems the elements
      * @param <T> the type of element
@@ -726,24 +626,18 @@ public final class Utils {
      */
     @SafeVarargs
     public static <T> Set<T> mkSet(T... elems) {
-        Set<T> result = new HashSet<>((int) (elems.length / 0.75) + 1);
-        for (T elem : elems)
-            result.add(elem);
-        return result;
+        return new HashSet<>(Arrays.asList(elems));
     }
 
-    /**
-     * Creates a sorted set
+    /*
+     * Creates a list
      * @param elems the elements
-     * @param <T> the type of element, must be comparable
-     * @return SortedSet
+     * @param <T> the type of element
+     * @return List
      */
     @SafeVarargs
-    public static <T extends Comparable<T>> SortedSet<T> mkSortedSet(T... elems) {
-        SortedSet<T> result = new TreeSet<>();
-        for (T elem : elems)
-            result.add(elem);
-        return result;
+    public static <T> List<T> mkList(T... elems) {
+        return Arrays.asList(elems);
     }
 
     /**
@@ -756,7 +650,22 @@ public final class Utils {
      * @return An entry
      */
     public static <K, V> Map.Entry<K, V> mkEntry(final K k, final V v) {
-        return new AbstractMap.SimpleEntry<>(k, v);
+        return new Map.Entry<K, V>() {
+            @Override
+            public K getKey() {
+                return k;
+            }
+
+            @Override
+            public V getValue() {
+                return v;
+            }
+
+            @Override
+            public V setValue(final V value) {
+                throw new UnsupportedOperationException();
+            }
+        };
     }
 
     /**
@@ -791,72 +700,31 @@ public final class Utils {
     }
 
     /**
-     * Creates a {@link Properties} from a map
-     *
-     * @param properties A map of properties to add
-     * @return The properties object
-     */
-    public static Properties mkObjectProperties(final Map<String, Object> properties) {
-        final Properties result = new Properties();
-        for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-            result.put(entry.getKey(), entry.getValue());
-        }
-        return result;
-    }
-
-    /**
      * Recursively delete the given file/directory and any subfiles (if any exist)
      *
-     * @param rootFile The root file at which to begin deleting
+     * @param file The root file at which to begin deleting
      */
-    public static void delete(final File rootFile) throws IOException {
-        delete(rootFile, Collections.emptyList());
-    }
-
-    /**
-     * Recursively delete the subfiles (if any exist) of the passed in root file that are not included
-     * in the list to keep
-     *
-     * @param rootFile The root file at which to begin deleting
-     * @param filesToKeep The subfiles to keep (note that if a subfile is to be kept, so are all its parent
-     *                    files in its pat)h; if empty we would also delete the root file
-     */
-    public static void delete(final File rootFile, final List<File> filesToKeep) throws IOException {
-        if (rootFile == null)
+    public static void delete(final File file) throws IOException {
+        if (file == null)
             return;
-        Files.walkFileTree(rootFile.toPath(), new SimpleFileVisitor<Path>() {
+        Files.walkFileTree(file.toPath(), new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFileFailed(Path path, IOException exc) throws IOException {
                 // If the root path did not exist, ignore the error; otherwise throw it.
-                if (exc instanceof NoSuchFileException && path.toFile().equals(rootFile))
+                if (exc instanceof NoSuchFileException && path.toFile().equals(file))
                     return FileVisitResult.TERMINATE;
                 throw exc;
             }
 
             @Override
             public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) throws IOException {
-                if (!filesToKeep.contains(path.toFile())) {
-                    Files.delete(path);
-                }
+                Files.delete(path);
                 return FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult postVisitDirectory(Path path, IOException exc) throws IOException {
-                // KAFKA-8999: if there's an exception thrown previously already, we should throw it
-                if (exc != null) {
-                    throw exc;
-                }
-
-                if (rootFile.toPath().equals(path)) {
-                    // only delete the parent directory if there's nothing to keep
-                    if (filesToKeep.isEmpty()) {
-                        Files.delete(path);
-                    }
-                } else if (!filesToKeep.contains(path.toFile())) {
-                    Files.delete(path);
-                }
-
+                Files.delete(path);
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -868,7 +736,7 @@ public final class Utils {
      * @return
      */
     public static <T> List<T> safe(List<T> other) {
-        return other == null ? Collections.emptyList() : other;
+        return other == null ? Collections.<T>emptyList() : other;
     }
 
    /**
@@ -894,23 +762,10 @@ public final class Utils {
 
     /**
      * Attempts to move source to target atomically and falls back to a non-atomic move if it fails.
-     * This function also flushes the parent directory to guarantee crash consistency.
      *
      * @throws IOException if both atomic and non-atomic moves fail
      */
     public static void atomicMoveWithFallback(Path source, Path target) throws IOException {
-        atomicMoveWithFallback(source, target, true);
-    }
-
-    /**
-     * Attempts to move source to target atomically and falls back to a non-atomic move if it fails.
-     * This function allows callers to decide whether to flush the parent directory. This is needed
-     * when a sequence of atomicMoveWithFallback is called for the same directory and we don't want
-     * to repeatedly flush the same parent directory.
-     *
-     * @throws IOException if both atomic and non-atomic moves fail
-     */
-    public static void atomicMoveWithFallback(Path source, Path target, boolean needFlushParentDir) throws IOException {
         try {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException outer) {
@@ -922,29 +777,6 @@ public final class Utils {
                 inner.addSuppressed(outer);
                 throw inner;
             }
-        } finally {
-            if (needFlushParentDir) {
-                flushParentDir(target);
-            }
-        }
-    }
-
-    /**
-     * Flushes the parent directory to guarantee crash consistency.
-     *
-     * @throws IOException if flushing the parent directory fails.
-     */
-    public static void flushParentDir(Path path) throws IOException {
-        FileChannel dir = null;
-        try {
-            Path parent = path.toAbsolutePath().getParent();
-            if (parent != null) {
-                dir = FileChannel.open(parent, StandardOpenOption.READ);
-                dir.force(true);
-            }
-        } finally {
-            if (dir != null)
-                dir.close();
         }
     }
 
@@ -972,18 +804,6 @@ public final class Utils {
     }
 
     /**
-     * An {@link AutoCloseable} interface without a throws clause in the signature
-     *
-     * This is used with lambda expressions in try-with-resources clauses
-     * to avoid casting un-checked exceptions to checked exceptions unnecessarily.
-     */
-    @FunctionalInterface
-    public interface UncheckedCloseable extends AutoCloseable {
-        @Override
-        void close();
-    }
-
-    /**
      * Closes {@code closeable} and if an exception is thrown, it is logged at the WARN level.
      */
     public static void closeQuietly(AutoCloseable closeable, String name) {
@@ -996,31 +816,10 @@ public final class Utils {
         }
     }
 
-    public static void closeQuietly(AutoCloseable closeable, String name, AtomicReference<Throwable> firstException) {
-        if (closeable != null) {
-            try {
-                closeable.close();
-            } catch (Throwable t) {
-                firstException.compareAndSet(null, t);
-                log.error("Failed to close {} with type {}", name, closeable.getClass().getName(), t);
-            }
-        }
-    }
-
-    /**
-     * close all closable objects even if one of them throws exception.
-     * @param firstException keeps the first exception
-     * @param name message of closing those objects
-     * @param closeables closable objects
-     */
-    public static void closeAllQuietly(AtomicReference<Throwable> firstException, String name, AutoCloseable... closeables) {
-        for (AutoCloseable closeable : closeables) closeQuietly(closeable, name, firstException);
-    }
-
     /**
      * A cheap way to deterministically convert a number to a positive value. When the input is
      * positive, the original value is returned. When the input number is negative, the returned
-     * positive value is the original value bit AND against 0x7fffffff which is not its absolute
+     * positive value is the original value bit AND against 0x7fffffff which is not its absolutely
      * value.
      *
      * Note: changing this method in the future will possibly cause partition selection not to be
@@ -1032,6 +831,10 @@ public final class Utils {
      */
     public static int toPositive(int number) {
         return number & 0x7fffffff;
+    }
+
+    public static int longHashcode(long value) {
+        return (int) (value ^ (value >>> 32));
     }
 
     /**
@@ -1115,7 +918,7 @@ public final class Utils {
      *
      * @throws IOException If an I/O error occurs
      */
-    public static void readFully(InputStream inputStream, ByteBuffer destinationBuffer) throws IOException {
+    public static final void readFully(InputStream inputStream, ByteBuffer destinationBuffer) throws IOException {
         if (!destinationBuffer.hasArray())
             throw new IllegalArgumentException("destinationBuffer must be backed by an array");
         int initialOffset = destinationBuffer.arrayOffset() + destinationBuffer.position();
@@ -1137,29 +940,6 @@ public final class Utils {
     }
 
     /**
-     * Trying to write data in source buffer to a {@link TransferableChannel}, we may need to call this method multiple
-     * times since this method doesn't ensure the data in the source buffer can be fully written to the destination channel.
-     *
-     * @param destChannel The destination channel
-     * @param position From which the source buffer will be written
-     * @param length The max size of bytes can be written
-     * @param sourceBuffer The source buffer
-     *
-     * @return The length of the actual written data
-     * @throws IOException If an I/O error occurs
-     */
-    public static long tryWriteTo(TransferableChannel destChannel,
-                                  int position,
-                                  int length,
-                                  ByteBuffer sourceBuffer) throws IOException {
-
-        ByteBuffer dup = sourceBuffer.duplicate();
-        dup.position(position);
-        dup.limit(position + length);
-        return destChannel.write(dup);
-    }
-
-    /**
      * Write the contents of a buffer to an output stream. The bytes are copied from the current position
      * in the buffer.
      * @param out The output to write to
@@ -1177,213 +957,10 @@ public final class Utils {
         }
     }
 
-    public static <T> List<T> toList(Iterable<T> iterable) {
-        return toList(iterable.iterator());
-    }
-
     public static <T> List<T> toList(Iterator<T> iterator) {
         List<T> res = new ArrayList<>();
         while (iterator.hasNext())
             res.add(iterator.next());
-        return res;
-    }
-
-    public static <T> List<T> concatListsUnmodifiable(List<T> left, List<T> right) {
-        return concatLists(left, right, Collections::unmodifiableList);
-    }
-
-    public static <T> List<T> concatLists(List<T> left, List<T> right, Function<List<T>, List<T>> finisher) {
-        return Stream.concat(left.stream(), right.stream())
-                .collect(Collectors.collectingAndThen(Collectors.toList(), finisher));
-    }
-
-    public static int to32BitField(final Set<Byte> bytes) {
-        int value = 0;
-        for (final byte b : bytes)
-            value |= 1 << checkRange(b);
-        return value;
-    }
-
-    private static byte checkRange(final byte i) {
-        if (i > 31)
-            throw new IllegalArgumentException("out of range: i>31, i = " + i);
-        if (i < 0)
-            throw new IllegalArgumentException("out of range: i<0, i = " + i);
-        return i;
-    }
-
-    public static Set<Byte> from32BitField(final int intValue) {
-        Set<Byte> result = new HashSet<>();
-        for (int itr = intValue, count = 0; itr != 0; itr >>>= 1) {
-            if ((itr & 1) != 0)
-                result.add((byte) count);
-            count++;
-        }
-        return result;
-    }
-
-    public static <K1, V1, K2, V2> Map<K2, V2> transformMap(
-            Map<? extends K1, ? extends V1> map,
-            Function<K1, K2> keyMapper,
-            Function<V1, V2> valueMapper) {
-        return map.entrySet().stream().collect(
-            Collectors.toMap(
-                entry -> keyMapper.apply(entry.getKey()),
-                entry -> valueMapper.apply(entry.getValue())
-            )
-        );
-    }
-
-    /**
-     * A Collector that offers two kinds of convenience:
-     * 1. You can specify the concrete type of the returned Map
-     * 2. You can turn a stream of Entries directly into a Map without having to mess with a key function
-     *    and a value function. In particular, this is handy if all you need to do is apply a filter to a Map's entries.
-     *
-     *
-     * One thing to be wary of: These types are too "distant" for IDE type checkers to warn you if you
-     * try to do something like build a TreeMap of non-Comparable elements. You'd get a runtime exception for that.
-     *
-     * @param mapSupplier The constructor for your concrete map type.
-     * @param <K> The Map key type
-     * @param <V> The Map value type
-     * @param <M> The type of the Map itself.
-     * @return new Collector<Map.Entry<K, V>, M, M>
-     */
-    public static <K, V, M extends Map<K, V>> Collector<Map.Entry<K, V>, M, M> entriesToMap(final Supplier<M> mapSupplier) {
-        return new Collector<Map.Entry<K, V>, M, M>() {
-            @Override
-            public Supplier<M> supplier() {
-                return mapSupplier;
-            }
-
-            @Override
-            public BiConsumer<M, Map.Entry<K, V>> accumulator() {
-                return (map, entry) -> map.put(entry.getKey(), entry.getValue());
-            }
-
-            @Override
-            public BinaryOperator<M> combiner() {
-                return (map, map2) -> {
-                    map.putAll(map2);
-                    return map;
-                };
-            }
-
-            @Override
-            public Function<M, M> finisher() {
-                return map -> map;
-            }
-
-            @Override
-            public Set<Characteristics> characteristics() {
-                return EnumSet.of(Characteristics.UNORDERED, Characteristics.IDENTITY_FINISH);
-            }
-        };
-    }
-
-    @SafeVarargs
-    public static <E> Set<E> union(final Supplier<Set<E>> constructor, final Set<E>... set) {
-        final Set<E> result = constructor.get();
-        for (final Set<E> s : set) {
-            result.addAll(s);
-        }
-        return result;
-    }
-
-    @SafeVarargs
-    public static <E> Set<E> intersection(final Supplier<Set<E>> constructor, final Set<E> first, final Set<E>... set) {
-        final Set<E> result = constructor.get();
-        result.addAll(first);
-        for (final Set<E> s : set) {
-            result.retainAll(s);
-        }
-        return result;
-    }
-
-    public static <E> Set<E> diff(final Supplier<Set<E>> constructor, final Set<E> left, final Set<E> right) {
-        final Set<E> result = constructor.get();
-        result.addAll(left);
-        result.removeAll(right);
-        return result;
-    }
-
-    /**
-     * Convert a properties to map. All keys in properties must be string type. Otherwise, a ConfigException is thrown.
-     * @param properties to be converted
-     * @return a map including all elements in properties
-     */
-    public static Map<String, Object> propsToMap(Properties properties) {
-        Map<String, Object> map = new HashMap<>(properties.size());
-        for (Map.Entry<Object, Object> entry : properties.entrySet()) {
-            if (entry.getKey() instanceof String) {
-                String k = (String) entry.getKey();
-                map.put(k, properties.get(k));
-            } else {
-                throw new ConfigException(entry.getKey().toString(), entry.getValue(), "Key must be a string.");
-            }
-        }
-        return map;
-    }
-
-    /**
-     * Convert timestamp to an epoch value
-     * @param timestamp the timestamp to be converted, the accepted formats are:
-     *                 (1) yyyy-MM-dd'T'HH:mm:ss.SSS, ex: 2020-11-10T16:51:38.198
-     *                 (2) yyyy-MM-dd'T'HH:mm:ss.SSSZ, ex: 2020-11-10T16:51:38.198+0800
-     *                 (3) yyyy-MM-dd'T'HH:mm:ss.SSSX, ex: 2020-11-10T16:51:38.198+08
-     *                 (4) yyyy-MM-dd'T'HH:mm:ss.SSSXX, ex: 2020-11-10T16:51:38.198+0800
-     *                 (5) yyyy-MM-dd'T'HH:mm:ss.SSSXXX, ex: 2020-11-10T16:51:38.198+08:00
-     *
-     * @return epoch value of a given timestamp (i.e. the number of milliseconds since January 1, 1970, 00:00:00 GMT)
-     * @throws ParseException for timestamp that doesn't follow ISO8601 format or the format is not expected
-     */
-    public static long getDateTime(String timestamp) throws ParseException, IllegalArgumentException {
-        if (timestamp == null) {
-            throw new IllegalArgumentException("Error parsing timestamp with null value");
-        }
-
-        final String[] timestampParts = timestamp.split("T");
-        if (timestampParts.length < 2) {
-            throw new ParseException("Error parsing timestamp. It does not contain a 'T' according to ISO8601 format", timestamp.length());
-        }
-
-        final String secondPart = timestampParts[1];
-        if (!(secondPart.contains("+") || secondPart.contains("-") || secondPart.contains("Z"))) {
-            timestamp = timestamp + "Z";
-        }
-
-        SimpleDateFormat simpleDateFormat = new SimpleDateFormat();
-        // strictly parsing the date/time format
-        simpleDateFormat.setLenient(false);
-        try {
-            simpleDateFormat.applyPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
-            final Date date = simpleDateFormat.parse(timestamp);
-            return date.getTime();
-        } catch (final ParseException e) {
-            simpleDateFormat.applyPattern("yyyy-MM-dd'T'HH:mm:ss.SSSX");
-            final Date date = simpleDateFormat.parse(timestamp);
-            return date.getTime();
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    public static <S> Iterator<S> covariantCast(Iterator<? extends S> iterator) {
-        return (Iterator<S>) iterator;
-    }
-
-    /**
-     * Checks if a string is null, empty or whitespace only.
-     * @param str a string to be checked
-     * @return true if the string is null, empty or whitespace only; otherwise, return false.
-     */    
-    public static boolean isBlank(String str) {
-        return str == null || str.trim().isEmpty();
-    }
-
-    public static <K, V> Map<K, V> initializeMap(Collection<K> keys, Supplier<V> valueSupplier) {
-        Map<K, V> res = new HashMap<>(keys.size());
-        keys.forEach(key -> res.put(key, valueSupplier.get()));
         return res;
     }
 

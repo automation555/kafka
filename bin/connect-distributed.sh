@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -16,7 +16,7 @@
 
 if [ $# -lt 1 ];
 then
-        echo "USAGE: $0 [-daemon] connect-distributed.properties"
+        echo "USAGE: $0 [-daemon] connect-distributed.properties [--override property=value]*"
         exit 1
 fi
 

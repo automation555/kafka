@@ -19,6 +19,7 @@ package kafka.tools
 
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
+import java.util.concurrent.atomic.AtomicLong
 
 import joptsimple.OptionException
 import org.junit.Assert.assertEquals
@@ -37,12 +38,12 @@ class ConsumerPerformanceTest {
 
   @Test
   def testNonDetailedHeaderMatchBody(): Unit = {
-    testHeaderMatchContent(detailed = false, 2, () => println(s"${dateFormat.format(System.currentTimeMillis)}, " +
-      s"${dateFormat.format(System.currentTimeMillis)}, 1.0, 1.0, 1, 1.0, 1, 1, 1.1, 1.1"))
+    testHeaderMatchContent(detailed = false, 2,
+      () => ConsumerPerformance.printBody(new AtomicLong(1024 * 1024), new AtomicLong(1), new AtomicLong(1), 0, 1, dateFormat))
   }
 
   @Test
-  def testConfigBrokerList(): Unit = {
+  def testConfig(): Unit = {
     //Given
     val args: Array[String] = Array(
       "--broker-list", "localhost:9092",
@@ -54,45 +55,7 @@ class ConsumerPerformanceTest {
     val config = new ConsumerPerformance.ConsumerPerfConfig(args)
 
     //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
-    assertEquals("test", config.topic)
-    assertEquals(10, config.numMessages)
-  }
-
-  @Test
-  def testConfigBootStrapServer(): Unit = {
-    //Given
-    val args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10"
-    )
-
-    //When
-    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
-
-    //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
-    assertEquals("test", config.topic)
-    assertEquals(10, config.numMessages)
-  }
-
-  @Test
-  def testBootstrapServerOverridesBrokerList(): Unit = {
-    //Given
-    // broker-list is deprecated in favor of bootstrap-server
-    val args: Array[String] = Array(
-      "--broker-list", "localhost:9094",
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10"
-    )
-
-    //When
-    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
-
-    //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
+    assertEquals("localhost:9092", config.options.valueOf(config.bootstrapServersOpt))
     assertEquals("test", config.topic)
     assertEquals(10, config.numMessages)
   }
@@ -101,7 +64,7 @@ class ConsumerPerformanceTest {
   def testConfigWithUnrecognizedOption(): Unit = {
     //Given
     val args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
+      "--broker-list", "localhost:9092",
       "--topic", "test",
       "--messages", "10",
       "--new-consumer"

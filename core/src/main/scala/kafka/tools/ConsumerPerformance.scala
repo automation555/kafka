@@ -20,11 +20,10 @@ package kafka.tools
 import java.text.SimpleDateFormat
 import java.time.Duration
 import java.util
-import java.util.{Properties, Random}
 import java.util.concurrent.atomic.AtomicLong
+import java.util.{Properties, Random}
 
 import com.typesafe.scalalogging.LazyLogging
-import joptsimple.util.RegexMatcher._
 import kafka.utils.{CommandLineUtils, ToolsUtils}
 import org.apache.kafka.clients.consumer.{ConsumerRebalanceListener, KafkaConsumer}
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
@@ -61,28 +60,14 @@ object ConsumerPerformance extends LazyLogging {
       metrics = consumer.metrics.asScala
     }
     consumer.close()
-    val elapsedSecs = (endMs - startMs) / 1000.0
-    val fetchTimeInMs = (endMs - startMs) - joinGroupTimeInMs.get
+
     if (!config.showDetailedStats) {
-      val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
-      println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
-        config.dateFormat.format(startMs),
-        config.dateFormat.format(endMs),
-        totalMBRead,
-        totalMBRead / elapsedSecs,
-        totalMessagesRead.get,
-        totalMessagesRead.get / elapsedSecs,
-        joinGroupTimeInMs.get,
-        fetchTimeInMs,
-        totalMBRead / (fetchTimeInMs / 1000.0),
-        totalMessagesRead.get / (fetchTimeInMs / 1000.0)
-      ))
+      printBody(totalBytesRead, totalMessagesRead, joinGroupTimeInMs, startMs, endMs, config.dateFormat)
     }
 
     if (metrics != null) {
       ToolsUtils.printMetrics(metrics)
     }
-
   }
 
   private[tools] def printHeader(showDetailedStats: Boolean): Unit = {
@@ -93,6 +78,29 @@ object ConsumerPerformance extends LazyLogging {
       println("time, threadId, data.consumed.in.MB, MB.sec, data.consumed.in.nMsg, nMsg.sec" + newFieldsInHeader)
   }
 
+  private[tools] def printBody(totalBytesRead: AtomicLong,
+                               totalMessagesRead: AtomicLong,
+                               joinGroupTimeInMs: AtomicLong,
+                               startMs: Long,
+                               endMs: Long,
+                               dateFormat: SimpleDateFormat): Unit = {
+    val elapsedSecs = (endMs - startMs) / 1000.0
+    val fetchTimeInMs = (endMs - startMs) - joinGroupTimeInMs.get
+    val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
+    println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
+      dateFormat.format(startMs),
+      dateFormat.format(endMs),
+      totalMBRead,
+      totalMBRead / elapsedSecs,
+      totalMessagesRead.get,
+      totalMessagesRead.get / elapsedSecs,
+      joinGroupTimeInMs.get,
+      fetchTimeInMs,
+      totalMBRead / (fetchTimeInMs / 1000.0),
+      totalMessagesRead.get / (fetchTimeInMs / 1000.0)
+    ))
+  }
+
   def consume(consumer: KafkaConsumer[Array[Byte], Array[Byte]],
               topics: List[String],
               count: Long,
@@ -101,41 +109,22 @@ object ConsumerPerformance extends LazyLogging {
               totalMessagesRead: AtomicLong,
               totalBytesRead: AtomicLong,
               joinTime: AtomicLong,
-              testStartTime: Long): Unit = {
+              testStartTime: Long) {
     var bytesRead = 0L
     var messagesRead = 0L
     var lastBytesRead = 0L
     var lastMessagesRead = 0L
     var joinStart = 0L
     var joinTimeMsInSingleRound = 0L
-    val assignedPartitions = mutable.LinkedHashSet[TopicPartition]()
-    var pausedPartitions = List[TopicPartition]()
-    var pausedPartitionIter: Iterator[TopicPartition] = null // circular array
 
     consumer.subscribe(topics.asJava, new ConsumerRebalanceListener {
-      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]) {
         joinTime.addAndGet(System.currentTimeMillis - joinStart)
         joinTimeMsInSingleRound += System.currentTimeMillis - joinStart
-        assignedPartitions ++= partitions.asScala
-        pausedPartitionIter = Iterator.continually(assignedPartitions).flatten
-
       }
-      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]) {
         joinStart = System.currentTimeMillis
-        assignedPartitions --= partitions.asScala.toSet
-        pausedPartitionIter = Iterator.continually(assignedPartitions).flatten
       }})
-
-    def pausePartitions(): Unit = if (assignedPartitions.nonEmpty) {
-      val assignmentSize = assignedPartitions.size
-      val numPartitionsToPause = Math.ceil(assignmentSize * config.pausedPartitionsPercent).toInt
-      if (assignmentSize == numPartitionsToPause)
-        println(s"WARNING: Pausing all $assignmentSize partitions. No data will be consumed this poll.")
-      pausedPartitions = pausedPartitionIter.take(numPartitionsToPause).toList
-      if (pausedPartitions.nonEmpty) consumer.pause(pausedPartitions.asJava)
-    }
-
-    def resumePartitions(): Unit = if (pausedPartitions.nonEmpty) consumer.resume(pausedPartitions.asJava)
 
     // Now start the benchmark
     var currentTimeMillis = System.currentTimeMillis
@@ -143,10 +132,8 @@ object ConsumerPerformance extends LazyLogging {
     var lastConsumedTime = currentTimeMillis
 
     while (messagesRead < count && currentTimeMillis - lastConsumedTime <= timeout) {
-      if (config.pausedPartitionsPercent > 0) pausePartitions()
       val records = consumer.poll(Duration.ofMillis(100)).asScala
       currentTimeMillis = System.currentTimeMillis
-      if (config.pausedPartitionsPercent > 0) resumePartitions()
       if (records.nonEmpty)
         lastConsumedTime = currentTimeMillis
       for (record <- records) {
@@ -176,14 +163,14 @@ object ConsumerPerformance extends LazyLogging {
   }
 
   def printConsumerProgress(id: Int,
-                               bytesRead: Long,
-                               lastBytesRead: Long,
-                               messagesRead: Long,
-                               lastMessagesRead: Long,
-                               startMs: Long,
-                               endMs: Long,
-                               dateFormat: SimpleDateFormat,
-                               periodicJoinTimeInMs: Long): Unit = {
+                            bytesRead: Long,
+                            lastBytesRead: Long,
+                            messagesRead: Long,
+                            lastMessagesRead: Long,
+                            startMs: Long,
+                            endMs: Long,
+                            dateFormat: SimpleDateFormat,
+                            periodicJoinTimeInMs: Long): Unit = {
     printBasicProgress(id, bytesRead, lastBytesRead, messagesRead, lastMessagesRead, startMs, endMs, dateFormat)
     printExtendedProgress(bytesRead, lastBytesRead, messagesRead, lastMessagesRead, startMs, endMs, periodicJoinTimeInMs)
     println()
@@ -271,13 +258,6 @@ object ConsumerPerformance extends LazyLogging {
       .describedAs("milliseconds")
       .ofType(classOf[Long])
       .defaultsTo(10000)
-    val pausedPartitionsOpt = parser.accepts("paused-partitions-percent", "The percentage [0-1] of subscribed " +
-      "partitions to pause each poll.")
-        .withOptionalArg()
-        .describedAs("percent")
-        .withValuesConvertedBy(regex("^0(\\.\\d+)?|1\\.0$")) // matches [0-1] with decimals
-        .ofType(classOf[Float])
-        .defaultsTo(0F)
 
     options = parser.parse(args: _*)
 
@@ -312,6 +292,5 @@ object ConsumerPerformance extends LazyLogging {
     val dateFormat = new SimpleDateFormat(options.valueOf(dateFormatOpt))
     val hideHeader = options.has(hideHeaderOpt)
     val recordFetchTimeoutMs = options.valueOf(recordFetchTimeoutOpt).longValue()
-    val pausedPartitionsPercent = options.valueOf(pausedPartitionsOpt).floatValue()
   }
 }

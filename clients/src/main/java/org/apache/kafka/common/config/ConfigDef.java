@@ -53,7 +53,7 @@ import java.util.regex.Pattern;
  * defs.define(&quot;config_with_validator&quot;, Type.INT, 42, Range.atLeast(0), &quot;Configuration with user provided validator.&quot;);
  * defs.define(&quot;config_with_dependents&quot;, Type.INT, &quot;Configuration with dependents.&quot;, &quot;group&quot;, 1, &quot;Config With Dependents&quot;, Arrays.asList(&quot;config_with_default&quot;,&quot;config_with_validator&quot;));
  *
- * Map&lt;String, String&gt; props = new HashMap&lt;&gt;();
+ * Map&lt;String, String&gt; props = new HashMap&lt;&gt();
  * props.put(&quot;config_with_default&quot;, &quot;some value&quot;);
  * props.put(&quot;config_with_dependents&quot;, &quot;some other value&quot;);
  *
@@ -204,7 +204,7 @@ public class ConfigDef {
      */
     public ConfigDef define(String name, Type type, Object defaultValue, Validator validator, Importance importance, String documentation,
                             String group, int orderInGroup, Width width, String displayName) {
-        return define(name, type, defaultValue, validator, importance, documentation, group, orderInGroup, width, displayName, Collections.emptyList());
+        return define(name, type, defaultValue, validator, importance, documentation, group, orderInGroup, width, displayName, Collections.<String>emptyList());
     }
 
     /**
@@ -280,7 +280,7 @@ public class ConfigDef {
      */
     public ConfigDef define(String name, Type type, Object defaultValue, Importance importance, String documentation,
                             String group, int orderInGroup, Width width, String displayName) {
-        return define(name, type, defaultValue, null, importance, documentation, group, orderInGroup, width, displayName, Collections.emptyList());
+        return define(name, type, defaultValue, null, importance, documentation, group, orderInGroup, width, displayName, Collections.<String>emptyList());
     }
 
     /**
@@ -352,7 +352,7 @@ public class ConfigDef {
      */
     public ConfigDef define(String name, Type type, Importance importance, String documentation, String group, int orderInGroup,
                             Width width, String displayName) {
-        return define(name, type, NO_DEFAULT_VALUE, null, importance, documentation, group, orderInGroup, width, displayName, Collections.emptyList());
+        return define(name, type, NO_DEFAULT_VALUE, null, importance, documentation, group, orderInGroup, width, displayName, Collections.<String>emptyList());
     }
 
     /**
@@ -404,7 +404,7 @@ public class ConfigDef {
      * @return This ConfigDef so you can chain calls
      */
     public ConfigDef defineInternal(final String name, final Type type, final Object defaultValue, final Importance importance) {
-        return define(new ConfigKey(name, type, defaultValue, null, importance, "", "", -1, Width.NONE, name, Collections.emptyList(), null, true));
+        return define(new ConfigKey(name, type, defaultValue, null, importance, "", "", -1, Width.NONE, name, Collections.<String>emptyList(), null, true));
     }
 
     /**
@@ -702,6 +702,21 @@ public class ConfigDef {
                             return Arrays.asList(COMMA_WITH_WHITESPACE.split(trimmed, -1));
                     else
                         throw new ConfigException(name, value, "Expected a comma separated list.");
+                case SET:
+                    if (value instanceof List)
+                        return value;
+                    else if (value instanceof String)
+                        if (trimmed.isEmpty())
+                            return Collections.emptyList();
+                        else {
+                            String[] actualValue = COMMA_WITH_WHITESPACE.split(trimmed, -1);
+                            if (actualValue.length != Arrays.asList(actualValue).stream().distinct().count()) {
+                                throw new ConfigException(name, value, "Contains duplicate values.");
+                            } else
+                                return Arrays.asList(actualValue);
+                        }
+                    else
+                        throw new ConfigException(name, value, "Expected a comma separated set.");
                 case CLASS:
                     if (value instanceof Class)
                         return value;
@@ -740,6 +755,9 @@ public class ConfigDef {
             case LIST:
                 List<?> valueList = (List<?>) parsedValue;
                 return Utils.join(valueList, ",");
+            case SET:
+                List<?> setValueList = (List<?>) parsedValue;
+                return Utils.join(setValueList, ",");
             case CLASS:
                 Class<?> clazz = (Class<?>) parsedValue;
                 return clazz.getName();
@@ -776,7 +794,7 @@ public class ConfigDef {
      * The config types
      */
     public enum Type {
-        BOOLEAN, STRING, INT, SHORT, LONG, DOUBLE, LIST, CLASS, PASSWORD
+        BOOLEAN, STRING, INT, SHORT, LONG, DOUBLE, LIST, CLASS, PASSWORD, SET
     }
 
     /**
@@ -978,7 +996,7 @@ public class ConfigDef {
                 if (desc.length() > 0) {
                     desc.append(',').append(' ');
                 }
-                desc.append(v);
+                desc.append(String.valueOf(v));
             }
             return desc.toString();
         }
@@ -1113,7 +1131,7 @@ public class ConfigDef {
     }
 
     public String toHtmlTable() {
-        return toHtmlTable(Collections.emptyMap());
+        return toHtmlTable(Collections.<String, String>emptyMap());
     }
 
     private void addHeader(StringBuilder builder, String headerName) {
@@ -1133,7 +1151,7 @@ public class ConfigDef {
      * If <code>dynamicUpdateModes</code> is non-empty, a "Dynamic Update Mode" column
      * will be included n the table with the value of the update mode. Default
      * mode is "read-only".
-     * @param dynamicUpdateModes Config name -&gt; update mode mapping
+     * @param dynamicUpdateModes Config name -> update mode mapping
      */
     public String toHtmlTable(Map<String, String> dynamicUpdateModes) {
         boolean hasUpdateModes = !dynamicUpdateModes.isEmpty();
@@ -1263,7 +1281,7 @@ public class ConfigDef {
         }
 
         List<ConfigKey> configs = new ArrayList<>(configKeys.values());
-        configs.sort((k1, k2) -> compare(k1, k2, groupOrd));
+        Collections.sort(configs, (k1, k2) -> compare(k1, k2, groupOrd));
         return configs;
     }
 

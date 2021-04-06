@@ -5,7 +5,7 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- *
+ * 
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -27,88 +27,81 @@ import kafka.cluster.BrokerEndPoint
 import scala.collection.JavaConverters._
 import kafka.common.{MessageFormatter, TopicAndPartition}
 import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.kafka.common.utils.{KafkaThread, Utils}
+import org.apache.kafka.common.utils.Utils
 
 /**
  * Command line program to dump out messages to standard out using the simple consumer
  */
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 object SimpleConsumerShell extends Logging {
 
   def UseLeaderReplica = -1
 
   def main(args: Array[String]): Unit = {
-    warn("WARNING: SimpleConsumerShell is deprecated and will be dropped in a future release following 0.11.0.0.")
 
-    val parser = new OptionParser(false)
-    val brokerListOpt = parser.accepts("broker-list", "The list of hostname and port of the server to connect to.")
+    val parser = new OptionParser
+    val brokerListOpt = parser.accepts("broker-list", "REQUIRED: The list of hostname and port of the server to connect to.")
                            .withRequiredArg
-                           .describedAs("server(s) to use for bootstrapping (e.g. hostname:port,...,hostname:port)")
+                           .describedAs("hostname:port,...,hostname:port")
                            .ofType(classOf[String])
-                           .required
-    val topicOpt = parser.accepts("topic", "The topic to consume from.")
+    val topicOpt = parser.accepts("topic", "REQUIRED: The topic to consume from.")
                            .withRequiredArg
-                           .describedAs("topic to consume from")
+                           .describedAs("topic")
                            .ofType(classOf[String])
-                           .required
     val partitionIdOpt = parser.accepts("partition", "The partition to consume from.")
                            .withRequiredArg
-                           .describedAs("partition to consume from")
+                           .describedAs("partition")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(0)
     val replicaIdOpt = parser.accepts("replica", "The replica id to consume from, default -1 means leader broker.")
                            .withRequiredArg
-                           .describedAs("replica id to consume from")
+                           .describedAs("replica id")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(UseLeaderReplica)
-    val offsetOpt = parser.accepts("offset", "The offset id to consume from. Default to -2 means from beginning, while value -1 means from end")
+    val offsetOpt = parser.accepts("offset", "The offset id to consume from, default to -2 which means from beginning; while value -1 means from end")
                            .withRequiredArg
-                           .describedAs("consumer offset to consume from")
+                           .describedAs("consume offset")
                            .ofType(classOf[java.lang.Long])
                            .defaultsTo(OffsetRequest.EarliestTime)
     val clientIdOpt = parser.accepts("clientId", "The ID of this client.")
                            .withRequiredArg
-                           .describedAs("client id")
+                           .describedAs("clientId")
                            .ofType(classOf[String])
                            .defaultsTo("SimpleConsumerShell")
     val fetchSizeOpt = parser.accepts("fetchsize", "The fetch size of each request.")
                            .withRequiredArg
-                           .describedAs("fetch size of each request(in bytes)")
+                           .describedAs("fetchsize")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(1024 * 1024)
-    val messageFormatterOpt = parser.accepts("formatter", "The name of a class to use for formatting Kafka messages for display.")
+    val messageFormatterOpt = parser.accepts("formatter", "The name of a class to use for formatting kafka messages for display.")
                            .withRequiredArg
-                           .describedAs("class name to use for formatting messages for display")
+                           .describedAs("class")
                            .ofType(classOf[String])
                            .defaultsTo(classOf[DefaultMessageFormatter].getName)
-    val messageFormatterArgOpt = parser.accepts("property", "The properties to initialize the message formatter.")
+    val messageFormatterArgOpt = parser.accepts("property")
                            .withRequiredArg
-                           .describedAs("properties to initialize message formatter")
+                           .describedAs("prop")
                            .ofType(classOf[String])
-    val printOffsetOpt = parser.accepts("print-offsets", "Print the offsets returned by the iterator.")
+    val printOffsetOpt = parser.accepts("print-offsets", "Print the offsets returned by the iterator")
     val maxWaitMsOpt = parser.accepts("max-wait-ms", "The max amount of time each fetch request waits.")
                            .withRequiredArg
-                           .describedAs("max wait time for each request(in ms)")
+                           .describedAs("ms")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(1000)
-    val maxMessagesOpt = parser.accepts("max-messages", "The number of messages to consume.")
+    val maxMessagesOpt = parser.accepts("max-messages", "The number of messages to consume")
                            .withRequiredArg
-                           .describedAs("max number of messages to consume")
+                           .describedAs("max-messages")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(Integer.MAX_VALUE)
     val skipMessageOnErrorOpt = parser.accepts("skip-message-on-error", "If there is an error when processing a message, " +
         "skip it instead of halt.")
     val noWaitAtEndOfLogOpt = parser.accepts("no-wait-at-logend",
         "If set, when the simple consumer reaches the end of the Log, it will stop, not waiting for new produced messages")
-
-    val commandDef : String = "A low-level tool for fetching data directly from a particular replica."
+        
     if(args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
+      CommandLineUtils.printUsageAndDie(parser, "A low-level tool for fetching data directly from a particular replica.")
 
-    val options = CommandLineUtils.tryParse(parser, args)
-    
-    if (options.has("help"))
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
+    val options = parser.parse(args : _*)
+    CommandLineUtils.checkRequiredArgs(parser, options, brokerListOpt, topicOpt)
 
     val topic = options.valueOf(topicOpt)
     val partitionId = options.valueOf(partitionIdOpt).intValue()
@@ -133,9 +126,9 @@ object SimpleConsumerShell extends Logging {
                        .minBytes(ConsumerConfig.MinFetchBytes)
 
     // getting topic metadata
-    val brokerList = options.valueOf(brokerListOpt)
-    ToolsUtils.validatePortOrDie(parser, brokerList)
     info("Getting topic metadata...")
+    val brokerList = options.valueOf(brokerListOpt)
+    ToolsUtils.validatePortOrDie(parser,brokerList)
     val metadataTargetBrokers = ClientUtils.parseBrokerList(brokerList)
     val topicsMetadata = ClientUtils.fetchTopicMetadata(Set(topic), metadataTargetBrokers, clientId, maxWaitMs).topicsMetadata
     if(topicsMetadata.size != 1 || !topicsMetadata.head.topic.equals(topic)) {
@@ -206,7 +199,7 @@ object SimpleConsumerShell extends Logging {
     val simpleConsumer = new SimpleConsumer(fetchTargetBroker.host,
                                             fetchTargetBroker.port,
                                             10000, 64*1024, clientId)
-    val thread = KafkaThread.nonDaemon("kafka-simpleconsumer-shell", new Runnable() {
+    val thread = Utils.newThread("kafka-simpleconsumer-shell", new Runnable() {
       def run() {
         var offset = startingOffset
         var numMessagesConsumed = 0
@@ -218,7 +211,7 @@ object SimpleConsumerShell extends Logging {
             val fetchResponse = simpleConsumer.fetch(fetchRequest)
             val messageSet = fetchResponse.messageSet(topic, partitionId)
             if (messageSet.validBytes <= 0 && noWaitAtEndOfLog) {
-              println("Terminating. Reached the end of partition (%s, %d) at offset %d".format(topic, partitionId, offset))
+              System.err.println("Terminating. Reached the end of partition (%s, %d) at offset %d".format(topic, partitionId, offset))
               return
             }
             debug("multi fetched " + messageSet.sizeInBytes + " bytes from offset " + offset)
@@ -258,7 +251,7 @@ object SimpleConsumerShell extends Logging {
           info(s"Consumed $numMessagesConsumed messages")
         }
       }
-    })
+    }, false)
     thread.start()
     thread.join()
     System.out.flush()

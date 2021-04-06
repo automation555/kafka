@@ -37,25 +37,16 @@ COMMAND=$1
 case $COMMAND in
   -daemon)
     EXTRA_ARGS="-daemon "$EXTRA_ARGS
-    if [ -f $2 ];then
-        CONFPATH=$2
-    else
-        CONFPATH=$CONFDIR"/"$2
-    fi
+    CONFPATH=$CONFDIR"/"$2
     shift
     shift
     ;;
   server.properties)
-    if [ -f $1 ];then
-        CONFPATH=$1
-    else
-        CONFPATH=$CONFDIR"/"$1
-    fi
-    
+    CONFPATH=$CONFDIR"/"$1
     shift
     ;;
   *)
     ;;
 esac
 
-exec  $base_dir/kafka-run-class.sh $EXTRA_ARGS kafka.Kafka $CONFPATH  "$@"
+exce  $base_dir/kafka-run-class.sh $EXTRA_ARGS kafka.Kafka $CONFPATH  "$@"

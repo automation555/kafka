@@ -19,28 +19,21 @@ package org.apache.kafka.message;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.EnumMap;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.stream.Collectors;
 
-public final class ApiMessageTypeGenerator implements TypeClassGenerator {
+public final class ApiMessageTypeGenerator {
     private final HeaderGenerator headerGenerator;
     private final CodeBuffer buffer;
     private final TreeMap<Short, ApiData> apis;
-    private final EnumMap<RequestListenerType, List<ApiData>> apisByListener = new EnumMap<>(RequestListenerType.class);
 
     private static final class ApiData {
         short apiKey;
         MessageSpec requestSpec;
+        boolean requestContainsZeroCopyFields;
         MessageSpec responseSpec;
+        boolean responseContainsZeroCopyFields;
 
         ApiData(short apiKey) {
             this.apiKey = apiKey;
@@ -82,13 +75,11 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
         this.buffer = new CodeBuffer();
     }
 
-    @Override
-    public String outputName() {
-        return MessageGenerator.API_MESSAGE_TYPE_JAVA;
+    public boolean hasRegisteredTypes() {
+        return !apis.isEmpty();
     }
 
-    @Override
-    public void registerMessageType(MessageSpec spec) {
+    void registerMessageType(MessageSpec spec, boolean containsZeroCopyFields) {
         switch (spec.type()) {
             case REQUEST: {
                 short apiKey = spec.apiKey().get();
@@ -102,13 +93,7 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
                         "API key " + spec.apiKey().get());
                 }
                 data.requestSpec = spec;
-
-                if (spec.listeners() != null) {
-                    for (RequestListenerType listener : spec.listeners()) {
-                        apisByListener.putIfAbsent(listener, new ArrayList<>());
-                        apisByListener.get(listener).add(data);
-                    }
-                }
+                data.requestContainsZeroCopyFields = containsZeroCopyFields;
                 break;
             }
             case RESPONSE: {
@@ -123,6 +108,7 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
                         "API key " + spec.apiKey().get());
                 }
                 data.responseSpec = spec;
+                data.responseContainsZeroCopyFields = containsZeroCopyFields;
                 break;
             }
             default:
@@ -131,13 +117,7 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
         }
     }
 
-    @Override
-    public void generateAndWrite(BufferedWriter writer) throws IOException {
-        generate();
-        write(writer);
-    }
-
-    private void generate() {
+    public void generate() {
         buffer.printf("public enum ApiMessageType {%n");
         buffer.incrementIndent();
         generateEnumValues();
@@ -152,46 +132,24 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
         buffer.printf("%n");
         generateNewApiMessageMethod("response");
         buffer.printf("%n");
-        generateAccessor("lowestSupportedVersion", "short");
-        buffer.printf("%n");
-        generateAccessor("highestSupportedVersion", "short");
-        buffer.printf("%n");
-        generateAccessor("listeners", "EnumSet<ListenerType>");
-        buffer.printf("%n");
         generateAccessor("apiKey", "short");
         buffer.printf("%n");
         generateAccessor("requestSchemas", "Schema[]");
         buffer.printf("%n");
         generateAccessor("responseSchemas", "Schema[]");
         buffer.printf("%n");
+        generateAccessor("requestContainsZeroCopyFields", "boolean");
+        buffer.printf("%n");
+        generateAccessor("responseContainsZeroCopyFields", "boolean");
+        buffer.printf("%n");
         generateToString();
         buffer.printf("%n");
         generateHeaderVersion("request");
         buffer.printf("%n");
         generateHeaderVersion("response");
-        buffer.printf("%n");
-        generateListenerTypesEnum();
-        buffer.printf("%n");
         buffer.decrementIndent();
         buffer.printf("}%n");
         headerGenerator.generate();
-    }
-
-    private String generateListenerTypeEnumSet(Collection<String> values) {
-        if (values.isEmpty()) {
-            return "EnumSet.noneOf(ListenerType.class)";
-        }
-        StringBuilder bldr = new StringBuilder("EnumSet.of(");
-        Iterator<String> iter = values.iterator();
-        while (iter.hasNext()) {
-            bldr.append("ListenerType.");
-            bldr.append(iter.next());
-            if (iter.hasNext()) {
-                bldr.append(", ");
-            }
-        }
-        bldr.append(")");
-        return bldr.toString();
     }
 
     private void generateEnumValues() {
@@ -200,54 +158,39 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
             ApiData apiData = entry.getValue();
             String name = apiData.name();
             numProcessed++;
-
-            final Collection<String> listeners;
-            if (apiData.requestSpec.listeners() == null) {
-                listeners = Collections.emptyList();
-            } else {
-                listeners = apiData.requestSpec.listeners().stream()
-                    .map(RequestListenerType::name)
-                    .collect(Collectors.toList());
-            }
-
-            buffer.printf("%s(\"%s\", (short) %d, %s, %s, (short) %d, (short) %d, %s)%s%n",
+            buffer.printf("%s(\"%s\", (short) %d, %s, %s, %s, %s)%s%n",
                 MessageGenerator.toSnakeCase(name).toUpperCase(Locale.ROOT),
                 MessageGenerator.capitalizeFirst(name),
                 entry.getKey(),
                 apiData.requestSchema(),
                 apiData.responseSchema(),
-                apiData.requestSpec.struct().versions().lowest(),
-                apiData.requestSpec.struct().versions().highest(),
-                generateListenerTypeEnumSet(listeners),
+                Boolean.toString(apiData.requestContainsZeroCopyFields),
+                Boolean.toString(apiData.responseContainsZeroCopyFields),
                 (numProcessed == apis.size()) ? ";" : ",");
         }
     }
 
     private void generateInstanceVariables() {
-        buffer.printf("public final String name;%n");
+        buffer.printf("private final String name;%n");
         buffer.printf("private final short apiKey;%n");
         buffer.printf("private final Schema[] requestSchemas;%n");
         buffer.printf("private final Schema[] responseSchemas;%n");
-        buffer.printf("private final short lowestSupportedVersion;%n");
-        buffer.printf("private final short highestSupportedVersion;%n");
-        buffer.printf("private final EnumSet<ListenerType> listeners;%n");
+        buffer.printf("private final boolean requestContainsZeroCopyFields;%n");
+        buffer.printf("private final boolean responseContainsZeroCopyFields;%n");
         headerGenerator.addImport(MessageGenerator.SCHEMA_CLASS);
-        headerGenerator.addImport(MessageGenerator.ENUM_SET_CLASS);
     }
 
     private void generateEnumConstructor() {
         buffer.printf("ApiMessageType(String name, short apiKey, " +
             "Schema[] requestSchemas, Schema[] responseSchemas, " +
-            "short lowestSupportedVersion, short highestSupportedVersion, " +
-            "EnumSet<ListenerType> listeners) {%n");
+            "boolean requestContainsZeroCopyFields, boolean responseContainsZeroCopyFields) {%n");
         buffer.incrementIndent();
         buffer.printf("this.name = name;%n");
         buffer.printf("this.apiKey = apiKey;%n");
         buffer.printf("this.requestSchemas = requestSchemas;%n");
         buffer.printf("this.responseSchemas = responseSchemas;%n");
-        buffer.printf("this.lowestSupportedVersion = lowestSupportedVersion;%n");
-        buffer.printf("this.highestSupportedVersion = highestSupportedVersion;%n");
-        buffer.printf("this.listeners = listeners;%n");
+        buffer.printf("this.requestContainsZeroCopyFields = requestContainsZeroCopyFields;%n");
+        buffer.printf("this.responseContainsZeroCopyFields = responseContainsZeroCopyFields;%n");
         buffer.decrementIndent();
         buffer.printf("}%n");
     }
@@ -328,21 +271,19 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
         buffer.incrementIndent();
         for (Map.Entry<Short, ApiData> entry : apis.entrySet()) {
             short apiKey = entry.getKey();
-            ApiData apiData = entry.getValue();
-            String name = apiData.name();
-            buffer.printf("case %d: // %s%n", apiKey, MessageGenerator.capitalizeFirst(name));
+            buffer.printf("case %d:%n", apiKey);
             buffer.incrementIndent();
             if (type.equals("response") && apiKey == 18) {
-                buffer.printf("// ApiVersionsResponse always includes a v0 header.%n");
-                buffer.printf("// See KIP-511 for details.%n");
+                // ApiVersionsResponse always includes a v0 header.
+                // See KIP-511 for details.
                 buffer.printf("return (short) 0;%n");
                 buffer.decrementIndent();
                 continue;
             }
             if (type.equals("request") && apiKey == 7) {
-                buffer.printf("// Version 0 of ControlledShutdownRequest has a non-standard request header%n");
-                buffer.printf("// which does not include clientId.  Version 1 of ControlledShutdownRequest%n");
-                buffer.printf("// and later use the standard request header.%n");
+                // Version 0 of ControlledShutdownRequest has a non-standard request header
+                // which does not include clientId.  Version 1 of ControlledShutdownRequest
+                // and later use the standard request header.
                 buffer.printf("if (_version == 0) {%n");
                 buffer.incrementIndent();
                 buffer.printf("return (short) 0;%n");
@@ -391,19 +332,7 @@ public final class ApiMessageTypeGenerator implements TypeClassGenerator {
         buffer.printf("}%n");
     }
 
-    private void generateListenerTypesEnum() {
-        buffer.printf("public enum ListenerType {%n");
-        buffer.incrementIndent();
-        Iterator<RequestListenerType> listenerIter = Arrays.stream(RequestListenerType.values()).iterator();
-        while (listenerIter.hasNext()) {
-            RequestListenerType scope = listenerIter.next();
-            buffer.printf("%s%s%n", scope.name(), listenerIter.hasNext() ? "," : ";");
-        }
-        buffer.decrementIndent();
-        buffer.printf("}%n");
-    }
-
-    private void write(BufferedWriter writer) throws IOException {
+    public void write(BufferedWriter writer) throws IOException {
         headerGenerator.buffer().write(writer);
         buffer.write(writer);
     }

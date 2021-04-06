@@ -26,6 +26,7 @@ import com.yammer.metrics.core.{Gauge, Meter}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.{Logging, NotNothing, Pool}
 import org.apache.kafka.common.memory.MemoryPool
+import org.apache.kafka.common.message.ApiMessageType
 import org.apache.kafka.common.network.Send
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests._
@@ -91,10 +92,11 @@ object RequestChannel extends Logging {
     def header: RequestHeader = context.header
     def sizeOfBodyInBytes: Int = bodyAndSize.size
 
-    //most request types are parsed entirely into objects at this point. for those we can release the underlying buffer.
-    //some (like produce, or any time the schema contains fields of types BYTES or NULLABLE_BYTES) retain a reference
-    //to the buffer. for those requests we cannot release the buffer early, but only when request processing is done.
-    if (!header.apiKey.requiresDelayedAllocation) {
+    // Most request types are parsed entirely into objects at this point.  For those, we can
+    // release the underlying buffer.  Some other requests contain zero-copy fields.
+    // These fields hold a reference to the underlying buffer.  Therefore, we cannot release
+    // that buffer until all the request processing is done.
+    if (!ApiMessageType.fromApiKey(header.apiKey().id).requestContainsZeroCopyFields()) {
       releaseBuffer()
     }
 
@@ -115,7 +117,7 @@ object RequestChannel extends Logging {
       math.max(apiLocalCompleteTimeNanos - requestDequeueTimeNanos, 0L)
     }
 
-    def updateRequestMetrics(networkThreadTimeNanos: Long, response: Response) {
+    def updateRequestMetrics(networkThreadTimeNanos: Long, response: Response): Unit = {
       val endTimeNanos = Time.SYSTEM.nanoseconds
       // In some corner cases, apiLocalCompleteTimeNanos may not be set when the request completes if the remote
       // processing time is really small. This value is set in KafkaApis from a request handling thread.
@@ -221,25 +223,6 @@ object RequestChannel extends Logging {
 
   }
 
-  class RdmaRequest(val qpnum: Int,
-                val processor: Int,
-                val startTimeNanos: Long,
-                val imm_data: Int,
-                val byte_len: Int,
-                @volatile private var buffer: ByteBuffer ) extends BaseRequest {
-
-    override def toString = s"RdmaRequest" +
-      s"buffer=$buffer)"
-
-
-    override def hashCode: Int =   imm_data.hashCode()
-  }
-
-  class RdmaResponse(val request: RdmaRequest, val immdata: Int) {
-
-    def processor: Int = request.processor
-  }
-
   abstract class Response(val request: Request) {
     locally {
       val nowNs = Time.SYSTEM.nanoseconds
@@ -291,22 +274,16 @@ object RequestChannel extends Logging {
   }
 }
 
-class RequestChannel(val numberOfIoProcessors: Int, val queueSize: Int, val metricNamePrefix : String) extends KafkaMetricsGroup {
+class RequestChannel(val queueSize: Int, val metricNamePrefix : String) extends KafkaMetricsGroup {
   import RequestChannel._
   val metrics = new RequestChannel.Metrics
-
-  private val requestQueue: Vector[ArrayBlockingQueue[BaseRequest]] =
-    Vector.fill(numberOfIoProcessors)(new ArrayBlockingQueue[BaseRequest](queueSize))
-
+  private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
   private val processors = new ConcurrentHashMap[Int, Processor]()
-  private val rdmaProcessors = new ConcurrentHashMap[Int, RdmaProcessor]()
-
-
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
 
   newGauge(requestQueueSizeMetricName, new Gauge[Int] {
-      def value = requestQueue.foldLeft(0){(total,q) => total + q.size()} // rdma patch
+      def value = requestQueue.size
   })
 
   newGauge(responseQueueSizeMetricName, new Gauge[Int]{
@@ -327,29 +304,18 @@ class RequestChannel(val numberOfIoProcessors: Int, val queueSize: Int, val metr
     )
   }
 
-  def addRdmaProcessor(processor: RdmaProcessor): Unit = {
-    if (rdmaProcessors.putIfAbsent(processor.id, processor) != null)
-      warn(s"Unexpected rdma processor with processorId ${processor.id}")
-
-  }
-  def removeRdmaProcessor(processorId: Int): Unit = {
-    rdmaProcessors.remove(processorId)
-  }
-
   def removeProcessor(processorId: Int): Unit = {
     processors.remove(processorId)
     removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString))
   }
 
   /** Send a request to be handled, potentially blocking until there is room in the queue for the request */
-  def sendRequest(request: BaseRequest) { // rdma patch
-    val id = request.hashCode() % numberOfIoProcessors
-  //  info(s"Enqueue request to $id");
-    requestQueue(id).put(request)
+  def sendRequest(request: RequestChannel.Request): Unit = {
+    requestQueue.put(request)
   }
 
   /** Send a response back to the socket server to be sent over the network */
-  def sendResponse(response: RequestChannel.Response) {
+  def sendResponse(response: RequestChannel.Response): Unit = {
     if (isTraceEnabled) {
       val requestHeader = response.request.header
       val message = response match {
@@ -375,42 +341,30 @@ class RequestChannel(val numberOfIoProcessors: Int, val queueSize: Int, val metr
     }
   }
 
-  /** Send a response back to the socket server to be sent over the network */
-  def sendRdmaResponse(response: RequestChannel.RdmaResponse) {
-    val processor = rdmaProcessors.get(response.processor)
-    // The processor may be null if it was shutdown. In this case, the connections
-    // are closed, so the response is dropped.
-    if (processor != null) {
-      processor.enqueueResponse(response)
-    }
-  }
-
   /** Get the next request or block until specified time has elapsed */
-  def receiveRequest(id: Int, timeout: Long): RequestChannel.BaseRequest =
-    requestQueue(id).poll(timeout, TimeUnit.MILLISECONDS)
+  def receiveRequest(timeout: Long): RequestChannel.BaseRequest =
+    requestQueue.poll(timeout, TimeUnit.MILLISECONDS)
 
   /** Get the next request or block until there is one */
-  def receiveRequest(id: Int): RequestChannel.BaseRequest =
-    requestQueue(id).take()
+  def receiveRequest(): RequestChannel.BaseRequest =
+    requestQueue.take()
 
-  def updateErrorMetrics(apiKey: ApiKeys, errors: collection.Map[Errors, Integer]) {
+  def updateErrorMetrics(apiKey: ApiKeys, errors: collection.Map[Errors, Integer]): Unit = {
     errors.foreach { case (error, count) =>
       metrics(apiKey.name).markErrorMeter(error, count)
     }
   }
 
-  def clear() {
-    requestQueue.foreach( _.clear() ) // rdma patch
+  def clear(): Unit = {
+    requestQueue.clear()
   }
 
-  def shutdown() {
+  def shutdown(): Unit = {
     clear()
     metrics.close()
   }
 
-  def sendShutdownRequest(): Unit = {
-    requestQueue.foreach( _.put(ShutdownRequest))
-  }
+  def sendShutdownRequest(): Unit = requestQueue.put(ShutdownRequest)
 
 }
 
@@ -501,7 +455,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
     }
   }
 
-  def markErrorMeter(error: Errors, count: Int) {
+  def markErrorMeter(error: Errors, count: Int): Unit = {
     errorMeters(error).getOrCreateMeter().mark(count.toLong)
   }
 

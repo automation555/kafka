@@ -28,12 +28,8 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 /**
  * The Kafka message generator.
@@ -64,9 +60,6 @@ public final class MessageGenerator {
     static final String LIST_CLASS = "java.util.List";
 
     static final String ARRAYLIST_CLASS = "java.util.ArrayList";
-
-    static final String IMPLICIT_LINKED_HASH_COLLECTION_CLASS =
-        "org.apache.kafka.common.utils.ImplicitLinkedHashCollection";
 
     static final String IMPLICIT_LINKED_HASH_MULTI_COLLECTION_CLASS =
         "org.apache.kafka.common.utils.ImplicitLinkedHashMultiCollection";
@@ -136,50 +129,23 @@ public final class MessageGenerator {
         HashSet<String> outputFileNames = new HashSet<>();
         try (DirectoryStream<Path> directoryStream = Files
                 .newDirectoryStream(Paths.get(inputDir), JSON_GLOB)) {
-            Map<String, CodesSpec> codesRegistry = new HashMap<>();
-            List<MessageSpec> messageSpecs = new ArrayList<>();
             for (Path inputPath : directoryStream) {
                 try {
-                    DeclarationSpec declSpec = JSON_SERDE.
-                            readValue(inputPath.toFile(), DeclarationSpec.class);
-                    if (declSpec instanceof MessageSpec) {
-                        MessageSpec spec = (MessageSpec) declSpec;
-                        messageSpecs.add(spec);
-                    } else if (declSpec instanceof CodesSpec) {
-                        CodesSpec spec = (CodesSpec) declSpec;
-                        codesRegistry.put(spec.name(), spec);
-                    } else {
-                        throw new RuntimeException();
-                    }
-                } catch (Exception e) {
-                    throw new RuntimeException("Exception while processing " + inputPath.toString(), e);
-                }
-            }
-            for (CodesSpec spec : codesRegistry.values()) {
-                String javaName = spec.generatedClassName() + JAVA_SUFFIX;
-                outputFileNames.add(javaName);
-                Path outputPath = Paths.get(outputDir, javaName);
-                try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
-                    CodesDataGenerator generator = new CodesDataGenerator(packageName);
-                    generator.generate(spec);
-                    generator.write(writer);
-                }
-                numProcessed++;
-            }
-            for (MessageSpec spec : messageSpecs) {
-                try {
+                    MessageSpec spec = JSON_SERDE.
+                        readValue(inputPath.toFile(), MessageSpec.class);
                     String javaName = spec.generatedClassName() + JAVA_SUFFIX;
                     outputFileNames.add(javaName);
                     Path outputPath = Paths.get(outputDir, javaName);
+                    MessageDataGenerator generator;
                     try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
-                        MessageDataGenerator generator = new MessageDataGenerator(packageName, codesRegistry);
+                        generator = new MessageDataGenerator(packageName);
                         generator.generate(spec);
                         generator.write(writer);
                     }
                     numProcessed++;
-                    messageTypeGenerator.registerMessageType(spec);
+                    messageTypeGenerator.registerMessageType(spec, generator.containsZeroCopyFields());
                 } catch (Exception e) {
-                    throw new RuntimeException("Exception while processing message spec " + spec.name(), e);
+                    throw new RuntimeException("Exception while processing " + inputPath.toString(), e);
                 }
             }
         }

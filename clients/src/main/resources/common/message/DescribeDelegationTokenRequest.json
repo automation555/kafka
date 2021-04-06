@@ -16,10 +16,10 @@
 {
   "apiKey": 41,
   "type": "request",
-  "listeners": ["zkBroker"],
   "name": "DescribeDelegationTokenRequest",
   // Version 1 is the same as version 0.
-  // Version 2 adds flexible version support
+  //
+  // Version 2 is the first flexible version.
   "validVersions": "0-2",
   "flexibleVersions": "2+",
   "fields": [

@@ -135,6 +135,7 @@ import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.security.token.delegation.DelegationToken;
 import org.apache.kafka.common.security.token.delegation.TokenInformation;
+import org.apache.kafka.common.utils.ByteUtils;
 import org.apache.kafka.common.utils.SecurityUtils;
 import org.apache.kafka.common.utils.Utils;
 import org.junit.Test;
@@ -210,11 +211,12 @@ public class RequestResponseTest {
         checkRequest(createDeleteGroupsRequest(), true);
         checkErrorResponse(createDeleteGroupsRequest(), new UnknownServerException(), true);
         checkResponse(createDeleteGroupsResponse(), 0, true);
-        for (int i = 0; i < ApiKeys.LIST_OFFSETS.latestVersion(); i++) {
-            checkRequest(createListOffsetRequest(i), true);
-            checkErrorResponse(createListOffsetRequest(i), new UnknownServerException(), true);
-            checkResponse(createListOffsetResponse(i), i, true);
-        }
+        checkRequest(createListOffsetRequest(1), true);
+        checkErrorResponse(createListOffsetRequest(1), new UnknownServerException(), true);
+        checkResponse(createListOffsetResponse(1), 1, true);
+        checkRequest(createListOffsetRequest(2), true);
+        checkErrorResponse(createListOffsetRequest(2), new UnknownServerException(), true);
+        checkResponse(createListOffsetResponse(2), 2, true);
         checkRequest(MetadataRequest.Builder.allTopics().build((short) 2), true);
         checkRequest(createMetadataRequest(1, Collections.singletonList("topic1")), true);
         checkErrorResponse(createMetadataRequest(1, Collections.singletonList("topic1")), new UnknownServerException(), true);
@@ -1096,7 +1098,7 @@ public class RequestResponseTest {
                     .forConsumer(true, IsolationLevel.READ_UNCOMMITTED)
                     .setTargetTimes(offsetData)
                     .build((short) version);
-        } else if (version >= 2 && version <= 5) {
+        } else if (version == 2) {
             Map<TopicPartition, ListOffsetRequest.PartitionData> offsetData = Collections.singletonMap(
                     new TopicPartition("test", 0),
                     new ListOffsetRequest.PartitionData(1000000L, Optional.of(5)));
@@ -1116,7 +1118,7 @@ public class RequestResponseTest {
             responseData.put(new TopicPartition("test", 0),
                     new ListOffsetResponse.PartitionData(Errors.NONE, asList(100L)));
             return new ListOffsetResponse(responseData);
-        } else if (version >= 1 && version <= 5) {
+        } else if (version == 1 || version == 2) {
             Map<TopicPartition, ListOffsetResponse.PartitionData> responseData = new HashMap<>();
             responseData.put(new TopicPartition("test", 0),
                     new ListOffsetResponse.PartitionData(Errors.NONE, 10000L, 100L, Optional.of(27)));
@@ -1317,7 +1319,7 @@ public class RequestResponseTest {
                 new Node(0, "test0", 1223),
                 new Node(1, "test1", 1223)
         );
-        return new LeaderAndIsrRequest.Builder((short) version, 1, 10, 0, partitionStates, leaders, false).build();
+        return new LeaderAndIsrRequest.Builder((short) version, 1, 10, 0, partitionStates, leaders).build();
     }
 
     private LeaderAndIsrResponse createLeaderAndIsrResponse() {
@@ -1426,7 +1428,7 @@ public class RequestResponseTest {
     }
 
     private SaslAuthenticateRequest createSaslAuthenticateRequest() {
-        SaslAuthenticateRequestData data = new SaslAuthenticateRequestData().setAuthBytes(new byte[0]);
+        SaslAuthenticateRequestData data = new SaslAuthenticateRequestData().setAuthBytes(ByteUtils.EMPTY_BUF);
         return new SaslAuthenticateRequest(data);
     }
 

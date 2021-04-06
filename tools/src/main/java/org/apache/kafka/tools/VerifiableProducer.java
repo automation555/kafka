@@ -24,7 +24,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
 import net.sourceforge.argparse4j.inf.Namespace;
 
 import org.apache.kafka.clients.producer.Callback;
@@ -120,24 +119,14 @@ public class VerifiableProducer implements AutoCloseable {
                 .type(String.class)
                 .metavar("TOPIC")
                 .help("Produce messages to this topic.");
-        MutuallyExclusiveGroup connectionGroup = parser.addMutuallyExclusiveGroup("Connection Group")
-                .description("Group of arguments for connection to brokers")
-                .required(true);
-        connectionGroup.addArgument("--bootstrap-server")
-                .action(store())
-                .required(false)
-                .type(String.class)
-                .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
-                .dest("bootstrapServer")
-                .help("REQUIRED: The server(s) to connect to. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
-        connectionGroup.addArgument("--broker-list")
+        parser.addArgument("--broker-list")
                 .action(store())
-                .required(false)
+                .required(true)
                 .type(String.class)
                 .metavar("HOST1:PORT1[,HOST2:PORT2[...]]")
                 .dest("brokerList")
-                .help("DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified. Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
+                .help("Comma-separated list of Kafka brokers in the form HOST1:PORT1,HOST2:PORT2,...");
 
         parser.addArgument("--max-messages")
                 .action(store())
@@ -233,16 +222,7 @@ public class VerifiableProducer implements AutoCloseable {
             createTime = null;
 
         Properties producerProps = new Properties();
-
-        if (res.get("bootstrapServer") != null) {
-            producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("bootstrapServer"));
-        } else if (res.getString("brokerList") != null) {
-            producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
-        } else {
-            parser.printHelp();
-            Exit.exit(0);
-        }
-
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
         producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                 "org.apache.kafka.common.serialization.StringSerializer");
         producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
@@ -289,7 +269,7 @@ public class VerifiableProducer implements AutoCloseable {
         }
     }
 
-    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' **/
+    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' */
     public String getValue(long val) {
         if (this.valuePrefix != null) {
             return String.format("%d.%d", this.valuePrefix, val);
@@ -537,7 +517,7 @@ public class VerifiableProducer implements AutoCloseable {
             final long startMs = System.currentTimeMillis();
             ThroughputThrottler throttler = new ThroughputThrottler(producer.throughput, startMs);
 
-            Exit.addShutdownHook("verifiable-producer-shutdown-hook", () -> {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 // Trigger main thread to stop producing messages
                 producer.stopProducing = true;
 
@@ -549,7 +529,7 @@ public class VerifiableProducer implements AutoCloseable {
                 double avgThroughput = 1000 * ((producer.numAcked) / (double) (stopMs - startMs));
 
                 producer.printJson(new ToolData(producer.numSent, producer.numAcked, producer.throughput, avgThroughput));
-            });
+            }));
 
             producer.run(throttler);
         } catch (ArgumentParserException e) {

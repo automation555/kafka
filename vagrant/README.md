@@ -3,14 +3,13 @@
 Using Vagrant to get up and running.
 
 1) Install Virtual Box [https://www.virtualbox.org/](https://www.virtualbox.org/)
-2) Install Vagrant >= 1.6.4 [https://www.vagrantup.com/](https://www.vagrantup.com/)
+2) Install Vagrant >= 1.6.4 [http://www.vagrantup.com/](http://www.vagrantup.com/)
 3) Install Vagrant Plugins:
-```
-$ vagrant plugin install vagrant-hostmanager
 
-# Optional, to caches & shares package downloads across VMs
-$ vagrant plugin install vagrant-cachier
-```
+    # Required
+    $ vagrant plugin install vagrant-hostmanager
+    # Optional
+    $ vagrant plugin install vagrant-cachier # Caches & shares package downloads across VMs
 
 In the main Kafka folder, do a normal Kafka build:
 
@@ -29,15 +28,11 @@ clusters concurrently.
 
 Now bring up the cluster:
 
-    $ vagrant/vagrant-up.sh     
-    $ # If on aws, run: vagrant/vagrant-up.sh --aws
+    $ vagrant up --no-provision && vagrant provision
 
-(This essentially runs vagrant up --no-provision && vagrant hostmanager && vagrant provision)
-
-We separate out the steps (bringing up the base VMs, mapping hostnames, and configuring the VMs)
+We separate out the two steps (bringing up the base VMs and configuring them)
 due to current limitations in ZooKeeper (ZOOKEEPER-1506) that require us to
-collect IPs for all nodes before starting ZooKeeper nodes. Breaking into multiple steps
-also allows us to bring machines up in parallel on AWS.
+collect IPs for all nodes before starting ZooKeeper nodes.
 
 Once this completes:
 
@@ -50,14 +45,16 @@ To log into one of the machines:
 
     vagrant ssh <machineName>
 
-You can access the brokers by their IP or hostname, e.g.
+You can access the brokers and zookeeper by their IP or hostname, e.g.
 
-    # Specify brokers by their hostnames: broker1, broker2, broker3 (or just one of them)
-    bin/kafka-topics.sh --create --bootstrap-server broker1:9092 --replication-factor 3 --partitions 1 --topic sandbox
-    bin/kafka-console-producer.sh --bootstrap-server broker1:9092,broker2:9092,broker3:9092 --topic sandbox
+    # Specify ZooKeeper node 1 by it's IP: 192.168.50.11
+    bin/kafka-topics.sh --create --zookeeper 192.168.50.11:2181 --replication-factor 3 --partitions 1 --topic sandbox
 
-    # Specify brokers by their IP: 192.168.50.51, 192.168.50.52, 192.168.50.53
-    bin/kafka-console-consumer.sh --bootstrap-server 192.168.50.51:9092,192.168.50.52:9092,192.168.50.53:9092 --topic sandbox --from-beginning
+    # Specify brokers by their hostnames: broker1, broker2, broker3
+    bin/kafka-console-producer.sh --broker-list broker1:9092,broker2:9092,broker3:9092 --topic sandbox
+
+    # Specify ZooKeeper node by its hostname: zk1
+    bin/kafka-console-consumer.sh --zookeeper zk1:2181 --topic sandbox --from-beginning
 
 If you need to update the running cluster, you can re-run the provisioner (the
 step that installs software and configures services):
@@ -70,7 +67,7 @@ the cluster to your most recent development version.
 
 Finally, you can clean up the cluster by destroying all the VMs:
 
-    vagrant destroy -f
+    vagrant destroy
 
 ## Configuration ##
 
@@ -79,17 +76,12 @@ You can override some default settings by specifying the values in
 only ever need to change a few simple configuration variables. Some values you
 might want to override:
 
-* `enable_hostmanager` - true by default; override to false if on AWS to allow parallel cluster bringup.
 * `enable_dns` - Register each VM with a hostname in /etc/hosts on the
   hosts. Hostnames are always set in the /etc/hosts in the VMs, so this is only
   necessary if you want to address them conveniently from the host for tasks
   that aren't provided by Vagrant.
-* `enable_jmx` - Whether to enable JMX ports on 800x and 900x for Zookeeper and the Brokers respectively where `x` is the nodes of each respectively. For example, the zk1 machine would have JMX exposed on 8001, ZK2 would be on 8002, etc. 
-* `num_workers` - Generic workers that get the code (from this project), but don't start any services (no brokers, no zookeepers, etc). Useful for starting clients. Each worker will have an IP address of `192.168.50.10x` where `x` starts at `1` and increments for each worker. 
 * `num_zookeepers` - Size of zookeeper cluster
 * `num_brokers` - Number of broker instances to run
-* `ram_megabytes` - The size of each virtual machine's RAM; default to `1200MB`
-
 
 
 ## Using Other Providers ##
@@ -101,7 +93,7 @@ Install the `vagrant-aws` plugin to provide EC2 support:
     $ vagrant plugin install vagrant-aws
 
 Next, configure parameters in `Vagrantfile.local`. A few are *required*:
-`enable_hostmanager`, `enable_dns`, `ec2_access_key`, `ec2_secret_key`, `ec2_keypair_name`, `ec2_keypair_file`, and
+`enable_dns`, `ec2_access_key`, `ec2_secret_key`, `ec2_keypair_name`, `ec2_keypair_file`, and
 `ec2_security_groups`. A couple of important notes:
 
 1. You definitely want to use `enable_dns` if you plan to run clients outside of
@@ -127,8 +119,21 @@ Next, configure parameters in `Vagrantfile.local`. A few are *required*:
 
 Now start things up, but specify the aws provider:
 
-    $ vagrant/vagrant-up.sh --aws
+    $ vagrant up --provider=aws --no-parallel --no-provision && vagrant provision
 
 Your instances should get tagged with a name including your hostname to make
 them identifiable and make it easier to track instances in the AWS management
 console.
+
+### Libvirt with kvm ###
+
+Install the `vagrant-libvirt` plugin to provide libvirt and kvm support:
+```
+yum install libxslt-devel libxml2-devel libvirt-devel
+```
+```vagrant plugin install vagrant-libvirt``` or ```yum install vagrant-libvirt``` for fedora >=21
+Description for ubuntu or other information is [there](https://github.com/pradels/vagrant-libvirt)
+
+
+Start things up with specified provider:
+```vagrant up --provider=libvirt```

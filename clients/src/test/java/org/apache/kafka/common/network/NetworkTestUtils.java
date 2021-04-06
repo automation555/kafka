@@ -18,19 +18,16 @@ package org.apache.kafka.common.network;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.kafka.common.config.AbstractConfig;
-import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.metrics.Metrics;
-import org.apache.kafka.common.security.auth.SecurityProtocol;
+import org.apache.kafka.common.protocol.SecurityProtocol;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.security.authenticator.CredentialCache;
-import org.apache.kafka.common.security.token.delegation.internals.DelegationTokenCache;
-import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestUtils;
 
@@ -38,39 +35,25 @@ import org.apache.kafka.test.TestUtils;
  * Common utility functions used by transport layer and authenticator tests.
  */
 public class NetworkTestUtils {
-    public static NioEchoServer createEchoServer(ListenerName listenerName, SecurityProtocol securityProtocol,
-                                                 AbstractConfig serverConfig, CredentialCache credentialCache, Time time) throws Exception {
-        return createEchoServer(listenerName, securityProtocol, serverConfig, credentialCache, 100, time);
-    }
 
     public static NioEchoServer createEchoServer(ListenerName listenerName, SecurityProtocol securityProtocol,
-                                                 AbstractConfig serverConfig, CredentialCache credentialCache,
-                                                 int failedAuthenticationDelayMs, Time time) throws Exception {
-        NioEchoServer server = new NioEchoServer(listenerName, securityProtocol, serverConfig, "localhost",
-                null, credentialCache, failedAuthenticationDelayMs, time);
+            AbstractConfig serverConfig, CredentialCache credentialCache) throws Exception {
+        NioEchoServer server = new NioEchoServer(listenerName, securityProtocol, serverConfig, "localhost", null, credentialCache);
         server.start();
         return server;
     }
 
-    public static NioEchoServer createEchoServer(ListenerName listenerName, SecurityProtocol securityProtocol,
-            AbstractConfig serverConfig, CredentialCache credentialCache,
-            int failedAuthenticationDelayMs, Time time, DelegationTokenCache tokenCache) throws Exception {
-        NioEchoServer server = new NioEchoServer(listenerName, securityProtocol, serverConfig, "localhost",
-                null, credentialCache, failedAuthenticationDelayMs, time, tokenCache);
-        server.start();
-        return server;
+    public static Selector createSelector(ChannelBuilder channelBuilder) {
+        return new Selector(5000, new Metrics(), new MockTime(), "MetricGroup", channelBuilder, new LogContext());
     }
 
-    public static Selector createSelector(ChannelBuilder channelBuilder, Time time) {
-        return new Selector(5000L, new Metrics(), time, "MetricGroup", channelBuilder, MemoryPool.NONE, new LogContext());
-    }
+    public static void checkClientConnection(Selector selector, String node, int minMessageSize, int messageCount) throws Exception {
 
-    public static void checkClientConnection(Selector selector, String nodeId, int minMessageSize, int messageCount) throws Exception {
-        waitForChannelReady(selector, nodeId);
+        waitForChannelReady(selector, node);
         String prefix = TestUtils.randomString(minMessageSize);
         int requests = 0;
         int responses = 0;
-        selector.send(new NetworkSend(nodeId, ByteBuffer.wrap((prefix + "-0").getBytes())));
+        selector.send(new NetworkSend(node, ByteBuffer.wrap((prefix + "-0").getBytes())));
         requests++;
         while (responses < messageCount) {
             selector.poll(0L);
@@ -81,8 +64,8 @@ public class NetworkTestUtils {
                 responses++;
             }
 
-            for (int i = 0; i < selector.completedSends().size() && requests < messageCount && selector.isChannelReady(nodeId); i++, requests++) {
-                selector.send(new NetworkSend(nodeId, ByteBuffer.wrap((prefix + "-" + requests).getBytes())));
+            for (int i = 0; i < selector.completedSends().size() && requests < messageCount && selector.isChannelReady(node); i++, requests++) {
+                selector.send(new NetworkSend(node, ByteBuffer.wrap((prefix + "-" + requests).getBytes())));
             }
         }
     }
@@ -96,27 +79,16 @@ public class NetworkTestUtils {
         assertTrue(selector.isChannelReady(node));
     }
 
-    public static ChannelState waitForChannelClose(Selector selector, String node, ChannelState.State channelState)
-            throws IOException {
+    public static void waitForChannelClose(Selector selector, String node, ChannelState.State channelState) throws IOException {
         boolean closed = false;
-        for (int i = 0; i < 300; i++) {
-            selector.poll(100L);
+        for (int i = 0; i < 30; i++) {
+            selector.poll(1000L);
             if (selector.channel(node) == null && selector.closingChannel(node) == null) {
                 closed = true;
                 break;
             }
         }
         assertTrue("Channel was not closed by timeout", closed);
-        ChannelState finalState = selector.disconnected().get(node);
-        assertEquals(channelState, finalState.state());
-        return finalState;
-    }
-
-    public static void completeDelayedChannelClose(Selector selector, long currentTimeNanos) {
-        selector.completeDelayedChannelClose(currentTimeNanos);
-    }
-
-    public static Map<?, ?> delayedClosingChannels(Selector selector) {
-        return selector.delayedClosingChannels();
+        assertEquals(channelState, selector.disconnected().get(node).value());
     }
 }

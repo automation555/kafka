@@ -18,7 +18,7 @@
 package kafka.log
 
 import java.io._
-import java.nio.file.Files
+import java.nio.ReadOnlyBufferException
 
 import org.junit.Assert._
 import java.util.{Arrays, Collections}
@@ -37,18 +37,18 @@ class OffsetIndexTest extends JUnitSuite {
   val maxEntries = 30
   
   @Before
-  def setup(): Unit = {
-    this.idx = new OffsetIndex(nonExistentTempFile(), baseOffset = 45L, maxIndexSize = 30 * 8)
+  def setup() {
+    this.idx = new OffsetIndex(nonExistantTempFile(), baseOffset = 45L, maxIndexSize = 30 * 8)
   }
   
   @After
-  def teardown(): Unit = {
+  def teardown() {
     if(this.idx != null)
       this.idx.file.delete()
   }
   
   @Test
-  def randomLookupTest(): Unit = {
+  def randomLookupTest() {
     assertEquals("Not present value should return physical offset 0.", OffsetPosition(idx.baseOffset, 0), idx.lookup(92L))
     
     // append some random values
@@ -76,7 +76,7 @@ class OffsetIndexTest extends JUnitSuite {
   }
   
   @Test
-  def lookupExtremeCases(): Unit = {
+  def lookupExtremeCases() {
     assertEquals("Lookup on empty file", OffsetPosition(idx.baseOffset, 0), idx.lookup(idx.baseOffset))
     for(i <- 0 until idx.maxEntries)
       idx.append(idx.baseOffset + i + 1, i)
@@ -86,7 +86,7 @@ class OffsetIndexTest extends JUnitSuite {
   }
   
   @Test
-  def appendTooMany(): Unit = {
+  def appendTooMany() {
     for(i <- 0 until idx.maxEntries) {
       val offset = idx.baseOffset + i + 1
       idx.append(offset, i)
@@ -95,13 +95,13 @@ class OffsetIndexTest extends JUnitSuite {
   }
   
   @Test(expected = classOf[InvalidOffsetException])
-  def appendOutOfOrder(): Unit = {
+  def appendOutOfOrder() {
     idx.append(51, 0)
     idx.append(50, 1)
   }
 
   @Test
-  def testFetchUpperBoundOffset(): Unit = {
+  def testFetchUpperBoundOffset() {
     val first = OffsetPosition(0, 0)
     val second = OffsetPosition(1, 10)
     val third = OffsetPosition(2, 23)
@@ -123,7 +123,7 @@ class OffsetIndexTest extends JUnitSuite {
   }
 
   @Test
-  def testReopen(): Unit = {
+  def testReopen() {
     val first = OffsetPosition(51, 0)
     val sec = OffsetPosition(52, 1)
     idx.append(first.offset, first.position)
@@ -138,8 +138,8 @@ class OffsetIndexTest extends JUnitSuite {
   }
   
   @Test
-  def truncate(): Unit = {
-	val idx = new OffsetIndex(nonExistentTempFile(), baseOffset = 0L, maxIndexSize = 10 * 8)
+  def truncate() {
+	val idx = new OffsetIndex(nonExistantTempFile(), baseOffset = 0L, maxIndexSize = 10 * 8)
 	idx.truncate()
     for(i <- 1 until 10)
       idx.append(i, i)
@@ -171,14 +171,15 @@ class OffsetIndexTest extends JUnitSuite {
   }
 
   @Test
-  def forceUnmapTest(): Unit = {
-    val idx = new OffsetIndex(nonExistentTempFile(), baseOffset = 0L, maxIndexSize = 10 * 8)
-    idx.forceUnmap()
-    // mmap should be null after unmap causing lookup to throw a NPE
-    intercept[NullPointerException](idx.lookup(1))
+  def testMakeReadOnly(): Unit = {
+    val idx = new OffsetIndex(nonExistantTempFile(), baseOffset = 0L, maxIndexSize = 10 * 8)
+    idx.append(1, 1)
+
+    idx.makeReadOnly()
+    assertWriteFails("Append should fail on read-only index", idx, 2, classOf[ReadOnlyBufferException])
   }
   
-  def assertWriteFails[T](message: String, idx: OffsetIndex, offset: Int, klass: Class[T]): Unit = {
+  def assertWriteFails[T](message: String, idx: OffsetIndex, offset: Int, klass: Class[T]) {
     try {
       idx.append(offset, 1)
       fail(message)
@@ -198,10 +199,9 @@ class OffsetIndexTest extends JUnitSuite {
     vals
   }
   
-  def nonExistentTempFile(): File = {
+  def nonExistantTempFile(): File = {
     val file = TestUtils.tempFile()
-    Files.delete(file.toPath)
+    file.delete()
     file
   }
-
 }

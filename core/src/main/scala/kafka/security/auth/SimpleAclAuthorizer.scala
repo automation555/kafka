@@ -18,20 +18,19 @@ package kafka.security.auth
 
 import java.util
 import java.util.concurrent.locks.ReentrantReadWriteLock
-
 import kafka.common.{NotificationHandler, ZkNodeChangeNotificationListener}
+
 import kafka.network.RequestChannel.Session
 import kafka.security.auth.SimpleAclAuthorizer.VersionedAcls
 import kafka.server.KafkaConfig
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils._
-import net.ripe.commons.ip.{Ipv4, Ipv4Range, Ipv6, Ipv6Range}
-import org.I0Itec.zkclient.exception.{ZkNoNodeException, ZkNodeExistsException}
+import org.I0Itec.zkclient.exception.{ZkNodeExistsException, ZkNoNodeException}
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.security.auth.KafkaPrincipal
+import scala.collection.JavaConverters._
 import org.apache.log4j.Logger
 
-import scala.collection.JavaConverters._
 import scala.util.Random
 
 object SimpleAclAuthorizer {
@@ -47,20 +46,20 @@ object SimpleAclAuthorizer {
   val AllowEveryoneIfNoAclIsFoundProp = "allow.everyone.if.no.acl.found"
 
   /**
-   * The root acl storage node. Under this node there will be one child node per resource type (Topic, Cluster, Group).
+   * The root acl storage node. Under this node there will be one child node per resource type (Topic, Cluster, ConsumerGroup).
    * under each resourceType there will be a unique child for each resource instance and the data for that child will contain
    * list of its acls as a json object. Following gives an example:
    *
    * <pre>
    * /kafka-acl/Topic/topic-1 => {"version": 1, "acls": [ { "host":"host1", "permissionType": "Allow","operation": "Read","principal": "User:alice"}]}
    * /kafka-acl/Cluster/kafka-cluster => {"version": 1, "acls": [ { "host":"host1", "permissionType": "Allow","operation": "Read","principal": "User:alice"}]}
-   * /kafka-acl/Group/group-1 => {"version": 1, "acls": [ { "host":"host1", "permissionType": "Allow","operation": "Read","principal": "User:alice"}]}
+   * /kafka-acl/ConsumerGroup/group-1 => {"version": 1, "acls": [ { "host":"host1", "permissionType": "Allow","operation": "Read","principal": "User:alice"}]}
    * </pre>
    */
-  val AclZkPath = ZkUtils.KafkaAclPath
+  val AclZkPath = "/kafka-acl"
 
   //notification node which gets updated with the resource name when acl on a resource is changed.
-  val AclChangedZkPath = ZkUtils.KafkaAclChangesPath
+  val AclChangedZkPath = "/kafka-acl-changes"
 
   //prefix of all the change notification sequence node.
   val AclChangedPrefix = "acl_changes_"
@@ -108,8 +107,8 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     val zkSessionTimeOutMs = configs.get(SimpleAclAuthorizer.ZkSessionTimeOutProp).map(_.toString.toInt).getOrElse(kafkaConfig.zkSessionTimeoutMs)
 
     zkUtils = ZkUtils(zkUrl,
-                      sessionTimeout = zkSessionTimeOutMs,
-                      connectionTimeout = zkConnectionTimeoutMs,
+                      zkConnectionTimeoutMs,
+                      zkSessionTimeOutMs,
                       JaasUtils.isZkSecurityEnabled())
     zkUtils.makeSurePersistentPathExists(SimpleAclAuthorizer.AclZkPath)
 
@@ -126,16 +125,16 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     val acls = getAcls(resource) ++ getAcls(new Resource(resource.resourceType, Resource.WildCardResource))
 
     //check if there is any Deny acl match that would disallow this operation.
-    val denyMatch = aclMatch(session, operation, resource, principal, host, Deny, acls)
+    val denyMatch = aclMatch(operation, resource, principal, host, Deny, acls)
 
-    //if principal is allowed to read, write or delete we allow describe by default, the reverse does not apply to Deny.
+    //if principal is allowed to read or write we allow describe by default, the reverse does not apply to Deny.
     val ops = if (Describe == operation)
-      Set[Operation](operation, Read, Write, Delete)
+      Set[Operation](operation, Read, Write)
     else
       Set[Operation](operation)
 
     //now check if there is any allow acl that will allow this operation.
-    val allowMatch = ops.exists(operation => aclMatch(session, operation, resource, principal, host, Allow, acls))
+    val allowMatch = ops.exists(operation => aclMatch(operation, resource, principal, host, Allow, acls))
 
     //we allow an operation if a user is a super user or if no acls are found and user has configured to allow all users
     //when no acls are found or if no deny acls are found and at least one allow acls matches.
@@ -161,32 +160,16 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     } else false
   }
 
-  private def aclMatch(session: Session, operations: Operation, resource: Resource, principal: KafkaPrincipal, host: String, permissionType: PermissionType, acls: Set[Acl]): Boolean = {
-    acls.find { acl =>
-      acl.permissionType == permissionType &&
-        (acl.principal == principal || acl.principal == Acl.WildCardPrincipal) &&
-        (operations == acl.operation || acl.operation == All) &&
-        aclHostMatch(acl, host)
-    }.exists { acl =>
+  private def aclMatch(operations: Operation, resource: Resource, principal: KafkaPrincipal, host: String, permissionType: PermissionType, acls: Set[Acl]): Boolean = {
+    acls.find ( acl =>
+      acl.permissionType == permissionType
+        && (acl.principal == principal || acl.principal == Acl.WildCardPrincipal)
+        && (operations == acl.operation || acl.operation == All)
+        && (acl.host == host || acl.host == Acl.WildCardHost)
+    ).map { acl: Acl =>
       authorizerLogger.debug(s"operation = $operations on resource = $resource from host = $host is $permissionType based on acl = $acl")
       true
-    }
-  }
-
-  private def aclHostMatch(acl: Acl, host: String): Boolean = {
-    if (acl.host == host || acl.host == Acl.WildCardHost) return true
-    if (acl.host.contains("/")) {
-      return try {
-        if (acl.host.contains(":")) {
-          Ipv6Range.parseCidr(acl.host).contains(Ipv6.of(host))
-        } else {
-          Ipv4Range.parseCidr(acl.host).contains(Ipv4.of(host))
-        }
-      } catch {
-        case _: Throwable => false
-      }
-    }
-    false
+    }.getOrElse(false)
   }
 
   override def addAcls(acls: Set[Acl], resource: Resource) {
@@ -202,7 +185,10 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
   override def removeAcls(aclsTobeRemoved: Set[Acl], resource: Resource): Boolean = {
     inWriteLock(lock) {
       updateResourceAcls(resource) { currentAcls =>
-        currentAcls -- aclsTobeRemoved
+        currentAcls.filterNot { currentAcl =>
+          //filter out current ACL if it matches an exact or a more generic ACL that we want to remove
+          aclMatch(currentAcl.operation, resource, currentAcl.principal, currentAcl.host, currentAcl.permissionType, aclsTobeRemoved)
+        }
       }
     }
   }
@@ -333,13 +319,13 @@ class SimpleAclAuthorizer extends Authorizer with Logging {
     try {
       zkUtils.conditionalUpdatePersistentPathIfExists(path, data, expectedVersion)
     } catch {
-      case _: ZkNoNodeException =>
+      case e: ZkNoNodeException =>
         try {
           debug(s"Node $path does not exist, attempting to create it.")
           zkUtils.createPersistentPath(path, data)
           (true, 0)
         } catch {
-          case _: ZkNodeExistsException =>
+          case e: ZkNodeExistsException =>
             debug(s"Failed to create node for $path because it already exists.")
             (false, 0)
         }

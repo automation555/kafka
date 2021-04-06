@@ -18,20 +18,18 @@
 package kafka.integration
 
 import java.io.File
-import java.util.Arrays
+import java.util.{Arrays, Properties}
 
 import kafka.server._
 import kafka.utils.TestUtils
 import kafka.zk.ZooKeeperTestHarness
+import org.apache.kafka.common.KafkaException
+import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
+import org.apache.kafka.common.utils.Time
 import org.junit.{After, Before}
 
 import scala.collection.mutable.{ArrayBuffer, Buffer}
-import java.util.Properties
-
-import org.apache.kafka.common.KafkaException
-import org.apache.kafka.common.network.ListenerName
-import org.apache.kafka.common.utils.Time
 
 /**
  * A test harness that brings up some number of broker nodes
@@ -120,7 +118,7 @@ abstract class KafkaServerTestHarness extends ZooKeeperTestHarness {
    * Wait until the leader is elected and the metadata is propagated to all brokers.
    * Return the leader for each partition.
    */
-  def createTopic(topic: String, numPartitions: Int = 1, replicationFactor: Short = 1,
+  def createTopic(topic: String, numPartitions: Int = 1, replicationFactor: Int = 1,
                   topicConfig: Properties = new Properties): scala.collection.immutable.Map[Int, Int] =
     TestUtils.createTopic(zkClient, topic, numPartitions, replicationFactor, servers, topicConfig)
 

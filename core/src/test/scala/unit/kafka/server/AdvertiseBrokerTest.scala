@@ -17,11 +17,10 @@
 
 package kafka.server
 
-import org.junit.Assert._
 import kafka.utils.TestUtils
 import kafka.zk.ZooKeeperTestHarness
-import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.junit.Assert._
 import org.junit.{After, Test}
 
 import scala.collection.mutable.ArrayBuffer
@@ -32,7 +31,7 @@ class AdvertiseBrokerTest extends ZooKeeperTestHarness {
   val brokerId = 0
 
   @After
-  override def tearDown(): Unit = {
+  override def tearDown() {
     TestUtils.shutdownServers(servers)
     super.tearDown()
   }
@@ -55,7 +54,6 @@ class AdvertiseBrokerTest extends ZooKeeperTestHarness {
     assertEquals(SecurityProtocol.PLAINTEXT.name, endpoint.listenerName.value)
   }
 
-  @Test
   def testBrokerAdvertiseListenersToZK(): Unit = {
     val props = TestUtils.createBrokerConfig(brokerId, zkConnect)
     props.put("advertised.listeners", "PLAINTEXT://routable-listener:3334")
@@ -67,10 +65,9 @@ class AdvertiseBrokerTest extends ZooKeeperTestHarness {
     assertEquals("routable-listener", endpoint.host)
     assertEquals(3334, endpoint.port)
     assertEquals(SecurityProtocol.PLAINTEXT, endpoint.securityProtocol)
-    assertEquals(ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT).value(), endpoint.listenerName.value())
+    assertEquals(SecurityProtocol.PLAINTEXT.name, endpoint.listenerName)
   }
 
-  @Test
   def testBrokerAdvertiseListenersWithCustomNamesToZK(): Unit = {
     val props = TestUtils.createBrokerConfig(brokerId, zkConnect)
     props.put("listeners", "INTERNAL://:0,EXTERNAL://:0")
@@ -80,17 +77,17 @@ class AdvertiseBrokerTest extends ZooKeeperTestHarness {
     servers += TestUtils.createServer(KafkaConfig.fromProps(props))
 
     val brokerInfo = zkClient.getBroker(brokerId).get
-    assertEquals(2, brokerInfo.endPoints.size)
+    assertEquals(1, brokerInfo.endPoints.size)
     val endpoint = brokerInfo.endPoints.head
     assertEquals("external-listener", endpoint.host)
     assertEquals(9999, endpoint.port)
     assertEquals(SecurityProtocol.PLAINTEXT, endpoint.securityProtocol)
-    assertEquals(new ListenerName("EXTERNAL"), endpoint.listenerName)
+    assertEquals("EXTERNAL", endpoint.listenerName.value)
     val endpoint2 = brokerInfo.endPoints(1)
     assertEquals("internal-listener", endpoint2.host)
     assertEquals(10999, endpoint2.port)
     assertEquals(SecurityProtocol.PLAINTEXT, endpoint.securityProtocol)
-    assertEquals(new ListenerName("INTERNAL"), endpoint2.listenerName)
+    assertEquals("INTERNAL", endpoint2.listenerName)
   }
   
 }

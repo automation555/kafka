@@ -30,8 +30,8 @@ import kafka.zk.{AdminZkClient, KafkaZkClient}
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.{ListTopicsOptions, NewPartitions, NewTopic, AdminClient => JAdminClient}
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
 import org.apache.kafka.common.config.ConfigResource.Type
+import org.apache.kafka.common.config.{ConfigResource, TopicConfig}
 import org.apache.kafka.common.errors.{InvalidTopicException, TopicExistsException}
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.security.JaasUtils
@@ -82,7 +82,7 @@ object TopicCommand extends Logging {
   class CommandTopicPartition(opts: TopicCommandOptions) {
     val name: String = opts.topic.get
     val partitions: Option[Integer] = opts.partitions
-    val replicationFactor: Short = opts.replicationFactor.getOrElse(-1.toShort)
+    val replicationFactor: Integer = opts.replicationFactor.getOrElse(-1)
     val replicaAssignment: Option[Map[Int, List[Int]]] = opts.replicaAssignment
     val configsToAdd: Properties = parseTopicConfigsToBeAdded(opts)
     val configsToDelete: Seq[String] = parseTopicConfigsToBeDeleted(opts)
@@ -538,7 +538,7 @@ object TopicCommand extends Logging {
     private val replicationFactorOpt = parser.accepts("replication-factor", "The replication factor for each partition in the topic being created.")
                            .withRequiredArg
                            .describedAs("replication factor")
-                           .ofType(classOf[Short])
+                           .ofType(classOf[java.lang.Integer])
     private val replicaAssignmentOpt = parser.accepts("replica-assignment", "A list of manual partition-to-broker assignments for the topic being created or altered.")
                            .withRequiredArg
                            .describedAs("broker_id_for_part1_replica1 : broker_id_for_part1_replica2 , " +
@@ -583,7 +583,7 @@ object TopicCommand extends Logging {
     def commandConfig: Properties = if (has(commandConfigOpt)) Utils.loadProps(options.valueOf(commandConfigOpt)) else new Properties()
     def topic: Option[String] = valueAsOption(topicOpt)
     def partitions: Option[Integer] = valueAsOption(partitionsOpt)
-    def replicationFactor: Option[Short] = valueAsOption(replicationFactorOpt)
+    def replicationFactor: Option[Integer] = valueAsOption(replicationFactorOpt)
     def replicaAssignment: Option[Map[Int, List[Int]]] =
       if (has(replicaAssignmentOpt) && !Option(options.valueOf(replicaAssignmentOpt)).getOrElse("").isEmpty)
         Some(parseReplicaAssignment(options.valueOf(replicaAssignmentOpt)))

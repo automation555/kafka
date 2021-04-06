@@ -19,50 +19,49 @@
 package kafka.server
 
 import java.io.{Closeable, File, FileWriter}
-import java.nio.file.{Files, Paths, StandardCopyOption}
 import java.lang.management.ManagementFactory
+import java.nio.file.{Files, Paths, StandardCopyOption}
 import java.security.KeyStore
 import java.time.Duration
 import java.util
-import java.util.{Collections, Properties}
 import java.util.concurrent._
+import java.util.{Collections, Properties}
 
-import javax.management.ObjectName
 import com.yammer.metrics.Metrics
 import com.yammer.metrics.core.MetricName
+import javax.management.ObjectName
 import kafka.admin.ConfigCommand
 import kafka.api.{KafkaSasl, SaslSetup}
 import kafka.log.LogConfig
 import kafka.message.ProducerCompressionCodec
 import kafka.network.{Processor, RequestChannel}
-import kafka.utils._
 import kafka.utils.Implicits._
+import kafka.utils._
 import kafka.zk.{ConfigEntityChangeNotificationZNode, ZooKeeperTestHarness}
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.ConfigEntry.{ConfigSource, ConfigSynonym}
 import org.apache.kafka.clients.admin._
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord, ConsumerRecords, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
-import org.apache.kafka.common.{ClusterResource, ClusterResourceListener, Reconfigurable, TopicPartition, TopicPartitionInfo}
-import org.apache.kafka.common.config.{ConfigException, ConfigResource}
 import org.apache.kafka.common.config.SslConfigs._
 import org.apache.kafka.common.config.types.Password
+import org.apache.kafka.common.config.{ConfigException, ConfigResource}
 import org.apache.kafka.common.errors.{AuthenticationException, InvalidRequestException}
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.metrics.{KafkaMetric, MetricsReporter}
-import org.apache.kafka.common.network.{ListenerName, Mode}
 import org.apache.kafka.common.network.CertStores.{KEYSTORE_PROPS, TRUSTSTORE_PROPS}
+import org.apache.kafka.common.network.{ListenerName, Mode}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
+import org.apache.kafka.common._
 import org.apache.kafka.test.TestSslUtils
 import org.junit.Assert._
 import org.junit.{After, Before, Ignore, Test}
 
-import scala.collection._
-import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConverters._
-import scala.collection.Seq
+import scala.collection.{Seq, _}
+import scala.collection.mutable.ArrayBuffer
 
 object DynamicBrokerReconfigurationTest {
   val SecureInternal = "INTERNAL"
@@ -131,9 +130,9 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       servers += TestUtils.createServer(kafkaConfig)
     }
 
-    TestUtils.createTopic(zkClient, topic, numPartitions, replicationFactor = numServers.toShort, servers)
+    TestUtils.createTopic(zkClient, topic, numPartitions, replicationFactor = numServers, servers)
     TestUtils.createTopic(zkClient, Topic.GROUP_METADATA_TOPIC_NAME, servers.head.config.offsetsTopicPartitions,
-      replicationFactor = numServers.toShort, servers, servers.head.groupCoordinator.offsetsTopicConfigs)
+      replicationFactor = numServers, servers, servers.head.groupCoordinator.offsetsTopicConfigs)
 
     createAdminClient(SecurityProtocol.SSL, SecureInternal)
 
@@ -216,7 +215,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
   @Test
   def testKeyStoreAlter(): Unit = {
     val topic2 = "testtopic2"
-    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers.toShort, servers)
+    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers, servers)
 
     // Start a producer and consumer that work with the current broker keystore.
     // This should continue working while changes are made
@@ -767,7 +766,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
 
     // Verify that produce/consume work now
     val topic2 = "testtopic2"
-    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers.toShort, servers)
+    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers, servers)
     val producer = ProducerBuilder().trustStoreProps(sslProperties1).maxRetries(0).build()
     val consumer = ConsumerBuilder("group2").trustStoreProps(sslProperties1).topic(topic2).build()
     verifyProduceConsume(producer, consumer, 10, topic2)
@@ -967,7 +966,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
 
     // Test that other listeners still work
     val topic2 = "testtopic2"
-    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers.toShort, servers)
+    TestUtils.createTopic(zkClient, topic2, numPartitions, replicationFactor = numServers, servers)
     val producer2 = ProducerBuilder().trustStoreProps(sslProperties1).maxRetries(0).build()
     val consumer2 = ConsumerBuilder(s"remove-listener-group2-$securityProtocol")
       .trustStoreProps(sslProperties1)

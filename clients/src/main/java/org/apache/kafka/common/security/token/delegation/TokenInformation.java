@@ -114,19 +114,27 @@ public class TokenInformation {
 
         TokenInformation that = (TokenInformation) o;
 
-        return issueTimestamp == that.issueTimestamp &&
-            maxTimestamp == that.maxTimestamp &&
-            Objects.equals(owner, that.owner) &&
-            Objects.equals(renewers, that.renewers) &&
-            Objects.equals(tokenId, that.tokenId);
+        if (issueTimestamp != that.issueTimestamp) {
+            return false;
+        }
+        if (maxTimestamp != that.maxTimestamp) {
+            return false;
+        }
+        if (!Objects.equals(owner, that.owner)) {
+            return false;
+        }
+        if (!Objects.equals(renewers, that.renewers)) {
+            return false;
+        }
+        return Objects.equals(tokenId, that.tokenId);
     }
 
     @Override
     public int hashCode() {
         int result = owner != null ? owner.hashCode() : 0;
         result = 31 * result + (renewers != null ? renewers.hashCode() : 0);
-        result = 31 * result + Long.hashCode(issueTimestamp);
-        result = 31 * result + Long.hashCode(maxTimestamp);
+        result = 31 * result + (int) (issueTimestamp ^ (issueTimestamp >>> 32));
+        result = 31 * result + (int) (maxTimestamp ^ (maxTimestamp >>> 32));
         result = 31 * result + (tokenId != null ? tokenId.hashCode() : 0);
         return result;
     }

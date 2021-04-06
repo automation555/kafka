@@ -26,12 +26,12 @@ import java.util.concurrent._
 import kafka.server.{BaseRequestTest, KafkaConfig}
 import kafka.utils.{CoreUtils, TestUtils}
 import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig}
-import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.record.{CompressionType, MemoryRecords, SimpleRecord}
 import org.apache.kafka.common.requests.{ProduceRequest, ProduceResponse}
 import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
 
@@ -49,7 +49,7 @@ class DynamicConnectionQuotaTest extends BaseRequestTest {
   @Before
   override def setUp(): Unit = {
     super.setUp()
-    TestUtils.createTopic(zkClient, topic, numBrokers, numBrokers.toShort, servers)
+    TestUtils.createTopic(zkClient, topic, numBrokers, numBrokers, servers)
   }
 
   @After

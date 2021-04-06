@@ -20,24 +20,22 @@ package kafka.controller
 import java.util.Properties
 import java.util.concurrent.{CountDownLatch, LinkedBlockingQueue}
 
-import com.codahale.metrics.Timer
+import com.yammer.metrics.Metrics
+import com.yammer.metrics.core.Timer
 import kafka.api.LeaderAndIsr
 import kafka.server.{KafkaConfig, KafkaServer}
-import kafka.utils.TestUtils
+import kafka.utils.{LogCaptureAppender, TestUtils}
 import kafka.zk._
-import org.junit.{After, Before, Test}
-import org.junit.Assert.{assertEquals, assertTrue}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{ControllerMovedException, StaleBrokerEpochException}
-import org.apache.log4j.Level
-import kafka.utils.LogCaptureAppender
 import org.apache.kafka.common.metrics.KafkaMetric
-import org.scalatest.Assertions.fail
+import org.apache.log4j.Level
+import org.junit.Assert.{assertEquals, assertTrue}
+import org.junit.{After, Before, Test}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.collection.Seq
-import scala.util.{Failure, Success, Try}
+import scala.util.Try
 
 class ControllerIntegrationTest extends ZooKeeperTestHarness {
   var servers = Seq.empty[KafkaServer]
@@ -45,13 +43,13 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
   val firstControllerEpochZkVersion = KafkaController.InitialControllerEpochZkVersion + 1
 
   @Before
-  override def setUp(): Unit = {
+  override def setUp() {
     super.setUp
     servers = Seq.empty[KafkaServer]
   }
 
   @After
-  override def tearDown(): Unit = {
+  override def tearDown() {
     TestUtils.shutdownServers(servers)
     super.tearDown
   }
@@ -70,7 +68,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
     waitUntilControllerEpoch(firstControllerEpoch, "broker failed to set controller epoch")
     servers.head.shutdown()
     servers.head.awaitShutdown()
-    TestUtils.waitUntilTrue(() => !zkClient.getControllerId.isDefined, "failed to kill controller")
+    TestUtils.waitUntilTrue(() => zkClient.getControllerId.isEmpty, "failed to kill controller")
     waitUntilControllerEpoch(firstControllerEpoch, "controller epoch was not persisted after broker failure")
   }
 
@@ -88,9 +86,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
 
   @Test
   def testMetadataPropagationOnControlPlane(): Unit = {
-    servers = makeServers(1,
-      listeners = Some("PLAINTEXT://localhost:0,CONTROLLER://localhost:0"),
-      listenerSecurityProtocolMap = Some("PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"),
+    servers = makeServers(1, listeners = Some("PLAINTEXT://localhost:0,CONTROLLER://localhost:5000"), listenerSecurityProtocolMap = Some("PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"),
       controlPlaneListenerName = Some("CONTROLLER"))
     TestUtils.waitUntilBrokerMetadataIsPropagated(servers)
     val controlPlaneMetricMap = mutable.Map[String, KafkaMetric]()
@@ -128,7 +124,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
     // Make sure shutdown the test broker will not require any leadership change to test avoid sending out full
     // UpdateMetadataRequest on broker failure
     val assignment = Map(
-      0 -> Seq(remainingBrokers(0).config.brokerId, testBroker.config.brokerId),
+      0 -> Seq(remainingBrokers.head.config.brokerId, testBroker.config.brokerId),
       1 -> remainingBrokers.map(_.config.brokerId))
 
     // Create topic
@@ -164,58 +160,6 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
         }
       }
     }, "Inconsistent metadata after broker startup")
-  }
-
-  @Test
-  def testMetadataPropagationForOfflineReplicas(): Unit = {
-    servers = makeServers(3)
-    TestUtils.waitUntilBrokerMetadataIsPropagated(servers)
-    val controllerId = TestUtils.waitUntilControllerElected(zkClient)
-
-    //get brokerId for topic creation with single partition and RF =1
-    val replicaBroker = servers.filter(e => e.config.brokerId != controllerId).head
-
-    val controllerBroker = servers.filter(e => e.config.brokerId == controllerId).head
-    val otherBroker = servers.filter(e => e.config.brokerId != controllerId &&
-      e.config.brokerId != replicaBroker.config.brokerId).head
-
-    val topic = "topic1"
-    val assignment = Map(0 -> Seq(replicaBroker.config.brokerId))
-
-    // Create topic
-    TestUtils.createTopic(zkClient, topic, assignment, servers)
-
-    // Shutdown the other broker
-    otherBroker.shutdown()
-    otherBroker.awaitShutdown()
-
-    // Shutdown the broker with replica
-    replicaBroker.shutdown()
-    replicaBroker.awaitShutdown()
-
-    //Shutdown controller broker
-    controllerBroker.shutdown()
-    controllerBroker.awaitShutdown()
-
-    def verifyMetadata(broker: KafkaServer): Unit = {
-      broker.startup()
-      TestUtils.waitUntilTrue(() => {
-        val partitionInfoOpt = broker.metadataCache.getPartitionInfo(topic, 0)
-        if (partitionInfoOpt.isDefined) {
-          val partitionInfo = partitionInfoOpt.get
-          (!partitionInfo.offlineReplicas.isEmpty && partitionInfo.basePartitionState.leader == -1
-            && !partitionInfo.basePartitionState.replicas.isEmpty && !partitionInfo.basePartitionState.isr.isEmpty)
-        } else {
-          false
-        }
-      }, "Inconsistent metadata after broker startup")
-    }
-
-    //Start controller broker and check metadata
-    verifyMetadata(controllerBroker)
-
-    //Start other broker and check metadata
-    verifyMetadata(otherBroker)
   }
 
   @Test
@@ -280,7 +224,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
     val controllerId = TestUtils.waitUntilControllerElected(zkClient)
 
     val metricName = s"kafka.controller:type=ControllerStats,name=${ControllerState.PartitionReassignment.rateAndTimeMetricName.get}"
-    val timerCount = timer(metricName).getCount
+    val timerCount = timer(metricName).count
 
     val otherBrokerId = servers.map(_.config.brokerId).filter(_ != controllerId).head
     val tp = new TopicPartition("t", 0)
@@ -295,7 +239,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
     TestUtils.waitUntilTrue(() => !zkClient.reassignPartitionsInProgress(),
       "failed to remove reassign partitions path after completion")
 
-    val updatedTimerCount = timer(metricName).getCount
+    val updatedTimerCount = timer(metricName).count
     assertTrue(s"Timer count $updatedTimerCount should be greater than $timerCount", updatedTimerCount > timerCount)
   }
 
@@ -439,7 +383,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testControlledShutdown(): Unit = {
+  def testControlledShutdown() {
     val expectedReplicaAssignment = Map(0  -> List(0, 1, 2))
     val topic = "test"
     val partition = 0
@@ -467,10 +411,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
     assertEquals(2, partitionStateInfo.basePartitionState.isr.size)
     assertEquals(List(0,1), partitionStateInfo.basePartitionState.isr.asScala)
     controller.controlledShutdown(1, servers.find(_.config.brokerId == 1).get.kafkaController.brokerEpoch, controlledShutdownCallback)
-    partitionsRemaining = resultQueue.take() match {
-      case Success(partitions) => partitions
-      case Failure(exception) => fail("Controlled shutdown failed due to error", exception)
-    }
+    partitionsRemaining = resultQueue.take().get
     assertEquals(0, partitionsRemaining.size)
     activeServers = servers.filter(s => s.config.brokerId == 0)
     partitionStateInfo = activeServers.head.dataPlaneRequestProcessor.metadataCache.getPartitionInfo(topic,partition).get
@@ -574,20 +515,17 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
 
     // Let the controller event thread await on a latch until broker bounce finishes.
     // This is used to simulate fast broker bounce
-
-    controller.eventManager.put(new MockEvent(ControllerState.TopicChange) {
-      override def process(): Unit = latch.await()
-    })
+    controller.eventManager.put(KafkaController.AwaitOnLatch(latch))
 
     otherBroker.shutdown()
     otherBroker.startup()
 
-    assertEquals(0, otherBroker.replicaManager.partitionCount.getValue)
+    assertEquals(0, otherBroker.replicaManager.partitionCount.value())
 
     // Release the latch so that controller can process broker change event
     latch.countDown()
     TestUtils.waitUntilTrue(() => {
-      otherBroker.replicaManager.partitionCount.getValue == 1 &&
+      otherBroker.replicaManager.partitionCount.value() == 1 &&
       otherBroker.replicaManager.metadataCache.getAllTopics().size == 1 &&
       otherBroker.replicaManager.metadataCache.getAliveBrokers.size == 2
     }, "Broker fail to initialize after restart")
@@ -596,7 +534,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
   private def testControllerMove(fun: () => Unit): Unit = {
     val controller = getController().kafkaController
     val appender = LogCaptureAppender.createAndRegister()
-    val previousLevel = LogCaptureAppender.setClassLoggerLevel(controller.getClass, Level.INFO)
+    val previousLevel = LogCaptureAppender.setClassLoggerLevel(controller.eventManager.thread.getClass, Level.INFO)
 
     try {
       TestUtils.waitUntilTrue(() => {
@@ -607,10 +545,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
 
       // Let the controller event thread await on a latch before the pre-defined logic is triggered.
       // This is used to make sure that when the event thread resumes and starts processing events, the controller has already moved.
-      controller.eventManager.put(new MockEvent(ControllerState.TopicChange) {
-        override def process(): Unit = latch.await()
-      })
-
+      controller.eventManager.put(KafkaController.AwaitOnLatch(latch))
       // Execute pre-defined logic. This can be topic creation/deletion, preferred leader election, etc.
       fun()
 
@@ -623,11 +558,9 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
       TestUtils.waitUntilTrue(() => !controller.isActive, "Controller fails to resign")
 
       // Expect to capture the ControllerMovedException in the log of ControllerEventThread
-      println(appender.getMessages.find(e => e.getLevel == Level.INFO
-        && e.getThrowableInformation != null))
       val event = appender.getMessages.find(e => e.getLevel == Level.INFO
         && e.getThrowableInformation != null
-        && e.getThrowableInformation.getThrowable.getClass.getName.equals(classOf[ControllerMovedException].getName))
+        && e.getThrowableInformation.getThrowable.getClass.getName.equals(new ControllerMovedException("").getClass.getName))
       assertTrue(event.isDefined)
 
     } finally {
@@ -695,7 +628,7 @@ class ControllerIntegrationTest extends ZooKeeperTestHarness {
   }
 
   private def timer(metricName: String): Timer = {
-    kafka.metrics.getKafkaMetrics.filterKeys(_ == metricName).values.headOption
+    Metrics.defaultRegistry.allMetrics.asScala.filterKeys(_.getMBeanName == metricName).values.headOption
       .getOrElse(fail(s"Unable to find metric $metricName")).asInstanceOf[Timer]
   }
 

@@ -124,10 +124,10 @@ public class Node {
         if (obj == null || getClass() != obj.getClass())
             return false;
         Node other = (Node) obj;
-        return id == other.id &&
+        return (Objects.equals(host, other.host)) &&
+            id == other.id &&
             port == other.port &&
-            Objects.equals(host, other.host) &&
-            Objects.equals(rack, other.rack);
+            (Objects.equals(rack, other.rack));
     }
 
     @Override

@@ -16,8 +16,9 @@
  */
 package kafka.admin
 
-import scala.collection.{Map, Seq, mutable}
 import org.junit.Assert._
+
+import scala.collection.{Map, Seq, mutable}
 
 trait RackAwareTest {
 
@@ -25,7 +26,7 @@ trait RackAwareTest {
                                brokerRackMapping: Map[Int, String],
                                numBrokers: Int,
                                numPartitions: Int,
-                               replicationFactor: Short,
+                               replicationFactor: Int,
                                verifyRackAware: Boolean = true,
                                verifyLeaderDistribution: Boolean = true,
                                verifyReplicasDistribution: Boolean = true) {

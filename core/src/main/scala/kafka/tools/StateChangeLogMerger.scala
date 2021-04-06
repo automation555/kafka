@@ -17,18 +17,17 @@
 
 package kafka.tools
 
-import joptsimple._
-
-import scala.util.matching.Regex
-import collection.mutable
-import java.util.Date
-import java.text.SimpleDateFormat
-
-import kafka.utils.{CommandLineUtils, CoreUtils, Exit, Logging}
 import java.io.{BufferedOutputStream, OutputStream}
 import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
 
+import joptsimple._
+import kafka.utils.{CommandLineUtils, CoreUtils, Exit, Logging}
 import org.apache.kafka.common.internals.Topic
+
+import scala.collection.mutable
+import scala.util.matching.Regex
 
 /**
  * A utility that merges the state change logs (possibly obtained from different brokers and over multiple days).
@@ -57,7 +56,7 @@ object StateChangeLogMerger extends Logging {
   var startDate: Date = null
   var endDate: Date = null
 
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
 
     // Parse input arguments.
     val parser = new OptionParser(false)
@@ -137,7 +136,7 @@ object StateChangeLogMerger extends Logging {
      */
     val pqueue = new mutable.PriorityQueue[LineIterator]()(dateBasedOrdering)
     val output: OutputStream = new BufferedOutputStream(System.out, 1024*1024)
-    val lineIterators = files.map(scala.io.Source.fromFile(_).getLines())
+    val lineIterators = files.map(io.Source.fromFile(_).getLines)
     var lines: List[LineIterator] = List()
 
     for (itr <- lineIterators) {
@@ -166,7 +165,7 @@ object StateChangeLogMerger extends Logging {
    */
   def getNextLine(itr: Iterator[String]): LineIterator = {
     while (itr != null && itr.hasNext) {
-      val nextLine = itr.next()
+      val nextLine = itr.next
       dateRegex.findFirstIn(nextLine).foreach { d =>
         val date = dateFormat.parse(d)
         if ((date.equals(startDate) || date.after(startDate)) && (date.equals(endDate) || date.before(endDate))) {

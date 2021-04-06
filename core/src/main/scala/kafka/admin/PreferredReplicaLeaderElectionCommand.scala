@@ -25,14 +25,13 @@ import kafka.utils._
 import kafka.zk.KafkaZkClient
 import org.apache.kafka.clients.admin.AdminClientConfig
 import org.apache.kafka.common.errors.TimeoutException
-
-import collection.JavaConverters._
-import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.security.JaasUtils
+import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{KafkaFuture, TopicPartition}
 import org.apache.zookeeper.KeeperException.NodeExistsException
 
-import collection._
+import scala.collection.JavaConverters._
+import scala.collection._
 
 object PreferredReplicaLeaderElectionCommand extends Logging {
 
@@ -148,6 +147,7 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
       .describedAs("config file")
       .ofType(classOf[String])
 
+    parser.accepts("")
     options = parser.parse(args: _*)
   }
 
@@ -177,12 +177,13 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
               zkClient.getAllPartitions().map(_.topic)
           }
 
+        val partitionsFromZk = zkClient.getPartitionsForTopics(topics).flatMap{ case (topic, partitions) =>
+          partitions.map(new TopicPartition(topic, _))
+        }.toSet
+
         val (validPartitions, invalidPartitions) =
           partitionsFromUser match {
             case Some(partitions) =>
-              val partitionsFromZk = zkClient.getPartitionsForTopics(topics).flatMap{ case (topic, partitions) =>
-                partitions.map(new TopicPartition(topic, _))
-              }.toSet
               partitions.partition(partitionsFromZk.contains)
             case None =>
               (zkClient.getAllPartitions(), Set.empty)
@@ -254,10 +255,10 @@ object PreferredReplicaLeaderElectionCommand extends Logging {
       val (exceptional, ok) = attemptedPartitions.map(tp => tp -> result.partitionResult(tp)).
         partition { case (_, partitionResult) => completedExceptionally(partitionResult) }
 
-      if (!ok.isEmpty) {
+      if (ok.nonEmpty) {
         println(s"Successfully completed preferred replica election for partitions ${ok.map{ case (tp, future) => tp }.mkString(", ")}")
       }
-      if (!exceptional.isEmpty) {
+      if (exceptional.nonEmpty) {
         val adminException = new AdminCommandFailedException(
           s"${exceptional.size} preferred replica(s) could not be elected")
         for ((partition, void) <- exceptional) {

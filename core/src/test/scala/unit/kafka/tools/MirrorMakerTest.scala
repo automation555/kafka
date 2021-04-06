@@ -19,9 +19,10 @@ package kafka.tools
 
 import kafka.consumer.BaseConsumerRecord
 import org.apache.kafka.common.record.{RecordBatch, TimestampType}
-import scala.collection.JavaConverters._
 import org.junit.Assert._
 import org.junit.Test
+
+import scala.collection.JavaConverters._
 
 class MirrorMakerTest {
 
@@ -74,26 +75,5 @@ class MirrorMakerTest {
     assertEquals("value", new String(producerRecord.value))
     assertEquals("headerValue", new String(producerRecord.headers.lastHeader("headerKey").value))
     assertEquals(1, producerRecord.headers.asScala.size)
-  }
-
-  @Test
-  def testDefaultMirrorMakerMessageHandlerWithPartitionToPartition() {
-    val now = 12345L
-    val consumerRecord = BaseConsumerRecord("topic", 123, 1L, now, TimestampType.CREATE_TIME, "key".getBytes,
-      "value".getBytes)
-
-    val oldSetting = MirrorMaker.partitionToPartition
-    MirrorMaker.partitionToPartition = true
-    val result = MirrorMaker.defaultMirrorMakerMessageHandler.handle(consumerRecord)
-    MirrorMaker.partitionToPartition = oldSetting
-
-    assertEquals(1, result.size)
-
-    val producerRecord = result.get(0)
-    assertEquals(now, producerRecord.timestamp)
-    assertEquals("topic", producerRecord.topic)
-    assertEquals(123, producerRecord.partition)
-    assertEquals("key", new String(producerRecord.key))
-    assertEquals("value", new String(producerRecord.value))
   }
 }

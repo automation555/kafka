@@ -293,7 +293,7 @@ public class ConsumerNetworkClient implements Closeable {
         // called without the lock to avoid deadlock potential if handlers need to acquire locks
         firePendingCompletedRequests();
 
-        metadata.maybeThrowAnyException();
+        metadata.maybeThrowException();
     }
 
     /**
@@ -301,27 +301,6 @@ public class ConsumerNetworkClient implements Closeable {
      */
     public void pollNoWakeup() {
         poll(time.timer(0), null, true);
-    }
-
-    /**
-     * Poll for network IO in best-effort only trying to transmit the ready-to-send request
-     * Do not check any pending requests or metadata errors so that no exception should ever
-     * be thrown, also no wakeups be triggered and no interrupted exception either.
-     */
-    public void transmitSends() {
-        Timer timer = time.timer(0);
-
-        // do not try to handle any disconnects, prev request failures, metadata exception etc;
-        // just try once and return immediately
-        lock.lock();
-        try {
-            // send all the requests we can send now
-            trySend(timer.currentTimeMs());
-
-            client.poll(0, timer.currentTimeMs());
-        } finally {
-            lock.unlock();
-        }
     }
 
     /**
@@ -444,7 +423,7 @@ public class ConsumerNetworkClient implements Closeable {
                 if (node == null)
                     break;
 
-                failUnsentRequests(node, new DisconnectException("On-demand disconnection with " + node.host()));
+                failUnsentRequests(node, DisconnectException.INSTANCE);
                 client.disconnect(node.idString());
             }
         } finally {
@@ -480,8 +459,7 @@ public class ConsumerNetworkClient implements Closeable {
         }
     }
 
-    // Visible for testing
-    long trySend(long now) {
+    private long trySend(long now) {
         long pollDelayMs = maxPollTimeoutMs;
 
         // send any requests that can be sent now
@@ -592,7 +570,7 @@ public class ConsumerNetworkClient implements Closeable {
             } else if (response.wasDisconnected()) {
                 log.debug("Cancelled request with header {} due to node {} being disconnected",
                         response.requestHeader(), response.destination());
-                future.raise(new DisconnectException("Disconnected from " + response.destination()));
+                future.raise(DisconnectException.INSTANCE);
             } else if (response.versionMismatch() != null) {
                 future.raise(response.versionMismatch());
             } else {
@@ -695,12 +673,7 @@ public class ConsumerNetworkClient implements Closeable {
             // the lock protects removal from a concurrent put which could otherwise mutate the
             // queue after it has been removed from the map
             synchronized (unsent) {
-                Iterator<ConcurrentLinkedQueue<ClientRequest>> iterator = unsent.values().iterator();
-                while (iterator.hasNext()) {
-                    ConcurrentLinkedQueue<ClientRequest> requests = iterator.next();
-                    if (requests.isEmpty())
-                        iterator.remove();
-                }
+                unsent.values().removeIf(ConcurrentLinkedQueue::isEmpty);
             }
         }
 
@@ -709,13 +682,13 @@ public class ConsumerNetworkClient implements Closeable {
             // queue after it has been removed from the map
             synchronized (unsent) {
                 ConcurrentLinkedQueue<ClientRequest> requests = unsent.remove(node);
-                return requests == null ? Collections.<ClientRequest>emptyList() : requests;
+                return requests == null ? Collections.emptyList() : requests;
             }
         }
 
         public Iterator<ClientRequest> requestIterator(Node node) {
             ConcurrentLinkedQueue<ClientRequest> requests = unsent.get(node);
-            return requests == null ? Collections.<ClientRequest>emptyIterator() : requests.iterator();
+            return requests == null ? Collections.emptyIterator() : requests.iterator();
         }
 
         public Collection<Node> nodes() {

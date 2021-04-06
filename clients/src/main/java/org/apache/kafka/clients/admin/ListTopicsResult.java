@@ -25,8 +25,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The result of the {@link Admin#listTopics()} call.
+ * The result of the {@link AdminClient#listTopics()} call.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class ListTopicsResult {
     final KafkaFuture<Map<String, TopicListing>> future;
 
@@ -45,23 +48,13 @@ public class ListTopicsResult {
      * Return a future which yields a collection of TopicListing objects.
      */
     public KafkaFuture<Collection<TopicListing>> listings() {
-        return future.thenApply(new KafkaFuture.BaseFunction<Map<String, TopicListing>, Collection<TopicListing>>() {
-            @Override
-            public Collection<TopicListing> apply(Map<String, TopicListing> namesToDescriptions) {
-                return namesToDescriptions.values();
-            }
-        });
+        return future.thenApply(Map::values);
     }
 
     /**
      * Return a future which yields a collection of topic names.
      */
     public KafkaFuture<Set<String>> names() {
-        return future.thenApply(new KafkaFuture.BaseFunction<Map<String, TopicListing>, Set<String>>() {
-            @Override
-            public Set<String> apply(Map<String, TopicListing> namesToListings) {
-                return namesToListings.keySet();
-            }
-        });
+        return future.thenApply(Map::keySet);
     }
 }

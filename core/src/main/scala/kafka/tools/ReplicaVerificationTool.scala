@@ -27,8 +27,7 @@ import java.util.{Date, Optional, Properties}
 
 import joptsimple.OptionParser
 import kafka.api._
-import kafka.utils.Whitelist
-import kafka.utils._
+import kafka.utils.{Whitelist, _}
 import org.apache.kafka.clients._
 import org.apache.kafka.clients.admin.{ListTopicsOptions, TopicDescription}
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
@@ -469,7 +468,6 @@ private class ReplicaFetcherBlockingSend(sourceNode: Node,
       1,
       0,
       0,
-      30000,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       consumerConfig.getInt(ConsumerConfig.RECEIVE_BUFFER_CONFIG),
       consumerConfig.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG),

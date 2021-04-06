@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -52,17 +53,11 @@ import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
-import org.apache.kafka.common.message.ApiVersionsRequestData;
-import org.apache.kafka.common.message.ApiVersionsResponseData;
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKey;
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKeyCollection;
-import org.apache.kafka.common.message.RequestHeaderData;
 import org.apache.kafka.common.message.SaslAuthenticateRequestData;
 import org.apache.kafka.common.message.SaslHandshakeRequestData;
 import org.apache.kafka.common.network.CertStores;
 import org.apache.kafka.common.network.ChannelBuilder;
 import org.apache.kafka.common.network.ChannelBuilders;
-import org.apache.kafka.common.network.ChannelMetadataRegistry;
 import org.apache.kafka.common.network.ChannelState;
 import org.apache.kafka.common.network.ListenerName;
 import org.apache.kafka.common.network.Mode;
@@ -81,6 +76,7 @@ import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.ApiVersionsRequest;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.apache.kafka.common.requests.ApiVersionsResponse.ApiVersion;
 import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.requests.ResponseHeader;
@@ -119,7 +115,6 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -170,7 +165,7 @@ public class SaslAuthenticatorTest {
     public void testValidSaslPlainOverSsl() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
 
         server = createEchoServer(securityProtocol);
         checkAuthenticationAndReauthentication(securityProtocol, node);
@@ -184,7 +179,7 @@ public class SaslAuthenticatorTest {
     public void testValidSaslPlainOverPlaintext() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
 
         server = createEchoServer(securityProtocol);
         checkAuthenticationAndReauthentication(securityProtocol, node);
@@ -197,7 +192,7 @@ public class SaslAuthenticatorTest {
     public void testInvalidPasswordSaslPlain() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         jaasConfig.setClientOptions("PLAIN", TestJaasConfig.USERNAME, "invalidpassword");
 
         server = createEchoServer(securityProtocol);
@@ -214,7 +209,7 @@ public class SaslAuthenticatorTest {
     public void testInvalidUsernameSaslPlain() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         jaasConfig.setClientOptions("PLAIN", "invaliduser", TestJaasConfig.PASSWORD);
 
         server = createEchoServer(securityProtocol);
@@ -230,7 +225,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testMissingUsernameSaslPlain() throws Exception {
         String node = "0";
-        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         jaasConfig.setClientOptions("PLAIN", null, "mypassword");
 
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
@@ -254,7 +249,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testMissingPasswordSaslPlain() throws Exception {
         String node = "0";
-        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         jaasConfig.setClientOptions("PLAIN", "myuser", null);
 
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
@@ -345,7 +340,7 @@ public class SaslAuthenticatorTest {
     public void testMechanismPluggability() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("DIGEST-MD5", Arrays.asList("DIGEST-MD5"));
+        configureMechanisms("DIGEST-MD5", Collections.singletonList("DIGEST-MD5"));
         configureDigestMd5ServerCallback(securityProtocol);
 
         server = createEchoServer(securityProtocol);
@@ -419,7 +414,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testValidSaslScramSha256() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
 
         server = createEchoServer(securityProtocol);
         updateScramCredentialCache(TestJaasConfig.USERNAME, TestJaasConfig.PASSWORD);
@@ -449,7 +444,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testInvalidPasswordSaslScram() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
         Map<String, Object> options = new HashMap<>();
         options.put("username", TestJaasConfig.USERNAME);
         options.put("password", "invalidpassword");
@@ -469,7 +464,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testUnknownUserSaslScram() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
         Map<String, Object> options = new HashMap<>();
         options.put("username", "unknownUser");
         options.put("password", TestJaasConfig.PASSWORD);
@@ -515,7 +510,7 @@ public class SaslAuthenticatorTest {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
         String username = "special user= test,scram";
         String password = username + "-password";
-        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
         Map<String, Object> options = new HashMap<>();
         options.put("username", username);
         options.put("password", password);
@@ -530,7 +525,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testTokenAuthenticationOverSaslScram() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
 
         //create jaas config for token auth
         Map<String, Object> options = new HashMap<>();
@@ -566,7 +561,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testTokenReauthenticationOverSaslScram() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Arrays.asList("SCRAM-SHA-256"));
+        TestJaasConfig jaasConfig = configureMechanisms("SCRAM-SHA-256", Collections.singletonList("SCRAM-SHA-256"));
 
         // create jaas config for token auth
         Map<String, Object> options = new HashMap<>();
@@ -592,7 +587,7 @@ public class SaslAuthenticatorTest {
             @Override
             public TokenInformation token(String tokenId) {
                 TokenInformation baseTokenInfo = super.token(tokenId);
-                long thisLifetimeMs = System.currentTimeMillis() + tokenLifetime.apply(++callNum).longValue();
+                long thisLifetimeMs = System.currentTimeMillis() + tokenLifetime.apply(++callNum);
                 TokenInformation retvalTokenInfo = new TokenInformation(baseTokenInfo.tokenId(), baseTokenInfo.owner(),
                         baseTokenInfo.renewers(), baseTokenInfo.issueTimestamp(), thisLifetimeMs, thisLifetimeMs);
                 return retvalTokenInfo;
@@ -679,96 +674,22 @@ public class SaslAuthenticatorTest {
     public void testApiVersionsRequestWithUnsupportedVersion() throws Exception {
         short handshakeVersion = ApiKeys.SASL_HANDSHAKE.latestVersion();
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send ApiVersionsRequest with unsupported version and validate error response.
         String node = "1";
         createClientConnection(SecurityProtocol.PLAINTEXT, node);
-
-        RequestHeader header = new RequestHeader(new RequestHeaderData().
-                setRequestApiKey(ApiKeys.API_VERSIONS.id).
-                setRequestApiVersion(Short.MAX_VALUE).
-                setClientId("someclient").
-                setCorrelationId(1),
-                (short) 2);
+        RequestHeader header = new RequestHeader(ApiKeys.API_VERSIONS, Short.MAX_VALUE, "someclient", 1);
         ApiVersionsRequest request = new ApiVersionsRequest.Builder().build();
         selector.send(request.toSend(node, header));
         ByteBuffer responseBuffer = waitForResponse();
-        ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion((short) 0));
+        ResponseHeader.parse(responseBuffer);
         ApiVersionsResponse response = ApiVersionsResponse.parse(responseBuffer, (short) 0);
-        assertEquals(Errors.UNSUPPORTED_VERSION, response.data.errorCode());
-
-        ApiVersionsResponseKey apiVersion = response.data.apiKeys().find(ApiKeys.API_VERSIONS.id);
-        assertNotNull(apiVersion);
-        assertEquals(ApiKeys.API_VERSIONS.id, apiVersion.apiKey());
-        assertEquals(ApiKeys.API_VERSIONS.oldestVersion(), apiVersion.minVersion());
-        assertEquals(ApiKeys.API_VERSIONS.latestVersion(), apiVersion.maxVersion());
+        assertEquals(Errors.UNSUPPORTED_VERSION, response.error());
 
         // Send ApiVersionsRequest with a supported version. This should succeed.
         sendVersionRequestReceiveResponse(node);
-
-        // Test that client can authenticate successfully
-        sendHandshakeRequestReceiveResponse(node, handshakeVersion);
-        authenticateUsingSaslPlainAndCheckConnection(node, handshakeVersion > 0);
-    }
-
-    /**
-     * Tests that invalid ApiVersionRequest is handled by the server correctly and
-     * returns an INVALID_REQUEST error.
-     */
-    @Test
-    public void testInvalidApiVersionsRequest() throws Exception {
-        short handshakeVersion = ApiKeys.SASL_HANDSHAKE.latestVersion();
-        SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
-        server = createEchoServer(securityProtocol);
-
-        // Send ApiVersionsRequest with invalid version and validate error response.
-        String node = "1";
-        short version = ApiKeys.API_VERSIONS.latestVersion();
-        createClientConnection(SecurityProtocol.PLAINTEXT, node);
-        RequestHeader header = new RequestHeader(ApiKeys.API_VERSIONS, version, "someclient", 1);
-        ApiVersionsRequest request = new ApiVersionsRequest(new ApiVersionsRequestData().
-                setClientSoftwareName("  ").
-                setClientSoftwareVersion("   "), version);
-        selector.send(request.toSend(node, header));
-        ByteBuffer responseBuffer = waitForResponse();
-        ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion(version));
-        ApiVersionsResponse response =
-            ApiVersionsResponse.parse(responseBuffer, version);
-        assertEquals(Errors.INVALID_REQUEST, response.data.errorCode());
-
-        // Send ApiVersionsRequest with a supported version. This should succeed.
-        sendVersionRequestReceiveResponse(node);
-
-        // Test that client can authenticate successfully
-        sendHandshakeRequestReceiveResponse(node, handshakeVersion);
-        authenticateUsingSaslPlainAndCheckConnection(node, handshakeVersion > 0);
-    }
-
-    /**
-     * Tests that valid ApiVersionRequest is handled by the server correctly and
-     * returns an NONE error.
-     */
-    @Test
-    public void testValidApiVersionsRequest() throws Exception {
-        short handshakeVersion = ApiKeys.SASL_HANDSHAKE.latestVersion();
-        SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
-        server = createEchoServer(securityProtocol);
-
-        // Send ApiVersionsRequest with valid version and validate error response.
-        String node = "1";
-        short version = ApiKeys.API_VERSIONS.latestVersion();
-        createClientConnection(SecurityProtocol.PLAINTEXT, node);
-        RequestHeader header = new RequestHeader(ApiKeys.API_VERSIONS, version, "someclient", 1);
-        ApiVersionsRequest request = new ApiVersionsRequest.Builder().build(version);
-        selector.send(request.toSend(node, header));
-        ByteBuffer responseBuffer = waitForResponse();
-        ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion(version));
-        ApiVersionsResponse response = ApiVersionsResponse.parse(responseBuffer, version);
-        assertEquals(Errors.NONE, response.data.errorCode());
 
         // Test that client can authenticate successfully
         sendHandshakeRequestReceiveResponse(node, handshakeVersion);
@@ -785,7 +706,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testSaslHandshakeRequestWithUnsupportedVersion() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send SaslHandshakeRequest and validate that connection is closed by server.
@@ -812,7 +733,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testInvalidSaslPacket() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send invalid SASL packet after valid handshake request
@@ -851,7 +772,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testInvalidApiVersionsRequestSequence() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send handshake request followed by ApiVersionsRequest
@@ -877,7 +798,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testPacketSizeTooBig() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send SASL packet with large size after valid handshake request
@@ -917,7 +838,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testDisallowedKafkaRequestsBeforeAuthentication() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Send metadata request before Kafka SASL handshake request
@@ -954,7 +875,7 @@ public class SaslAuthenticatorTest {
      */
     @Test
     public void testInvalidLoginModule() throws Exception {
-        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         jaasConfig.createOrUpdateEntry(TestJaasConfig.LOGIN_CONTEXT_CLIENT, "InvalidLoginModule", TestJaasConfig.defaultClientOptions());
 
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
@@ -996,7 +917,7 @@ public class SaslAuthenticatorTest {
     public void testServerAuthenticateCallbackHandler() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
         TestJaasConfig jaasConfig = configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
-        jaasConfig.createOrUpdateEntry(TestJaasConfig.LOGIN_CONTEXT_SERVER, PlainLoginModule.class.getName(), new HashMap<String, Object>());
+        jaasConfig.createOrUpdateEntry(TestJaasConfig.LOGIN_CONTEXT_SERVER, PlainLoginModule.class.getName(), new HashMap<>());
         String callbackPrefix = ListenerName.forSecurityProtocol(securityProtocol).saslMechanismConfigPrefix("PLAIN");
         saslServerConfigs.put(callbackPrefix + BrokerSecurityConfigs.SASL_SERVER_CALLBACK_HANDLER_CLASS,
                 TestServerCallbackHandler.class.getName());
@@ -1176,7 +1097,7 @@ public class SaslAuthenticatorTest {
     public void testDisabledMechanism() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("PLAIN", Arrays.asList("DIGEST-MD5"));
+        configureMechanisms("PLAIN", Collections.singletonList("DIGEST-MD5"));
 
         server = createEchoServer(securityProtocol);
         createAndCheckClientConnectionFailure(securityProtocol, node);
@@ -1191,7 +1112,7 @@ public class SaslAuthenticatorTest {
     public void testInvalidMechanism() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "INVALID");
 
         server = createEchoServer(securityProtocol);
@@ -1209,7 +1130,7 @@ public class SaslAuthenticatorTest {
     public void testClientDynamicJaasConfiguration() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "PLAIN");
-        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Arrays.asList("PLAIN"));
+        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Collections.singletonList("PLAIN"));
         Map<String, Object> serverOptions = new HashMap<>();
         serverOptions.put("user_user1", "user1-secret");
         serverOptions.put("user_user2", "user2-secret");
@@ -1256,7 +1177,7 @@ public class SaslAuthenticatorTest {
     public void testServerDynamicJaasConfiguration() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "PLAIN");
-        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Arrays.asList("PLAIN"));
+        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Collections.singletonList("PLAIN"));
         Map<String, Object> serverOptions = new HashMap<>();
         serverOptions.put("user_user1", "user1-secret");
         serverOptions.put("user_user2", "user2-secret");
@@ -1282,7 +1203,7 @@ public class SaslAuthenticatorTest {
     public void testJaasConfigurationForListener() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_PLAINTEXT;
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "PLAIN");
-        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Arrays.asList("PLAIN"));
+        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Collections.singletonList("PLAIN"));
 
         TestJaasConfig staticJaasConfig = new TestJaasConfig();
 
@@ -1470,7 +1391,7 @@ public class SaslAuthenticatorTest {
     public void testValidSaslOauthBearerMechanism() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("OAUTHBEARER", Arrays.asList("OAUTHBEARER"));
+        configureMechanisms("OAUTHBEARER", Collections.singletonList("OAUTHBEARER"));
         server = createEchoServer(securityProtocol);
         createAndCheckClientConnection(securityProtocol, node);
     }
@@ -1485,7 +1406,7 @@ public class SaslAuthenticatorTest {
         saslClientConfigs.put(SaslConfigs.SASL_LOGIN_CALLBACK_HANDLER_CLASS,
                 AlternateLoginCallbackHandler.class.getName());
         configureMechanisms(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM,
-                Arrays.asList(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM));
+                Collections.singletonList(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM));
         server = createEchoServer(securityProtocol);
         // initial authentication must succeed
         createClientConnection(securityProtocol, node);
@@ -1557,7 +1478,7 @@ public class SaslAuthenticatorTest {
         time = new MockTime();
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
         configureMechanisms(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM,
-                Arrays.asList(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM));
+                Collections.singletonList(OAuthBearerLoginModule.OAUTHBEARER_MECHANISM));
         server = createEchoServer(securityProtocol);
         try {
             createClientConnection(securityProtocol, node);
@@ -1606,7 +1527,7 @@ public class SaslAuthenticatorTest {
     public void testRepeatedValidSaslPlainOverSsl() throws Exception {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         /*
          * Make sure 85% of this value is at least 1 second otherwise it is possible for
          * the client to start re-authenticating but the server does not start due to
@@ -1643,7 +1564,7 @@ public class SaslAuthenticatorTest {
         String node = "0";
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
         saslClientConfigs.put(SaslConfigs.SASL_MECHANISM, "OAUTHBEARER");
-        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Arrays.asList("OAUTHBEARER"));
+        saslServerConfigs.put(BrokerSecurityConfigs.SASL_ENABLED_MECHANISMS_CONFIG, Collections.singletonList("OAUTHBEARER"));
         saslClientConfigs.put(SaslConfigs.SASL_JAAS_CONFIG,
                 TestJaasConfig.jaasConfigProperty("OAUTHBEARER", Collections.singletonMap("unsecuredLoginStringClaim_sub", TestJaasConfig.USERNAME)));
         saslServerConfigs.put("listener.name.sasl_ssl.oauthbearer." + SaslConfigs.SASL_JAAS_CONFIG,
@@ -1676,7 +1597,7 @@ public class SaslAuthenticatorTest {
     @Test
     public void testInsufficientScopeSaslOauthBearerMechanism() throws Exception {
         SecurityProtocol securityProtocol = SecurityProtocol.SASL_SSL;
-        TestJaasConfig jaasConfig = configureMechanisms("OAUTHBEARER", Arrays.asList("OAUTHBEARER"));
+        TestJaasConfig jaasConfig = configureMechanisms("OAUTHBEARER", Collections.singletonList("OAUTHBEARER"));
         // now update the server side to require a scope the client does not provide
         Map<String, Object> serverJaasConfigOptionsMap = TestJaasConfig.defaultServerOptions("OAUTHBEARER");
         serverJaasConfigOptionsMap.put("unsecuredValidatorRequiredScope", "LOGIN_TO_KAFKA"); // causes the failure
@@ -1690,7 +1611,7 @@ public class SaslAuthenticatorTest {
 
     private void verifySaslAuthenticateHeaderInterop(boolean enableHeaderOnServer, boolean enableHeaderOnClient,
             SecurityProtocol securityProtocol, String saslMechanism) throws Exception {
-        configureMechanisms(saslMechanism, Arrays.asList(saslMechanism));
+        configureMechanisms(saslMechanism, Collections.singletonList(saslMechanism));
         createServer(securityProtocol, saslMechanism, enableHeaderOnServer);
 
         String node = "0";
@@ -1700,7 +1621,7 @@ public class SaslAuthenticatorTest {
 
     private void verifySaslAuthenticateHeaderInteropWithFailure(boolean enableHeaderOnServer, boolean enableHeaderOnClient,
             SecurityProtocol securityProtocol, String saslMechanism) throws Exception {
-        TestJaasConfig jaasConfig = configureMechanisms(saslMechanism, Arrays.asList(saslMechanism));
+        TestJaasConfig jaasConfig = configureMechanisms(saslMechanism, Collections.singletonList(saslMechanism));
         jaasConfig.setClientOptions(saslMechanism, TestJaasConfig.USERNAME, "invalidpassword");
         createServer(securityProtocol, saslMechanism, enableHeaderOnServer);
 
@@ -1738,7 +1659,7 @@ public class SaslAuthenticatorTest {
 
         boolean isScram = ScramMechanism.isScram(saslMechanism);
         if (isScram)
-            ScramCredentialUtils.createCache(credentialCache, Arrays.asList(saslMechanism));
+            ScramCredentialUtils.createCache(credentialCache, Collections.singletonList(saslMechanism));
         SaslChannelBuilder serverChannelBuilder = new SaslChannelBuilder(Mode.SERVER, jaasContexts,
                 securityProtocol, listenerName, false, saslMechanism, true, credentialCache, null, time) {
 
@@ -1748,32 +1669,20 @@ public class SaslAuthenticatorTest {
                                                                        String id,
                                                                        TransportLayer transportLayer,
                                                                        Map<String, Subject> subjects,
-                                                                       Map<String, Long> connectionsMaxReauthMsByMechanism,
-                                                                       ChannelMetadataRegistry metadataRegistry) {
-                return new SaslServerAuthenticator(configs, callbackHandlers, id, subjects, null, listenerName,
-                    securityProtocol, transportLayer, connectionsMaxReauthMsByMechanism, metadataRegistry, time) {
+                                                                       Map<String, Long> connectionsMaxReauthMsByMechanism) {
+                return new SaslServerAuthenticator(configs, callbackHandlers, id, subjects, null, listenerName, securityProtocol, transportLayer, connectionsMaxReauthMsByMechanism, time) {
 
                     @Override
                     protected ApiVersionsResponse apiVersionsResponse() {
-                        ApiVersionsResponse defaultApiVersionResponse = ApiVersionsResponse.DEFAULT_API_VERSIONS_RESPONSE;
-                        ApiVersionsResponseKeyCollection apiVersions = new ApiVersionsResponseKeyCollection();
-                        for (ApiVersionsResponseKey apiVersion : defaultApiVersionResponse.data.apiKeys()) {
-                            if (apiVersion.apiKey() != ApiKeys.SASL_AUTHENTICATE.id) {
-                                // ApiVersionsResponseKey can NOT be reused in second ApiVersionsResponseKeyCollection
-                                // due to the internal pointers it contains.
-                                apiVersions.add(new ApiVersionsResponseKey()
-                                    .setApiKey(apiVersion.apiKey())
-                                    .setMinVersion(apiVersion.minVersion())
-                                    .setMaxVersion(apiVersion.maxVersion())
-                                );
+                        List<ApiVersion> apiVersions = new ArrayList<>(ApiVersionsResponse.defaultApiVersionsResponse().apiVersions());
+                        for (Iterator<ApiVersion> it = apiVersions.iterator(); it.hasNext(); ) {
+                            ApiVersion apiVersion = it.next();
+                            if (apiVersion.apiKey == ApiKeys.SASL_AUTHENTICATE.id) {
+                                it.remove();
+                                break;
                             }
-
                         }
-                        ApiVersionsResponseData data = new ApiVersionsResponseData()
-                            .setErrorCode(Errors.NONE)
-                            .setThrottleTimeMs(0)
-                            .setApiKeys(apiVersions);
-                        return new ApiVersionsResponse(data);
+                        return new ApiVersionsResponse(0, Errors.NONE, apiVersions);
                     }
 
                     @Override
@@ -1854,7 +1763,7 @@ public class SaslAuthenticatorTest {
      * </ol>
      */
     private void testUnauthenticatedApiVersionsRequest(SecurityProtocol securityProtocol, short saslHandshakeVersion) throws Exception {
-        configureMechanisms("PLAIN", Arrays.asList("PLAIN"));
+        configureMechanisms("PLAIN", Collections.singletonList("PLAIN"));
         server = createEchoServer(securityProtocol);
 
         // Create non-SASL connection to manually authenticate after ApiVersionsRequest
@@ -1875,10 +1784,10 @@ public class SaslAuthenticatorTest {
 
         // Send ApiVersionsRequest and check response
         ApiVersionsResponse versionsResponse = sendVersionRequestReceiveResponse(node);
-        assertEquals(ApiKeys.SASL_HANDSHAKE.oldestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).minVersion());
-        assertEquals(ApiKeys.SASL_HANDSHAKE.latestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).maxVersion());
-        assertEquals(ApiKeys.SASL_AUTHENTICATE.oldestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id).minVersion());
-        assertEquals(ApiKeys.SASL_AUTHENTICATE.latestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id).maxVersion());
+        assertEquals(ApiKeys.SASL_HANDSHAKE.oldestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).minVersion);
+        assertEquals(ApiKeys.SASL_HANDSHAKE.latestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).maxVersion);
+        assertEquals(ApiKeys.SASL_AUTHENTICATE.oldestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id).minVersion);
+        assertEquals(ApiKeys.SASL_AUTHENTICATE.latestVersion(), versionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id).maxVersion);
 
         // Send SaslHandshakeRequest and check response
         SaslHandshakeResponse handshakeResponse = sendHandshakeRequestReceiveResponse(node, saslHandshakeVersion);
@@ -1891,7 +1800,7 @@ public class SaslAuthenticatorTest {
     private void authenticateUsingSaslPlainAndCheckConnection(String node, boolean enableSaslAuthenticateHeader) throws Exception {
         // Authenticate using PLAIN username/password
         String authString = "\u0000" + TestJaasConfig.USERNAME + "\u0000" + TestJaasConfig.PASSWORD;
-        ByteBuffer authBuf = ByteBuffer.wrap(authString.getBytes("UTF-8"));
+        ByteBuffer authBuf = ByteBuffer.wrap(authString.getBytes(StandardCharsets.UTF_8));
         if (enableSaslAuthenticateHeader) {
             SaslAuthenticateRequestData data = new SaslAuthenticateRequestData().setAuthBytes(authBuf.array());
             SaslAuthenticateRequest request = new SaslAuthenticateRequest.Builder(data).build();
@@ -2036,7 +1945,7 @@ public class SaslAuthenticatorTest {
     private ApiVersionsResponse sendVersionRequestReceiveResponse(String node) throws Exception {
         ApiVersionsRequest handshakeRequest = createApiVersionsRequestV0();
         ApiVersionsResponse response =  (ApiVersionsResponse) sendKafkaRequestReceiveResponse(node, ApiKeys.API_VERSIONS, handshakeRequest);
-        assertEquals(Errors.NONE, response.data.errorCode());
+        assertEquals(Errors.NONE, response.error());
         return response;
     }
 

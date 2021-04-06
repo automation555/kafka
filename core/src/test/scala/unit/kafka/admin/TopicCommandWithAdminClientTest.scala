@@ -18,7 +18,6 @@ package kafka.admin
 
 import java.util.{Collections, Properties}
 
-import joptsimple.OptionException
 import kafka.admin.TopicCommand.{AdminClientTopicService, TopicCommandOptions}
 import kafka.common.AdminCommandFailedException
 import kafka.integration.KafkaServerTestHarness
@@ -30,8 +29,8 @@ import org.apache.kafka.clients.admin.{ListTopicsOptions, NewTopic, AdminClient 
 import org.apache.kafka.common.config.{ConfigException, ConfigResource, TopicConfig}
 import org.apache.kafka.common.internals.Topic
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue}
-import org.junit.{After, Before, Rule, Test}
 import org.junit.rules.TestName
+import org.junit.{After, Before, Rule, Test}
 
 import scala.collection.JavaConverters._
 import scala.concurrent.ExecutionException
@@ -200,7 +199,7 @@ class TopicCommandWithAdminClientTest extends KafkaServerTestHarness with Loggin
 
   @Test
   def testCreateWithInvalidReplicationFactor() {
-    intercept[OptionException] {
+    intercept[IllegalArgumentException] {
       topicService.createTopic(new TopicCommandOptions(
         Array("--partitions", "2", "--replication-factor", (Short.MaxValue+1).toString, "--topic", testTopicName)))
     }
@@ -400,7 +399,7 @@ class TopicCommandWithAdminClientTest extends KafkaServerTestHarness with Loggin
     val rackInfo = Map(0 -> "rack1", 1 -> "rack2", 2 -> "rack2", 3 -> "rack1", 4 -> "rack3", 5 -> "rack3")
 
     val numPartitions = 18
-    val replicationFactor = 3.toShort
+    val replicationFactor = 3
     val createOpts = new TopicCommandOptions(Array(
       "--partitions", numPartitions.toString,
       "--replication-factor", replicationFactor.toString,

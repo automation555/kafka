@@ -16,8 +16,8 @@
  */
 package kafka.common
 
-import java.util.{ArrayDeque, ArrayList, Collection, Collections, HashMap, Iterator}
 import java.util.Map.Entry
+import java.util.{ArrayDeque, ArrayList, Collection, Collections, HashMap, Iterator}
 
 import kafka.utils.ShutdownableThread
 import org.apache.kafka.clients.{ClientRequest, ClientResponse, NetworkClient, RequestCompletionHandler}
@@ -51,7 +51,7 @@ abstract class InterBrokerSendThread(name: String,
     awaitShutdown()
   }
 
-  override def doWork(): Unit = {
+  override def doWork() {
     var now = time.milliseconds()
 
     generateRequests().foreach { request =>
@@ -138,8 +138,7 @@ abstract class InterBrokerSendThread(name: String,
   def wakeup(): Unit = networkClient.wakeup()
 }
 
-case class RequestAndCompletionHandler(destination: Node,
-                                       request: AbstractRequest.Builder[_ <: AbstractRequest],
+case class RequestAndCompletionHandler(destination: Node, request: AbstractRequest.Builder[_ <: AbstractRequest],
                                        handler: RequestCompletionHandler)
 
 private class UnsentRequests {

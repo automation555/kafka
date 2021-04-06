@@ -18,14 +18,14 @@ import java.time.Duration
 import java.util.{Collections, HashMap, Properties}
 
 import kafka.api.QuotaTestClients._
-import kafka.server.{ClientQuotaManager, ClientQuotaManagerConfig, DynamicConfig, KafkaConfig, KafkaServer, QuotaType}
+import kafka.server._
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.clients.producer.internals.ErrorLoggingCallback
-import org.apache.kafka.common.{Metric, MetricName, TopicPartition}
 import org.apache.kafka.common.metrics.{KafkaMetric, Quota}
 import org.apache.kafka.common.security.auth.KafkaPrincipal
+import org.apache.kafka.common.{Metric, MetricName, TopicPartition}
 import org.junit.Assert._
 import org.junit.{Before, Test}
 
@@ -70,7 +70,7 @@ abstract class BaseQuotaTest extends IntegrationTestHarness {
     super.setUp()
 
     val numPartitions = 1
-    val leaders = createTopic(topic1, numPartitions, serverCount.toShort)
+    val leaders = createTopic(topic1, numPartitions, serverCount)
     leaderNode = if (leaders(0) == servers.head.config.brokerId) servers.head else servers(1)
     followerNode = if (leaders(0) != servers.head.config.brokerId) servers.head else servers(1)
     quotaTestClients = createQuotaTestClients(topic1, leaderNode)

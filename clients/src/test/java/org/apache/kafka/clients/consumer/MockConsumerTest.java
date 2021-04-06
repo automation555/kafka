@@ -18,25 +18,18 @@ package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.Assert;
 import org.junit.Test;
 
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Optional;
 
-import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 
 public class MockConsumerTest {
     
@@ -62,10 +55,9 @@ public class MockConsumerTest {
         assertEquals(rec1, iter.next());
         assertEquals(rec2, iter.next());
         assertFalse(iter.hasNext());
-        final TopicPartition tp = new TopicPartition("test", 0);
-        assertEquals(2L, consumer.position(tp));
+        assertEquals(2L, consumer.position(new TopicPartition("test", 0)));
         consumer.commitSync();
-        assertEquals(2L, consumer.committed(Collections.singleton(tp)).get(tp).offset());
+        assertEquals(2L, consumer.committed(new TopicPartition("test", 0)).offset());
     }
 
     @SuppressWarnings("deprecation")
@@ -89,11 +81,9 @@ public class MockConsumerTest {
         assertEquals(rec1, iter.next());
         assertEquals(rec2, iter.next());
         assertFalse(iter.hasNext());
-        final TopicPartition tp = new TopicPartition("test", 0);
-        assertEquals(2L, consumer.position(tp));
+        assertEquals(2L, consumer.position(new TopicPartition("test", 0)));
         consumer.commitSync();
-        assertEquals(2L, consumer.committed(Collections.singleton(tp)).get(tp).offset());
-        assertThat(consumer.groupMetadata(), equalTo(new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty())));
+        assertEquals(2L, consumer.committed(new TopicPartition("test", 0)).offset());
     }
 
     @Test
@@ -106,56 +96,6 @@ public class MockConsumerTest {
         ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1));
         assertThat(records.count(), is(0));
         assertThat(records.isEmpty(), is(true));
-    }
-
-    @Test
-    public void shouldNotClearRecordsForPausedPartitions() {
-        TopicPartition partition0 = new TopicPartition("test", 0);
-        Collection<TopicPartition> testPartitionList = Collections.singletonList(partition0);
-        consumer.assign(testPartitionList);
-        consumer.addRecord(new ConsumerRecord<>("test", 0, 0, null, null));
-        consumer.updateBeginningOffsets(Collections.singletonMap(partition0, 0L));
-        consumer.seekToBeginning(testPartitionList);
-
-        consumer.pause(testPartitionList);
-        consumer.poll(Duration.ofMillis(1));
-        consumer.resume(testPartitionList);
-        ConsumerRecords<String, String> recordsSecondPoll = consumer.poll(Duration.ofMillis(1));
-        assertThat(recordsSecondPoll.count(), is(1));
-    }
-
-    @Test
-    public void testRebalanceListener() {
-        TopicPartition tp1 = new TopicPartition("test", 0);
-        ConsumerRebalanceListener listener = mock(ConsumerRebalanceListener.class);
-
-        consumer.subscribe(Collections.singleton("test"), listener);
-        assertEquals(0, consumer.poll(Duration.ZERO).count());
-
-        consumer.rebalance(Collections.singleton(tp1));
-        verify(listener).onPartitionsAssigned(Collections.singleton(tp1));
-        verify(listener).onPartitionsRevoked(Collections.emptySet());
-
-        TopicPartition tp2 = new TopicPartition("test", 1);
-        consumer.rebalance(Collections.singleton(tp2));
-
-        verify(listener).onPartitionsAssigned(Collections.singleton(tp2));
-        verify(listener).onPartitionsRevoked(argThat(partitions -> partitions.contains(tp1)));
-    }
-
-    @Test
-    public void endOffsetsShouldBeIdempotent() {
-        TopicPartition partition = new TopicPartition("test", 0);
-        consumer.updateEndOffsets(Collections.singletonMap(partition, 10L));
-        // consumer.endOffsets should NOT change the value of end offsets
-        Assert.assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        Assert.assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        Assert.assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        consumer.updateEndOffsets(Collections.singletonMap(partition, 11L));
-        // consumer.endOffsets should NOT change the value of end offsets
-        Assert.assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        Assert.assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        Assert.assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
     }
 
 }

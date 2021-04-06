@@ -18,39 +18,27 @@ package kafka.server
 
 import java.nio.charset.StandardCharsets
 import java.util.Properties
-import java.util.concurrent.ExecutionException
 
+import kafka.admin.AdminOperationException
 import kafka.integration.KafkaServerTestHarness
 import kafka.log.LogConfig._
-import kafka.utils._
 import kafka.server.Constants._
+import kafka.utils._
 import kafka.zk.ConfigEntityChangeNotificationZNode
-import org.apache.kafka.clients.CommonClientConfigs
-import org.apache.kafka.clients.admin.{Admin, AlterConfigOp, ConfigEntry}
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.config.ConfigResource
-import org.apache.kafka.common.errors.UnknownTopicOrPartitionException
 import org.apache.kafka.common.metrics.Quota
 import org.easymock.EasyMock
 import org.junit.Assert._
 import org.junit.Test
-import kafka.integration.KafkaServerTestHarness
-import kafka.utils._
-import kafka.admin.AdminOperationException
-import kafka.server.DynamicConfig.Broker.{DefaultReplicationThrottledRate, FollowerReplicationThrottledRateProp, LeaderReplicationThrottledRateProp}
-import kafka.utils.CoreUtils.propsWith
-import kafka.utils.TestUtils.retry
-import kafka.zk.ConfigEntityChangeNotificationZNode
-import org.apache.kafka.common.TopicPartition
 
-import scala.collection.{Map, Seq}
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
+import scala.collection.Map
 
 class DynamicConfigChangeTest extends KafkaServerTestHarness {
   def generateConfigs = List(KafkaConfig.fromProps(TestUtils.createBrokerConfig(0, zkConnect)))
 
   @Test
-  def testConfigChange(): Unit = {
+  def testConfigChange() {
     assertTrue("Should contain a ConfigHandler for topics",
       this.servers.head.dynamicConfigHandlers.contains(ConfigType.Topic))
     val oldVal: java.lang.Long = 100000L
@@ -72,7 +60,7 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testDynamicTopicConfigChange(): Unit = {
+  def testDynamicTopicConfigChange() {
     val tp = new TopicPartition("test", 0)
     val oldSegmentSize = 1000
     val logProps = new Properties()
@@ -98,7 +86,7 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
     assertTrue("Log segment size change not applied", log.logSegments.forall(_.size > 1000))
   }
 
-  private def testQuotaConfigChange(user: String, clientId: String, rootEntityType: String, configEntityName: String): Unit = {
+  private def testQuotaConfigChange(user: String, clientId: String, rootEntityType: String, configEntityName: String) {
     assertTrue("Should contain a ConfigHandler for " + rootEntityType ,
                this.servers.head.dynamicConfigHandlers.contains(rootEntityType))
     val props = new Properties()
@@ -141,37 +129,37 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testClientIdQuotaConfigChange(): Unit = {
+  def testClientIdQuotaConfigChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.Client, "testClient")
   }
 
   @Test
-  def testUserQuotaConfigChange(): Unit = {
+  def testUserQuotaConfigChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.User, "ANONYMOUS")
   }
 
   @Test
-  def testUserClientIdQuotaChange(): Unit = {
+  def testUserClientIdQuotaChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.User, "ANONYMOUS/clients/testClient")
   }
 
   @Test
-  def testDefaultClientIdQuotaConfigChange(): Unit = {
+  def testDefaultClientIdQuotaConfigChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.Client, "<default>")
   }
 
   @Test
-  def testDefaultUserQuotaConfigChange(): Unit = {
+  def testDefaultUserQuotaConfigChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.User, "<default>")
   }
 
   @Test
-  def testDefaultUserClientIdQuotaConfigChange(): Unit = {
+  def testDefaultUserClientIdQuotaConfigChange() {
     testQuotaConfigChange("ANONYMOUS", "testClient", ConfigType.User, "<default>/clients/<default>")
   }
 
   @Test
-  def testQuotaInitialization(): Unit = {
+  def testQuotaInitialization() {
     val server = servers.head
     val clientIdProps = new Properties()
     server.shutdown()
@@ -202,32 +190,15 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testConfigChangeOnNonExistingTopic(): Unit = {
+  def testConfigChangeOnNonExistingTopic() {
     val topic = TestUtils.tempTopic
     try {
       val logProps = new Properties()
       logProps.put(FlushMessagesProp, 10000: java.lang.Integer)
       adminZkClient.changeTopicConfig(topic, logProps)
-      fail("Should fail with UnknownTopicOrPartitionException for topic doesn't exist")
+      fail("Should fail with AdminOperationException for topic doesn't exist")
     } catch {
-      case _: UnknownTopicOrPartitionException => // expected
-    }
-  }
-
-  @Test
-  def testConfigChangeOnNonExistingTopicWithAdminClient(): Unit = {
-    val topic = TestUtils.tempTopic
-    val admin = createAdminClient()
-    try {
-      val resource = new ConfigResource(ConfigResource.Type.TOPIC, topic)
-      val op = new AlterConfigOp(new ConfigEntry(FlushMessagesProp, "10000"), AlterConfigOp.OpType.SET)
-      admin.incrementalAlterConfigs(Map(resource -> List(op).asJavaCollection).asJava).all.get
-      fail("Should fail with UnknownTopicOrPartitionException for topic doesn't exist")
-    } catch {
-      case e: ExecutionException =>
-        assertTrue(e.getCause.isInstanceOf[UnknownTopicOrPartitionException])
-    } finally {
-      admin.close()
+      case _: AdminOperationException => // expected
     }
   }
 
@@ -331,7 +302,7 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def shouldParseRegardlessOfWhitespaceAroundValues(): Unit = {
+  def shouldParseRegardlessOfWhitespaceAroundValues() {
     val configHandler: TopicConfigHandler = new TopicConfigHandler(null, null, null, null)
     assertEquals(AllReplicas, parse(configHandler, "* "))
     assertEquals(Seq(), parse(configHandler, " "))
@@ -340,56 +311,7 @@ class DynamicConfigChangeTest extends KafkaServerTestHarness {
     assertEquals(Seq(6), parse(configHandler, " 6:102"))
   }
 
-  @Test
-  def testDynamicBrokerConfigChange(): Unit ={
-    val brokerIds = servers.map(_.config.brokerId)
-
-    def checkConfig(limit: Long) {
-      retry(10000) {
-        for (server <- servers) {
-          assertEquals("Leader Quota Manager was not updated", limit, server.quotaManagers.leader.upperBound)
-          assertEquals("Follower Quota Manager was not updated", limit, server.quotaManagers.follower.upperBound)
-        }
-      }
-    }
-
-    val limitForBroker: Long = 1000000
-    val limitForDefaultBroker: Long = 2000000
-
-    checkConfig(DefaultReplicationThrottledRate)
-
-    // Set the limit at both broker ids and broker default
-    adminZkClient.changeBrokerConfig(brokerIds, propsWith(
-      (LeaderReplicationThrottledRateProp, limitForBroker.toString),
-      (FollowerReplicationThrottledRateProp, limitForBroker.toString)))
-
-    adminZkClient.changeConfigs(ConfigType.Broker, ConfigEntityName.Default, propsWith(
-      (LeaderReplicationThrottledRateProp, limitForDefaultBroker.toString),
-      (FollowerReplicationThrottledRateProp, limitForDefaultBroker.toString)) )
-
-    // Verify that it is limit at broker id that gets chosen.
-    checkConfig(limitForBroker)
-
-    // Remove limit at broker ids.
-    adminZkClient.changeBrokerConfig(brokerIds, new Properties)
-
-    // Verify that it is limit at broker default that gets chosen.
-    checkConfig(limitForDefaultBroker)
-
-    //Now remove limit at default broker.
-    adminZkClient.changeConfigs(ConfigType.Broker, ConfigEntityName.Default, new Properties())
-
-    checkConfig(DefaultReplicationThrottledRate)
-  }
-
   def parse(configHandler: TopicConfigHandler, value: String): Seq[Int] = {
     configHandler.parseThrottledPartitions(CoreUtils.propsWith(LeaderReplicationThrottledReplicasProp, value), 102, LeaderReplicationThrottledReplicasProp)
   }
-
-  private def createAdminClient(): Admin = {
-    val props = new Properties()
-    props.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, brokerList)
-    Admin.create(props)
-  }
-
 }

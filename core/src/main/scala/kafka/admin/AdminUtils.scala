@@ -17,20 +17,19 @@
 
 package kafka.admin
 
-import kafka.log.LogConfig
-import kafka.server.{ConfigEntityName, ConfigType, DynamicConfig}
-import kafka.utils._
-import kafka.utils.ZkUtils._
-import java.util.Random
-import java.util.Properties
+import java.util.{Properties, Random}
 
 import kafka.common.TopicAlreadyMarkedForDeletionException
-import org.apache.kafka.common.errors._
-
-import collection.{Map, Set, mutable, _}
-import scala.collection.JavaConverters._
+import kafka.log.LogConfig
+import kafka.server.{ConfigEntityName, ConfigType, DynamicConfig}
+import kafka.utils.ZkUtils._
+import kafka.utils._
 import org.I0Itec.zkclient.exception.ZkNodeExistsException
+import org.apache.kafka.common.errors._
 import org.apache.kafka.common.internals.Topic
+
+import scala.collection.JavaConverters._
+import scala.collection.{Map, Set, mutable, _}
 
 @deprecated("This class is deprecated and will be replaced by kafka.zk.AdminZkClient.", "1.1.0")
 trait AdminUtilities {
@@ -128,7 +127,7 @@ object AdminUtils extends Logging with AdminUtilities {
    */
   def assignReplicasToBrokers(brokerMetadatas: Seq[BrokerMetadata],
                               nPartitions: Int,
-                              replicationFactor: Short,
+                              replicationFactor: Int,
                               fixedStartIndex: Int = -1,
                               startPartitionId: Int = -1): Map[Int, Seq[Int]] = {
     if (nPartitions <= 0)
@@ -149,7 +148,7 @@ object AdminUtils extends Logging with AdminUtilities {
   }
 
   private def assignReplicasToBrokersRackUnaware(nPartitions: Int,
-                                                 replicationFactor: Short,
+                                                 replicationFactor: Int,
                                                  brokerList: Seq[Int],
                                                  fixedStartIndex: Int,
                                                  startPartitionId: Int): Map[Int, Seq[Int]] = {
@@ -295,7 +294,7 @@ object AdminUtils extends Logging with AdminUtilities {
 
     val proposedAssignmentForNewPartitions = replicaAssignment.getOrElse {
       val startIndex = math.max(0, allBrokers.indexWhere(_.id >= existingAssignmentPartition0.head))
-      AdminUtils.assignReplicasToBrokers(allBrokers, partitionsToAdd, existingAssignmentPartition0.size.toShort,
+      AdminUtils.assignReplicasToBrokers(allBrokers, partitionsToAdd, existingAssignmentPartition0.size,
         startIndex, existingAssignment.size)
     }
     val proposedAssignment = existingAssignment ++ proposedAssignmentForNewPartitions
@@ -403,7 +402,7 @@ object AdminUtils extends Logging with AdminUtilities {
   def createTopic(zkUtils: ZkUtils,
                   topic: String,
                   partitions: Int,
-                  replicationFactor: Short,
+                  replicationFactor: Int,
                   topicConfig: Properties = new Properties,
                   rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
     val brokerMetadatas = getBrokerMetadatas(zkUtils, rackAwareMode)

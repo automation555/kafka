@@ -26,8 +26,8 @@ import kafka.utils._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.log4j.Logger
-import org.junit.{After, Test}
 import org.junit.Assert._
+import org.junit.{After, Test}
 
 class ControllerFailoverTest extends KafkaServerTestHarness with Logging {
   val log = Logger.getLogger(classOf[ControllerFailoverTest])
@@ -59,7 +59,7 @@ class ControllerFailoverTest extends KafkaServerTestHarness with Logging {
     }
     val initialEpoch = initialController.epoch
     // Create topic with one partition
-    createTopic(topic, 1, 1.toShort)
+    createTopic(topic, 1, 1)
     val topicPartition = new TopicPartition("topic1", 0)
     TestUtils.waitUntilTrue(() =>
       initialController.partitionStateMachine.partitionsInState(OnlinePartition).contains(topicPartition),

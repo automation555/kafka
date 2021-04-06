@@ -16,8 +16,8 @@
  */
 package org.apache.kafka.clients;
 
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
+import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.RequestHeader;
 import org.slf4j.Logger;
@@ -42,7 +42,7 @@ public class ManualMetadataUpdater implements MetadataUpdater {
     private List<Node> nodes;
 
     public ManualMetadataUpdater() {
-        this(new ArrayList<Node>(0));
+        this(new ArrayList<>(0));
     }
 
     public ManualMetadataUpdater(List<Node> nodes) {
@@ -56,11 +56,6 @@ public class ManualMetadataUpdater implements MetadataUpdater {
     @Override
     public List<Node> fetchNodes() {
         return new ArrayList<>(nodes);
-    }
-
-    @Override
-    public List<Node> fetchBootStrapNodes() {
-        return new ArrayList<>(0);
     }
 
     @Override
@@ -79,10 +74,10 @@ public class ManualMetadataUpdater implements MetadataUpdater {
     }
 
     @Override
-    public void handleFatalException(KafkaException exception) {
-        // We don't fail the broker on failures, but there should be sufficient information in the logs indicating the reason
-        // for failure.
-        log.debug("An error occurred in broker-to-broker communication.", exception);
+    public void handleAuthenticationFailure(AuthenticationException exception) {
+        // We don't fail the broker on authentication failures, but there is sufficient information in the broker logs
+        // to identify the failure.
+        log.debug("An authentication error occurred in broker-to-broker communication.", exception);
     }
 
     @Override

@@ -163,11 +163,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
         if (offsets.size() == 0) {
             return;
         }
-        Map<TopicPartition, OffsetAndMetadata> uncommittedOffsets = this.uncommittedConsumerGroupOffsets.get(consumerGroupId);
-        if (uncommittedOffsets == null) {
-            uncommittedOffsets = new HashMap<>();
-            this.uncommittedConsumerGroupOffsets.put(consumerGroupId, uncommittedOffsets);
-        }
+        Map<TopicPartition, OffsetAndMetadata> uncommittedOffsets = this.uncommittedConsumerGroupOffsets.computeIfAbsent(consumerGroupId, k -> new HashMap<>());
         uncommittedOffsets.putAll(offsets);
         this.sentOffsets = true;
     }
@@ -255,11 +251,11 @@ public class MockProducer<K, V> implements Producer<K, V> {
             partition = partition(record, this.cluster);
         TopicPartition topicPartition = new TopicPartition(record.topic(), partition);
         ProduceRequestResult result = new ProduceRequestResult(topicPartition);
-        FutureRecordMetadata future = new FutureRecordMetadata(result, 0, (record.timestamp() == null || record.timestamp() == 0) ? RecordBatch.NO_TIMESTAMP : record.timestamp(),
+        FutureRecordMetadata future = new FutureRecordMetadata(result, 0, RecordBatch.NO_TIMESTAMP,
                 0L, 0, 0, Time.SYSTEM);
         long offset = nextOffset(topicPartition);
         Completion completion = new Completion(offset, new RecordMetadata(topicPartition, 0, offset,
-                (record.timestamp() == null || record.timestamp() == 0) ? RecordBatch.NO_TIMESTAMP : record.timestamp(), Long.valueOf(0L), 0, 0), result, callback);
+                RecordBatch.NO_TIMESTAMP, 0L, 0, 0), result, callback);
 
         if (!this.transactionInFlight)
             this.sent.add(record);

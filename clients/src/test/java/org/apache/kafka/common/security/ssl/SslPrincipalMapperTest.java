@@ -16,46 +16,72 @@
  */
 package org.apache.kafka.common.security.ssl;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 public class SslPrincipalMapperTest {
 
     @Test
     public void testValidRules() {
-        testValidRule("DEFAULT");
-        testValidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/");
-        testValidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/L, DEFAULT");
-        testValidRule("RULE:^CN=(.*?),OU=(.*?),O=(.*?),L=(.*?),ST=(.*?),C=(.*?)$/$1@$2/");
-        testValidRule("RULE:^.*[Cc][Nn]=([a-zA-Z0-9.]*).*$/$1/L");
-        testValidRule("RULE:^cn=(.?),ou=(.?),dc=(.?),dc=(.?)$/$1@$2/U");
-
-        testValidRule("RULE:^CN=([^,ADEFLTU,]+)(,.*|$)/$1/");
-        testValidRule("RULE:^CN=([^,DEFAULT,]+)(,.*|$)/$1/");
+        testValidRule(Collections.singletonList("DEFAULT"));
+        testValidRule(Collections.singletonList("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/"));
+        testValidRule(Arrays.asList("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/L", "DEFAULT"));
+        testValidRule(Collections.singletonList("RULE:^CN=(.*?),OU=(.*?),O=(.*?),L=(.*?),ST=(.*?),C=(.*?)$/$1@$2/"));
+        testValidRule(Collections.singletonList("RULE:^.*[Cc][Nn]=([a-zA-Z0-9.]*).*$/$1/L"));
+        testValidRule(Collections.singletonList("RULE:^cn=(.?),ou=(.?),dc=(.?),dc=(.?)$/$1@$2/U"));
     }
 
-    private void testValidRule(String rules) {
+    @Test
+    public void testValidSplitRules() {
+        testValidRule(Collections.singletonList("DEFAULT"));
+        testValidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/$1/"));
+        testValidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/$1/L", "DEFAULT"));
+        testValidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=(.*?),O=(.*?),L=(.*?)", "ST=(.*?)", "C=(.*?)$/$1@$2/"));
+        testValidRule(Collections.singletonList("RULE:^.*[Cc][Nn]=([a-zA-Z0-9.]*).*$/$1/L"));
+        testValidRule(Arrays.asList("RULE:^cn=(.?)", "ou=(.?)", "dc=(.?)", "dc=(.?)$/$1@$2/U"));
+    }
+
+    private void testValidRule(List<String> rules) {
         SslPrincipalMapper.fromRules(rules);
     }
 
     @Test
     public void testInvalidRules() {
-        testInvalidRule("default");
-        testInvalidRule("DEFAUL");
-        testInvalidRule("DEFAULT/L");
-        testInvalidRule("DEFAULT/U");
+        testInvalidRule(Collections.singletonList("default"));
+        testInvalidRule(Collections.singletonList("DEFAUL"));
+        testInvalidRule(Collections.singletonList("DEFAULT/L"));
+        testInvalidRule(Collections.singletonList("DEFAULT/U"));
 
-        testInvalidRule("RULE:CN=(.*?),OU=ServiceUsers.*/$1");
-        testInvalidRule("rule:^CN=(.*?),OU=ServiceUsers.*$/$1/");
-        testInvalidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/L/U");
-        testInvalidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/L");
-        testInvalidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/U");
-        testInvalidRule("RULE:^CN=(.*?),OU=ServiceUsers.*$/LU");
+        testInvalidRule(Collections.singletonList("RULE:CN=(.*?),OU=ServiceUsers.*/$1"));
+        testInvalidRule(Collections.singletonList("rule:^CN=(.*?),OU=ServiceUsers.*$/$1/"));
+        testInvalidRule(Collections.singletonList("RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/L/U"));
+        testInvalidRule(Collections.singletonList("RULE:^CN=(.*?),OU=ServiceUsers.*$/L"));
+        testInvalidRule(Collections.singletonList("RULE:^CN=(.*?),OU=ServiceUsers.*$/U"));
+        testInvalidRule(Collections.singletonList("RULE:^CN=(.*?),OU=ServiceUsers.*$/LU"));
     }
 
-    private void testInvalidRule(String rules) {
+    @Test
+    public void testInvalidSplitRules() {
+        testInvalidRule(Collections.singletonList("default"));
+        testInvalidRule(Collections.singletonList("DEFAUL"));
+        testInvalidRule(Collections.singletonList("DEFAULT/L"));
+        testInvalidRule(Collections.singletonList("DEFAULT/U"));
+
+        testInvalidRule(Arrays.asList("RULE:CN=(.*?)", "OU=ServiceUsers.*/$1"));
+        testInvalidRule(Arrays.asList("rule:^CN=(.*?)", "OU=ServiceUsers.*$/$1/"));
+        testInvalidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/$1/L/U"));
+        testInvalidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/L"));
+        testInvalidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/U"));
+        testInvalidRule(Arrays.asList("RULE:^CN=(.*?)", "OU=ServiceUsers.*$/LU"));
+    }
+
+    private void testInvalidRule(List<String> rules) {
         try {
             System.out.println(SslPrincipalMapper.fromRules(rules));
             fail("should have thrown IllegalArgumentException");
@@ -65,7 +91,7 @@ public class SslPrincipalMapperTest {
 
     @Test
     public void testSslPrincipalMapper() throws Exception {
-        String rules = String.join(", ",
+        List<String> rules = Arrays.asList(
             "RULE:^CN=(.*?),OU=ServiceUsers.*$/$1/L",
             "RULE:^CN=(.*?),OU=(.*?),O=(.*?),L=(.*?),ST=(.*?),C=(.*?)$/$1@$2/L",
             "RULE:^cn=(.*?),ou=(.*?),dc=(.*?),dc=(.*?)$/$1@$2/U",
@@ -82,47 +108,4 @@ public class SslPrincipalMapperTest {
         assertEquals("OU=JavaSoft,O=Sun Microsystems,C=US", mapper.getName("OU=JavaSoft,O=Sun Microsystems,C=US"));
     }
 
-    private void testRulesSplitting(String expected, String rules) {
-        SslPrincipalMapper mapper = SslPrincipalMapper.fromRules(rules);
-        assertEquals(String.format("SslPrincipalMapper(rules = %s)", expected), mapper.toString());
-    }
-
-    @Test
-    public void testRulesSplitting() {
-        // seeing is believing
-        testRulesSplitting("[]", "");
-        testRulesSplitting("[DEFAULT]", "DEFAULT");
-        testRulesSplitting("[RULE:/]", "RULE://");
-        testRulesSplitting("[RULE:/.*]", "RULE:/.*/");
-        testRulesSplitting("[RULE:/.*/L]", "RULE:/.*/L");
-        testRulesSplitting("[RULE:/, DEFAULT]", "RULE://,DEFAULT");
-        testRulesSplitting("[RULE:/, DEFAULT]", "  RULE:// ,  DEFAULT  ");
-        testRulesSplitting("[RULE:   /     , DEFAULT]", "  RULE:   /     / ,  DEFAULT  ");
-        testRulesSplitting("[RULE:  /     /U, DEFAULT]", "  RULE:  /     /U   ,DEFAULT  ");
-        testRulesSplitting("[RULE:([A-Z]*)/$1/U, RULE:([a-z]+)/$1, DEFAULT]", "  RULE:([A-Z]*)/$1/U   ,RULE:([a-z]+)/$1/,   DEFAULT  ");
-
-        // empty rules are ignored
-        testRulesSplitting("[]", ",   , , ,      , , ,   ");
-        testRulesSplitting("[RULE:/, DEFAULT]", ",,RULE://,,,DEFAULT,,");
-        testRulesSplitting("[RULE: /   , DEFAULT]", ",  , RULE: /   /    ,,,   DEFAULT, ,   ");
-        testRulesSplitting("[RULE:   /  /U, DEFAULT]", "     ,  , RULE:   /  /U    ,,  ,DEFAULT, ,");
-
-        // escape sequences
-        testRulesSplitting("[RULE:\\/\\\\\\(\\)\\n\\t/\\/\\/]", "RULE:\\/\\\\\\(\\)\\n\\t/\\/\\//");
-        testRulesSplitting("[RULE:\\**\\/+/*/L, RULE:\\/*\\**/**]", "RULE:\\**\\/+/*/L,RULE:\\/*\\**/**/");
-
-        // rules rule
-        testRulesSplitting(
-            "[RULE:,RULE:,/,RULE:,\\//U, RULE:,/RULE:,, RULE:,RULE:,/L,RULE:,/L, RULE:, DEFAULT, /DEFAULT, DEFAULT]",
-            "RULE:,RULE:,/,RULE:,\\//U,RULE:,/RULE:,/,RULE:,RULE:,/L,RULE:,/L,RULE:, DEFAULT, /DEFAULT/,DEFAULT"
-        );
-    }
-
-    @Test
-    public void testCommaWithWhitespace() throws Exception {
-        String rules = "RULE:^CN=((\\\\, *|\\w)+)(,.*|$)/$1/,DEFAULT";
-
-        SslPrincipalMapper mapper = SslPrincipalMapper.fromRules(rules);
-        assertEquals("Tkac\\, Adam", mapper.getName("CN=Tkac\\, Adam,OU=ITZ,DC=geodis,DC=cz"));
-    }
 }

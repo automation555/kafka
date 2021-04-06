@@ -17,13 +17,13 @@
 package kafka.admin
 
 import joptsimple.OptionException
-import org.junit.Test
 import kafka.utils.TestUtils
+import org.junit.Test
 
 class ListConsumerGroupTest extends ConsumerGroupCommandTest {
 
   @Test
-  def testListConsumerGroups(): Unit = {
+  def testListConsumerGroups() {
     val simpleGroup = "simple-group"
     addSimpleGroupExecutor(group = simpleGroup)
     addConsumerGroupExecutor(numConsumers = 1)
@@ -36,28 +36,11 @@ class ListConsumerGroupTest extends ConsumerGroupCommandTest {
     TestUtils.waitUntilTrue(() => {
       foundGroups = service.listGroups().toSet
       expectedGroups == foundGroups
-    }, s"Expected --list to show groups $expectedGroups, but found $foundGroups.")
-  }
-
-  @Test
-  def testListConsumerGroupsWithSufficientInitializationTimeoutSpecified(): Unit = {
-    val simpleGroup = "simple-group"
-    addSimpleGroupExecutor(group = simpleGroup)
-    addConsumerGroupExecutor(numConsumers = 1)
-
-    val cgcArgs = Array("--bootstrap-server", brokerList, "--list", "--timeout", "5000")
-    val service = getConsumerGroupService(cgcArgs)
-
-    val expectedGroups = Set(group, simpleGroup)
-    var foundGroups = Set.empty[String]
-    TestUtils.waitUntilTrue(() => {
-      foundGroups = service.listGroups().toSet
-      expectedGroups == foundGroups
-    }, s"Expected --list to show groups $expectedGroups, but found $foundGroups.")
+    }, s"Expected --list to show groups $expectedGroups, but found $foundGroups.", maxRetries = 3)
   }
 
   @Test(expected = classOf[OptionException])
-  def testListWithUnrecognizedNewConsumerOption(): Unit = {
+  def testListWithUnrecognizedNewConsumerOption() {
     val cgcArgs = Array("--new-consumer", "--bootstrap-server", brokerList, "--list")
     getConsumerGroupService(cgcArgs)
   }

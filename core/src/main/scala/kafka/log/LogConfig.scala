@@ -19,18 +19,18 @@ package kafka.log
 
 import java.util.{Collections, Locale, Properties}
 
-import scala.collection.JavaConverters._
 import kafka.api.{ApiVersion, ApiVersionValidator}
 import kafka.message.BrokerCompressionCodec
 import kafka.server.{KafkaConfig, ThrottledReplicaListValidator}
 import kafka.utils.Implicits._
-import org.apache.kafka.common.errors.InvalidConfigurationException
+import org.apache.kafka.common.config.ConfigDef.{ConfigKey, ValidList, Validator}
 import org.apache.kafka.common.config.{AbstractConfig, ConfigDef, TopicConfig}
+import org.apache.kafka.common.errors.InvalidConfigurationException
 import org.apache.kafka.common.record.{LegacyRecord, TimestampType}
 import org.apache.kafka.common.utils.Utils
 
+import scala.collection.JavaConverters._
 import scala.collection.{Map, mutable}
-import org.apache.kafka.common.config.ConfigDef.{ConfigKey, ValidList, Validator}
 
 object Defaults {
   val SegmentSize = kafka.server.Defaults.LogSegmentBytes
@@ -89,7 +89,7 @@ case class LogConfig(props: java.util.Map[_, _], overriddenConfigs: Set[String] 
   val compact = getList(LogConfig.CleanupPolicyProp).asScala.map(_.toLowerCase(Locale.ROOT)).contains(LogConfig.Compact)
   val delete = getList(LogConfig.CleanupPolicyProp).asScala.map(_.toLowerCase(Locale.ROOT)).contains(LogConfig.Delete)
   val uncleanLeaderElectionEnable = getBoolean(LogConfig.UncleanLeaderElectionEnableProp)
-  val minInSyncReplicas = getShort(LogConfig.MinInSyncReplicasProp)
+  val minInSyncReplicas = getInt(LogConfig.MinInSyncReplicasProp)
   val compressionType = getString(LogConfig.CompressionTypeProp).toLowerCase(Locale.ROOT)
   val preallocate = getBoolean(LogConfig.PreAllocateEnableProp)
   val messageFormatVersion = ApiVersion(getString(LogConfig.MessageFormatVersionProp))
@@ -201,7 +201,7 @@ object LogConfig {
 
     override def getConfigValue(key: ConfigKey, headerName: String): String = {
       headerName match {
-        case "Server Default Property" => serverDefaultConfigNames.get(key.name).get
+        case "Server Default Property" => serverDefaultConfigNames(key.name)
         case _ => super.getConfigValue(key, headerName)
       }
     }
@@ -250,7 +250,7 @@ object LogConfig {
         KafkaConfig.LogCleanupPolicyProp)
       .define(UncleanLeaderElectionEnableProp, BOOLEAN, Defaults.UncleanLeaderElectionEnable,
         MEDIUM, UncleanLeaderElectionEnableDoc, KafkaConfig.UncleanLeaderElectionEnableProp)
-      .define(MinInSyncReplicasProp, SHORT, Defaults.MinInSyncReplicas, atLeast(1), MEDIUM, MinInSyncReplicasDoc,
+      .define(MinInSyncReplicasProp, INT, Defaults.MinInSyncReplicas, atLeast(1), MEDIUM, MinInSyncReplicasDoc,
         KafkaConfig.MinInSyncReplicasProp)
       .define(CompressionTypeProp, STRING, Defaults.CompressionType, in(BrokerCompressionCodec.brokerCompressionOptions:_*),
         MEDIUM, CompressionTypeDoc, KafkaConfig.CompressionTypeProp)

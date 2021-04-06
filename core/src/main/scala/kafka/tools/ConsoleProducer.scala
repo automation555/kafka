@@ -45,7 +45,7 @@ object ConsoleProducer {
         val producer = new KafkaProducer[Array[Byte], Array[Byte]](producerProps(config))
 
         Runtime.getRuntime.addShutdownHook(new Thread() {
-          override def run(): Unit = {
+          override def run() {
             producer.close()
           }
         })
@@ -251,9 +251,8 @@ object ConsoleProducer {
     var keySeparator = "\t"
     var ignoreError = false
     var lineNumber = 0
-    var nullValue: String = null
 
-    override def init(inputStream: InputStream, props: Properties): Unit = {
+    override def init(inputStream: InputStream, props: Properties) {
       topic = props.getProperty("topic")
       if (props.containsKey("parse.key"))
         parseKey = props.getProperty("parse.key").trim.equalsIgnoreCase("true")
@@ -261,8 +260,6 @@ object ConsoleProducer {
         keySeparator = props.getProperty("key.separator")
       if (props.containsKey("ignore.error"))
         ignoreError = props.getProperty("ignore.error").trim.equalsIgnoreCase("true")
-      if (props.containsKey("null.value"))
-        nullValue = props.getProperty("null.value")
       reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))
     }
 
@@ -277,9 +274,8 @@ object ConsoleProducer {
               if (ignoreError) new ProducerRecord(topic, line.getBytes(StandardCharsets.UTF_8))
               else throw new KafkaException(s"No key found on line $lineNumber: $line")
             case n =>
-              val value = if (n + keySeparator.size > line.size) "" else line.substring(n + keySeparator.size)
-              val valueBytes = if (value == nullValue) null else value.getBytes(StandardCharsets.UTF_8)
-              new ProducerRecord(topic, line.substring(0, n).getBytes(StandardCharsets.UTF_8), valueBytes)
+              val value = (if (n + keySeparator.length > line.length) "" else line.substring(n + keySeparator.length)).getBytes(StandardCharsets.UTF_8)
+              new ProducerRecord(topic, line.substring(0, n).getBytes(StandardCharsets.UTF_8), value)
           }
         case (line, false) =>
           new ProducerRecord(topic, line.getBytes(StandardCharsets.UTF_8))

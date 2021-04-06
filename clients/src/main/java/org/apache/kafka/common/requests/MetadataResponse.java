@@ -51,12 +51,9 @@ import java.util.stream.Collectors;
  * Possible partition-level error codes:
  *  LeaderNotAvailable (5)
  *  ReplicaNotAvailable (9)
- *  ListenerNotFound (72)
  */
 public class MetadataResponse extends AbstractResponse {
     public static final int NO_CONTROLLER_ID = -1;
-
-    public static final int AUTHORIZED_OPERATIONS_OMITTED = Integer.MIN_VALUE;
 
     private MetadataResponseData data;
 
@@ -114,24 +111,6 @@ public class MetadataResponse extends AbstractResponse {
         for (MetadataResponseTopic metadata : data.topics()) {
             if (metadata.errorCode() != Errors.NONE.code())
                 errors.put(metadata.name(), Errors.forCode(metadata.errorCode()));
-        }
-        return errors;
-    }
-
-    /**
-     * Return a map from topic to its partition metadata errors.
-     */
-    public Map<String, Set<Errors>> partitionErrors() {
-        Map<String, Set<Errors>> errors = new HashMap<>();
-        for (MetadataResponseTopic topicMetadata : data.topics()) {
-            String topic = topicMetadata.name();
-            Set<Errors> errorSet = new HashSet<>();
-            for (MetadataResponsePartition partitionMetadata : topicMetadata.partitions()) {
-                Errors partitionError = Errors.forCode(partitionMetadata.errorCode());
-                if (partitionError != Errors.NONE)
-                    errorSet.add(partitionError);
-            }
-            errors.put(topic, errorSet);
         }
         return errors;
     }
@@ -405,13 +384,11 @@ public class MetadataResponse extends AbstractResponse {
                                                    int clusterAuthorizedOperations) {
         MetadataResponseData responseData = new MetadataResponseData();
         responseData.setThrottleTimeMs(throttleTimeMs);
-        brokers.forEach(broker -> {
-            responseData.brokers().add(new MetadataResponseBroker()
-                .setNodeId(broker.id())
-                .setHost(broker.host())
-                .setPort(broker.port())
-                .setRack(broker.rack()));
-        });
+        brokers.forEach(broker -> responseData.brokers().add(new MetadataResponseBroker()
+            .setNodeId(broker.id())
+            .setHost(broker.host())
+            .setPort(broker.port())
+            .setRack(broker.rack())));
 
         responseData.setClusterId(clusterId);
         responseData.setControllerId(controllerId);
@@ -442,8 +419,7 @@ public class MetadataResponse extends AbstractResponse {
 
     public static MetadataResponse prepareResponse(int throttleTimeMs, List<Node> brokers, String clusterId,
                                                    int controllerId, List<TopicMetadata> topicMetadataList) {
-        return prepareResponse(throttleTimeMs, brokers, clusterId, controllerId, topicMetadataList,
-                MetadataResponse.AUTHORIZED_OPERATIONS_OMITTED);
+        return prepareResponse(throttleTimeMs, brokers, clusterId, controllerId, topicMetadataList, 0);
     }
 
     public static MetadataResponse prepareResponse(List<Node> brokers, String clusterId, int controllerId,

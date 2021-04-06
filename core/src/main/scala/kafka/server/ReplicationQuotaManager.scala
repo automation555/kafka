@@ -16,18 +16,15 @@
   */
 package kafka.server
 
-import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 import java.util.concurrent.locks.ReentrantReadWriteLock
-
-import scala.collection.Seq
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 
 import kafka.server.Constants._
 import kafka.server.ReplicationQuotaManagerConfig._
 import kafka.utils.CoreUtils._
 import kafka.utils.Logging
-import org.apache.kafka.common.metrics._
-
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.metrics._
 import org.apache.kafka.common.metrics.stats.SimpleRate
 import org.apache.kafka.common.utils.Time
 
@@ -80,14 +77,13 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
   private val sensorAccess = new SensorAccess(lock, metrics)
   private val rateMetricName = metrics.metricName("byte-rate", replicationType.toString,
     s"Tracking byte-rate for ${replicationType}")
-  private var isBrokerThrottled = false
 
   /**
     * Update the quota
     *
     * @param quota
     */
-  def updateQuota(quota: Quota): Unit = {
+  def updateQuota(quota: Quota) {
     inWriteLock(lock) {
       this.quota = quota
       //The metric could be expired by another thread, so use a local variable and null check.
@@ -115,7 +111,6 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
   }
 
   /**
-    * Is the broker throttled by this ReplicationQuotaManager or
     * Is the passed partition throttled by this ReplicationQuotaManager
     *
     * @param topicPartition the partition to check
@@ -123,9 +118,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     */
   override def isThrottled(topicPartition: TopicPartition): Boolean = {
     val partitions = throttledPartitions.get(topicPartition.topic)
-    if (isBrokerThrottled)
-      true
-    else if (partitions != null)
+    if (partitions != null)
       (partitions eq AllReplicas) || partitions.contains(topicPartition.partition)
     else false
   }
@@ -136,21 +129,13 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     *
     * @param value
     */
-  def record(value: Long): Unit = {
+  def record(value: Long) {
     try {
       sensor().record(value)
     } catch {
       case qve: QuotaViolationException =>
         trace(s"Record: Quota violated, but ignored, for sensor (${sensor.name}), metric: (${qve.metricName}), value : (${qve.value}), bound: (${qve.bound}), recordedValue ($value)")
     }
-  }
-
-  def markBrokerThrottled() : Unit = {
-    isBrokerThrottled = true
-  }
-
-  def removeBrokerThrottle() : Unit = {
-    isBrokerThrottled = false
   }
 
   /**
@@ -161,7 +146,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param partitions the set of throttled partitions
     * @return
     */
-  def markThrottled(topic: String, partitions: Seq[Int]): Unit = {
+  def markThrottled(topic: String, partitions: Seq[Int]) {
     throttledPartitions.put(topic, partitions)
   }
 
@@ -171,7 +156,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param topic
     * @return
     */
-  def markThrottled(topic: String): Unit = {
+  def markThrottled(topic: String) {
     markThrottled(topic, AllReplicas)
   }
 
@@ -181,7 +166,7 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param topic
     * @return
     */
-  def removeThrottle(topic: String): Unit = {
+  def removeThrottle(topic: String) {
     throttledPartitions.remove(topic)
   }
 

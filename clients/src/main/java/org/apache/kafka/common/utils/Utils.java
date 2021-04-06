@@ -16,11 +16,7 @@
  */
 package org.apache.kafka.common.utils;
 
-import java.util.EnumSet;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.config.ConfigException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,41 +31,35 @@ import java.io.StringWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
+import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
-import java.util.function.BinaryOperator;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -84,8 +74,7 @@ public final class Utils {
     private static final Pattern VALID_HOST_CHARACTERS = Pattern.compile("([0-9a-zA-Z\\-%._:]*)");
 
     // Prints up to 2 decimal digits. Used for human readable printing
-    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##",
-        DecimalFormatSymbols.getInstance(Locale.ENGLISH));
+    private static final DecimalFormat TWO_DIGIT_FORMAT = new DecimalFormat("0.##");
 
     private static final String[] BYTE_SCALE_SUFFIXES = new String[] {"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
 
@@ -295,6 +284,20 @@ public final class Utils {
     }
 
     /**
+     * Check that the parameter t is not null
+     *
+     * @param t The object to check
+     * @return t if it isn't null
+     * @throws NullPointerException if t is null.
+     */
+    public static <T> T notNull(T t) {
+        if (t == null)
+            throw new NullPointerException();
+        else
+            return t;
+    }
+
+    /**
      * Sleep for a bit
      * @param ms The duration of the sleep
      */
@@ -342,18 +345,6 @@ public final class Utils {
      */
     public static <T> Class<? extends T> loadClass(String klass, Class<T> base) throws ClassNotFoundException {
         return Class.forName(klass, true, Utils.getContextOrKafkaClassLoader()).asSubclass(base);
-    }
-
-    /**
-     * Cast {@code klass} to {@code base} and instantiate it.
-     * @param klass The class to instantiate
-     * @param base A know baseclass of klass.
-     * @param <T> the type of the base class
-     * @throws ClassCastException If {@code klass} is not a subclass of {@code base}.
-     * @return the new instance.
-     */
-    public static <T> T newInstance(Class<?> klass, Class<T> base) {
-        return Utils.newInstance(klass.asSubclass(base));
     }
 
     /**
@@ -574,19 +565,8 @@ public final class Utils {
     /**
      * Read a properties file from the given path
      * @param filename The path of the file to read
-     * @return the loaded properties
      */
     public static Properties loadProps(String filename) throws IOException {
-        return loadProps(filename, null);
-    }
-
-    /**
-     * Read a properties file from the given path
-     * @param filename The path of the file to read
-     * @param onlyIncludeKeys When non-null, only return values associated with these keys and ignore all others
-     * @return the loaded properties
-     */
-    public static Properties loadProps(String filename, List<String> onlyIncludeKeys) throws IOException {
         Properties props = new Properties();
 
         if (filename != null) {
@@ -597,15 +577,7 @@ public final class Utils {
             System.out.println("Did not load any properties since the property file is not specified");
         }
 
-        if (onlyIncludeKeys == null || onlyIncludeKeys.isEmpty())
-            return props;
-        Properties requestedProps = new Properties();
-        onlyIncludeKeys.forEach(key -> {
-            String value = props.getProperty(key);
-            if (value != null)
-                requestedProps.setProperty(key, value);
-        });
-        return requestedProps;
+        return props;
     }
 
     /**
@@ -614,11 +586,8 @@ public final class Utils {
      */
     public static Map<String, String> propsToStringMap(Properties props) {
         Map<String, String> result = new HashMap<>();
-        Enumeration<?> propNames = props.propertyNames();
-        while (propNames.hasMoreElements()) {
-            String propName = (String) propNames.nextElement();
-            result.put(propName, props.getProperty(propName));
-        }
+        for (Map.Entry<Object, Object> entry : props.entrySet())
+            result.put(entry.getKey().toString(), entry.getValue().toString());
         return result;
     }
 
@@ -633,6 +602,15 @@ public final class Utils {
     }
 
     /**
+     * Print an error message and shutdown the JVM
+     * @param message The error message
+     */
+    public static void croak(String message) {
+        System.err.println(message);
+        Exit.exit(1);
+    }
+
+    /**
      * Read a buffer into a Byte array for the given offset and length
      */
     public static byte[] readBytes(ByteBuffer buffer, int offset, int length) {
@@ -642,7 +620,7 @@ public final class Utils {
         } else {
             buffer.mark();
             buffer.position(offset);
-            buffer.get(dest);
+            buffer.get(dest, 0, length);
             buffer.reset();
         }
         return dest;
@@ -656,16 +634,21 @@ public final class Utils {
     }
 
     /**
-     * Read a file as string and return the content. The file is treated as a stream and no seek is performed.
-     * This allows the program to read from a regular file as well as from a pipe/fifo.
+     * Attempt to read a file as a string
+     * @throws IOException
      */
-    public static String readFileAsString(String path) throws IOException {
-        try {
-            byte[] allBytes = Files.readAllBytes(Paths.get(path));
-            return new String(allBytes, StandardCharsets.UTF_8);
-        } catch (IOException ex) {
-            throw new IOException("Unable to read file " + path, ex);
+    public static String readFileAsString(String path, Charset charset) throws IOException {
+        if (charset == null) charset = Charset.defaultCharset();
+
+        try (FileChannel fc = FileChannel.open(Paths.get(path))) {
+            MappedByteBuffer bb = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
+            return charset.decode(bb).toString();
         }
+
+    }
+
+    public static String readFileAsString(String path) throws IOException {
+        return Utils.readFileAsString(path, Charset.defaultCharset());
     }
 
     /**
@@ -684,32 +667,16 @@ public final class Utils {
         return existingBuffer;
     }
 
-    /**
+    /*
      * Creates a set
      * @param elems the elements
      * @param <T> the type of element
      * @return Set
      */
     @SafeVarargs
+    @SuppressWarnings("varargs")
     public static <T> Set<T> mkSet(T... elems) {
-        Set<T> result = new HashSet<>((int) (elems.length / 0.75) + 1);
-        for (T elem : elems)
-            result.add(elem);
-        return result;
-    }
-
-    /**
-     * Creates a sorted set
-     * @param elems the elements
-     * @param <T> the type of element, must be comparable
-     * @return SortedSet
-     */
-    @SafeVarargs
-    public static <T extends Comparable<T>> SortedSet<T> mkSortedSet(T... elems) {
-        SortedSet<T> result = new TreeSet<>();
-        for (T elem : elems)
-            result.add(elem);
-        return result;
+        return Arrays.stream(elems).collect(Collectors.toSet());
     }
 
     /**
@@ -772,72 +739,31 @@ public final class Utils {
     }
 
     /**
-     * Creates a {@link Properties} from a map
-     *
-     * @param properties A map of properties to add
-     * @return The properties object
-     */
-    public static Properties mkObjectProperties(final Map<String, Object> properties) {
-        final Properties result = new Properties();
-        for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-            result.put(entry.getKey(), entry.getValue());
-        }
-        return result;
-    }
-
-    /**
      * Recursively delete the given file/directory and any subfiles (if any exist)
      *
-     * @param rootFile The root file at which to begin deleting
+     * @param file The root file at which to begin deleting
      */
-    public static void delete(final File rootFile) throws IOException {
-        delete(rootFile, Collections.emptyList());
-    }
-
-    /**
-     * Recursively delete the subfiles (if any exist) of the passed in root file that are not included
-     * in the list to keep
-     *
-     * @param rootFile The root file at which to begin deleting
-     * @param filesToKeep The subfiles to keep (note that if a subfile is to be kept, so are all its parent
-     *                    files in its pat)h; if empty we would also delete the root file
-     */
-    public static void delete(final File rootFile, final List<File> filesToKeep) throws IOException {
-        if (rootFile == null)
+    public static void delete(final File file) throws IOException {
+        if (file == null)
             return;
-        Files.walkFileTree(rootFile.toPath(), new SimpleFileVisitor<Path>() {
+        Files.walkFileTree(file.toPath(), new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFileFailed(Path path, IOException exc) throws IOException {
                 // If the root path did not exist, ignore the error; otherwise throw it.
-                if (exc instanceof NoSuchFileException && path.toFile().equals(rootFile))
+                if (exc instanceof NoSuchFileException && path.toFile().equals(file))
                     return FileVisitResult.TERMINATE;
                 throw exc;
             }
 
             @Override
             public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) throws IOException {
-                if (!filesToKeep.contains(path.toFile())) {
-                    Files.delete(path);
-                }
+                Files.delete(path);
                 return FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult postVisitDirectory(Path path, IOException exc) throws IOException {
-                // KAFKA-8999: if there's an exception thrown previously already, we should throw it
-                if (exc != null) {
-                    throw exc;
-                }
-
-                if (rootFile.toPath().equals(path)) {
-                    // only delete the parent directory if there's nothing to keep
-                    if (filesToKeep.isEmpty()) {
-                        Files.delete(path);
-                    }
-                } else if (!filesToKeep.contains(path.toFile())) {
-                    Files.delete(path);
-                }
-
+                Files.delete(path);
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -917,18 +843,6 @@ public final class Utils {
     }
 
     /**
-     * An {@link AutoCloseable} interface without a throws clause in the signature
-     *
-     * This is used with lambda expressions in try-with-resources clauses
-     * to avoid casting un-checked exceptions to checked exceptions unnecessarily.
-     */
-    @FunctionalInterface
-    public interface UncheckedCloseable extends AutoCloseable {
-        @Override
-        void close();
-    }
-
-    /**
      * Closes {@code closeable} and if an exception is thrown, it is logged at the WARN level.
      */
     public static void closeQuietly(AutoCloseable closeable, String name) {
@@ -937,17 +851,6 @@ public final class Utils {
                 closeable.close();
             } catch (Throwable t) {
                 log.warn("Failed to close {} with type {}", name, closeable.getClass().getName(), t);
-            }
-        }
-    }
-
-    public static void closeQuietly(AutoCloseable closeable, String name, AtomicReference<Throwable> firstException) {
-        if (closeable != null) {
-            try {
-                closeable.close();
-            } catch (Throwable t) {
-                firstException.compareAndSet(null, t);
-                log.error("Failed to close {} with type {}", name, closeable.getClass().getName(), t);
             }
         }
     }
@@ -967,6 +870,10 @@ public final class Utils {
      */
     public static int toPositive(int number) {
         return number & 0x7fffffff;
+    }
+
+    public static int longHashcode(long value) {
+        return (int) (value ^ (value >>> 32));
     }
 
     /**
@@ -1128,120 +1035,5 @@ public final class Utils {
             count++;
         }
         return result;
-    }
-
-    public static <K1, V1, K2, V2> Map<K2, V2> transformMap(
-            Map<? extends K1, ? extends V1> map,
-            Function<K1, K2> keyMapper,
-            Function<V1, V2> valueMapper) {
-        return map.entrySet().stream().collect(
-            Collectors.toMap(
-                entry -> keyMapper.apply(entry.getKey()),
-                entry -> valueMapper.apply(entry.getValue())
-            )
-        );
-    }
-
-    /**
-     * A Collector that offers two kinds of convenience:
-     * 1. You can specify the concrete type of the returned Map
-     * 2. You can turn a stream of Entries directly into a Map without having to mess with a key function
-     *    and a value function. In particular, this is handy if all you need to do is apply a filter to a Map's entries.
-     *
-     *
-     * One thing to be wary of: These types are too "distant" for IDE type checkers to warn you if you
-     * try to do something like build a TreeMap of non-Comparable elements. You'd get a runtime exception for that.
-     *
-     * @param mapSupplier The constructor for your concrete map type.
-     * @param <K> The Map key type
-     * @param <V> The Map value type
-     * @param <M> The type of the Map itself.
-     * @return new Collector<Map.Entry<K, V>, M, M>
-     */
-    public static <K, V, M extends Map<K, V>> Collector<Map.Entry<K, V>, M, M> entriesToMap(final Supplier<M> mapSupplier) {
-        return new Collector<Map.Entry<K, V>, M, M>() {
-            @Override
-            public Supplier<M> supplier() {
-                return mapSupplier;
-            }
-
-            @Override
-            public BiConsumer<M, Map.Entry<K, V>> accumulator() {
-                return (map, entry) -> map.put(entry.getKey(), entry.getValue());
-            }
-
-            @Override
-            public BinaryOperator<M> combiner() {
-                return (map, map2) -> {
-                    map.putAll(map2);
-                    return map;
-                };
-            }
-
-            @Override
-            public Function<M, M> finisher() {
-                return map -> map;
-            }
-
-            @Override
-            public Set<Characteristics> characteristics() {
-                return EnumSet.of(Characteristics.UNORDERED, Characteristics.IDENTITY_FINISH);
-            }
-        };
-    }
-
-    @SafeVarargs
-    public static <E> Set<E> union(final Supplier<Set<E>> constructor, final Set<E>... set) {
-        final Set<E> result = constructor.get();
-        for (final Set<E> s : set) {
-            result.addAll(s);
-        }
-        return result;
-    }
-
-    @SafeVarargs
-    public static <E> Set<E> intersection(final Supplier<Set<E>> constructor, final Set<E> first, final Set<E>... set) {
-        final Set<E> result = constructor.get();
-        result.addAll(first);
-        for (final Set<E> s : set) {
-            result.retainAll(s);
-        }
-        return result;
-    }
-
-    public static <E> Set<E> diff(final Supplier<Set<E>> constructor, final Set<E> left, final Set<E> right) {
-        final Set<E> result = constructor.get();
-        result.addAll(left);
-        result.removeAll(right);
-        return result;
-    }
-
-    /**
-     * Convert a properties to map. All keys in properties must be string type. Otherwise, a ConfigException is thrown.
-     * @param properties to be converted
-     * @return a map including all elements in properties
-     */
-    public static Map<String, Object> propsToMap(Properties properties) {
-        Map<String, Object> map = new HashMap<>(properties.size());
-
-        // Calling propertyNames() will cause a class cast exception if one of the propertyNames is not a String
-        // Doing one single try catch for ClassCastException since this should be the only cause but also covers the
-        // casting of the individual keys.
-        try {
-            Enumeration<?> propNames = properties.propertyNames();
-
-            while (propNames.hasMoreElements()) {
-                String propName = (String) propNames.nextElement();
-                // Using properties.get initially rather than getProperty since there is a history of incorrectly using
-                // the Hashmap functions in Properties and it could be something other than a String.  If its null then
-                // try getProperty which respects the backing defaults
-                Object val = properties.get(propName);
-                if (val == null) val = properties.getProperty(propName);
-                map.put(propName, val);
-            }
-        } catch (ClassCastException cce) {
-            throw new ConfigException("All property keys must be a string: " + properties.toString(), cce);
-        }
-        return map;
     }
 }

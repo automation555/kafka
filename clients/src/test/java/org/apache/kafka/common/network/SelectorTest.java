@@ -27,7 +27,6 @@ import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
-import org.apache.kafka.test.TestCondition;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -59,7 +58,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -107,33 +105,6 @@ public class SelectorTest {
         return SecurityProtocol.PLAINTEXT;
     }
 
-    @Test
-    public void numberOfSensorsIsIncreased_whenNodeConnects() throws IOException {
-        final String node = "0";
-        int size = selector.numberOfSensors();
-
-        blockingConnect(node);
-
-        assertTrue(
-                "number of sensors should be increased when node is connected",
-                size < selector.numberOfSensors()
-        );
-
-        selector.close(node);
-    }
-
-    @Test
-    public void sensorsAreRemove_afterNodeDisconnects() throws IOException {
-        final String node = "0";
-        int size = selector.numberOfSensors();
-
-        blockingConnect(node);
-
-        selector.close(node);
-
-        assertEquals(selector.numberOfSensors(), size);
-    }
-
     /**
      * Validate that when the server disconnects, a client send ends up with that node in the disconnected list.
      */
@@ -149,15 +120,12 @@ public class SelectorTest {
 
         // disconnect
         this.server.closeConnections();
-        TestUtils.waitForCondition(new TestCondition() {
-            @Override
-            public boolean conditionMet() {
-                try {
-                    selector.poll(1000L);
-                    return selector.disconnected().containsKey(node);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
+        TestUtils.waitForCondition(() -> {
+            try {
+                selector.poll(1000L);
+                return selector.disconnected().containsKey(node);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
         }, 5000, "Failed to observe disconnected node in disconnected set");
 
@@ -563,7 +531,7 @@ public class SelectorTest {
         selector.close();
         MemoryPool pool = new SimpleMemoryPool(900, 900, false, null);
         selector = new Selector(NetworkReceive.UNLIMITED, 5000, metrics, time, "MetricGroup",
-            new HashMap<String, String>(), true, false, channelBuilder, pool, new LogContext());
+                new HashMap<>(), true, false, channelBuilder, pool, new LogContext());
 
         try (ServerSocketChannel ss = ServerSocketChannel.open()) {
             ss.bind(new InetSocketAddress(0));
@@ -745,26 +713,6 @@ public class SelectorTest {
         assertNull(selector.lowestPriorityChannel());
     }
 
-    @Test
-    public void testMetricsCleanupOnSelectorClose() throws Exception {
-        Metrics metrics = new Metrics();
-        Selector selector = new ImmediatelyConnectingSelector(5000, metrics, time, "MetricGroup", channelBuilder, new LogContext()) {
-            @Override
-            public void close(String id) {
-                throw new RuntimeException();
-            }
-        };
-        assertTrue(metrics.metrics().size() > 1);
-        String id = "0";
-        selector.connect(id, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-
-        // Close the selector and ensure a RuntimeException has been throw
-        assertThrows(RuntimeException.class, selector::close);
-
-        // We should only have one remaining metric for kafka-metrics-count, which is a global metric
-        assertEquals(1, metrics.metrics().size());
-    }
-
 
     private String blockingRequest(String node, String s) throws IOException {
         selector.send(createSend(node, s));
@@ -840,7 +788,7 @@ public class SelectorTest {
         verifySelectorEmpty(this.selector);
     }
 
-    public void verifySelectorEmpty(Selector selector) throws Exception {
+    private void verifySelectorEmpty(Selector selector) throws Exception {
         for (KafkaChannel channel : selector.channels()) {
             selector.close(channel.id());
             assertNull(channel.selectionKey().attachment());

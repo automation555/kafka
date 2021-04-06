@@ -60,14 +60,28 @@ object ConsumerPerformance extends LazyLogging {
       metrics = consumer.metrics.asScala
     }
     consumer.close()
-
+    val elapsedSecs = (endMs - startMs) / 1000.0
+    val fetchTimeInMs = (endMs - startMs) - joinGroupTimeInMs.get
     if (!config.showDetailedStats) {
-      printBody(totalBytesRead, totalMessagesRead, joinGroupTimeInMs, startMs, endMs, config.dateFormat)
+      val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
+      println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
+        config.dateFormat.format(startMs),
+        config.dateFormat.format(endMs),
+        totalMBRead,
+        totalMBRead / elapsedSecs,
+        totalMessagesRead.get,
+        totalMessagesRead.get / elapsedSecs,
+        joinGroupTimeInMs.get,
+        fetchTimeInMs,
+        totalMBRead / (fetchTimeInMs / 1000.0),
+        totalMessagesRead.get / (fetchTimeInMs / 1000.0)
+      ))
     }
 
     if (metrics != null) {
       ToolsUtils.printMetrics(metrics)
     }
+
   }
 
   private[tools] def printHeader(showDetailedStats: Boolean): Unit = {
@@ -76,29 +90,6 @@ object ConsumerPerformance extends LazyLogging {
       println("start.time, end.time, data.consumed.in.MB, MB.sec, data.consumed.in.nMsg, nMsg.sec" + newFieldsInHeader)
     else
       println("time, threadId, data.consumed.in.MB, MB.sec, data.consumed.in.nMsg, nMsg.sec" + newFieldsInHeader)
-  }
-
-  private[tools] def printBody(totalBytesRead: AtomicLong,
-                               totalMessagesRead: AtomicLong,
-                               joinGroupTimeInMs: AtomicLong,
-                               startMs: Long,
-                               endMs: Long,
-                               dateFormat: SimpleDateFormat): Unit = {
-    val elapsedSecs = (endMs - startMs) / 1000.0
-    val fetchTimeInMs = (endMs - startMs) - joinGroupTimeInMs.get
-    val totalMBRead = (totalBytesRead.get * 1.0) / (1024 * 1024)
-    println("%s, %s, %.4f, %.4f, %d, %.4f, %d, %d, %.4f, %.4f".format(
-      dateFormat.format(startMs),
-      dateFormat.format(endMs),
-      totalMBRead,
-      totalMBRead / elapsedSecs,
-      totalMessagesRead.get,
-      totalMessagesRead.get / elapsedSecs,
-      joinGroupTimeInMs.get,
-      fetchTimeInMs,
-      totalMBRead / (fetchTimeInMs / 1000.0),
-      totalMessagesRead.get / (fetchTimeInMs / 1000.0)
-    ))
   }
 
   def consume(consumer: KafkaConsumer[Array[Byte], Array[Byte]],
@@ -139,9 +130,9 @@ object ConsumerPerformance extends LazyLogging {
       for (record <- records) {
         messagesRead += 1
         if (record.key != null)
-          bytesRead += record.key.size
+          bytesRead += record.key.length
         if (record.value != null)
-          bytesRead += record.value.size
+          bytesRead += record.value.length
 
         if (currentTimeMillis - lastReportTime >= config.reportingInterval) {
           if (config.showDetailedStats)
@@ -163,14 +154,14 @@ object ConsumerPerformance extends LazyLogging {
   }
 
   def printConsumerProgress(id: Int,
-                            bytesRead: Long,
-                            lastBytesRead: Long,
-                            messagesRead: Long,
-                            lastMessagesRead: Long,
-                            startMs: Long,
-                            endMs: Long,
-                            dateFormat: SimpleDateFormat,
-                            periodicJoinTimeInMs: Long): Unit = {
+                               bytesRead: Long,
+                               lastBytesRead: Long,
+                               messagesRead: Long,
+                               lastMessagesRead: Long,
+                               startMs: Long,
+                               endMs: Long,
+                               dateFormat: SimpleDateFormat,
+                               periodicJoinTimeInMs: Long): Unit = {
     printBasicProgress(id, bytesRead, lastBytesRead, messagesRead, lastMessagesRead, startMs, endMs, dateFormat)
     printExtendedProgress(bytesRead, lastBytesRead, messagesRead, lastMessagesRead, startMs, endMs, periodicJoinTimeInMs)
     println()

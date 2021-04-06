@@ -28,8 +28,11 @@ import java.util.concurrent.ExecutionException;
 
 
 /**
- * The result of {@link Admin#describeReplicaLogDirs(Collection)}.
+ * The result of {@link AdminClient#describeReplicaLogDirs(Collection)}.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class DescribeReplicaLogDirsResult {
     private final Map<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> futures;
 
@@ -49,20 +52,17 @@ public class DescribeReplicaLogDirsResult {
      */
     public KafkaFuture<Map<TopicPartitionReplica, ReplicaLogDirInfo>> all() {
         return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0])).
-            thenApply(new KafkaFuture.BaseFunction<Void, Map<TopicPartitionReplica, ReplicaLogDirInfo>>() {
-                @Override
-                public Map<TopicPartitionReplica, ReplicaLogDirInfo> apply(Void v) {
-                    Map<TopicPartitionReplica, ReplicaLogDirInfo> replicaLogDirInfos = new HashMap<>();
-                    for (Map.Entry<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> entry : futures.entrySet()) {
-                        try {
-                            replicaLogDirInfos.put(entry.getKey(), entry.getValue().get());
-                        } catch (InterruptedException | ExecutionException e) {
-                            // This should be unreachable, because allOf ensured that all the futures completed successfully.
-                            throw new RuntimeException(e);
-                        }
+            thenApply(v -> {
+                Map<TopicPartitionReplica, ReplicaLogDirInfo> replicaLogDirInfos = new HashMap<>();
+                for (Map.Entry<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> entry : futures.entrySet()) {
+                    try {
+                        replicaLogDirInfos.put(entry.getKey(), entry.getValue().get());
+                    } catch (InterruptedException | ExecutionException e) {
+                        // This should be unreachable, because allOf ensured that all the futures completed successfully.
+                        throw new RuntimeException(e);
                     }
-                    return replicaLogDirInfos;
                 }
+                return replicaLogDirInfos;
             });
     }
 

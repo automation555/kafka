@@ -18,18 +18,20 @@
  */
 package kafka.tools
 
-import java.util.{Date, Objects}
+
 import java.text.SimpleDateFormat
+import java.util.Date
+
 import javax.management._
 import javax.management.remote._
-import javax.rmi.ssl.SslRMIClientSocketFactory
-
 import joptsimple.OptionParser
+import kafka.utils.{CommandLineUtils, Exit, Logging}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.math._
 import kafka.utils.{CommandLineUtils, Exit, Logging}
+
 
 
 /**
@@ -40,7 +42,7 @@ import kafka.utils.{CommandLineUtils, Exit, Logging}
   */
 object JmxTool extends Logging {
 
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     // Parse command line
     val parser = new OptionParser(false)
     val objectNameOpt =
@@ -83,30 +85,8 @@ object JmxTool extends Logging {
       .describedAs("report-format")
       .ofType(classOf[java.lang.String])
       .defaultsTo("original")
-    val jmxAuthPropOpt = parser.accepts("jmx-auth-prop", "A mechanism to pass property in the form 'username=password' " +
-      "when enabling remote JMX with password authentication.")
-      .withRequiredArg
-      .describedAs("jmx-auth-prop")
-      .ofType(classOf[String])
-    val jmxSslEnableOpt = parser.accepts("jmx-ssl-enable", "Flag to enable remote JMX with SSL.")
-      .withRequiredArg
-      .describedAs("ssl-enable")
-      .ofType(classOf[java.lang.Boolean])
-      .defaultsTo(false)
     val waitOpt = parser.accepts("wait", "Wait for requested JMX objects to become available before starting output. " +
       "Only supported when the list of objects is non-empty and contains no object name patterns.")
-    val waitTimeoutOpt = parser.accepts("wait-timeout", "In milliseconds, how long to wait for requested JMX objects. " +
-      "Only applies when '--wait' flag is specified.")
-      .withOptionalArg
-      .describedAs("ms")
-      .ofType(classOf[java.lang.Integer])
-      .defaultsTo(10000)
-    val waitBackoffOpt = parser.accepts("wait-backoff", "In milliseconds, the wait interval in between queries for requested JMX objects. " +
-      "Only applies when '--wait' flag is specified.")
-      .withOptionalArg
-      .describedAs("ms")
-      .ofType(classOf[java.lang.Integer])
-      .defaultsTo(100)
     val helpOpt = parser.accepts("help", "Print usage information.")
 
 
@@ -128,14 +108,9 @@ object JmxTool extends Logging {
     val dateFormatExists = options.has(dateFormatOpt)
     val dateFormat = if(dateFormatExists) Some(new SimpleDateFormat(options.valueOf(dateFormatOpt))) else None
     val wait = options.has(waitOpt)
-    val waitTimeoutMs = options.valueOf(waitTimeoutOpt).intValue
-    val waitBackoffMs = options.valueOf(waitBackoffOpt).intValue
 
     val reportFormat = parseFormat(options.valueOf(reportFormatOpt).toLowerCase)
     val reportFormatOriginal = reportFormat.equals("original")
-
-    val enablePasswordAuth = options.has(jmxAuthPropOpt)
-    val enableSsl = options.has(jmxSslEnableOpt)
 
     var jmxc: JMXConnector = null
     var mbsc: MBeanServerConnection = null
@@ -145,18 +120,7 @@ object JmxTool extends Logging {
     do {
       try {
         System.err.println(s"Trying to connect to JMX url: $url.")
-        val env = new java.util.HashMap[String, AnyRef]
-        // ssl enable
-        if (enableSsl) {
-          val csf = new SslRMIClientSocketFactory
-          env.put("com.sun.jndi.rmi.factory.socket", csf)
-        }
-        // password authentication enable
-        if (enablePasswordAuth) {
-          val credentials = options.valueOf(jmxAuthPropOpt).split("=", 2)
-          env.put(JMXConnector.CREDENTIALS, credentials)
-        }
-        jmxc = JMXConnectorFactory.connect(url, env)
+        jmxc = JMXConnectorFactory.connect(url, null)
         mbsc = jmxc.getMBeanServerConnection
         connected = true
       } catch {
@@ -184,12 +148,13 @@ object JmxTool extends Logging {
     var names: Iterable[ObjectName] = null
     def namesSet = Option(names).toSet.flatten
     def foundAllObjects = queries.toSet == namesSet
+    val waitTimeoutMs = 10000
     if (!hasPatternQueries) {
       val start = System.currentTimeMillis
       do {
         if (names != null) {
           System.err.println("Could not find all object names, retrying")
-          Thread.sleep(waitBackoffMs)
+          Thread.sleep(100)
         }
         names = queries.flatMap((name: ObjectName) => mbsc.queryNames(name, null).asScala)
       } while (wait && System.currentTimeMillis - start < waitTimeoutMs && !foundAllObjects)

@@ -16,13 +16,11 @@
  */
 package org.apache.kafka.common.protocol.types;
 
-import org.apache.kafka.common.protocol.types.Field.Errors;
 import org.apache.kafka.common.record.BaseRecords;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * A record that can be serialized and deserialized according to a pre-defined schema
@@ -90,14 +88,6 @@ public class Struct {
         return getLong(field.name);
     }
 
-    public UUID get(Field.UUID field) {
-        return getUUID(field.name);
-    }
-
-    public org.apache.kafka.common.protocol.Errors get(Errors field) {
-        return getErrors(field.name);
-    }
-
     public Short get(Field.Int16 field) {
         return getShort(field.name);
     }
@@ -125,19 +115,6 @@ public class Struct {
     public Long getOrElse(Field.Int64 field, long alternative) {
         if (hasField(field.name))
             return getLong(field.name);
-        return alternative;
-    }
-
-    public UUID getOrElse(Field.UUID field, UUID alternative) {
-        if (hasField(field.name))
-            return getUUID(field.name);
-        return alternative;
-    }
-
-    public org.apache.kafka.common.protocol.Errors getOrElse(
-        Errors field, org.apache.kafka.common.protocol.Errors alternative) {
-        if (hasField(field.name))
-            return getErrors(field.name);
         return alternative;
     }
 
@@ -268,14 +245,6 @@ public class Struct {
         return (Long) get(name);
     }
 
-    public UUID getUUID(BoundField field) {
-        return (UUID) get(field);
-    }
-
-    public UUID getUUID(String name) {
-        return (UUID) get(name);
-    }
-
     public Object[] getArray(BoundField field) {
         return (Object[]) get(field);
     }
@@ -300,14 +269,6 @@ public class Struct {
         return (Boolean) get(name);
     }
 
-    public org.apache.kafka.common.protocol.Errors getErrors(BoundField field) {
-        return (org.apache.kafka.common.protocol.Errors) get(field);
-    }
-
-    public org.apache.kafka.common.protocol.Errors getErrors(String name) {
-        return (org.apache.kafka.common.protocol.Errors) get(name);
-    }
-
     public ByteBuffer getBytes(BoundField field) {
         Object result = get(field);
         if (result instanceof byte[])
@@ -329,7 +290,6 @@ public class Struct {
         ByteBuffer buf = (ByteBuffer) result;
         byte[] arr = new byte[buf.remaining()];
         buf.get(arr);
-        buf.flip();
         return arr;
     }
 
@@ -378,14 +338,6 @@ public class Struct {
     }
 
     public Struct set(Field.Int64 def, long value) {
-        return set(def.name, value);
-    }
-
-    public Struct set(Field.UUID def, UUID value) {
-        return set(def.name, value);
-    }
-
-    public Struct set(Errors def, org.apache.kafka.common.protocol.Errors value) {
         return set(def.name, value);
     }
 
@@ -442,8 +394,9 @@ public class Struct {
         validateField(field);
         if (field.def.type instanceof Schema) {
             return new Struct((Schema) field.def.type);
-        } else if (field.def.type.isArray()) {
-            return new Struct((Schema) field.def.type.arrayElementType().get());
+        } else if (field.def.type instanceof ArrayOf) {
+            ArrayOf array = (ArrayOf) field.def.type;
+            return new Struct((Schema) array.type());
         } else {
             throw new SchemaException("Field '" + field.def.name + "' is not a container type, it is of type " + field.def.type);
         }
@@ -495,7 +448,6 @@ public class Struct {
      * @throws SchemaException If validation fails
      */
     private void validateField(BoundField field) {
-        Objects.requireNonNull(field, "`field` must be non-null");
         if (this.schema != field.schema)
             throw new SchemaException("Attempt to access field '" + field.def.name + "' from a different schema instance.");
         if (field.index > values.length)
@@ -519,7 +471,7 @@ public class Struct {
             BoundField f = this.schema.get(i);
             b.append(f.def.name);
             b.append('=');
-            if (f.def.type.isArray() && this.values[i] != null) {
+            if (f.def.type instanceof ArrayOf && this.values[i] != null) {
                 Object[] arrayValue = (Object[]) this.values[i];
                 b.append('[');
                 for (int j = 0; j < arrayValue.length; j++) {
@@ -543,7 +495,7 @@ public class Struct {
         int result = 1;
         for (int i = 0; i < this.values.length; i++) {
             BoundField f = this.schema.get(i);
-            if (f.def.type.isArray()) {
+            if (f.def.type instanceof ArrayOf) {
                 if (this.get(f) != null) {
                     Object[] arrayObject = (Object[]) this.get(f);
                     for (Object arrayItem: arrayObject)
@@ -573,16 +525,17 @@ public class Struct {
         for (int i = 0; i < this.values.length; i++) {
             BoundField f = this.schema.get(i);
             boolean result;
-            if (f.def.type.isArray()) {
+            if (f.def.type instanceof ArrayOf) {
                 result = Arrays.equals((Object[]) this.get(f), (Object[]) other.get(f));
             } else {
                 Object thisField = this.get(f);
                 Object otherField = other.get(f);
-                result = Objects.equals(thisField, otherField);
+                return Objects.equals(thisField, otherField);
             }
             if (!result)
                 return false;
         }
         return true;
     }
+
 }

@@ -34,7 +34,7 @@ import kafka.message.{BrokerCompressionCodec, CompressionCodec, NoCompressionCod
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.checkpoints.LeaderEpochCheckpointFile
 import kafka.server.epoch.LeaderEpochFileCache
-import kafka.server.{BrokerTopicStats, FetchDataInfo, LogDirFailureChannel, LogOffsetMetadata, OffsetAndEpoch}
+import kafka.server._
 import kafka.utils._
 import org.apache.kafka.common.errors._
 import org.apache.kafka.common.record.FileRecords.TimestampAndOffset
@@ -779,17 +779,6 @@ class Log(@volatile var dir: File,
     lock synchronized {
       logSegments.foreach(_.closeHandlers())
       isMemoryMappedBufferClosed = true
-    }
-  }
-
-  /**
-    * Re-Open handlers
-    */
-  def reopenHandlers() {
-    debug("Re-Opening handlers")
-    lock synchronized {
-      logSegments.foreach(_.reopenHandlers())
-      isMemoryMappedBufferClosed = false
     }
   }
 
@@ -1932,8 +1921,6 @@ class Log(@volatile var dir: File,
    * @throws IOException if the file can't be renamed and still exists
    */
   private def asyncDeleteSegment(segment: LogSegment) {
-    // Since we are deleting the segment, lets close its handlers
-    segment.closeHandlers()
     segment.changeFileSuffixes("", Log.DeletedFileSuffix)
     def deleteSeg() {
       info(s"Deleting segment ${segment.baseOffset}")
@@ -1985,10 +1972,6 @@ class Log(@volatile var dir: File,
       val sortedOldSegments = oldSegments.filter(seg => segments.containsKey(seg.baseOffset)).sortBy(_.baseOffset)
 
       checkIfMemoryMappedBufferClosed()
-
-      // Close the handlers of the new segments as we are renaming the files
-      sortedNewSegments.foreach(_.closeHandlers())
-
       // need to do this in two phases to be crash safe AND do the delete asynchronously
       // if we crash in the middle of this we complete the swap in loadSegments()
       if (!isRecoveredSwapFile)
@@ -2005,9 +1988,6 @@ class Log(@volatile var dir: File,
       }
       // okay we are safe now, remove the swap suffix
       sortedNewSegments.foreach(_.changeFileSuffixes(Log.SwapFileSuffix, ""))
-
-      // Re-Open the handlers since we closed them for renaming
-      sortedNewSegments.foreach(_.reopenHandlers())
     }
   }
 

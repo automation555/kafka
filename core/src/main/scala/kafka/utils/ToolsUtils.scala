@@ -17,7 +17,6 @@
 package kafka.utils
 
 import joptsimple.OptionParser
-import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.{Metric, MetricName}
 
 import scala.collection.mutable
@@ -32,22 +31,9 @@ object ToolsUtils {
     val validHostPort = hostPorts.filter { hostPortData =>
       org.apache.kafka.common.utils.Utils.getPort(hostPortData) != null
     }
-    val isValid = !validHostPort.isEmpty && validHostPort.size == hostPorts.length
+    val isValid = !validHostPort.isEmpty && validHostPort.length == hostPorts.length
     if(!isValid)
       CommandLineUtils.printUsageAndDie(parser, "Please provide valid host:port like host1:9091,host2:9092\n ")
-  }
-
-  def maybeResonseCallback(responseCallbackOpt: Option[Errors => Unit],
-                           errors: Errors): Unit = {
-    if (responseCallbackOpt.isDefined) {
-      val responseErrors = errors match {
-        case errors@(Errors.NONE | Errors.NOT_COORDINATOR | Errors.COORDINATOR_LOAD_IN_PROGRESS) =>
-          errors
-        case _ =>
-          Errors.UNKNOWN_SERVER_ERROR
-      }
-      responseCallbackOpt.get(responseErrors)
-    }
   }
 
   /**
@@ -71,11 +57,7 @@ object ToolsUtils {
     println(s"\n%-${maxLengthOfDisplayName}s   %s".format("Metric Name", "Value"))
     sortedMap.foreach {
       case (metricName, value) =>
-        val specifier = value match {
-          case _ @ (_: java.lang.Float | _: java.lang.Double) => "%.3f"
-          case _ => "%s"
-        }
-        println(s"%-${maxLengthOfDisplayName}s : $specifier".format(metricName, value))
+        println(s"%-${maxLengthOfDisplayName}s : %.3f".format(metricName, value))
     }
   }
 }

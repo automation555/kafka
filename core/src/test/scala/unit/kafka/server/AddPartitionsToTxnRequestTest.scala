@@ -22,8 +22,8 @@ import java.util.Properties
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{AddPartitionsToTxnRequest, AddPartitionsToTxnResponse}
-import org.junit.{Before, Test}
 import org.junit.Assert._
+import org.junit.{Before, Test}
 
 import scala.collection.JavaConverters._
 
@@ -37,7 +37,7 @@ class AddPartitionsToTxnRequestTest extends BaseRequestTest {
   @Before
   override def setUp(): Unit = {
     super.setUp()
-    createTopic(topic1, numPartitions, servers.size.toShort, new Properties())
+    createTopic(topic1, numPartitions, servers.size, new Properties())
   }
 
   @Test

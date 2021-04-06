@@ -22,6 +22,7 @@ import kafka.cluster.Partition
 import kafka.common.OffsetAndMetadata
 import kafka.log.{Log, LogAppendInfo}
 import kafka.server.{FetchDataInfo, KafkaConfig, LogOffsetMetadata, ReplicaManager}
+import kafka.utils.TestUtils.fail
 import kafka.utils.{KafkaScheduler, MockTime, TestUtils}
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
 import org.apache.kafka.clients.consumer.internals.PartitionAssignor.Subscription
@@ -33,7 +34,6 @@ import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.easymock.{Capture, EasyMock, IAnswer}
 import org.junit.Assert.{assertEquals, assertFalse, assertNull, assertTrue}
 import org.junit.{Before, Test}
-import org.scalatest.Assertions.fail
 import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.Optional
@@ -59,7 +59,6 @@ class GroupMetadataManagerTest {
   var defaultOffsetRetentionMs = Long.MaxValue
 
   val groupId = "foo"
-  val groupInstanceId = Some("bar")
   val groupPartitionId = 0
   val groupTopicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, groupPartitionId)
   val protocolType = "protocolType"
@@ -710,7 +709,7 @@ class GroupMetadataManagerTest {
 
     groupMetadataManager.loadGroupsAndOffsets(groupMetadataTopicPartition, _ => ())
 
-    val group = groupMetadataManager.getGroup(groupId).getOrElse(fail("Group was not loaded into the cache"))
+    val group = groupMetadataManager.getGroup(groupId).getOrElse(TestUtils.fail("Group was not loaded into the cache"))
     assertEquals(groupId, group.groupId)
     assertEquals(Empty, group.currentState)
     assertEquals(committedOffsets.size, group.allOffsets.size)
@@ -773,53 +772,6 @@ class GroupMetadataManagerTest {
     val group = new GroupMetadata("foo", Empty, time)
     assertEquals(group, groupMetadataManager.addGroup(group))
     assertEquals(group, groupMetadataManager.addGroup(new GroupMetadata("foo", Empty, time)))
-  }
-
-  @Test
-  def testloadGroupWithStaticMember() {
-    val generation = 27
-    val protocolType = "consumer"
-    val staticMemberId = "staticMemberId"
-    val dynamicMemberId = "dynamicMemberId"
-
-    val staticMember = new MemberMetadata(staticMemberId, groupId, groupInstanceId, "", "", rebalanceTimeout, sessionTimeout,
-      protocolType, List(("protocol", Array[Byte]())))
-
-    val dynamicMember = new MemberMetadata(dynamicMemberId, groupId, None, "", "", rebalanceTimeout, sessionTimeout,
-      protocolType, List(("protocol", Array[Byte]())))
-
-    val members = Seq(staticMember, dynamicMember)
-
-    val group = GroupMetadata.loadGroup(groupId, Empty, generation, protocolType, null, null, None, members, time)
-
-    assertTrue(group.is(Empty))
-    assertEquals(generation, group.generationId)
-    assertEquals(Some(protocolType), group.protocolType)
-    assertTrue(group.has(staticMemberId))
-    assertTrue(group.has(dynamicMemberId))
-    assertTrue(group.hasStaticMember(groupInstanceId))
-    assertEquals(staticMemberId, group.getStaticMemberId(groupInstanceId))
-  }
-
-  @Test
-  def testReadFromOldGroupMetadata() {
-    val generation = 1
-    val protocol = "range"
-    val memberId = "memberId"
-    val oldApiVersions = Array(KAFKA_0_9_0, KAFKA_0_10_1_IV0, KAFKA_2_1_IV0)
-
-    for (apiVersion <- oldApiVersions) {
-      val groupMetadataRecord = buildStableGroupRecordWithMember(generation, protocolType, protocol, memberId, apiVersion = apiVersion)
-
-      val deserializedGroupMetadata = GroupMetadataManager.readGroupMessageValue(groupId, groupMetadataRecord.value(), time)
-      assertEquals(groupId, deserializedGroupMetadata.groupId)
-      assertEquals(generation, deserializedGroupMetadata.generationId)
-      assertEquals(protocolType, deserializedGroupMetadata.protocolType.get)
-      assertEquals(protocol, deserializedGroupMetadata.protocolOrNull)
-      assertEquals(1, deserializedGroupMetadata.allMembers.size)
-      assertTrue(deserializedGroupMetadata.allMembers.contains(memberId))
-      assertTrue(deserializedGroupMetadata.allStaticMembers.isEmpty)
-    }
   }
 
   @Test
@@ -923,7 +875,7 @@ class GroupMetadataManagerTest {
     val group = new GroupMetadata(groupId, Empty, time)
     groupMetadataManager.addGroup(group)
 
-    val member = new MemberMetadata(memberId, groupId, groupInstanceId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
+    val member = new MemberMetadata(memberId, groupId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
       protocolType, List(("protocol", Array[Byte]())))
     group.add(member, _ => ())
     group.transitionTo(PreparingRebalance)
@@ -952,7 +904,7 @@ class GroupMetadataManagerTest {
 
     val group = new GroupMetadata(groupId, Empty, time)
 
-    val member = new MemberMetadata(memberId, groupId, groupInstanceId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
+    val member = new MemberMetadata(memberId, groupId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
       protocolType, List(("protocol", Array[Byte]())))
     group.add(member, _ => ())
     group.transitionTo(PreparingRebalance)
@@ -1252,7 +1204,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
     assertEquals(None, group.offset(topicPartition1))
@@ -1287,7 +1239,73 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(replicaManager, partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
+
+    assertTrue(recordsCapture.hasCaptured)
+
+    val records = recordsCapture.getValue.records.asScala.toList
+    recordsCapture.getValue.batches.asScala.foreach { batch =>
+      assertEquals(RecordBatch.CURRENT_MAGIC_VALUE, batch.magic)
+      assertEquals(TimestampType.CREATE_TIME, batch.timestampType)
+    }
+    assertEquals(1, records.size)
+
+    val metadataTombstone = records.head
+    assertTrue(metadataTombstone.hasKey)
+    assertFalse(metadataTombstone.hasValue)
+    assertTrue(metadataTombstone.timestamp > 0)
+
+    val groupKey = GroupMetadataManager.readMessageKey(metadataTombstone.key).asInstanceOf[GroupMetadataKey]
+    assertEquals(groupId, groupKey.key)
+
+    // the full group should be gone since all offsets were removed
+    assertEquals(None, groupMetadataManager.getGroup(groupId))
+    val cachedOffsets = groupMetadataManager.getOffsets(groupId, Some(Seq(topicPartition1, topicPartition2)))
+    assertEquals(Some(OffsetFetchResponse.INVALID_OFFSET), cachedOffsets.get(topicPartition1).map(_.offset))
+    assertEquals(Some(OffsetFetchResponse.INVALID_OFFSET), cachedOffsets.get(topicPartition2).map(_.offset))
+  }
+
+  @Test
+  def testGroupMetadataRemovalWithLogAppendTime() {
+    val topicPartition1 = new TopicPartition("foo", 0)
+    val topicPartition2 = new TopicPartition("foo", 1)
+
+    groupMetadataManager.addPartitionOwnership(groupPartitionId)
+
+    val group = new GroupMetadata(groupId, Empty, time)
+    groupMetadataManager.addGroup(group)
+    group.generationId = 5
+
+    // expect the group metadata tombstone
+    EasyMock.reset(partition)
+    val recordsCapture: Capture[MemoryRecords] = EasyMock.newCapture()
+
+    EasyMock.expect(replicaManager.getMagic(EasyMock.anyObject())).andStubReturn(Some(RecordBatch.CURRENT_MAGIC_VALUE))
+    mockGetPartition()
+    EasyMock.expect(partition.appendRecordsToLeader(EasyMock.capture(recordsCapture),
+      isFromClient = EasyMock.eq(false), requiredAcks = EasyMock.anyInt()))
+      .andReturn(LogAppendInfo.UnknownLogAppendInfo)
+    EasyMock.replay(replicaManager, partition)
+
+    groupMetadataManager.cleanupGroupMetadata()
+
+    assertTrue(recordsCapture.hasCaptured)
+
+    val records = recordsCapture.getValue.records.asScala.toList
+    recordsCapture.getValue.batches.asScala.foreach { batch =>
+      assertEquals(RecordBatch.CURRENT_MAGIC_VALUE, batch.magic)
+      // Use CREATE_TIME, like the producer. The conversion to LOG_APPEND_TIME (if necessary) happens automatically.
+      assertEquals(TimestampType.CREATE_TIME, batch.timestampType)
+    }
+    assertEquals(1, records.size)
+
+    val metadataTombstone = records.head
+    assertTrue(metadataTombstone.hasKey)
+    assertFalse(metadataTombstone.hasValue)
+    assertTrue(metadataTombstone.timestamp > 0)
+
+    val groupKey = GroupMetadataManager.readMessageKey(metadataTombstone.key).asInstanceOf[GroupMetadataKey]
+    assertEquals(groupId, groupKey.key)
 
     // the full group should be gone since all offsets were removed
     assertEquals(None, groupMetadataManager.getGroup(groupId))
@@ -1344,7 +1362,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     assertTrue(recordsCapture.hasCaptured)
 
@@ -1385,7 +1403,7 @@ class GroupMetadataManagerTest {
     groupMetadataManager.addGroup(group)
 
     val subscription = new Subscription(List(topic).asJava)
-    val member = new MemberMetadata(memberId, groupId, groupInstanceId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
+    val member = new MemberMetadata(memberId, groupId, clientId, clientHost, rebalanceTimeout, sessionTimeout,
       protocolType, List(("protocol", ConsumerProtocol.serializeSubscription(subscription).array())))
     group.add(member, _ => ())
     group.transitionTo(PreparingRebalance)
@@ -1420,7 +1438,7 @@ class GroupMetadataManagerTest {
     // do not expire any offset even though expiration timestamp is reached for one (due to group still being active)
     time.sleep(2)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // group and offsets should still be there
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
@@ -1445,7 +1463,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // group is empty now, only one offset should expire
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
@@ -1469,7 +1487,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // one more offset should expire
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
@@ -1487,7 +1505,7 @@ class GroupMetadataManagerTest {
     // advance time to just before the offset of last partition is to be expired, no offset should expire
     time.sleep(group.currentStateTimestamp.get + defaultOffsetRetentionMs - time.milliseconds() - 1)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // one more offset should expire
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
@@ -1512,7 +1530,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // group and all its offsets should be gone now
     assertEquals(None, groupMetadataManager.getGroup(groupId))
@@ -1566,10 +1584,10 @@ class GroupMetadataManagerTest {
     assertEquals(Some(Errors.NONE), commitErrors.get.get(topicPartition1))
 
     // do not expire offsets while within retention period since commit timestamp
-    val expiryTimestamp = offsets.get(topicPartition1).get.commitTimestamp + defaultOffsetRetentionMs
+    val expiryTimestamp = offsets(topicPartition1).commitTimestamp + defaultOffsetRetentionMs
     time.sleep(expiryTimestamp - time.milliseconds() - 1)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // group and offsets should still be there
     assertEquals(Some(group), groupMetadataManager.getGroup(groupId))
@@ -1590,7 +1608,7 @@ class GroupMetadataManagerTest {
       .andReturn(LogAppendInfo.UnknownLogAppendInfo)
     EasyMock.replay(partition)
 
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
 
     // group and all its offsets should be gone now
     assertEquals(None, groupMetadataManager.getGroup(groupId))
@@ -1878,7 +1896,7 @@ class GroupMetadataManagerTest {
                                                assignmentSize: Int = 0,
                                                apiVersion: ApiVersion = ApiVersion.latestVersion): SimpleRecord = {
     val memberProtocols = List((protocol, Array.emptyByteArray))
-    val member = new MemberMetadata(memberId, groupId, groupInstanceId, "clientId", "clientHost", 30000, 10000, protocolType, memberProtocols)
+    val member = new MemberMetadata(memberId, groupId, "clientId", "clientHost", 30000, 10000, protocolType, memberProtocols)
     val group = GroupMetadata.loadGroup(groupId, Stable, generation, protocolType, protocol, memberId,
       if (apiVersion >= KAFKA_2_1_IV0) Some(time.milliseconds()) else None, Seq(member), time)
     val groupMetadataKey = GroupMetadataManager.groupMetadataKey(groupId)
@@ -1959,7 +1977,7 @@ class GroupMetadataManagerTest {
   }
 
   private def mockGetPartition(): Unit = {
-    EasyMock.expect(replicaManager.getPartition(groupTopicPartition)).andStubReturn(partition)
+    EasyMock.expect(replicaManager.getPartition(groupTopicPartition)).andStubReturn(Some(partition))
     EasyMock.expect(replicaManager.nonOfflinePartition(groupTopicPartition)).andStubReturn(Some(partition))
   }
 
@@ -1978,7 +1996,7 @@ class GroupMetadataManagerTest {
 
   @Test
   def testMetrics() {
-    groupMetadataManager.cleanupGroupMetadata(_ => {})
+    groupMetadataManager.cleanupGroupMetadata()
     expectMetrics(groupMetadataManager, 0, 0, 0)
     val group = new GroupMetadata("foo2", Stable, time)
     groupMetadataManager.addGroup(group)

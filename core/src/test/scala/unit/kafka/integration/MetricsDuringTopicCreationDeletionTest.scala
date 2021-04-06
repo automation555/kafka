@@ -18,20 +18,21 @@
 package kafka.integration
 
 import java.util.Properties
-import kafka.server.KafkaConfig
-import kafka.utils.{Logging, TestUtils}
-import scala.collection.JavaConverters.mapAsScalaMapConverter
 
-import org.junit.{Before, Test}
 import com.yammer.metrics.Metrics
 import com.yammer.metrics.core.Gauge
+import kafka.server.KafkaConfig
+import kafka.utils.{Logging, TestUtils}
+import org.junit.{Before, Test}
+
+import scala.collection.JavaConverters.mapAsScalaMapConverter
 
 class MetricsDuringTopicCreationDeletionTest extends KafkaServerTestHarness with Logging {
 
   private val nodesNum = 3
   private val topicName = "topic"
   private val topicNum = 2
-  private val replicationFactor = 3.toShort
+  private val replicationFactor = 3
   private val partitionNum = 3
   private val createDeleteIterations = 3
 

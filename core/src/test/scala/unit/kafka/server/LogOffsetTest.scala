@@ -27,7 +27,7 @@ import kafka.utils.{MockTime, TestUtils}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.record.MemoryRecords
-import org.apache.kafka.common.requests.{FetchRequest, FetchResponse, IsolationLevel, ListOffsetRequest, ListOffsetResponse}
+import org.apache.kafka.common.requests._
 import org.easymock.{EasyMock, IAnswer}
 import org.junit.Assert._
 import org.junit.Test
@@ -67,7 +67,7 @@ class LogOffsetTest extends BaseRequestTest {
     val topic = "kafka-"
     val topicPartition = new TopicPartition(topic, 0)
 
-    createTopic(topic, 1, 1.toShort)
+    createTopic(topic, 1, 1)
 
     val logManager = server.getLogManager
     TestUtils.waitUntilTrue(() => logManager.getLog(topicPartition).isDefined,
@@ -99,7 +99,7 @@ class LogOffsetTest extends BaseRequestTest {
     val topic = "kafka-"
     val topicPartition = new TopicPartition(topic, 0)
 
-    createTopic(topic, 1, 1.toShort)
+    createTopic(topic, 1, 1)
 
     val logManager = server.getLogManager
     TestUtils.waitUntilTrue(() => logManager.getLog(topicPartition).isDefined,

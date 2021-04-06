@@ -19,15 +19,14 @@ package kafka.server
 import java.net.SocketTimeoutException
 
 import kafka.cluster.BrokerEndPoint
-import org.apache.kafka.clients._
+import org.apache.kafka.clients.{ApiVersions, ClientResponse, ManualMetadataUpdater, NetworkClient, _}
+import org.apache.kafka.common.Node
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network._
 import org.apache.kafka.common.requests.AbstractRequest
+import org.apache.kafka.common.requests.AbstractRequest.Builder
 import org.apache.kafka.common.security.JaasContext
 import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.clients.{ApiVersions, ClientResponse, ManualMetadataUpdater, NetworkClient}
-import org.apache.kafka.common.Node
-import org.apache.kafka.common.requests.AbstractRequest.Builder
 
 import scala.collection.JavaConverters._
 
@@ -79,7 +78,6 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       1,
       0,
       0,
-      30000,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       brokerConfig.replicaSocketReceiveBufferBytes,
       brokerConfig.requestTimeoutMs,

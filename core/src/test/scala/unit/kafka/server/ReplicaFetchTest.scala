@@ -17,15 +17,13 @@
 
 package kafka.server
 
-import java.util.Properties
-
-import org.junit.{After, Before, Test}
-import kafka.zk.ZooKeeperTestHarness
 import kafka.utils.TestUtils
-import TestUtils._
+import kafka.utils.TestUtils._
+import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringSerializer
+import org.junit.{After, Before, Test}
 
 class ReplicaFetchTest extends ZooKeeperTestHarness  {
   var brokers: Seq[KafkaServer] = null
@@ -36,8 +34,6 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
   override def setUp() {
     super.setUp()
     val props = createBrokerConfigs(2, zkConnect)
-    props.foreach( _.put("log.preallocate","true"))
-    props.foreach( _.put("log.segment.bytes", "1024"))
     brokers = props.map(KafkaConfig.fromProps).map(TestUtils.createServer(_))
   }
 
@@ -62,16 +58,14 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
     val producer = TestUtils.createProducer(TestUtils.getBrokerListStrFromServers(brokers),
                                                keySerializer = new StringSerializer,
                                                valueSerializer = new StringSerializer)
-    val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m))
-   /* ++
-      testMessageList2.map(m => new ProducerRecord(topic2, m, m))*/
-    records.map(producer.send).foreach(_.get)
+    val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m)) ++
+      testMessageList2.map(m => new ProducerRecord(topic2, m, m))
     records.map(producer.send).foreach(_.get)
     producer.close()
 
     def logsMatch(): Boolean = {
       var result = true
-      for (topic <- List(topic1)) { //, topic2
+      for (topic <- List(topic1, topic2)) {
         val tp = new TopicPartition(topic, partition)
         val expectedOffset = brokers.head.getLogManager().getLog(tp).get.logEndOffset
         result = result && expectedOffset > 0 && brokers.forall { item =>

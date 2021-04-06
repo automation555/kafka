@@ -27,8 +27,11 @@ import org.apache.kafka.common.requests.DescribeLogDirsResponse.LogDirInfo;
 
 
 /**
- * The result of the {@link Admin#describeLogDirs(Collection)} call.
+ * The result of the {@link AdminClient#describeLogDirs(Collection)} call.
+ *
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
+@InterfaceStability.Evolving
 public class DescribeLogDirsResult {
     private final Map<Integer, KafkaFuture<Map<String, LogDirInfo>>> futures;
 
@@ -48,20 +51,17 @@ public class DescribeLogDirsResult {
      */
     public KafkaFuture<Map<Integer, Map<String, LogDirInfo>>> all() {
         return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0])).
-            thenApply(new KafkaFuture.BaseFunction<Void, Map<Integer, Map<String, LogDirInfo>>>() {
-                @Override
-                public Map<Integer, Map<String, LogDirInfo>> apply(Void v) {
-                    Map<Integer, Map<String, LogDirInfo>> descriptions = new HashMap<>(futures.size());
-                    for (Map.Entry<Integer, KafkaFuture<Map<String, LogDirInfo>>> entry : futures.entrySet()) {
-                        try {
-                            descriptions.put(entry.getKey(), entry.getValue().get());
-                        } catch (InterruptedException | ExecutionException e) {
-                            // This should be unreachable, because allOf ensured that all the futures completed successfully.
-                            throw new RuntimeException(e);
-                        }
+            thenApply(v -> {
+                Map<Integer, Map<String, LogDirInfo>> descriptions = new HashMap<>(futures.size());
+                for (Map.Entry<Integer, KafkaFuture<Map<String, LogDirInfo>>> entry : futures.entrySet()) {
+                    try {
+                        descriptions.put(entry.getKey(), entry.getValue().get());
+                    } catch (InterruptedException | ExecutionException e) {
+                        // This should be unreachable, because allOf ensured that all the futures completed successfully.
+                        throw new RuntimeException(e);
                     }
-                    return descriptions;
                 }
+                return descriptions;
             });
     }
 }

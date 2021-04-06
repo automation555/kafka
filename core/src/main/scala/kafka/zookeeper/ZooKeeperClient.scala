@@ -18,9 +18,11 @@
 package kafka.zookeeper
 
 import java.util
-import java.util.concurrent.locks.{ReentrantLock, ReentrantReadWriteLock}
+import java.util.Locale
 import java.util.concurrent._
+import java.util.concurrent.locks.{ReentrantLock, ReentrantReadWriteLock}
 
+import com.yammer.metrics.core.{Gauge, MetricName}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.CoreUtils.{inLock, inReadLock, inWriteLock}
 import kafka.utils.{KafkaScheduler, Logging}
@@ -29,11 +31,10 @@ import org.apache.zookeeper.AsyncCallback._
 import org.apache.zookeeper.KeeperException.Code
 import org.apache.zookeeper.Watcher.Event.{EventType, KeeperState}
 import org.apache.zookeeper.ZooKeeper.States
-import org.apache.zookeeper.data.{ACL, Stat}
 import org.apache.zookeeper._
+import org.apache.zookeeper.data.{ACL, Stat}
 
 import scala.collection.JavaConverters._
-import scala.collection.Seq
 import scala.collection.mutable.Set
 
 /**
@@ -43,7 +44,6 @@ import scala.collection.mutable.Set
  * @param sessionTimeoutMs session timeout in milliseconds
  * @param connectionTimeoutMs connection timeout in milliseconds
  * @param maxInFlightRequests maximum number of unacknowledged requests the client will send before blocking.
- * @param name name of the client instance
  */
 class ZooKeeperClient(connectString: String,
                       sessionTimeoutMs: Int,
@@ -51,23 +51,8 @@ class ZooKeeperClient(connectString: String,
                       maxInFlightRequests: Int,
                       time: Time,
                       metricGroup: String,
-                      metricType: String,
-                      name: Option[String]) extends Logging with KafkaMetricsGroup {
-
-  def this(connectString: String,
-           sessionTimeoutMs: Int,
-           connectionTimeoutMs: Int,
-           maxInFlightRequests: Int,
-           time: Time,
-           metricGroup: String,
-           metricType: String) = {
-    this(connectString, sessionTimeoutMs, connectionTimeoutMs, maxInFlightRequests, time, metricGroup, metricType, None)
-  }
-
-  this.logIdent = name match {
-    case Some(n) => s"[ZooKeeperClient $n] "
-    case _ => "[ZooKeeperClient] "
-  }
+                      metricType: String) extends Logging with KafkaMetricsGroup {
+  this.logIdent = "[ZooKeeperClient] "
   private val initializationLock = new ReentrantReadWriteLock()
   private val isConnectedOrExpiredLock = new ReentrantLock()
   private val isConnectedOrExpiredCondition = isConnectedOrExpiredLock.newCondition()
@@ -93,7 +78,7 @@ class ZooKeeperClient(connectString: String,
     stateToEventTypeMap.map { case (state, eventType) =>
       val name = s"ZooKeeper${eventType}PerSec"
       metricNames += name
-      state -> newMeter(name)
+      state -> newMeter(name, eventType.toLowerCase(Locale.ROOT), TimeUnit.SECONDS)
     }
   }
 
@@ -101,7 +86,9 @@ class ZooKeeperClient(connectString: String,
   // Fail-fast if there's an error during construction (so don't call initialize, which retries forever)
   @volatile private var zooKeeper = new ZooKeeper(connectString, sessionTimeoutMs, ZooKeeperClientWatcher)
 
-  newGauge[String]("SessionState", () => Option(connectionState.toString).getOrElse("DISCONNECTED"))
+  newGauge("SessionState", new Gauge[String] {
+    override def value: String = Option(connectionState.toString).getOrElse("DISCONNECTED")
+  })
 
   metricNames += "SessionState"
 
@@ -113,7 +100,7 @@ class ZooKeeperClient(connectString: String,
       throw e
   }
 
-  override def metricName(name: String, metricTags: scala.collection.Map[String, String]): String = {
+  override def metricName(name: String, metricTags: scala.collection.Map[String, String]): MetricName = {
     explicitMetricName(metricGroup, metricType, name, metricTags)
   }
 
@@ -333,12 +320,6 @@ class ZooKeeperClient(connectString: String,
 
   def close(): Unit = {
     info("Closing.")
-
-    // Shutdown scheduler outside of lock to avoid deadlock if scheduler
-    // is waiting for lock to process session expiry. Close expiry thread
-    // first to ensure that new clients are not created during close().
-    expiryScheduler.shutdown()
-
     inWriteLock(initializationLock) {
       zNodeChangeHandlers.clear()
       zNodeChildChangeHandlers.clear()
@@ -346,6 +327,9 @@ class ZooKeeperClient(connectString: String,
       zooKeeper.close()
       metricNames.foreach(removeMetric(_))
     }
+    // Shutdown scheduler outside of lock to avoid deadlock if scheduler
+    // is waiting for lock to process session expiry
+    expiryScheduler.shutdown()
     info("Closed.")
   }
 

@@ -26,9 +26,9 @@ import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.message.MetadataRequestData
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests.{MetadataRequest, MetadataResponse}
+import org.apache.kafka.test.TestUtils.isValidClusterId
 import org.junit.Assert._
 import org.junit.{Before, Test}
-import org.apache.kafka.test.TestUtils.isValidClusterId
 
 import scala.collection.JavaConverters._
 
@@ -254,7 +254,7 @@ class MetadataRequestTest extends BaseRequestTest {
     val replicaCount = 3
 
     // create a topic with 3 replicas
-    createTopic(replicaDownTopic, 1, replicaCount.toShort)
+    createTopic(replicaDownTopic, 1, replicaCount)
 
     // Kill a replica node that is not the leader
     val metadataResponse = sendMetadataRequest(new MetadataRequest.Builder(List(replicaDownTopic).asJava, true, 1.toShort).build())
@@ -321,7 +321,7 @@ class MetadataRequestTest extends BaseRequestTest {
     }
 
     val topic = "isr-after-broker-shutdown"
-    val replicaCount = 3.toShort
+    val replicaCount = 3
     createTopic(topic, 1, replicaCount)
 
     servers.last.shutdown()

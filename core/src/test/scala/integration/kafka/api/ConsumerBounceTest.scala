@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import java.util.{Collection, Collections, Properties}
 
-import util.control.Breaks._
 import kafka.server.{BaseRequestTest, KafkaConfig}
 import kafka.utils.{CoreUtils, Logging, ShutdownableThread, TestUtils}
 import org.apache.kafka.clients.consumer._
@@ -35,6 +34,7 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, ExecutionContextExecutor, Future => SFuture}
+import scala.util.control.Breaks._
 
 /**
  * Integration tests for the consumer that cover basic usage as well as server failures
@@ -72,7 +72,7 @@ class ConsumerBounceTest extends BaseRequestTest with Logging {
     super.setUp()
 
     // create the test topic with all the brokers as replicas
-    createTopic(topic, 1, numBrokers.toShort)
+    createTopic(topic, 1, numBrokers)
   }
 
   @After
@@ -176,7 +176,7 @@ class ConsumerBounceTest extends BaseRequestTest with Logging {
     val consumer = createConsumer()
     consumer.subscribe(Collections.singleton(newtopic))
     executor.schedule(new Runnable {
-        def run() = createTopic(newtopic, numPartitions = numBrokers, replicationFactor = numBrokers.toShort)
+        def run() = createTopic(newtopic, numPartitions = numBrokers, replicationFactor = numBrokers)
       }, 2, TimeUnit.SECONDS)
     consumer.poll(time.Duration.ZERO)
 
@@ -316,7 +316,7 @@ class ConsumerBounceTest extends BaseRequestTest with Logging {
     this.consumerConfig.setProperty(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, "1000")
     this.consumerConfig.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
     val producer = createProducer()
-    createTopic(topic, numPartitions = partitionCount, replicationFactor = numBrokers.toShort)
+    createTopic(topic, numPartitions = partitionCount, replicationFactor = numBrokers)
     val stableConsumers = createConsumersWithGroupId("group2", consumerCount, executor, topic = topic)
 
     // assert group is stable and working
@@ -392,7 +392,7 @@ class ConsumerBounceTest extends BaseRequestTest with Logging {
     val topic = "group-max-size-test"
     val groupId = "group1"
     val executor = Executors.newScheduledThreadPool(maxGroupSize * 2)
-    createTopic(topic, maxGroupSize, numBrokers.toShort)
+    createTopic(topic, maxGroupSize, numBrokers)
     this.consumerConfig.setProperty(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, "60000")
     this.consumerConfig.setProperty(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, "1000")
     this.consumerConfig.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
@@ -463,7 +463,7 @@ class ConsumerBounceTest extends BaseRequestTest with Logging {
   @Test
   def testCloseDuringRebalance() {
     val topic = "closetest"
-    createTopic(topic, 10, numBrokers.toShort)
+    createTopic(topic, 10, numBrokers)
     this.consumerConfig.setProperty(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, "60000")
     this.consumerConfig.setProperty(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, "1000")
     this.consumerConfig.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")

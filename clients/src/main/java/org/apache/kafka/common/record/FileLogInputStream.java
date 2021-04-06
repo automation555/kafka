@@ -20,7 +20,6 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.record.AbstractLegacyRecordBatch.LegacyFileChannelRecordBatch;
 import org.apache.kafka.common.record.DefaultRecordBatch.DefaultFileChannelRecordBatch;
-import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.CloseableIterator;
 import org.apache.kafka.common.utils.Utils;
 
@@ -235,14 +234,14 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
             return offset == that.offset &&
                     position == that.position &&
                     batchSize == that.batchSize &&
-                    Objects.equals(channel, thatChannel);
+                    (Objects.equals(channel, thatChannel));
         }
 
         @Override
         public int hashCode() {
             FileChannel channel = fileRecords == null ? null : fileRecords.channel();
 
-            int result = Long.hashCode(offset);
+            int result = (int) (offset ^ (offset >>> 32));
             result = 31 * result + (channel != null ? channel.hashCode() : 0);
             result = 31 * result + position;
             result = 31 * result + batchSize;

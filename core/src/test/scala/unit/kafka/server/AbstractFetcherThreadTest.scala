@@ -21,13 +21,12 @@ import java.nio.ByteBuffer
 import java.util.Optional
 import java.util.concurrent.atomic.AtomicInteger
 
-import javax.management.ObjectName
+import com.yammer.metrics.Metrics
 import kafka.cluster.BrokerEndPoint
 import kafka.log.LogAppendInfo
 import kafka.message.NoCompressionCodec
 import kafka.server.AbstractFetcherThread.ResultWithPartitions
 import kafka.utils.TestUtils
-import org.apache.kafka.common.KafkaException
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{FencedLeaderEpochException, UnknownLeaderEpochException}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
@@ -36,26 +35,22 @@ import org.apache.kafka.common.requests.{EpochEndOffset, FetchRequest}
 import org.apache.kafka.common.utils.Time
 import org.junit.Assert._
 import org.junit.{Before, Test}
-
-import scala.collection.JavaConverters._
-import scala.collection.{Map, Set, mutable}
-import scala.util.Random
 import org.scalatest.Assertions.assertThrows
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.{Map, Set, mutable}
+import scala.util.Random
 
 class AbstractFetcherThreadTest {
 
-  private val partition1 = new TopicPartition("topic1", 0)
-  private val partition2 = new TopicPartition("topic2", 0)
-  private val failedPartitions = new FailedPartitions
-
   @Before
   def cleanMetricRegistry(): Unit = {
-    TestUtils.clearDropwizardMetrics()
+    for (metricName <- Metrics.defaultRegistry().allMetrics().keySet().asScala)
+      Metrics.defaultRegistry().removeMetric(metricName)
   }
 
-  private def allMetricsNames: Set[String] = kafka.metrics.getKafkaMetrics.keySet.map(ObjectName.getInstance(_).getKeyProperty("name"))
+  private def allMetricsNames: Set[String] = Metrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName)
 
   private def mkBatch(baseOffset: Long, leaderEpoch: Int, records: SimpleRecord*): RecordBatch = {
     MemoryRecords.withRecords(baseOffset, CompressionType.NONE, leaderEpoch, records: _*)
@@ -86,7 +81,7 @@ class AbstractFetcherThreadTest {
     fetcher.shutdown()
 
     // after shutdown, they should be gone
-    assertTrue(kafka.metrics.getKafkaMetrics.isEmpty)
+    assertTrue(Metrics.defaultRegistry().allMetrics().isEmpty)
   }
 
   @Test
@@ -101,7 +96,8 @@ class AbstractFetcherThreadTest {
 
     fetcher.doWork()
 
-    assertTrue("Failed waiting for consumer lag metric", allMetricsNames(FetcherMetrics.ConsumerLag))
+    assertTrue("Failed waiting for consumer lag metric",
+      allMetricsNames(FetcherMetrics.ConsumerLag))
 
     // remove the partition to simulate leader migration
     fetcher.removePartitions(Set(partition))
@@ -150,9 +146,8 @@ class AbstractFetcherThreadTest {
     assertEquals(0L, replicaState.logEndOffset)
     assertEquals(0L, replicaState.highWatermark)
 
-    // After fencing, the fetcher should remove the partition from tracking and mark as failed
+    // After fencing, the fetcher should remove the partition from tracking
     assertTrue(fetcher.fetchState(partition).isEmpty)
-    assertTrue(failedPartitions.contains(partition))
   }
 
   @Test
@@ -180,9 +175,8 @@ class AbstractFetcherThreadTest {
 
     fetcher.doWork()
 
-    // After fencing, the fetcher should remove the partition from tracking and mark as failed
+    // After fencing, the fetcher should remove the partition from tracking
     assertTrue(fetcher.fetchState(partition).isEmpty)
-    assertTrue(failedPartitions.contains(partition))
   }
 
   @Test
@@ -485,12 +479,11 @@ class AbstractFetcherThreadTest {
     val leaderState = MockFetcherThread.PartitionState(leaderLog, leaderEpoch = 4, highWatermark = 2L)
     fetcher.setLeaderState(partition, leaderState)
 
-    // After the out of range error, we get a fenced error and remove the partition and mark as failed
+    // After the out of range error, we get a fenced error and remove the partition
     fetcher.doWork()
     assertEquals(0, replicaState.logEndOffset)
     assertTrue(fetchedEarliestOffset)
     assertTrue(fetcher.fetchState(partition).isEmpty)
-    assertTrue(failedPartitions.contains(partition))
   }
 
   @Test
@@ -728,67 +721,6 @@ class AbstractFetcherThreadTest {
     }
   }
 
-  @Test
-  def testFetcherThreadHandlingPartitionFailureDuringAppending(): Unit = {
-    val fetcherForAppend = new MockFetcherThread {
-      override def processPartitionData(topicPartition: TopicPartition, fetchOffset: Long, partitionData: FetchData): Option[LogAppendInfo] = {
-        if (topicPartition == partition1) {
-          throw new KafkaException()
-        } else {
-          super.processPartitionData(topicPartition, fetchOffset, partitionData)
-        }
-      }
-    }
-    verifyFetcherThreadHandlingPartitionFailure(fetcherForAppend)
-  }
-
-  @Test
-  def testFetcherThreadHandlingPartitionFailureDuringTruncation(): Unit = {
-    val fetcherForTruncation = new MockFetcherThread {
-      override def truncate(topicPartition: TopicPartition, truncationState: OffsetTruncationState): Unit = {
-        if(topicPartition == partition1)
-          throw new Exception()
-        else {
-          super.truncate(topicPartition: TopicPartition, truncationState: OffsetTruncationState)
-        }
-      }
-    }
-    verifyFetcherThreadHandlingPartitionFailure(fetcherForTruncation)
-  }
-
-  private def verifyFetcherThreadHandlingPartitionFailure(fetcher: MockFetcherThread): Unit = {
-
-    fetcher.setReplicaState(partition1, MockFetcherThread.PartitionState(leaderEpoch = 0))
-    fetcher.addPartitions(Map(partition1 -> offsetAndEpoch(0L, leaderEpoch = 0)))
-    fetcher.setLeaderState(partition1, MockFetcherThread.PartitionState(leaderEpoch = 0))
-
-    fetcher.setReplicaState(partition2, MockFetcherThread.PartitionState(leaderEpoch = 0))
-    fetcher.addPartitions(Map(partition2 -> offsetAndEpoch(0L, leaderEpoch = 0)))
-    fetcher.setLeaderState(partition2, MockFetcherThread.PartitionState(leaderEpoch = 0))
-
-    // processing data fails for partition1
-    fetcher.doWork()
-
-    // partition1 marked as failed
-    assertTrue(failedPartitions.contains(partition1))
-    assertEquals(None, fetcher.fetchState(partition1))
-
-    // make sure the fetcher continues to work with rest of the partitions
-    fetcher.doWork()
-    assertEquals(Some(Fetching), fetcher.fetchState(partition2).map(_.state))
-    assertFalse(failedPartitions.contains(partition2))
-
-    // simulate a leader change
-    fetcher.removePartitions(Set(partition1))
-    failedPartitions.removeAll(Set(partition1))
-    fetcher.addPartitions(Map(partition1 -> offsetAndEpoch(0L, leaderEpoch = 1)))
-
-    // partition1 added back
-    assertEquals(Some(Truncating), fetcher.fetchState(partition1).map(_.state))
-    assertFalse(failedPartitions.contains(partition1))
-
-  }
-
   object MockFetcherThread {
     class PartitionState(var log: mutable.Buffer[RecordBatch],
                          var leaderEpoch: Int,
@@ -812,8 +744,7 @@ class AbstractFetcherThreadTest {
   class MockFetcherThread(val replicaId: Int = 0, val leaderId: Int = 1)
     extends AbstractFetcherThread("mock-fetcher",
       clientId = "mock-fetcher",
-      sourceBroker = new BrokerEndPoint(leaderId, host = "localhost", port = Random.nextInt()),
-      failedPartitions) {
+      sourceBroker = new BrokerEndPoint(leaderId, host = "localhost", port = Random.nextInt())) {
 
     import MockFetcherThread.PartitionState
 

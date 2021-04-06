@@ -18,20 +18,18 @@ package org.apache.kafka.common.metrics;
 
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.stats.Avg;
-import org.apache.kafka.common.metrics.stats.CumulativeCount;
 import org.apache.kafka.common.metrics.stats.Meter;
 import org.apache.kafka.common.metrics.stats.Rate;
-import org.apache.kafka.common.metrics.stats.WindowedSum;
+import org.apache.kafka.common.metrics.stats.Sum;
 import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Time;
 import org.junit.Test;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -39,8 +37,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -69,17 +65,17 @@ public class SensorTest {
         MetricConfig debugConfig = new MetricConfig().recordLevel(Sensor.RecordingLevel.DEBUG);
         MetricConfig infoConfig = new MetricConfig().recordLevel(Sensor.RecordingLevel.INFO);
 
-        Sensor infoSensor = new Sensor(null, "infoSensor", null, debugConfig, Time.SYSTEM,
+        Sensor infoSensor = new Sensor(null, "infoSensor", null, debugConfig, new SystemTime(),
             0, Sensor.RecordingLevel.INFO);
         assertTrue(infoSensor.shouldRecord());
-        infoSensor = new Sensor(null, "infoSensor", null, debugConfig, Time.SYSTEM,
+        infoSensor = new Sensor(null, "infoSensor", null, debugConfig, new SystemTime(),
             0, Sensor.RecordingLevel.DEBUG);
         assertTrue(infoSensor.shouldRecord());
 
-        Sensor debugSensor = new Sensor(null, "debugSensor", null, infoConfig, Time.SYSTEM,
+        Sensor debugSensor = new Sensor(null, "debugSensor", null, infoConfig, new SystemTime(),
             0, Sensor.RecordingLevel.INFO);
         assertTrue(debugSensor.shouldRecord());
-        debugSensor = new Sensor(null, "debugSensor", null, infoConfig, Time.SYSTEM,
+        debugSensor = new Sensor(null, "debugSensor", null, infoConfig, new SystemTime(),
             0, Sensor.RecordingLevel.DEBUG);
         assertFalse(debugSensor.shouldRecord());
     }
@@ -88,23 +84,25 @@ public class SensorTest {
     public void testExpiredSensor() {
         MetricConfig config = new MetricConfig();
         Time mockTime = new MockTime();
-        try (Metrics metrics = new Metrics(config, Arrays.asList(new JmxReporter()), mockTime, true)) {
-            long inactiveSensorExpirationTimeSeconds = 60L;
-            Sensor sensor = new Sensor(metrics, "sensor", null, config, mockTime,
-                    inactiveSensorExpirationTimeSeconds, Sensor.RecordingLevel.INFO);
+        Metrics metrics =  new Metrics(config, Collections.singletonList((MetricsReporter) new JmxReporter()), mockTime, true);
 
-            assertTrue(sensor.add(metrics.metricName("test1", "grp1"), new Avg()));
+        long inactiveSensorExpirationTimeSeconds = 60L;
+        Sensor sensor = new Sensor(metrics, "sensor", null, config, mockTime,
+            inactiveSensorExpirationTimeSeconds, Sensor.RecordingLevel.INFO);
 
-            Map<String, String> emptyTags = Collections.emptyMap();
-            MetricName rateMetricName = new MetricName("rate", "test", "", emptyTags);
-            MetricName totalMetricName = new MetricName("total", "test", "", emptyTags);
-            Meter meter = new Meter(rateMetricName, totalMetricName);
-            assertTrue(sensor.add(meter));
+        assertTrue(sensor.add(metrics.metricName("test1", "grp1"), new Avg()));
 
-            mockTime.sleep(TimeUnit.SECONDS.toMillis(inactiveSensorExpirationTimeSeconds + 1));
-            assertFalse(sensor.add(metrics.metricName("test3", "grp1"), new Avg()));
-            assertFalse(sensor.add(meter));
-        }
+        Map<String, String> emptyTags = Collections.emptyMap();
+        MetricName rateMetricName = new MetricName("rate", "test", "", emptyTags);
+        MetricName totalMetricName = new MetricName("total", "test", "", emptyTags);
+        Meter meter = new Meter(rateMetricName, totalMetricName);
+        assertTrue(sensor.add(meter));
+
+        mockTime.sleep(TimeUnit.SECONDS.toMillis(inactiveSensorExpirationTimeSeconds + 1));
+        assertFalse(sensor.add(metrics.metricName("test3", "grp1"), new Avg()));
+        assertFalse(sensor.add(meter));
+
+        metrics.close();
     }
 
     @Test
@@ -128,7 +126,7 @@ public class SensorTest {
         }
 
         // note that adding a different metric with the same name is also a no-op
-        assertTrue(sensor.add(metrics.metricName("test-metric", "test-group"), new WindowedSum()));
+        assertTrue(sensor.add(metrics.metricName("test-metric", "test-group"), new Sum()));
 
         // so after all this, we still just have the original metric registered
         assertEquals(1, sensor.metrics().size());
@@ -156,19 +154,16 @@ public class SensorTest {
         try {
             for (int i = 0; i != threadCount; ++i) {
                 final int index = i;
-                workers.add(service.submit(new Callable<Throwable>() {
-                    @Override
-                    public Throwable call() {
-                        try {
-                            assertTrue(latch.await(5, TimeUnit.SECONDS));
-                            for (int j = 0; j != 20; ++j) {
-                                sensor.record(j * index, System.currentTimeMillis() + j, false);
-                                sensor.checkQuotas();
-                            }
-                            return null;
-                        } catch (Throwable e) {
-                            return e;
+                workers.add(service.submit(() -> {
+                    try {
+                        assertTrue(latch.await(5, TimeUnit.SECONDS));
+                        for (int j = 0; j != 20; ++j) {
+                            sensor.record(j * index, System.currentTimeMillis() + j, false);
+                            sensor.checkQuotas();
                         }
+                        return null;
+                    } catch (Throwable e) {
+                        return e;
                     }
                 }));
             }
@@ -185,27 +180,5 @@ public class SensorTest {
                 service.shutdownNow();
             }
         }
-    }
-
-    @Test
-    public void shouldReturnPresenceOfMetrics() {
-        final Metrics metrics = new Metrics();
-        final Sensor sensor = metrics.sensor("sensor");
-
-        assertThat(sensor.hasMetrics(), is(false));
-
-        sensor.add(
-            new MetricName("name1", "group1", "description1", Collections.emptyMap()),
-            new WindowedSum()
-        );
-
-        assertThat(sensor.hasMetrics(), is(true));
-
-        sensor.add(
-            new MetricName("name2", "group2", "description2", Collections.emptyMap()),
-            new CumulativeCount()
-        );
-
-        assertThat(sensor.hasMetrics(), is(true));
     }
 }

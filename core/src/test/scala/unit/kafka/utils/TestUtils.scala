@@ -24,24 +24,23 @@ import java.nio.charset.{Charset, StandardCharsets}
 import java.nio.file.{Files, StandardOpenOption}
 import java.security.cert.X509Certificate
 import java.time.Duration
-import java.util.{Collections, Properties}
 import java.util.concurrent.{Callable, ExecutionException, Executors, TimeUnit}
-import javax.net.ssl.X509TrustManager
+import java.util.{Collections, Properties}
 
+import javax.net.ssl.X509TrustManager
 import kafka.api._
 import kafka.cluster.{Broker, EndPoint}
+import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.log._
 import kafka.security.auth.{Acl, Authorizer, Resource}
 import kafka.server._
 import kafka.server.checkpoints.OffsetCheckpointFile
-import Implicits._
-import kafka.controller.LeaderIsrAndControllerEpoch
+import kafka.utils.Implicits._
 import kafka.zk._
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.{AdminClient, AlterConfigsResult, Config, ConfigEntry}
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
-import org.apache.kafka.common.{KafkaFuture, TopicPartition}
 import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.errors.RetriableException
 import org.apache.kafka.common.header.Header
@@ -52,6 +51,7 @@ import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, Deserializer, Serializer}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.utils.Utils._
+import org.apache.kafka.common.{KafkaFuture, TopicPartition}
 import org.apache.kafka.test.{TestSslUtils, TestUtils => JTestUtils}
 import org.apache.zookeeper.KeeperException.SessionExpiredException
 import org.apache.zookeeper.ZooDefs._
@@ -59,8 +59,8 @@ import org.apache.zookeeper.data.ACL
 import org.junit.Assert._
 
 import scala.collection.JavaConverters._
-import scala.collection.{Map, mutable}
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.collection.{Map, mutable}
 
 /**
  * Utility functions to help with testing
@@ -297,7 +297,7 @@ object TestUtils extends Logging {
   def createTopic(zkClient: KafkaZkClient,
                   topic: String,
                   numPartitions: Int = 1,
-                  replicationFactor: Short = 1,
+                  replicationFactor: Int = 1,
                   servers: Seq[KafkaServer],
                   topicConfig: Properties = new Properties): scala.collection.immutable.Map[Int, Int] = {
     val adminZkClient = new AdminZkClient(zkClient)
@@ -370,7 +370,7 @@ object TestUtils extends Logging {
     val server = servers.head
     createTopic(zkClient, Topic.GROUP_METADATA_TOPIC_NAME,
       server.config.getInt(KafkaConfig.OffsetsTopicPartitionsProp),
-      server.config.getShort(KafkaConfig.OffsetsTopicReplicationFactorProp),
+      server.config.getShort(KafkaConfig.OffsetsTopicReplicationFactorProp).toInt,
       servers,
       server.groupCoordinator.offsetsTopicConfigs)
   }

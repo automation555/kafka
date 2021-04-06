@@ -18,6 +18,8 @@
 package kafka.server
 
 
+import java.util.concurrent.TimeUnit
+
 import kafka.metrics.KafkaMetricsGroup
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.Errors
@@ -71,19 +73,19 @@ class DelayedDeleteRecords(delayMs: Long,
       // skip those partitions that have already been satisfied
       if (status.acksPending) {
         val (lowWatermarkReached, error, lw) = replicaManager.getPartition(topicPartition) match {
-          case HostedPartition.Online(partition) =>
-            partition.leaderLogIfLocal match {
-              case Some(_) =>
-                val leaderLW = partition.lowWatermarkIfLeader
-                (leaderLW >= status.requiredOffset, Errors.NONE, leaderLW)
-              case None =>
-                (false, Errors.NOT_LEADER_FOR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+          case Some(partition) =>
+            if (partition eq ReplicaManager.OfflinePartition) {
+              (false, Errors.KAFKA_STORAGE_ERROR, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+            } else {
+              partition.leaderReplicaIfLocal match {
+                case Some(_) =>
+                  val leaderLW = partition.lowWatermarkIfLeader
+                  (leaderLW >= status.requiredOffset, Errors.NONE, leaderLW)
+                case None =>
+                  (false, Errors.NOT_LEADER_FOR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
+              }
             }
-
-          case HostedPartition.Offline =>
-            (false, Errors.KAFKA_STORAGE_ERROR, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
-
-          case HostedPartition.None =>
+          case None =>
             (false, Errors.UNKNOWN_TOPIC_OR_PARTITION, DeleteRecordsResponse.INVALID_LOW_WATERMARK)
         }
         if (error != Errors.NONE || lowWatermarkReached) {
@@ -101,7 +103,7 @@ class DelayedDeleteRecords(delayMs: Long,
       false
   }
 
-  override def onExpiration(): Unit = {
+  override def onExpiration() {
     deleteRecordsStatus.foreach { case (topicPartition, status) =>
       if (status.acksPending) {
         DelayedDeleteRecordsMetrics.recordExpiration(topicPartition)
@@ -112,17 +114,17 @@ class DelayedDeleteRecords(delayMs: Long,
   /**
    * Upon completion, return the current response status along with the error code per partition
    */
-  override def onComplete(): Unit = {
-    val responseStatus = deleteRecordsStatus.map { case (k, status) => k -> status.responseStatus }
+  override def onComplete() {
+    val responseStatus = deleteRecordsStatus.mapValues(status => status.responseStatus)
     responseCallback(responseStatus)
   }
 }
 
 object DelayedDeleteRecordsMetrics extends KafkaMetricsGroup {
 
-  private val aggregateExpirationMeter = newMeter("ExpiresPerSec")
+  private val aggregateExpirationMeter = newMeter("ExpiresPerSec", "requests", TimeUnit.SECONDS)
 
-  def recordExpiration(partition: TopicPartition): Unit = {
+  def recordExpiration(partition: TopicPartition) {
     aggregateExpirationMeter.mark()
   }
 }

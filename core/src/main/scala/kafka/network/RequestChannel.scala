@@ -22,7 +22,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent._
 
 import com.typesafe.scalalogging.Logger
-import com.codahale.metrics.Meter
+import com.yammer.metrics.core.{Gauge, Meter}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.{Logging, NotNothing, Pool}
 import org.apache.kafka.common.memory.MemoryPool
@@ -32,8 +32,8 @@ import org.apache.kafka.common.requests._
 import org.apache.kafka.common.security.auth.KafkaPrincipal
 import org.apache.kafka.common.utils.{Sanitizer, Time}
 
-import scala.collection.mutable
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 object RequestChannel extends Logging {
@@ -115,7 +115,7 @@ object RequestChannel extends Logging {
       math.max(apiLocalCompleteTimeNanos - requestDequeueTimeNanos, 0L)
     }
 
-    def updateRequestMetrics(networkThreadTimeNanos: Long, response: Response): Unit = {
+    def updateRequestMetrics(networkThreadTimeNanos: Long, response: Response) {
       val endTimeNanos = Time.SYSTEM.nanoseconds
       // In some corner cases, apiLocalCompleteTimeNanos may not be set when the request completes if the remote
       // processing time is really small. This value is set in KafkaApis from a request handling thread.
@@ -280,18 +280,24 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String) extends 
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
 
-  newGauge[Int](requestQueueSizeMetricName, () => requestQueue.size)
+  newGauge(requestQueueSizeMetricName, new Gauge[Int] {
+      def value = requestQueue.size
+  })
 
-  newGauge[Int](responseQueueSizeMetricName, () => processors.values.asScala.foldLeft(0) {(total, processor) =>
+  newGauge(responseQueueSizeMetricName, new Gauge[Int]{
+    def value = processors.values.asScala.foldLeft(0) {(total, processor) =>
       total + processor.responseQueueSize
     }
-  )
+  })
 
   def addProcessor(processor: Processor): Unit = {
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
 
-    newGauge[Int](responseQueueSizeMetricName, () => processor.responseQueueSize,
+    newGauge(responseQueueSizeMetricName,
+      new Gauge[Int] {
+        def value = processor.responseQueueSize
+      },
       Map(ProcessorMetricTag -> processor.id.toString)
     )
   }
@@ -302,12 +308,12 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String) extends 
   }
 
   /** Send a request to be handled, potentially blocking until there is room in the queue for the request */
-  def sendRequest(request: RequestChannel.Request): Unit = {
+  def sendRequest(request: RequestChannel.Request) {
     requestQueue.put(request)
   }
 
   /** Send a response back to the socket server to be sent over the network */
-  def sendResponse(response: RequestChannel.Response): Unit = {
+  def sendResponse(response: RequestChannel.Response) {
     if (isTraceEnabled) {
       val requestHeader = response.request.header
       val message = response match {
@@ -341,17 +347,17 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String) extends 
   def receiveRequest(): RequestChannel.BaseRequest =
     requestQueue.take()
 
-  def updateErrorMetrics(apiKey: ApiKeys, errors: collection.Map[Errors, Integer]): Unit = {
+  def updateErrorMetrics(apiKey: ApiKeys, errors: collection.Map[Errors, Integer]) {
     errors.foreach { case (error, count) =>
       metrics(apiKey.name).markErrorMeter(error, count)
     }
   }
 
-  def clear(): Unit = {
+  def clear() {
     requestQueue.clear()
   }
 
-  def shutdown(): Unit = {
+  def shutdown() {
     clear()
     metrics.close()
   }
@@ -417,7 +423,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
   Errors.values.foreach(error => errorMeters.put(error, new ErrorMeter(name, error)))
 
   def requestRate(version: Short): Meter = {
-    requestRateInternal.getAndMaybePut(version, newMeter("RequestsPerSec", tags + ("version" -> version.toString)))
+    requestRateInternal.getAndMaybePut(version, newMeter("RequestsPerSec", "requests", TimeUnit.SECONDS, tags + ("version" -> version.toString)))
   }
 
   class ErrorMeter(name: String, error: Errors) {
@@ -431,7 +437,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
       else {
         synchronized {
           if (meter == null)
-             meter = newMeter(ErrorsPerSec, tags)
+             meter = newMeter(ErrorsPerSec, "requests", TimeUnit.SECONDS, tags)
           meter
         }
       }
@@ -447,7 +453,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
     }
   }
 
-  def markErrorMeter(error: Errors, count: Int): Unit = {
+  def markErrorMeter(error: Errors, count: Int) {
     errorMeters(error).getOrCreateMeter().mark(count.toLong)
   }
 

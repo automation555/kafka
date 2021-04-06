@@ -19,14 +19,14 @@
 package kafka.server
 
 import java.io.File
-import java.util.{Collections, Objects, Properties}
 import java.util.concurrent.TimeUnit
+import java.util.{Collections, Objects, Properties}
 
 import kafka.api.SaslSetup
 import kafka.coordinator.group.OffsetConfig
+import kafka.utils.Implicits._
 import kafka.utils.JaasTestUtils.JaasSection
 import kafka.utils.{JaasTestUtils, TestUtils}
-import kafka.utils.Implicits._
 import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
@@ -126,7 +126,7 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
       def addProducerConsumer(listenerName: ListenerName, mechanism: String, saslProps: Option[Properties]): Unit = {
 
         val topic = s"${listenerName.value}${producers.size}"
-        TestUtils.createTopic(zkClient, topic, 2, 2.toShort, servers)
+        TestUtils.createTopic(zkClient, topic, 2, 2, servers)
         val clientMetadata = ClientMetadata(listenerName, mechanism, topic)
 
         producers(clientMetadata) = TestUtils.createProducer(bootstrapServers, acks = -1,

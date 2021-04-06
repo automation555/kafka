@@ -18,12 +18,13 @@ package kafka.api
 
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+
 import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.record.TimestampType
-import org.junit.jupiter.api.{BeforeEach, Test}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertNotEquals, assertTrue}
+import org.junit.Assert.{assertEquals, assertNotEquals, assertTrue}
+import org.junit.{Before, Test}
 
 /**
   * Tests where the broker is configured to use LogAppendTime. For tests where LogAppendTime is configured via topic
@@ -32,7 +33,7 @@ import org.junit.jupiter.api.Assertions.{assertEquals, assertNotEquals, assertTr
 class LogAppendTimeTest extends IntegrationTestHarness {
   val producerCount: Int = 1
   val consumerCount: Int = 1
-  val brokerCount: Int = 2
+  val serverCount: Int = 2
 
   // This will be used for the offsets topic as well
   serverConfig.put(KafkaConfig.LogMessageTimestampTypeProp, TimestampType.LOG_APPEND_TIME.name)
@@ -40,14 +41,14 @@ class LogAppendTimeTest extends IntegrationTestHarness {
 
   private val topic = "topic"
 
-  @BeforeEach
-  override def setUp(): Unit = {
+  @Before
+  override def setUp() {
     super.setUp()
     createTopic(topic)
   }
 
   @Test
-  def testProduceConsume(): Unit = {
+  def testProduceConsume() {
     val producer = createProducer()
     val now = System.currentTimeMillis()
     val createTime = now - TimeUnit.DAYS.toMillis(1)

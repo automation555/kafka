@@ -16,19 +16,18 @@
  */
 package kafka.api
 
+import java.lang.{Long => JLong}
 import java.util.Collections
 
 import kafka.admin.AdminClient
 import kafka.server.KafkaConfig
-import java.lang.{Long => JLong}
-
 import kafka.utils.{Logging, TestUtils}
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.ApiKeys
-import org.junit.{After, Before, Test}
 import org.junit.Assert._
+import org.junit.{After, Before, Test}
 
 import scala.collection.JavaConverters._
 
@@ -70,7 +69,7 @@ class LegacyAdminClientTest extends IntegrationTestHarness with Logging {
   override def setUp() {
     super.setUp()
     client = AdminClient.createSimplePlaintext(this.brokerList)
-    createTopic(topic, 2, serverCount.toShort)
+    createTopic(topic, 2, serverCount)
   }
 
   @After

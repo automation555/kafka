@@ -59,7 +59,10 @@ public class DelegationToken {
 
         DelegationToken token = (DelegationToken) o;
 
-        return Objects.equals(tokenInformation, token.tokenInformation) && Arrays.equals(hmac, token.hmac);
+        if (!Objects.equals(tokenInformation, token.tokenInformation)) {
+            return false;
+        }
+        return Arrays.equals(hmac, token.hmac);
     }
 
     @Override

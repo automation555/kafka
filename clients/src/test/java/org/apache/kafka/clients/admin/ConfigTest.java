@@ -22,8 +22,6 @@ import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
@@ -72,7 +70,7 @@ public class ConfigTest {
         assertThat(config, is(equalTo(config)));
         assertThat(config, is(equalTo(new Config(config.entries()))));
         assertThat(config, is(not(equalTo(new Config(entries)))));
-        assertThat(config, is(not(equalTo((Object) "this"))));
+        assertThat(config, is(not(equalTo("this"))));
     }
 
     @Test
@@ -89,10 +87,5 @@ public class ConfigTest {
     public void shouldImplementToStringProperly() {
         assertThat(config.toString(), containsString(E1.toString()));
         assertThat(config.toString(), containsString(E2.toString()));
-    }
-
-    public static ConfigEntry newConfigEntry(String name, String value, ConfigEntry.ConfigSource source, boolean isSensitive,
-                                             boolean isReadOnly, List<ConfigEntry.ConfigSynonym> synonyms) {
-        return new ConfigEntry(name, Optional.ofNullable(value), source, isSensitive, isReadOnly, synonyms);
     }
 }

@@ -17,8 +17,8 @@
 package kafka.log
 
 import java.io.{File, IOException}
-import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.FileTime
+import java.nio.file.{Files, NoSuchFileException}
 import java.util.concurrent.TimeUnit
 
 import kafka.common.LogSegmentOffsetOverflowException
@@ -592,16 +592,6 @@ class LogSegment private[log] (val log: FileRecords,
     CoreUtils.swallow(timeIndex.closeHandler(), this)
     CoreUtils.swallow(log.closeHandlers(), this)
     CoreUtils.swallow(txnIndex.close(), this)
-  }
-
-  /**
-    * Re-Open the file handlers
-    */
-  def reopenHandlers() {
-    offsetIndex.reopenHandler()
-    timeIndex.reopenHandler()
-    log.reopenHandler()
-    txnIndex.reopenHandler()
   }
 
   /**

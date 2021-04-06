@@ -17,8 +17,7 @@
 
 package kafka.server
 
-import java.lang.{Long => JLong}
-import java.lang.{Byte => JByte}
+import java.lang.{Byte => JByte, Long => JLong}
 import java.nio.ByteBuffer
 import java.util
 import java.util.concurrent.ConcurrentHashMap
@@ -45,14 +44,8 @@ import org.apache.kafka.common.errors._
 import org.apache.kafka.common.internals.FatalExitError
 import org.apache.kafka.common.internals.Topic.{GROUP_METADATA_TOPIC_NAME, TRANSACTION_STATE_TOPIC_NAME, isInternal}
 import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopic
-import org.apache.kafka.common.message.CreateTopicsResponseData
 import org.apache.kafka.common.message.CreateTopicsResponseData.{CreatableTopicResult, CreatableTopicResultSet}
-import org.apache.kafka.common.message.DescribeGroupsResponseData
-import org.apache.kafka.common.message.ElectPreferredLeadersResponseData
-import org.apache.kafka.common.message.JoinGroupResponseData
-import org.apache.kafka.common.message.LeaveGroupResponseData
-import org.apache.kafka.common.message.SaslAuthenticateResponseData
-import org.apache.kafka.common.message.SaslHandshakeResponseData
+import org.apache.kafka.common.message._
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network.{ListenerName, Send}
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
@@ -908,7 +901,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   private def createTopic(topic: String,
                           numPartitions: Int,
-                          replicationFactor: Short,
+                          replicationFactor: Int,
                           properties: Properties = new Properties()): MetadataResponse.TopicMetadata = {
     try {
       adminZkClient.createTopic(topic, numPartitions, replicationFactor, properties, RackAwareMode.Safe)
@@ -941,7 +934,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             s"and not all brokers are up yet.")
           new MetadataResponse.TopicMetadata(Errors.COORDINATOR_NOT_AVAILABLE, topic, true, java.util.Collections.emptyList())
         } else {
-          createTopic(topic, config.offsetsTopicPartitions, config.offsetsTopicReplicationFactor,
+          createTopic(topic, config.offsetsTopicPartitions, config.offsetsTopicReplicationFactor.toInt,
             groupCoordinator.offsetsTopicConfigs)
         }
       case TRANSACTION_STATE_TOPIC_NAME =>
@@ -952,7 +945,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             s"and not all brokers are up yet.")
           new MetadataResponse.TopicMetadata(Errors.COORDINATOR_NOT_AVAILABLE, topic, true, java.util.Collections.emptyList())
         } else {
-          createTopic(topic, config.transactionTopicPartitions, config.transactionTopicReplicationFactor,
+          createTopic(topic, config.transactionTopicPartitions, config.transactionTopicReplicationFactor.toInt,
             txnCoordinator.transactionTopicConfigs)
         }
       case _ => throw new IllegalArgumentException(s"Unexpected internal topic name: $topic")
@@ -1284,23 +1277,10 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     // the callback for sending a join-group response
     def sendResponseCallback(joinResult: JoinGroupResult) {
-      val members = joinResult.members map { case (memberId, metadataArray) =>
-        new JoinGroupResponseData.JoinGroupResponseMember()
-          .setMemberId(memberId)
-          .setMetadata(metadataArray)
-      }
-
+      val members = joinResult.members map { case (memberId, metadataArray) => (memberId, ByteBuffer.wrap(metadataArray)) }
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
-        val responseBody = new JoinGroupResponse(
-          new JoinGroupResponseData()
-            .setThrottleTimeMs(requestThrottleMs)
-            .setErrorCode(joinResult.error.code())
-            .setGenerationId(joinResult.generationId)
-            .setProtocolName(joinResult.subProtocol)
-            .setLeader(joinResult.leaderId)
-            .setMemberId(joinResult.memberId)
-            .setMembers(members.toSeq.asJava)
-        )
+        val responseBody = new JoinGroupResponse(requestThrottleMs, joinResult.error, joinResult.generationId,
+          joinResult.subProtocol, joinResult.memberId, joinResult.leaderId, members.asJava)
 
         trace("Sending join group response %s for correlation id %d to client %s."
           .format(responseBody, request.header.correlationId, request.header.clientId))
@@ -1309,35 +1289,33 @@ class KafkaApis(val requestChannel: RequestChannel,
       sendResponseMaybeThrottle(request, createResponse)
     }
 
-    if (!authorize(request.session, Read, Resource(Group, joinGroupRequest.data().groupId(), LITERAL))) {
+    if (!authorize(request.session, Read, Resource(Group, joinGroupRequest.groupId(), LITERAL))) {
       sendResponseMaybeThrottle(request, requestThrottleMs =>
         new JoinGroupResponse(
-          new JoinGroupResponseData()
-            .setThrottleTimeMs(requestThrottleMs)
-            .setErrorCode(Errors.GROUP_AUTHORIZATION_FAILED.code())
-            .setGenerationId(JoinGroupResponse.UNKNOWN_GENERATION_ID)
-            .setProtocolName(JoinGroupResponse.UNKNOWN_PROTOCOL)
-            .setLeader(JoinGroupResponse.UNKNOWN_MEMBER_ID)
-            .setMemberId(JoinGroupResponse.UNKNOWN_MEMBER_ID)
-            .setMembers(Collections.emptyList())
-        )
+          requestThrottleMs,
+          Errors.GROUP_AUTHORIZATION_FAILED,
+          JoinGroupResponse.UNKNOWN_GENERATION_ID,
+          JoinGroupResponse.UNKNOWN_PROTOCOL,
+          JoinGroupResponse.UNKNOWN_MEMBER_ID, // memberId
+          JoinGroupResponse.UNKNOWN_MEMBER_ID, // leaderId
+          Collections.emptyMap())
       )
     } else {
       // Only return MEMBER_ID_REQUIRED error if joinGroupRequest version is >= 4
       val requireKnownMemberId = joinGroupRequest.version >= 4
 
       // let the coordinator handle join-group
-      val protocols = joinGroupRequest.data().protocols().asScala.map(protocol =>
-        (protocol.name, protocol.metadata)).toList
+      val protocols = joinGroupRequest.groupProtocols().asScala.map(protocol =>
+        (protocol.name, Utils.toArray(protocol.metadata))).toList
       groupCoordinator.handleJoinGroup(
-        joinGroupRequest.data().groupId,
-        joinGroupRequest.data().memberId,
+        joinGroupRequest.groupId,
+        joinGroupRequest.memberId,
         requireKnownMemberId,
         request.header.clientId,
         request.session.clientAddress.toString,
-        joinGroupRequest.data().rebalanceTimeoutMs,
-        joinGroupRequest.data().sessionTimeoutMs,
-        joinGroupRequest.data().protocolType,
+        joinGroupRequest.rebalanceTimeout,
+        joinGroupRequest.sessionTimeout,
+        joinGroupRequest.protocolType,
         protocols,
         sendResponseCallback)
     }
@@ -1413,10 +1391,9 @@ class KafkaApis(val requestChannel: RequestChannel,
     def sendResponseCallback(error: Errors) {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val response = new LeaveGroupResponse(new LeaveGroupResponseData()
-          .setThrottleTimeMs(requestThrottleMs)
-          .setErrorCode(error.code()))
+          .setThrottleTimeMs(requestThrottleMs).setErrorCode(error.code()))
         trace("Sending leave group response %s for correlation id %d to client %s."
-          .format(response, request.header.correlationId, request.header.clientId))
+                    .format(response, request.header.correlationId, request.header.clientId))
         response
       }
       sendResponseMaybeThrottle(request, createResponse)
@@ -1425,8 +1402,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (!authorize(request.session, Read, Resource(Group, leaveGroupRequest.data().groupId(), LITERAL))) {
       sendResponseMaybeThrottle(request, requestThrottleMs =>
         new LeaveGroupResponse(new LeaveGroupResponseData()
-          .setThrottleTimeMs(requestThrottleMs)
-          .setErrorCode(Errors.GROUP_AUTHORIZATION_FAILED.code())))
+          .setThrottleTimeMs(requestThrottleMs).setErrorCode(Errors.GROUP_AUTHORIZATION_FAILED.code())))
     } else {
       // let the coordinator to handle leave-group
       groupCoordinator.handleLeaveGroup(

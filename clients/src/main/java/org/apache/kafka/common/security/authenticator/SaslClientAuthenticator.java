@@ -23,8 +23,6 @@ import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.errors.IllegalSaslStateException;
 import org.apache.kafka.common.errors.SaslAuthenticationException;
 import org.apache.kafka.common.errors.UnsupportedSaslMechanismException;
-import org.apache.kafka.common.message.ApiVersionsResponseData.ApiVersionsResponseKey;
-import org.apache.kafka.common.message.RequestHeaderData;
 import org.apache.kafka.common.message.SaslAuthenticateRequestData;
 import org.apache.kafka.common.message.SaslHandshakeRequestData;
 import org.apache.kafka.common.network.Authenticator;
@@ -39,6 +37,7 @@ import org.apache.kafka.common.protocol.types.SchemaException;
 import org.apache.kafka.common.requests.AbstractResponse;
 import org.apache.kafka.common.requests.ApiVersionsRequest;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
+import org.apache.kafka.common.requests.ApiVersionsResponse.ApiVersion;
 import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.requests.SaslAuthenticateRequest;
 import org.apache.kafka.common.requests.SaslAuthenticateResponse;
@@ -150,7 +149,7 @@ public class SaslClientAuthenticator implements Authenticator {
         this.host = host;
         this.servicePrincipal = servicePrincipal;
         this.mechanism = mechanism;
-        this.correlationId = 0;
+        this.correlationId = -1;
         this.transportLayer = transportLayer;
         this.configs = configs;
         this.saslAuthenticateVersion = DISABLE_KAFKA_SASL_AUTHENTICATE_HEADER;
@@ -202,7 +201,7 @@ public class SaslClientAuthenticator implements Authenticator {
         switch (saslState) {
             case SEND_APIVERSIONS_REQUEST:
                 // Always use version 0 request since brokers treat requests with schema exceptions as GSSAPI tokens
-                ApiVersionsRequest apiVersionsRequest = new ApiVersionsRequest.Builder().build((short) 0);
+                ApiVersionsRequest apiVersionsRequest = new ApiVersionsRequest((short) 0);
                 send(apiVersionsRequest.toSend(node, nextRequestHeader(ApiKeys.API_VERSIONS, apiVersionsRequest.version())));
                 setSaslState(SaslState.RECEIVE_APIVERSIONS_RESPONSE);
                 break;
@@ -285,7 +284,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
     private void sendHandshakeRequest(ApiVersionsResponse apiVersionsResponse) throws IOException {
         SaslHandshakeRequest handshakeRequest = createSaslHandshakeRequest(
-                apiVersionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).maxVersion());
+                apiVersionsResponse.apiVersion(ApiKeys.SASL_HANDSHAKE.id).maxVersion);
         send(handshakeRequest.toSend(node, nextRequestHeader(ApiKeys.SASL_HANDSHAKE, handshakeRequest.version())));
     }
 
@@ -325,14 +324,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
     private RequestHeader nextRequestHeader(ApiKeys apiKey, short version) {
         String clientId = (String) configs.get(CommonClientConfigs.CLIENT_ID_CONFIG);
-        short requestApiKey = apiKey.id;
-        currentRequestHeader = new RequestHeader(
-            new RequestHeaderData().
-                setRequestApiKey(requestApiKey).
-                setRequestApiVersion(version).
-                setClientId(clientId).
-                setCorrelationId(correlationId++),
-            apiKey.requestHeaderVersion(version));
+        currentRequestHeader = new RequestHeader(apiKey, version, clientId, correlationId++);
         return currentRequestHeader;
     }
 
@@ -344,9 +336,9 @@ public class SaslClientAuthenticator implements Authenticator {
 
     // Visible to override for testing
     protected void saslAuthenticateVersion(ApiVersionsResponse apiVersionsResponse) {
-        ApiVersionsResponseKey authenticateVersion = apiVersionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id);
+        ApiVersion authenticateVersion = apiVersionsResponse.apiVersion(ApiKeys.SASL_AUTHENTICATE.id);
         if (authenticateVersion != null)
-            this.saslAuthenticateVersion = (short) Math.min(authenticateVersion.maxVersion(),
+            this.saslAuthenticateVersion = (short) Math.min(authenticateVersion.maxVersion,
                     ApiKeys.SASL_AUTHENTICATE.latestVersion());
     }
 
@@ -383,7 +375,7 @@ public class SaslClientAuthenticator implements Authenticator {
                 ByteBuffer tokenBuf = ByteBuffer.wrap(saslToken);
                 if (saslAuthenticateVersion != DISABLE_KAFKA_SASL_AUTHENTICATE_HEADER) {
                     SaslAuthenticateRequestData data = new SaslAuthenticateRequestData()
-                            .setAuthBytes(tokenBuf);
+                            .setAuthBytes(tokenBuf.array());
                     SaslAuthenticateRequest request = new SaslAuthenticateRequest.Builder(data).build(saslAuthenticateVersion);
                     tokenBuf = request.serialize(nextRequestHeader(ApiKeys.SASL_AUTHENTICATE, saslAuthenticateVersion));
                 }
@@ -628,7 +620,7 @@ public class SaslClientAuthenticator implements Authenticator {
                 double pctWindowJitterToAvoidReauthenticationStormAcrossManyChannelsSimultaneously = 0.10;
                 double pctToUse = pctWindowFactorToTakeNetworkLatencyAndClockDriftIntoAccount + RNG.nextDouble()
                         * pctWindowJitterToAvoidReauthenticationStormAcrossManyChannelsSimultaneously;
-                sessionLifetimeMsToUse = (long) (positiveSessionLifetimeMs.longValue() * pctToUse);
+                sessionLifetimeMsToUse = (long) (positiveSessionLifetimeMs * pctToUse);
                 clientSessionReauthenticationTimeNanos = authenticationEndNanos + 1000 * 1000 * sessionLifetimeMsToUse;
                 LOG.debug(
                         "Finished {} with session expiration in {} ms and session re-authentication on or after {} ms",
@@ -640,7 +632,7 @@ public class SaslClientAuthenticator implements Authenticator {
 
         public Long reauthenticationLatencyMs() {
             return reauthenticating()
-                    ? Long.valueOf(Math.round((authenticationEndNanos - reauthenticationBeginNanos) / 1000.0 / 1000.0))
+                    ? Math.round((authenticationEndNanos - reauthenticationBeginNanos) / 1000.0 / 1000.0)
                     : null;
         }
 

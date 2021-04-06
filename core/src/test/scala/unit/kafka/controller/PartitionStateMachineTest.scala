@@ -17,23 +17,28 @@
 package kafka.controller
 
 import kafka.api.LeaderAndIsr
+import kafka.log.LogConfig
 import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
 import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
-import kafka.zk.KafkaZkClient
+import kafka.zk.{KafkaZkClient, TopicPartitionStateZNode}
 import kafka.zookeeper._
 import org.apache.kafka.common.TopicPartition
 import org.apache.zookeeper.KeeperException.Code
+import org.apache.zookeeper.data.Stat
 import org.easymock.EasyMock
 import org.junit.Assert._
 import org.junit.{Before, Test}
-import org.mockito.Mockito
-import scala.collection.breakOut
+import org.scalatest.junit.JUnitSuite
 
-class PartitionStateMachineTest {
+import scala.collection.mutable
+
+class PartitionStateMachineTest extends JUnitSuite {
   private var controllerContext: ControllerContext = null
   private var mockZkClient: KafkaZkClient = null
   private var mockControllerBrokerRequestBatch: ControllerBrokerRequestBatch = null
+  private var mockTopicDeletionManager: TopicDeletionManager = null
+  private var partitionState: mutable.Map[TopicPartition, PartitionState] = null
   private var partitionStateMachine: PartitionStateMachine = null
 
   private val brokerId = 5
@@ -48,12 +53,11 @@ class PartitionStateMachineTest {
     controllerContext.epoch = controllerEpoch
     mockZkClient = EasyMock.createMock(classOf[KafkaZkClient])
     mockControllerBrokerRequestBatch = EasyMock.createMock(classOf[ControllerBrokerRequestBatch])
-    partitionStateMachine = new ZkPartitionStateMachine(config, new StateChangeLogger(brokerId, true, None), controllerContext,
-      mockZkClient, mockControllerBrokerRequestBatch)
-  }
-
-  private def partitionState(partition: TopicPartition): PartitionState = {
-    controllerContext.partitionState(partition)
+    mockTopicDeletionManager = EasyMock.createMock(classOf[TopicDeletionManager])
+    partitionState = mutable.Map.empty[TopicPartition, PartitionState]
+    partitionStateMachine = new PartitionStateMachine(config, new StateChangeLogger(brokerId, true, None), controllerContext,
+      mockZkClient, partitionState, mockControllerBrokerRequestBatch)
+    partitionStateMachine.setTopicDeletionManager(mockTopicDeletionManager)
   }
 
   @Test
@@ -64,11 +68,7 @@ class PartitionStateMachineTest {
 
   @Test
   def testInvalidNonexistentPartitionToOnlinePartitionTransition(): Unit = {
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     assertEquals(NonExistentPartition, partitionState(partition))
   }
 
@@ -82,7 +82,7 @@ class PartitionStateMachineTest {
   def testNewPartitionToOnlinePartitionTransition(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, NewPartition)
+    partitionState.put(partition, NewPartition)
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(LeaderAndIsr(brokerId, List(brokerId)), controllerEpoch)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
     EasyMock.expect(mockZkClient.createTopicPartitionStatesRaw(Map(partition -> leaderIsrAndControllerEpoch), controllerContext.epochZkVersion))
@@ -91,31 +91,23 @@ class PartitionStateMachineTest {
       partition, leaderIsrAndControllerEpoch, Seq(brokerId), isNew = true))
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
     assertEquals(OnlinePartition, partitionState(partition))
   }
 
   @Test
-  def testNewPartitionToOnlinePartitionTransitionZooKeeperClientExceptionFromCreateStates(): Unit = {
+  def testNewPartitionToOnlinePartitionTransitionZkUtilsExceptionFromCreateStates(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, NewPartition)
+    partitionState.put(partition, NewPartition)
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(LeaderAndIsr(brokerId, List(brokerId)), controllerEpoch)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
     EasyMock.expect(mockZkClient.createTopicPartitionStatesRaw(Map(partition -> leaderIsrAndControllerEpoch), controllerContext.epochZkVersion))
       .andThrow(new ZooKeeperClientException("test"))
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
     assertEquals(NewPartition, partitionState(partition))
   }
@@ -124,32 +116,28 @@ class PartitionStateMachineTest {
   def testNewPartitionToOnlinePartitionTransitionErrorCodeFromCreateStates(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, NewPartition)
+    partitionState.put(partition, NewPartition)
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(LeaderAndIsr(brokerId, List(brokerId)), controllerEpoch)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
     EasyMock.expect(mockZkClient.createTopicPartitionStatesRaw(Map(partition -> leaderIsrAndControllerEpoch), controllerContext.epochZkVersion))
       .andReturn(Seq(CreateResponse(Code.NODEEXISTS, null, Some(partition), null, ResponseMetadata(0, 0))))
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
     assertEquals(NewPartition, partitionState(partition))
   }
 
   @Test
   def testNewPartitionToOfflinePartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, NewPartition)
+    partitionState.put(partition, NewPartition)
     partitionStateMachine.handleStateChanges(partitions, OfflinePartition)
     assertEquals(OfflinePartition, partitionState(partition))
   }
 
   @Test
   def testInvalidNewPartitionToNonexistentPartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, NewPartition)
+    partitionState.put(partition, NewPartition)
     partitionStateMachine.handleStateChanges(partitions, NonExistentPartition)
     assertEquals(NewPartition, partitionState(partition))
   }
@@ -158,17 +146,21 @@ class PartitionStateMachineTest {
   def testOnlinePartitionToOnlineTransition(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, OnlinePartition)
+    partitionState.put(partition, OnlinePartition)
     val leaderAndIsr = LeaderAndIsr(brokerId, List(brokerId))
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
     controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
 
+    val stat = new Stat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
+    EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+      .andReturn(Seq(GetDataResponse(Code.OK, null, Some(partition),
+        TopicPartitionStateZNode.encode(leaderIsrAndControllerEpoch), stat, ResponseMetadata(0, 0))))
 
     val leaderAndIsrAfterElection = leaderAndIsr.newLeader(brokerId)
     val updatedLeaderAndIsr = leaderAndIsrAfterElection.withZkVersion(2)
     EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> leaderAndIsrAfterElection), controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Right(updatedLeaderAndIsr)), Seq.empty))
+      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> updatedLeaderAndIsr), Seq.empty, Map.empty))
     EasyMock.expect(mockControllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(Seq(brokerId),
       partition, LeaderIsrAndControllerEpoch(updatedLeaderAndIsr, controllerEpoch), Seq(brokerId), isNew = false))
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
@@ -187,17 +179,21 @@ class PartitionStateMachineTest {
       TestUtils.createBrokerAndEpoch(otherBrokerId, "host", 0)))
     controllerContext.shuttingDownBrokerIds.add(brokerId)
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId, otherBrokerId))
-    controllerContext.putPartitionState(partition, OnlinePartition)
+    partitionState.put(partition, OnlinePartition)
     val leaderAndIsr = LeaderAndIsr(brokerId, List(brokerId, otherBrokerId))
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
     controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
 
+    val stat = new Stat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
+    EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+      .andReturn(Seq(GetDataResponse(Code.OK, null, Some(partition),
+        TopicPartitionStateZNode.encode(leaderIsrAndControllerEpoch), stat, ResponseMetadata(0, 0))))
 
     val leaderAndIsrAfterElection = leaderAndIsr.newLeaderAndIsr(otherBrokerId, List(otherBrokerId))
     val updatedLeaderAndIsr = leaderAndIsrAfterElection.withZkVersion(2)
     EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> leaderAndIsrAfterElection), controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Right(updatedLeaderAndIsr)), Seq.empty))
+      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> updatedLeaderAndIsr), Seq.empty, Map.empty))
 
     // The leaderAndIsr request should be sent to both brokers, including the shutting down one
     EasyMock.expect(mockControllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(Seq(brokerId, otherBrokerId),
@@ -213,21 +209,21 @@ class PartitionStateMachineTest {
 
   @Test
   def testOnlinePartitionToOfflineTransition(): Unit = {
-    controllerContext.putPartitionState(partition, OnlinePartition)
+    partitionState.put(partition, OnlinePartition)
     partitionStateMachine.handleStateChanges(partitions, OfflinePartition)
     assertEquals(OfflinePartition, partitionState(partition))
   }
 
   @Test
   def testInvalidOnlinePartitionToNonexistentPartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, OnlinePartition)
+    partitionState.put(partition, OnlinePartition)
     partitionStateMachine.handleStateChanges(partitions, NonExistentPartition)
     assertEquals(OnlinePartition, partitionState(partition))
   }
 
   @Test
   def testInvalidOnlinePartitionToNewPartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, OnlinePartition)
+    partitionState.put(partition, OnlinePartition)
     partitionStateMachine.handleStateChanges(partitions, NewPartition)
     assertEquals(OnlinePartition, partitionState(partition))
   }
@@ -236,230 +232,116 @@ class PartitionStateMachineTest {
   def testOfflinePartitionToOnlinePartitionTransition(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, OfflinePartition)
+    partitionState.put(partition, OfflinePartition)
     val leaderAndIsr = LeaderAndIsr(LeaderAndIsr.NoLeader, List(brokerId))
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
     controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
 
+    val stat = new Stat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
+    EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+      .andReturn(Seq(GetDataResponse(Code.OK, null, Some(partition),
+        TopicPartitionStateZNode.encode(leaderIsrAndControllerEpoch), stat, ResponseMetadata(0, 0))))
 
+    EasyMock.expect(mockZkClient.getLogConfigs(Seq.empty, config.originals()))
+      .andReturn((Map(partition.topic -> LogConfig()), Map.empty))
     val leaderAndIsrAfterElection = leaderAndIsr.newLeader(brokerId)
     val updatedLeaderAndIsr = leaderAndIsrAfterElection.withZkVersion(2)
     EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> leaderAndIsrAfterElection), controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Right(updatedLeaderAndIsr)), Seq.empty))
+      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> updatedLeaderAndIsr), Seq.empty, Map.empty))
     EasyMock.expect(mockControllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(Seq(brokerId),
       partition, LeaderIsrAndControllerEpoch(updatedLeaderAndIsr, controllerEpoch), Seq(brokerId), isNew = false))
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
 
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
     assertEquals(OnlinePartition, partitionState(partition))
   }
 
   @Test
-  def testOfflinePartitionToUncleanOnlinePartitionTransition(): Unit = {
-    /* Starting scenario: Leader: X, Isr: [X], Replicas: [X, Y], LiveBrokers: [Y]
-     * Ending scenario: Leader: Y, Isr: [Y], Replicas: [X, Y], LiverBrokers: [Y]
-     *
-     * For the give staring scenario verify that performing an unclean leader
-     * election on the offline partition results on the first live broker getting
-     * elected.
-     */
-    val leaderBrokerId = brokerId + 1
-    controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
-    controllerContext.updatePartitionReplicaAssignment(partition, Seq(leaderBrokerId, brokerId))
-    controllerContext.putPartitionState(partition, OfflinePartition)
-
-    val leaderAndIsr = LeaderAndIsr(leaderBrokerId, List(leaderBrokerId))
-    val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
-    controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
-
-    EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
-
-    val leaderAndIsrAfterElection = leaderAndIsr.newLeaderAndIsr(brokerId, List(brokerId))
-    val updatedLeaderAndIsr = leaderAndIsrAfterElection.withZkVersion(2)
-
-    EasyMock
-      .expect(
-        mockZkClient.updateLeaderAndIsr(
-          Map(partition -> leaderAndIsrAfterElection),
-          controllerEpoch,
-          controllerContext.epochZkVersion
-        )
-      )
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Right(updatedLeaderAndIsr)), Seq.empty))
-    EasyMock.expect(
-      mockControllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(
-        Seq(brokerId),
-        partition,
-        LeaderIsrAndControllerEpoch(updatedLeaderAndIsr, controllerEpoch),
-        Seq(leaderBrokerId, brokerId),
-        false
-      )
-    )
-    EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
-    EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
-
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(true))
-    )
-    EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
-    assertEquals(OnlinePartition, partitionState(partition))
-  }
-
-  @Test
-  def testOfflinePartitionToOnlinePartitionTransitionZooKeeperClientExceptionFromStateLookup(): Unit = {
+  def testOfflinePartitionToOnlinePartitionTransitionZkUtilsExceptionFromStateLookup(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, OfflinePartition)
+    partitionState.put(partition, OfflinePartition)
     val leaderAndIsr = LeaderAndIsr(LeaderAndIsr.NoLeader, List(brokerId))
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
     controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
 
-    val exception = new ZooKeeperClientException("")
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
-    EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> leaderAndIsr.newLeader(brokerId)),
-      controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Left(exception)), Seq.empty))
+    EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+      .andThrow(new ZooKeeperClientException(""))
 
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
 
-    val results = partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
-    assertTrue(results.get(partition).isDefined)
-    assertEquals(Left(exception), results(partition))
     assertEquals(OfflinePartition, partitionState(partition))
-  }
-
-  @Test
-  def testPreferredLeaderElectionWithInFlightIsrShrink(): Unit = {
-    // Tests the scenario where the controller is electing the preferred leader
-    // while the current leader has removed a node from the ISR.
-
-    val otherBrokerId = brokerId + 1
-    val preferredBrokerId = brokerId + 2
-    val replicas = Seq(preferredBrokerId, brokerId, otherBrokerId)
-
-    controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
-    controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(otherBrokerId, "host", 0)))
-    controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(preferredBrokerId, "host", 0)))
-
-    controllerContext.updatePartitionReplicaAssignment(partition, replicas)
-    controllerContext.putPartitionState(partition, OnlinePartition)
-
-    // Initially all replicas are in the ISR
-    val leaderAndIsr = LeaderAndIsr(brokerId, 1, List(brokerId, otherBrokerId, preferredBrokerId), 1)
-    val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
-    controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
-
-    // The controller tries to elect the preferred leader, but it fails since the ISR has changed
-    val firstTryPreferredLeaderAndIsr = leaderAndIsr.newLeader(preferredBrokerId)
-    EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> firstTryPreferredLeaderAndIsr),
-      controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map.empty, Seq(partition)))
-
-    // So we look up the latest partition state and see the shrunk ISR
-    val shrunkLeaderAndIsr = LeaderAndIsr(brokerId, 1, List(brokerId, preferredBrokerId), 2)
-    EasyMock.expect(mockZkClient.fetchPartitionStates(partitions))
-      .andReturn(Seq(partition -> Some(LeaderIsrAndControllerEpoch(shrunkLeaderAndIsr, controllerEpoch))))
-
-    // Then we can retry the preferred election
-    val preferredLeaderAndIsr = shrunkLeaderAndIsr.newLeader(preferredBrokerId)
-    EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> preferredLeaderAndIsr),
-      controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map(partition -> Right(preferredLeaderAndIsr)), Seq()))
-
-    EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
-    EasyMock.expect(mockControllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(
-      replicas, partition, LeaderIsrAndControllerEpoch(preferredLeaderAndIsr, controllerEpoch),
-      replicas, isNew = false))
-    EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
-    EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
-
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(PreferredReplicaPartitionLeaderElectionStrategy)
-    )
-
-    EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
-    assertEquals(OnlinePartition, partitionState(partition))
-    assertEquals(preferredLeaderAndIsr, controllerContext.partitionLeadershipInfo(partition).leaderAndIsr)
   }
 
   @Test
   def testOfflinePartitionToOnlinePartitionTransitionErrorCodeFromStateLookup(): Unit = {
     controllerContext.setLiveBrokerAndEpochs(Map(TestUtils.createBrokerAndEpoch(brokerId, "host", 0)))
     controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
-    controllerContext.putPartitionState(partition, OfflinePartition)
+    partitionState.put(partition, OfflinePartition)
     val leaderAndIsr = LeaderAndIsr(LeaderAndIsr.NoLeader, List(brokerId))
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
     controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
 
-    EasyMock.expect(mockZkClient.updateLeaderAndIsr(Map(partition -> leaderAndIsr.newLeader(brokerId)),
-      controllerEpoch, controllerContext.epochZkVersion))
-      .andReturn(UpdateLeaderAndIsrResult(Map.empty, Seq(partition)))
-    EasyMock.expect(mockZkClient.fetchPartitionStates(partitions))
-      .andReturn(Seq(partition -> None))
-
+    val stat = new Stat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     EasyMock.expect(mockControllerBrokerRequestBatch.newBatch())
+    EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+      .andReturn(Seq(GetDataResponse(Code.NONODE, null, Some(partition),
+        TopicPartitionStateZNode.encode(leaderIsrAndControllerEpoch), stat, ResponseMetadata(0, 0))))
+
     EasyMock.expect(mockControllerBrokerRequestBatch.sendRequestsToBrokers(controllerEpoch))
     EasyMock.replay(mockZkClient, mockControllerBrokerRequestBatch)
 
-    partitionStateMachine.handleStateChanges(
-      partitions,
-      OnlinePartition,
-      Option(OfflinePartitionLeaderElectionStrategy(false))
-    )
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Option(OfflinePartitionLeaderElectionStrategy))
     EasyMock.verify(mockZkClient, mockControllerBrokerRequestBatch)
     assertEquals(OfflinePartition, partitionState(partition))
   }
 
   @Test
   def testOfflinePartitionToNonexistentPartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, OfflinePartition)
+    partitionState.put(partition, OfflinePartition)
     partitionStateMachine.handleStateChanges(partitions, NonExistentPartition)
     assertEquals(NonExistentPartition, partitionState(partition))
   }
 
   @Test
   def testInvalidOfflinePartitionToNewPartitionTransition(): Unit = {
-    controllerContext.putPartitionState(partition, OfflinePartition)
+    partitionState.put(partition, OfflinePartition)
     partitionStateMachine.handleStateChanges(partitions, NewPartition)
     assertEquals(OfflinePartition, partitionState(partition))
   }
 
   private def prepareMockToElectLeaderForPartitions(partitions: Seq[TopicPartition]): Unit = {
     val leaderAndIsr = LeaderAndIsr(brokerId, List(brokerId))
-    val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
-    partitions.foreach { partition =>
-      controllerContext.partitionLeadershipInfo.put(partition, leaderIsrAndControllerEpoch)
+    def prepareMockToGetTopicPartitionsStatesRaw(): Unit = {
+      val stat = new Stat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
+      val getDataResponses = partitions.map {p => GetDataResponse(Code.OK, null, Some(p),
+        TopicPartitionStateZNode.encode(leaderIsrAndControllerEpoch), stat, ResponseMetadata(0, 0))}
+      EasyMock.expect(mockZkClient.getTopicPartitionStatesRaw(partitions))
+        .andReturn(getDataResponses)
     }
+    prepareMockToGetTopicPartitionsStatesRaw()
 
     def prepareMockToGetLogConfigs(): Unit = {
-      EasyMock.expect(mockZkClient.getLogConfigs(Set.empty, config.originals()))
+      val topicsForPartitionsWithNoLiveInSyncReplicas = Seq()
+      EasyMock.expect(mockZkClient.getLogConfigs(topicsForPartitionsWithNoLiveInSyncReplicas, config.originals()))
         .andReturn(Map.empty, Map.empty)
     }
     prepareMockToGetLogConfigs()
 
     def prepareMockToUpdateLeaderAndIsr(): Unit = {
-      val updatedLeaderAndIsr: Map[TopicPartition, LeaderAndIsr] = partitions.map { partition =>
+      val updatedLeaderAndIsr = partitions.map { partition =>
         partition -> leaderAndIsr.newLeaderAndIsr(brokerId, List(brokerId))
-      }(breakOut)
+      }.toMap
       EasyMock.expect(mockZkClient.updateLeaderAndIsr(updatedLeaderAndIsr, controllerEpoch, controllerContext.epochZkVersion))
-        .andReturn(UpdateLeaderAndIsrResult(updatedLeaderAndIsr.mapValues(Right(_)), Seq.empty))
+        .andReturn(UpdateLeaderAndIsrResult(updatedLeaderAndIsr, Seq.empty, Map.empty))
     }
     prepareMockToUpdateLeaderAndIsr()
   }
@@ -474,21 +356,23 @@ class PartitionStateMachineTest {
 
     val partitionIds = Seq(0, 1, 2, 3)
     val topic = "test"
-    val partitions = partitionIds.map(new TopicPartition(topic, _))
+    val partitions = partitionIds.map(new TopicPartition("test", _))
 
     partitions.foreach { partition =>
       controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
     }
 
+    EasyMock.expect(mockTopicDeletionManager.isTopicWithDeletionStarted(topic)).andReturn(false)
+    EasyMock.expectLastCall().anyTimes()
     prepareMockToElectLeaderForPartitions(partitions)
-    EasyMock.replay(mockZkClient)
+    EasyMock.replay(mockZkClient, mockTopicDeletionManager)
 
     partitionStateMachine.handleStateChanges(partitions, NewPartition)
     partitionStateMachine.handleStateChanges(partitions, OfflinePartition)
-    assertEquals(s"There should be ${partitions.size} offline partition(s)", partitions.size, controllerContext.offlinePartitionCount)
+    assertEquals(s"There should be ${partitions.size} offline partition(s)", partitions.size, partitionStateMachine.offlinePartitionCount)
 
-    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy(false)))
-    assertEquals(s"There should be no offline partition(s)", 0, controllerContext.offlinePartitionCount)
+    partitionStateMachine.handleStateChanges(partitions, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy))
+    assertEquals(s"There should be no offline partition(s)", 0, partitionStateMachine.offlinePartitionCount)
   }
 
   /**
@@ -499,14 +383,15 @@ class PartitionStateMachineTest {
   def testNoOfflinePartitionsChangeForTopicsBeingDeleted() = {
     val partitionIds = Seq(0, 1, 2, 3)
     val topic = "test"
-    val partitions = partitionIds.map(new TopicPartition(topic, _))
+    val partitions = partitionIds.map(new TopicPartition("test", _))
 
-    controllerContext.topicsToBeDeleted.add(topic)
-    controllerContext.topicsWithDeletionStarted.add(topic)
+    EasyMock.expect(mockTopicDeletionManager.isTopicWithDeletionStarted(topic)).andReturn(true)
+    EasyMock.expectLastCall().anyTimes()
+    EasyMock.replay(mockTopicDeletionManager)
 
     partitionStateMachine.handleStateChanges(partitions, NewPartition)
     partitionStateMachine.handleStateChanges(partitions, OfflinePartition)
-    assertEquals(s"There should be no offline partition(s)", 0, controllerContext.offlinePartitionCount)
+    assertEquals(s"There should be no offline partition(s)", 0, partitionStateMachine.offlinePartitionCount)
   }
 
   /**
@@ -526,21 +411,52 @@ class PartitionStateMachineTest {
       controllerContext.updatePartitionReplicaAssignment(partition, Seq(brokerId))
     }
 
-    val partitionStateMachine = new MockPartitionStateMachine(controllerContext, uncleanLeaderElectionEnabled = false)
-    val replicaStateMachine = new MockReplicaStateMachine(controllerContext)
-    val deletionClient = Mockito.mock(classOf[DeletionClient])
-    val topicDeletionManager = new TopicDeletionManager(config, controllerContext,
-      replicaStateMachine, partitionStateMachine, deletionClient)
+    val props = TestUtils.createBrokerConfig(brokerId, "zkConnect")
+    props.put(KafkaConfig.DeleteTopicEnableProp, "true")
+
+    val customConfig = KafkaConfig.fromProps(props)
+
+    def createMockReplicaStateMachine() = {
+      val replicaStateMachine: ReplicaStateMachine = EasyMock.createMock(classOf[ReplicaStateMachine])
+      EasyMock.expect(replicaStateMachine.areAllReplicasForTopicDeleted(topic)).andReturn(false).anyTimes()
+      EasyMock.expect(replicaStateMachine.isAtLeastOneReplicaInDeletionStartedState(topic)).andReturn(false).anyTimes()
+      EasyMock.expect(replicaStateMachine.isAnyReplicaInState(topic, ReplicaDeletionIneligible)).andReturn(false).anyTimes()
+      EasyMock.expect(replicaStateMachine.replicasInState(topic, ReplicaDeletionIneligible)).andReturn(Set.empty).anyTimes()
+      EasyMock.expect(replicaStateMachine.replicasInState(topic, ReplicaDeletionStarted)).andReturn(Set.empty).anyTimes()
+      EasyMock.expect(replicaStateMachine.replicasInState(topic, ReplicaDeletionSuccessful)).andReturn(Set.empty).anyTimes()
+      EasyMock.expect(replicaStateMachine.handleStateChanges(EasyMock.anyObject[Seq[PartitionAndReplica]],
+        EasyMock.anyObject[ReplicaState], EasyMock.anyObject[Callbacks]))
+
+      EasyMock.expectLastCall().anyTimes()
+      replicaStateMachine
+    }
+    val replicaStateMachine = createMockReplicaStateMachine()
+    partitionStateMachine = new PartitionStateMachine(customConfig, new StateChangeLogger(brokerId, true, None), controllerContext,
+      mockZkClient, partitionState, mockControllerBrokerRequestBatch)
+
+    def createMockController() = {
+      val mockController: KafkaController = EasyMock.createMock(classOf[KafkaController])
+      EasyMock.expect(mockController.controllerContext).andReturn(controllerContext).anyTimes()
+      EasyMock.expect(mockController.config).andReturn(customConfig).anyTimes()
+      EasyMock.expect(mockController.partitionStateMachine).andReturn(partitionStateMachine).anyTimes()
+      EasyMock.expect(mockController.replicaStateMachine).andReturn(replicaStateMachine).anyTimes()
+      EasyMock.expect(mockController.sendUpdateMetadataRequest(Seq.empty, partitions.toSet))
+      EasyMock.expectLastCall().anyTimes()
+      mockController
+    }
+
+    val mockController = createMockController()
+    val mockEventManager: ControllerEventManager = EasyMock.createMock(classOf[ControllerEventManager])
+    EasyMock.replay(mockController, replicaStateMachine, mockEventManager)
+
+    val topicDeletionManager = new TopicDeletionManager(mockController, mockEventManager, mockZkClient)
+    partitionStateMachine.setTopicDeletionManager(topicDeletionManager)
 
     partitionStateMachine.handleStateChanges(partitions, NewPartition)
     partitionStateMachine.handleStateChanges(partitions, OfflinePartition)
-    partitions.foreach { partition =>
-      val replica = PartitionAndReplica(partition, brokerId)
-      controllerContext.putReplicaState(replica, OfflineReplica)
-    }
+    assertEquals(s"There should be ${partitions.size} offline partition(s)", partitions.size, mockController.partitionStateMachine.offlinePartitionCount)
 
-    assertEquals(s"There should be ${partitions.size} offline partition(s)", partitions.size, controllerContext.offlinePartitionCount)
     topicDeletionManager.enqueueTopicsForDeletion(Set(topic))
-    assertEquals(s"There should be no offline partition(s)", 0, controllerContext.offlinePartitionCount)
+    assertEquals(s"There should be no offline partition(s)", 0, partitionStateMachine.offlinePartitionCount)
   }
 }

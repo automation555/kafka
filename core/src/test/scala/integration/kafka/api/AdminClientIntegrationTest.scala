@@ -16,45 +16,39 @@
  */
 package kafka.api
 
-import java.{time, util}
-import java.util.{Collections, Properties}
-import java.util.Arrays.asList
-import java.util.concurrent.{CountDownLatch, ExecutionException, TimeUnit}
 import java.io.File
+import java.lang.{Long => JLong}
+import java.util.Arrays.asList
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+import java.util.concurrent.{ExecutionException, TimeUnit}
+import java.util.{Collections, Properties}
+import java.{time, util}
 
-import org.apache.kafka.clients.admin.KafkaAdminClientTest
-import org.apache.kafka.common.utils.{Time, Utils}
 import kafka.log.LogConfig
+import kafka.security.auth.{Cluster, Group, Topic}
 import kafka.server.{Defaults, KafkaConfig, KafkaServer}
-import org.apache.kafka.clients.admin._
-import kafka.utils.{Logging, TestUtils}
-import kafka.utils.TestUtils._
 import kafka.utils.Implicits._
-import org.apache.kafka.clients.admin.NewTopic
+import kafka.utils.TestUtils._
+import kafka.utils.{Logging, TestUtils}
+import kafka.zk.KafkaZkClient
+import org.apache.kafka.clients.admin.{KafkaAdminClientTest, NewTopic, _}
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.{ConsumerGroupState, TopicPartition, TopicPartitionReplica}
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
 import org.apache.kafka.common.acl._
 import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.errors._
-import org.junit.{After, Before, Rule, Test}
 import org.apache.kafka.common.requests.{DeleteRecordsRequest, MetadataResponse}
 import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
-import org.junit.rules.Timeout
+import org.apache.kafka.common.utils.{Time, Utils}
+import org.apache.kafka.common.{ConsumerGroupState, TopicPartition, TopicPartitionReplica}
 import org.junit.Assert._
+import org.junit.rules.Timeout
+import org.junit.{After, Before, Rule, Test}
 
-import scala.util.Random
 import scala.collection.JavaConverters._
-import kafka.zk.KafkaZkClient
-
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
-import java.lang.{Long => JLong}
-import java.time.{Duration => JDuration}
-
-import kafka.security.auth.{Cluster, Group, Topic}
+import scala.util.Random
 
 /**
  * An integration test of the KafkaAdminClient.
@@ -361,7 +355,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
       assertTrue(exception.getCause.isInstanceOf[UnknownTopicOrPartitionException])
     }
 
-    createTopic(topic, numPartitions = 1, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 1, replicationFactor = serverCount)
     servers.foreach { server =>
       val logDir = server.logManager.getLog(tp).get.dir.getParent
       assertEquals(firstReplicaAssignment(new TopicPartitionReplica(topic, 0, server.config.brokerId)), logDir)
@@ -501,10 +495,10 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
     // Create topics
     val topic1 = "create-partitions-topic-1"
-    createTopic(topic1, numPartitions = 1, replicationFactor = 1.toShort)
+    createTopic(topic1, numPartitions = 1, replicationFactor = 1)
 
     val topic2 = "create-partitions-topic-2"
-    createTopic(topic2, numPartitions = 1, replicationFactor = 2.toShort)
+    createTopic(topic2, numPartitions = 1, replicationFactor = 2)
 
     // assert that both the topics have 1 partition
     assertEquals(1, client.describeTopics(Set(topic1).asJava).values.get(topic1).get.partitions.size)
@@ -759,7 +753,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testSeekAfterDeleteRecords(): Unit = {
-    createTopic(topic, numPartitions = 2, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 2, replicationFactor = serverCount)
 
     client = AdminClient.create(createConfig)
 
@@ -788,7 +782,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testLogStartOffsetCheckpoint(): Unit = {
-    createTopic(topic, numPartitions = 2, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 2, replicationFactor = serverCount)
 
     client = AdminClient.create(createConfig)
 
@@ -828,7 +822,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testLogStartOffsetAfterDeleteRecords(): Unit = {
-    createTopic(topic, numPartitions = 2, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 2, replicationFactor = serverCount)
 
     client = AdminClient.create(createConfig)
 
@@ -848,8 +842,8 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testReplicaCanFetchFromLogStartOffsetAfterDeleteRecords(): Unit = {
-    val leaders = createTopic(topic, numPartitions = 1, replicationFactor = serverCount.toShort)
-    val followerIndex = if (leaders(0) != servers(0).config.brokerId) 0 else 1
+    val leaders = createTopic(topic, numPartitions = 1, replicationFactor = serverCount)
+    val followerIndex = if (leaders(0) != servers.head.config.brokerId) 0 else 1
 
     def waitForFollowerLog(expectedStartOffset: Long, expectedEndOffset: Long): Unit = {
       TestUtils.waitUntilTrue(() => servers(followerIndex).replicaManager.localReplica(topicPartition) != None,
@@ -896,7 +890,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
   @Test
   def testAlterLogDirsAfterDeleteRecords(): Unit = {
     client = AdminClient.create(createConfig)
-    createTopic(topic, numPartitions = 1, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 1, replicationFactor = serverCount)
     val expectedLEO = 100
     val producer = createProducer()
     sendRecords(producer, expectedLEO, topicPartition)
@@ -927,7 +921,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testOffsetsForTimesAfterDeleteRecords(): Unit = {
-    createTopic(topic, numPartitions = 2, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 2, replicationFactor = serverCount)
 
     client = AdminClient.create(createConfig)
 
@@ -999,7 +993,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
 
   @Test
   def testDescribeConfigsForTopic(): Unit = {
-    createTopic(topic, numPartitions = 2, replicationFactor = serverCount.toShort)
+    createTopic(topic, numPartitions = 2, replicationFactor = serverCount)
     client = AdminClient.create(createConfig)
 
     val existingTopic = new ConfigResource(ConfigResource.Type.TOPIC, topic)
@@ -1159,32 +1153,23 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
       newConsumerConfig.setProperty(ConsumerConfig.GROUP_ID_CONFIG, testGroupId)
       newConsumerConfig.setProperty(ConsumerConfig.CLIENT_ID_CONFIG, testClientId)
       val consumer = createConsumer(configOverrides = newConsumerConfig)
-      val latch = new CountDownLatch(1)
       try {
         // Start a consumer in a thread that will subscribe to a new group.
         val consumerThread = new Thread {
           override def run {
             consumer.subscribe(Collections.singleton(testTopicName))
-
-            try {
-              while (true) {
-                consumer.poll(JDuration.ofSeconds(5))
-                if (!consumer.assignment.isEmpty && latch.getCount > 0L)
-                  latch.countDown()
-                consumer.commitSync()
-              }
-            } catch {
-              case _: InterruptException => // Suppress the output to stderr
+            while (true) {
+              consumer.poll(time.Duration.ofSeconds(5L))
+              consumer.commitSync()
             }
           }
         }
         try {
           consumerThread.start
-          assertTrue(latch.await(30000, TimeUnit.MILLISECONDS))
           // Test that we can list the new group.
           TestUtils.waitUntilTrue(() => {
             val matching = client.listConsumerGroups.all.get().asScala.filter(_.groupId == testGroupId)
-            !matching.isEmpty
+            matching.nonEmpty
           }, s"Expected to be able to list $testGroupId")
 
           val result = client.describeConsumerGroups(Seq(testGroupId, fakeGroupId).asJava,
@@ -1478,11 +1463,11 @@ object AdminClientIntegrationTest {
     // Create topics
     val topic1 = "invalid-alter-configs-topic-1"
     val topicResource1 = new ConfigResource(ConfigResource.Type.TOPIC, topic1)
-    TestUtils.createTopic(zkClient, topic1, 1, 1.toShort, servers)
+    TestUtils.createTopic(zkClient, topic1, 1, 1, servers)
 
     val topic2 = "invalid-alter-configs-topic-2"
     val topicResource2 = new ConfigResource(ConfigResource.Type.TOPIC, topic2)
-    TestUtils.createTopic(zkClient, topic2, 1, 1.toShort, servers)
+    TestUtils.createTopic(zkClient, topic2, 1, 1, servers)
 
     val topicConfigEntries1 = Seq(
       new ConfigEntry(LogConfig.MinCleanableDirtyRatioProp, "1.1"), // this value is invalid as it's above 1.0

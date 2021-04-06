@@ -17,25 +17,24 @@
 
 package kafka.api
 
-import com.codahale.metrics.Gauge
 import java.io.File
 import java.util.concurrent.ExecutionException
 
-import javax.management.ObjectName
+import com.yammer.metrics.Metrics
+import com.yammer.metrics.core.Gauge
 import kafka.admin.AclCommand
 import kafka.security.auth._
 import kafka.server._
 import kafka.utils._
-import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, ConsumerRecords}
+import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
-import org.apache.kafka.common.security.auth.KafkaPrincipal
-import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.errors.{GroupAuthorizationException, TopicAuthorizationException}
 import org.apache.kafka.common.resource.PatternType
 import org.apache.kafka.common.resource.PatternType.{LITERAL, PREFIXED}
+import org.apache.kafka.common.security.auth.KafkaPrincipal
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
-import org.scalatest.Assertions.{assertThrows, fail, intercept}
 
 import scala.collection.JavaConverters._
 
@@ -58,9 +57,9 @@ import scala.collection.JavaConverters._
   * would end up with ZooKeeperTestHarness twice.
   */
 abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with SaslSetup {
-  override val brokerCount = 3
+  override val serverCount = 3
 
-  override def configureSecurityBeforeServersStart(): Unit = {
+  override def configureSecurityBeforeServersStart() {
     AclCommand.main(clusterActionArgs)
     AclCommand.main(topicBrokerReadAclArgs)
   }
@@ -179,7 +178,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     * Starts MiniKDC and only then sets up the parent trait.
     */
   @Before
-  override def setUp(): Unit = {
+  override def setUp() {
     super.setUp()
     servers.foreach { s =>
       TestUtils.waitAndVerifyAcls(ClusterActionAcl, s.dataPlaneRequestProcessor.authorizer.get, Resource.ClusterResource)
@@ -193,7 +192,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     * Closes MiniKDC last when tearing down.
     */
   @After
-  override def tearDown(): Unit = {
+  override def tearDown() {
     super.tearDown()
     closeSasl()
   }
@@ -211,7 +210,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
   }
 
   protected def confirmReauthenticationMetrics() : Unit = {
-    val expiredConnectionsKilledCountTotal = getGauge("ExpiredConnectionsKilledCount").getValue()
+    val expiredConnectionsKilledCountTotal = getGauge("ExpiredConnectionsKilledCount").value()
     servers.foreach { s =>
         val numExpiredKilled = TestUtils.totalMetricValue(s, "expired-connections-killed-count")
         assertTrue("Should have been zero expired connections killed: " + numExpiredKilled + "(total=" + expiredConnectionsKilledCountTotal + ")", numExpiredKilled == 0)
@@ -223,8 +222,8 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
   }
 
   private def getGauge(metricName: String) = {
-    kafka.metrics.getKafkaMetrics
-           .filterKeys(ObjectName.getInstance(_).getKeyProperty("name") == metricName)
+    Metrics.defaultRegistry.allMetrics.asScala
+           .filterKeys(k => k.getName == metricName)
            .headOption
            .getOrElse { fail( "Unable to find metric " + metricName ) }
            ._2.asInstanceOf[Gauge[Double]]
@@ -272,7 +271,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     confirmReauthenticationMetrics
   }
 
-  private def setWildcardResourceAcls(): Unit = {
+  private def setWildcardResourceAcls() {
     AclCommand.main(produceConsumeWildcardAclArgs)
     servers.foreach { s =>
       TestUtils.waitAndVerifyAcls(TopicReadAcl ++ TopicWriteAcl ++ TopicDescribeAcl ++ TopicCreateAcl ++ TopicBrokerReadAcl, s.dataPlaneRequestProcessor.authorizer.get, wildcardTopicResource)
@@ -280,7 +279,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     }
   }
 
-  private def setPrefixedResourceAcls(): Unit = {
+  private def setPrefixedResourceAcls() {
     AclCommand.main(produceConsumePrefixedAclsArgs)
     servers.foreach { s =>
       TestUtils.waitAndVerifyAcls(TopicReadAcl ++ TopicWriteAcl ++ TopicDescribeAcl ++ TopicCreateAcl, s.dataPlaneRequestProcessor.authorizer.get, prefixedTopicResource)
@@ -288,7 +287,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     }
   }
 
-  private def setReadAndWriteAcls(tp: TopicPartition): Unit = {
+  protected def setAclsAndProduce(tp: TopicPartition) {
     AclCommand.main(produceAclArgs(tp.topic))
     AclCommand.main(consumeAclArgs(tp.topic))
     servers.foreach { s =>
@@ -296,72 +295,19 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
         new Resource(Topic, tp.topic, PatternType.LITERAL))
       TestUtils.waitAndVerifyAcls(GroupReadAcl, s.dataPlaneRequestProcessor.authorizer.get, groupResource)
     }
-  }
-
-  protected def setAclsAndProduce(tp: TopicPartition): Unit = {
-    setReadAndWriteAcls(tp)
     val producer = createProducer()
     sendRecords(producer, numRecords, tp)
-  }
-
-  private def setConsumerGroupAcls(): Unit = {
-    AclCommand.main(groupAclArgs)
-    servers.foreach { s =>
-      TestUtils.waitAndVerifyAcls(GroupReadAcl, s.dataPlaneRequestProcessor.authorizer.get, groupResource)
-    }
   }
 
   /**
-    * Tests that producer, consumer and adminClient fail to publish messages, consume
-    * messages and describe topics respectively when the describe ACL isn't set.
-    * Also verifies that subsequent publish, consume and describe to authorized topic succeeds.
+    * Tests that a producer fails to publish messages when the appropriate ACL
+    * isn't set.
     */
-  @Test
-  def testNoDescribeProduceOrConsumeWithoutTopicDescribeAcl(): Unit = {
-    // Set consumer group acls since we are testing topic authorization
-    setConsumerGroupAcls()
-
-    // Verify produce/consume/describe throw TopicAuthorizationException
+  @Test(expected = classOf[TopicAuthorizationException])
+  def testNoProduceWithoutDescribeAcl(): Unit = {
     val producer = createProducer()
-    assertThrows[TopicAuthorizationException] { sendRecords(producer, numRecords, tp) }
-    val consumer = createConsumer()
-    consumer.assign(List(tp).asJava)
-    assertThrows[TopicAuthorizationException] { consumeRecords(consumer, numRecords, topic = tp.topic) }
-    val adminClient = createAdminClient()
-    val e1 = intercept[ExecutionException] { adminClient.describeTopics(Set(topic).asJava).all().get() }
-    assertTrue("Unexpected exception " + e1.getCause, e1.getCause.isInstanceOf[TopicAuthorizationException])
-
-    // Verify successful produce/consume/describe on another topic using the same producer, consumer and adminClient
-    val topic2 = "topic2"
-    val tp2 = new TopicPartition(topic2, 0)
-    setReadAndWriteAcls(tp2)
-    sendRecords(producer, numRecords, tp2)
-    consumer.assign(List(tp2).asJava)
-    consumeRecords(consumer, numRecords, topic = topic2)
-    val describeResults = adminClient.describeTopics(Set(topic, topic2).asJava).values
-    assertEquals(1, describeResults.get(topic2).get().partitions().size())
-    val e2 = intercept[ExecutionException] { adminClient.describeTopics(Set(topic).asJava).all().get() }
-    assertTrue("Unexpected exception " + e2.getCause, e2.getCause.isInstanceOf[TopicAuthorizationException])
-
-    // Verify that consumer manually assigning both authorized and unauthorized topic doesn't consume from either
-    consumer.assign(List(tp, tp2).asJava)
-    sendRecords(producer, numRecords, tp2)
-    def verifyNoRecords(records: ConsumerRecords[Array[Byte], Array[Byte]]): Boolean = {
-      assertTrue("Consumed records: " + records, records.isEmpty)
-      !records.isEmpty
-    }
-    assertThrows[TopicAuthorizationException] {
-      TestUtils.pollRecordsUntilTrue(consumer, verifyNoRecords, "Consumer didn't fail with authorization exception within timeout")
-    }
-
-    // Add ACLs and verify successful produce/consume/describe on first topic
-    setReadAndWriteAcls(tp)
-    consumeRecordsIgnoreOneAuthorizationException(consumer, numRecords, startingOffset = numRecords, topic2)
     sendRecords(producer, numRecords, tp)
-    consumeRecords(consumer, numRecords, topic = topic)
-    val describeResults2 = adminClient.describeTopics(Set(topic, topic2).asJava).values
-    assertEquals(1, describeResults2.get(topic).get().partitions().size())
-    assertEquals(1, describeResults2.get(topic2).get().partitions().size())
+    confirmReauthenticationMetrics
   }
 
   @Test
@@ -395,22 +341,13 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
     confirmReauthenticationMetrics
   }
 
-  @Test
+  @Test(expected = classOf[TopicAuthorizationException])
   def testNoConsumeWithoutDescribeAclViaSubscribe(): Unit = {
     noConsumeWithoutDescribeAclSetup()
     val consumer = createConsumer()
     consumer.subscribe(List(topic).asJava)
     // this should timeout since the consumer will not be able to fetch any metadata for the topic
-    assertThrows[TopicAuthorizationException] { consumeRecords(consumer, timeout = 3000) }
-
-    // Verify that no records are consumed even if one of the requested topics is authorized
-    setReadAndWriteAcls(tp)
-    consumer.subscribe(List(topic, "topic2").asJava)
-    assertThrows[TopicAuthorizationException] { consumeRecords(consumer, timeout = 3000) }
-
-    // Verify that records are consumed if all topics are authorized
-    consumer.subscribe(List(topic).asJava)
-    consumeRecordsIgnoreOneAuthorizationException(consumer)
+    consumeRecords(consumer, timeout = 3000)
   }
 
   private def noConsumeWithoutDescribeAclSetup(): Unit = {
@@ -500,7 +437,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
   }
 
   protected final def sendRecords(producer: KafkaProducer[Array[Byte], Array[Byte]],
-                                  numRecords: Int, tp: TopicPartition): Unit = {
+                                  numRecords: Int, tp: TopicPartition) {
     val futures = (0 until numRecords).map { i =>
       val record = new ProducerRecord(tp.topic(), tp.partition(), s"$i".getBytes, s"$i".getBytes)
       debug(s"Sending this record: $record")
@@ -518,7 +455,7 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
                                      startingOffset: Int = 0,
                                      topic: String = topic,
                                      part: Int = part,
-                                     timeout: Long = 10000): Unit = {
+                                     timeout: Long = 10000) {
     val records = TestUtils.consumeRecords(consumer, numRecords, timeout)
 
     for (i <- 0 until numRecords) {
@@ -527,18 +464,6 @@ abstract class EndToEndAuthorizationTest extends IntegrationTestHarness with Sas
       assertEquals(topic, record.topic)
       assertEquals(part, record.partition)
       assertEquals(offset.toLong, record.offset)
-    }
-  }
-
-  // Consume records, ignoring at most one TopicAuthorization exception from previously sent request
-  private def consumeRecordsIgnoreOneAuthorizationException(consumer: Consumer[Array[Byte], Array[Byte]],
-                                                            numRecords: Int = 1,
-                                                            startingOffset: Int = 0,
-                                                            topic: String = topic): Unit = {
-    try {
-      consumeRecords(consumer, numRecords, startingOffset, topic)
-    } catch {
-      case _: TopicAuthorizationException => consumeRecords(consumer, numRecords, startingOffset, topic)
     }
   }
 }

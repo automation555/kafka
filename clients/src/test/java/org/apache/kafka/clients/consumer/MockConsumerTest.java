@@ -18,23 +18,21 @@ package org.apache.kafka.clients.consumer;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Optional;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 public class MockConsumerTest {
     
-    private final MockConsumer<String, String> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
+    private MockConsumer<String, String> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
 
     @Test
     public void testSimpleMock() {
@@ -48,18 +46,25 @@ public class MockConsumerTest {
         consumer.updateBeginningOffsets(beginningOffsets);
         consumer.seek(new TopicPartition("test", 0), 0);
         ConsumerRecord<String, String> rec1 = new ConsumerRecord<>("test", 0, 0, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, "key1", "value1");
-        ConsumerRecord<String, String> rec2 = new ConsumerRecord<>("test", 0, 1, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, "key2", "value2");
+        ConsumerRecord<String, String> rec2 = new ConsumerRecord<>("test", 0, 1, 100L, TimestampType.CREATE_TIME, 0L, 0, 0, "key2", "value2");
         consumer.addRecord(rec1);
         consumer.addRecord(rec2);
+        Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
+        TopicPartition test_0 = new TopicPartition("test", 0);
+        timestampsToSearch.put(test_0, 0L);
+        assertEquals(0, consumer.offsetsForTimes(timestampsToSearch).get(test_0).offset());
+        timestampsToSearch.put(test_0, 50L);
+        assertEquals(1, consumer.offsetsForTimes(timestampsToSearch).get(test_0).offset());
+        timestampsToSearch.put(test_0, 150L);
+        assertEquals(null, consumer.offsetsForTimes(timestampsToSearch).get(test_0));
         ConsumerRecords<String, String> recs = consumer.poll(Duration.ofMillis(1));
         Iterator<ConsumerRecord<String, String>> iter = recs.iterator();
         assertEquals(rec1, iter.next());
         assertEquals(rec2, iter.next());
         assertFalse(iter.hasNext());
-        final TopicPartition tp = new TopicPartition("test", 0);
-        assertEquals(2L, consumer.position(tp));
+        assertEquals(2L, consumer.position(new TopicPartition("test", 0)));
         consumer.commitSync();
-        assertEquals(2L, consumer.committed(Collections.singleton(tp)).get(tp).offset());
+        assertEquals(2L, consumer.committed(new TopicPartition("test", 0)).offset());
     }
 
     @SuppressWarnings("deprecation")
@@ -83,55 +88,9 @@ public class MockConsumerTest {
         assertEquals(rec1, iter.next());
         assertEquals(rec2, iter.next());
         assertFalse(iter.hasNext());
-        final TopicPartition tp = new TopicPartition("test", 0);
-        assertEquals(2L, consumer.position(tp));
+        assertEquals(2L, consumer.position(new TopicPartition("test", 0)));
         consumer.commitSync();
-        assertEquals(2L, consumer.committed(Collections.singleton(tp)).get(tp).offset());
-        assertEquals(new ConsumerGroupMetadata("dummy.group.id", 1, "1", Optional.empty()),
-            consumer.groupMetadata());
-    }
-
-    @Test
-    public void testConsumerRecordsIsEmptyWhenReturningNoRecords() {
-        TopicPartition partition = new TopicPartition("test", 0);
-        consumer.assign(Collections.singleton(partition));
-        consumer.addRecord(new ConsumerRecord<>("test", 0, 0, null, null));
-        consumer.updateEndOffsets(Collections.singletonMap(partition, 1L));
-        consumer.seekToEnd(Collections.singleton(partition));
-        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1));
-        assertEquals(0, records.count());
-        assertTrue(records.isEmpty());
-    }
-
-    @Test
-    public void shouldNotClearRecordsForPausedPartitions() {
-        TopicPartition partition0 = new TopicPartition("test", 0);
-        Collection<TopicPartition> testPartitionList = Collections.singletonList(partition0);
-        consumer.assign(testPartitionList);
-        consumer.addRecord(new ConsumerRecord<>("test", 0, 0, null, null));
-        consumer.updateBeginningOffsets(Collections.singletonMap(partition0, 0L));
-        consumer.seekToBeginning(testPartitionList);
-
-        consumer.pause(testPartitionList);
-        consumer.poll(Duration.ofMillis(1));
-        consumer.resume(testPartitionList);
-        ConsumerRecords<String, String> recordsSecondPoll = consumer.poll(Duration.ofMillis(1));
-        assertEquals(1, recordsSecondPoll.count());
-    }
-
-    @Test
-    public void endOffsetsShouldBeIdempotent() {
-        TopicPartition partition = new TopicPartition("test", 0);
-        consumer.updateEndOffsets(Collections.singletonMap(partition, 10L));
-        // consumer.endOffsets should NOT change the value of end offsets
-        assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        assertEquals(10L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        consumer.updateEndOffsets(Collections.singletonMap(partition, 11L));
-        // consumer.endOffsets should NOT change the value of end offsets
-        assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
-        assertEquals(11L, (long) consumer.endOffsets(Collections.singleton(partition)).get(partition));
+        assertEquals(2L, consumer.committed(new TopicPartition("test", 0)).offset());
     }
 
 }

@@ -38,17 +38,17 @@ should_include_file() {
     return 0
   fi
   file=$1
-  if [[ "$file" =~ $regex ]] ; then
-    return 1
-  else
+  if [ -z "$(echo "$file" | egrep "$regex")" ] ; then
     return 0
+  else
+    return 1
   fi
 }
 
 base_dir=$(dirname $0)/..
 
 if [ -z "$SCALA_VERSION" ]; then
-  SCALA_VERSION=2.11.12
+  SCALA_VERSION=2.11.11
 fi
 
 if [ -z "$SCALA_BINARY_VERSION" ]; then
@@ -59,7 +59,11 @@ fi
 shopt -s nullglob
 for dir in "$base_dir"/core/build/dependant-libs-${SCALA_VERSION}*;
 do
-  CLASSPATH="$CLASSPATH:$dir/*"
+  if [ -z "$CLASSPATH" ] ; then
+    CLASSPATH="$dir/*"
+  else
+    CLASSPATH="$CLASSPATH:$dir/*"
+  fi
 done
 
 for file in "$base_dir"/examples/build/libs/kafka-examples*.jar;
@@ -222,7 +226,6 @@ while [ $# -gt 0 ]; do
   case $COMMAND in
     -name)
       DAEMON_NAME=$2
-      CONSOLE_OUTPUT_FILE=$LOG_DIR/$DAEMON_NAME.out
       shift 2
       ;;
     -loggc)
@@ -241,6 +244,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -z "{$CONSOLE_OUTPUT_FILE+x}" ]; then
+  CONSOLE_OUTPUT_FILE=$LOG_DIR/$DAEMON_NAME.out
+fi
+ 
 # GC options
 GC_FILE_SUFFIX='-gc.log'
 GC_LOG_FILE_NAME=''
@@ -255,11 +262,6 @@ if [ "x$GC_LOG_ENABLED" = "xtrue" ]; then
     KAFKA_GC_LOG_OPTS="-Xloggc:$LOG_DIR/$GC_LOG_FILE_NAME -verbose:gc -XX:+PrintGCDetails -XX:+PrintGCDateStamps -XX:+PrintGCTimeStamps -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=10 -XX:GCLogFileSize=100M"
   fi
 fi
-
-# Remove a possible colon prefix from the classpath (happens at lines like `CLASSPATH="$CLASSPATH:$file"` when CLASSPATH is blank)
-# Syntax used on the right side is native Bash string manipulation; for more details see
-# http://tldp.org/LDP/abs/html/string-manipulation.html, specifically the section titled "Substring Removal"
-CLASSPATH=${CLASSPATH#:}
 
 # If Cygwin is detected, classpath is converted to Windows format.
 (( CYGWIN )) && CLASSPATH=$(cygpath --path --mixed "${CLASSPATH}")

@@ -24,11 +24,13 @@ import kafka.utils._
 import kafka.utils.TestUtils._
 import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.utils.Time
+import org.apache.kafka.common.utils.{Time, Utils}
 import org.junit.{After, Before, Test}
 import org.junit.Assert._
 import java.util.Properties
 import java.io.File
+
+import kafka.admin.AdminUtils
 
 import scala.util.Random
 import scala.collection._
@@ -44,7 +46,7 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   var simpleConsumer: SimpleConsumer = null
 
   @Before
-  override def setUp(): Unit = {
+  override def setUp() {
     super.setUp()
     val config: Properties = createBrokerConfig(1, zkConnect,  enableDeleteTopic = true)
     config.setProperty(KafkaConfig.OffsetsTopicReplicationFactorProp, "1")
@@ -64,21 +66,22 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   }
 
   @After
-  override def tearDown(): Unit = {
+  override def tearDown() {
     simpleConsumer.close
-    TestUtils.shutdownServers(Seq(server))
+    server.shutdown
+    Utils.delete(logDir)
     super.tearDown()
   }
 
   @Test
-  def testUpdateOffsets(): Unit = {
+  def testUpdateOffsets() {
     val topic = "topic"
 
     // Commit an offset
     val topicAndPartition = TopicAndPartition(topic, 0)
     val expectedReplicaAssignment = Map(0  -> List(1))
     // create the topic
-    createTopic(zkClient, topic, partitionReplicaAssignment = expectedReplicaAssignment, servers = Seq(server))
+    createTopic(zkUtils, topic, partitionReplicaAssignment = expectedReplicaAssignment, servers = Seq(server))
 
     val commitRequest = OffsetCommitRequest(group, immutable.Map(topicAndPartition -> OffsetAndMetadata(offset = 42L)))
     val commitResponse = simpleConsumer.commitOffsets(commitRequest)
@@ -115,22 +118,22 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
     val fetchRequest2 = OffsetFetchRequest(group, Seq(unknownTopicAndPartition))
     val fetchResponse2 = simpleConsumer.fetchOffsets(fetchRequest2)
 
-    assertEquals(OffsetMetadataAndError.NoOffset, fetchResponse2.requestInfo.get(unknownTopicAndPartition).get)
+    assertEquals(OffsetMetadataAndError.UnknownTopicOrPartition, fetchResponse2.requestInfo.get(unknownTopicAndPartition).get)
     assertEquals(1, fetchResponse2.requestInfo.size)
   }
 
   @Test
-  def testCommitAndFetchOffsets(): Unit = {
+  def testCommitAndFetchOffsets() {
     val topic1 = "topic-1"
     val topic2 = "topic-2"
     val topic3 = "topic-3"
     val topic4 = "topic-4" // Topic that group never consumes
     val topic5 = "topic-5" // Non-existent topic
 
-    createTopic(zkClient, topic1, servers = Seq(server), numPartitions = 1)
-    createTopic(zkClient, topic2, servers = Seq(server), numPartitions = 2)
-    createTopic(zkClient, topic3, servers = Seq(server), numPartitions = 1)
-    createTopic(zkClient, topic4, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic1, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic2, servers = Seq(server), numPartitions = 2)
+    createTopic(zkUtils, topic3, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic4, servers = Seq(server), numPartitions = 1)
 
     val commitRequest = OffsetCommitRequest("test-group", immutable.Map(
       TopicAndPartition(topic1, 0) -> OffsetAndMetadata(offset=42L, metadata="metadata one"),
@@ -161,14 +164,14 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
     assertEquals(Errors.NONE, fetchResponse.requestInfo.get(TopicAndPartition(topic2, 1)).get.error)
 
     assertEquals(Errors.NONE, fetchResponse.requestInfo.get(TopicAndPartition(topic3, 0)).get.error)
-    assertEquals(Errors.NONE, fetchResponse.requestInfo.get(TopicAndPartition(topic3, 1)).get.error)
-    assertEquals(OffsetMetadataAndError.NoOffset, fetchResponse.requestInfo.get(TopicAndPartition(topic3, 1)).get)
+    assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, fetchResponse.requestInfo.get(TopicAndPartition(topic3, 1)).get.error)
+    assertEquals(OffsetMetadataAndError.UnknownTopicOrPartition, fetchResponse.requestInfo.get(TopicAndPartition(topic3, 1)).get)
 
     assertEquals(Errors.NONE, fetchResponse.requestInfo.get(TopicAndPartition(topic4, 0)).get.error)
     assertEquals(OffsetMetadataAndError.NoOffset, fetchResponse.requestInfo.get(TopicAndPartition(topic4, 0)).get)
 
-    assertEquals(Errors.NONE, fetchResponse.requestInfo.get(TopicAndPartition(topic5, 0)).get.error)
-    assertEquals(OffsetMetadataAndError.NoOffset, fetchResponse.requestInfo.get(TopicAndPartition(topic5, 0)).get)
+    assertEquals(Errors.UNKNOWN_TOPIC_OR_PARTITION, fetchResponse.requestInfo.get(TopicAndPartition(topic5, 0)).get.error)
+    assertEquals(OffsetMetadataAndError.UnknownTopicOrPartition, fetchResponse.requestInfo.get(TopicAndPartition(topic5, 0)).get)
 
     assertEquals("metadata one", fetchResponse.requestInfo.get(TopicAndPartition(topic1, 0)).get.metadata)
     assertEquals("metadata two", fetchResponse.requestInfo.get(TopicAndPartition(topic2, 0)).get.metadata)
@@ -190,10 +193,10 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testLargeMetadataPayload(): Unit = {
+  def testLargeMetadataPayload() {
     val topicAndPartition = TopicAndPartition("large-metadata", 0)
     val expectedReplicaAssignment = Map(0  -> List(1))
-    createTopic(zkClient, topicAndPartition.topic, partitionReplicaAssignment = expectedReplicaAssignment,
+    createTopic(zkUtils, topicAndPartition.topic, partitionReplicaAssignment = expectedReplicaAssignment,
                 servers = Seq(server))
 
     val commitRequest = OffsetCommitRequest("test-group", immutable.Map(topicAndPartition -> OffsetAndMetadata(
@@ -214,11 +217,11 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testOffsetExpiration(): Unit = {
+  def testOffsetExpiration() {
     // set up topic partition
     val topic = "topic"
     val topicPartition = TopicAndPartition(topic, 0)
-    createTopic(zkClient, topic, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic, servers = Seq(server), numPartitions = 1)
 
     val fetchRequest = OffsetFetchRequest(group, Seq(TopicAndPartition(topic, 0)))
 
@@ -249,11 +252,11 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
     Thread.sleep(retentionCheckInterval * 2)
     assertEquals(2L, simpleConsumer.fetchOffsets(fetchRequest).requestInfo.get(topicPartition).get.offset)
 
-    // v1 version commit request with commit timestamp set to now - seven + a bit days
+    // v1 version commit request with commit timestamp set to now - two days
     // committed offset should expire
     val commitRequest2 = OffsetCommitRequest(
       groupId = group,
-      requestInfo = immutable.Map(topicPartition -> OffsetAndMetadata(3L, "metadata", Time.SYSTEM.milliseconds - (Defaults.OffsetsRetentionMinutes + 1) * 60 * 1000L)),
+      requestInfo = immutable.Map(topicPartition -> OffsetAndMetadata(3L, "metadata", Time.SYSTEM.milliseconds - 2*24*60*60*1000L)),
       versionId = 1
     )
     assertEquals(Errors.NONE, simpleConsumer.commitOffsets(commitRequest2).commitStatus.get(topicPartition).get)
@@ -287,11 +290,11 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testNonExistingTopicOffsetCommit(): Unit = {
+  def testNonExistingTopicOffsetCommit() {
     val topic1 = "topicDoesNotExists"
     val topic2 = "topic-2"
 
-    createTopic(zkClient, topic2, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic2, servers = Seq(server), numPartitions = 1)
 
     // Commit an offset
     val commitRequest = OffsetCommitRequest(group, immutable.Map(
@@ -305,11 +308,11 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testOffsetsDeleteAfterTopicDeletion(): Unit = {
+  def testOffsetsDeleteAfterTopicDeletion() {
     // set up topic partition
     val topic = "topic"
     val topicPartition = TopicAndPartition(topic, 0)
-    createTopic(zkClient, topic, servers = Seq(server), numPartitions = 1)
+    createTopic(zkUtils, topic, servers = Seq(server), numPartitions = 1)
 
     val commitRequest = OffsetCommitRequest(group, immutable.Map(topicPartition -> OffsetAndMetadata(offset = 42L)))
     val commitResponse = simpleConsumer.commitOffsets(commitRequest)
@@ -317,15 +320,15 @@ class OffsetCommitTest extends ZooKeeperTestHarness {
     assertEquals(Errors.NONE, commitResponse.commitStatus.get(topicPartition).get)
 
     // start topic deletion
-    adminZkClient.deleteTopic(topic)
-    TestUtils.verifyTopicDeletion(zkClient, topic, 1, Seq(server))
+    AdminUtils.deleteTopic(zkUtils, topic)
+    TestUtils.verifyTopicDeletion(zkUtils, topic, 1, Seq(server))
     Thread.sleep(retentionCheckInterval * 2)
 
     // check if offsets deleted
     val fetchRequest = OffsetFetchRequest(group, Seq(TopicAndPartition(topic, 0)))
     val offsetMetadataAndErrorMap = simpleConsumer.fetchOffsets(fetchRequest)
     val offsetMetadataAndError = offsetMetadataAndErrorMap.requestInfo(topicPartition)
-    assertEquals(OffsetMetadataAndError.NoOffset, offsetMetadataAndError)
+    assertEquals(OffsetMetadataAndError.UnknownTopicOrPartition, offsetMetadataAndError)
   }
 
 }

@@ -614,7 +614,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @param properties The consumer configuration properties
      */
     public KafkaConsumer(Properties properties) {
-        this(getFlattenedProperties(properties), null, null);
+        this(properties, null, null);
     }
 
     /**
@@ -632,7 +632,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     public KafkaConsumer(Properties properties,
                          Deserializer<K> keyDeserializer,
                          Deserializer<V> valueDeserializer) {
-        this(new ConsumerConfig(ConsumerConfig.addDeserializerToConfig(getFlattenedProperties(properties), keyDeserializer, valueDeserializer)),
+        this(new ConsumerConfig(ConsumerConfig.addDeserializerToConfig(properties, keyDeserializer, valueDeserializer)),
              keyDeserializer,
              valueDeserializer);
     }
@@ -699,12 +699,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
             this.metadata.update(Cluster.bootstrap(addresses), Collections.<String>emptySet(), 0);
             String metricGrpPrefix = "consumer";
-            ConsumerMetrics metricsRegistry = new ConsumerMetrics(metricsTags.keySet(), "consumer");
+            ConsumerMetrics metricsRegistry = new ConsumerMetrics(this.metrics);
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config);
 
             IsolationLevel isolationLevel = IsolationLevel.valueOf(
                     config.getString(ConsumerConfig.ISOLATION_LEVEL_CONFIG).toUpperCase(Locale.ROOT));
-            Sensor throttleTimeSensor = Fetcher.throttleTimeSensor(metrics, metricsRegistry.fetcherMetrics);
+            Sensor throttleTimeSensor = Fetcher.throttleTimeSensor(metricsRegistry.fetcherMetrics);
 
             NetworkClient netClient = new NetworkClient(
                     new Selector(config.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext),
@@ -764,14 +764,13 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     this.valueDeserializer,
                     this.metadata,
                     this.subscriptions,
-                    metrics,
                     metricsRegistry.fetcherMetrics,
                     this.time,
                     this.retryBackoffMs,
                     isolationLevel);
 
             config.logUnused();
-            AppInfoParser.registerAppInfo(JMX_PREFIX, sanitizedClientId, metrics);
+            AppInfoParser.registerAppInfo(JMX_PREFIX, sanitizedClientId);
 
             log.debug("Kafka consumer initialized");
         } catch (Throwable t) {
@@ -1726,7 +1725,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         ClientUtils.closeQuietly(client, "consumer network client", firstException);
         ClientUtils.closeQuietly(keyDeserializer, "consumer key deserializer", firstException);
         ClientUtils.closeQuietly(valueDeserializer, "consumer value deserializer", firstException);
-        AppInfoParser.unregisterAppInfo(JMX_PREFIX, Sanitizer.sanitize(clientId), metrics);
+        AppInfoParser.unregisterAppInfo(JMX_PREFIX, Sanitizer.sanitize(clientId));
         log.debug("Kafka consumer has been closed");
         Throwable exception = firstException.get();
         if (exception != null && !swallowException) {
@@ -1797,18 +1796,4 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (refcount.decrementAndGet() == 0)
             currentThread.set(NO_CURRENT_THREAD);
     }
-    
-     /**
-      * Returns a flattened Properties object
-      * @param properties - Java Properties object
-      */
-     private static Properties getFlattenedProperties(Properties properties) {
-        for (final String name: properties.stringPropertyNames()) {
-            if (properties.get(name) == null) {
-                properties.put(name, properties.getProperty(name));
-            }
-        }
-        return properties;         
-     }
-    
 }

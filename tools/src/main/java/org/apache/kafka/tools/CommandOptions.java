@@ -19,41 +19,48 @@ package org.apache.kafka.tools;
 
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
-import org.apache.kafka.common.utils.Exit;
 
 /**
  * Base class for command line tools options
  */
 public abstract class CommandOptions {
 
-    protected final ArgumentParser parser;
-    protected final Namespace ns;
+    public ArgumentParser parser;
+    protected Namespace ns;
 
+    /**
+     * Constructor
+     *
+     * @param command   command
+     * @param description   command description
+     */
+    public CommandOptions(String command, String description) {
 
-    public CommandOptions(String command, String description, String[] args) {
         this.parser = ArgumentParsers
                 .newArgumentParser(command)
                 .defaultHelp(true)
                 .description(description);
-
-        prepareArgs();
-
-        Namespace ns = null;
-        try {
-            ns = this.parser.parseArgs(args);
-        } catch (ArgumentParserException e) {
-            parser.handleError(e);
-            Exit.exit(1);
-        }
-        this.ns = ns;
     }
 
-    public boolean has(String dest) {
-        return ns.get(dest) != null;
+    /**
+     * If an option was specified on the command line
+     *
+     * @param option    option to check
+     * @return  if the option was specified
+     */
+    public boolean has(String option) {
+
+        if (this.ns.get(option) instanceof Boolean)
+            return this.ns.getBoolean(option);
+        else
+            return this.ns.get(option) != null;
     }
 
-    protected abstract void prepareArgs();
-
+    /**
+     * Checking arguments needs (required, invalid, ...)
+     *
+     * @throws Exception
+     */
+    public abstract void checkArgs() throws Exception;
 }

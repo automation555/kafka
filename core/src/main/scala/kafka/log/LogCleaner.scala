@@ -432,8 +432,7 @@ object LogCleaner {
   def createNewCleanedSegment(log: Log, baseOffset: Long): LogSegment = {
     LogSegment.deleteIfExists(log.dir, baseOffset, fileSuffix = Log.CleanedFileSuffix)
     LogSegment.open(log.dir, baseOffset, log.config, Time.SYSTEM, fileAlreadyExists = false,
-      backupOnTruncateToZero = log.config.backupOnTruncateToZero, fileSuffix = Log.CleanedFileSuffix,
-      initFileSize = log.initFileSize, preallocate = log.config.preallocate)
+      fileSuffix = Log.CleanedFileSuffix, initFileSize = log.initFileSize, preallocate = log.config.preallocate)
   }
 
   /**
@@ -820,7 +819,8 @@ private[log] class Cleaner(val id: Int,
             logSize + segs.head.size <= maxSize &&
             indexSize + segs.head.offsetIndex.sizeInBytes <= maxIndexSize &&
             timeIndexSize + segs.head.timeIndex.sizeInBytes <= maxIndexSize &&
-            lastOffsetForFirstSegment(segs, firstUncleanableOffset) - group.last.baseOffset <= Int.MaxValue) {
+            (lastOffsetForFirstSegment(segs, firstUncleanableOffset) - group.last.baseOffset <= Int.MaxValue ||
+                logSize + segs.head.size == 0)) {
         group = segs.head :: group
         logSize += segs.head.size
         indexSize += segs.head.offsetIndex.sizeInBytes

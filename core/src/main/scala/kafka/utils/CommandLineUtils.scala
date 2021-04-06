@@ -28,17 +28,30 @@ object CommandLineUtils extends Logging {
   /**
    * Check that all the listed options are present
    */
-  def checkRequiredArgs(parser: OptionParser, options: OptionSet, required: OptionSpec[_]*): Unit = {
+  def checkRequiredArgs(parser: OptionParser, options: OptionSet, required: OptionSpec[_]*) {
     for (arg <- required) {
       if(!options.has(arg))
         printUsageAndDie(parser, "Missing required argument \"" + arg + "\"")
     }
   }
 
+   /**
+     * Check that at least one option is present
+     */
+   def checkRequiredArgNotMissing(parser: OptionParser, options: OptionSet, required: OptionSpec[_]*) {
+     var areAllArgsMissing = true
+     for (arg <- required) {
+       if (options.has(arg))
+         areAllArgsMissing = false
+     }
+     if (areAllArgsMissing)
+       printUsageAndDie(parser, s"Must specify at least one parameter in ${required.mkString(",")}")
+   }
+
   /**
    * Check that none of the listed options are present
    */
-  def checkInvalidArgs(parser: OptionParser, options: OptionSet, usedOption: OptionSpec[_], invalidOptions: Set[OptionSpec[_]]): Unit = {
+  def checkInvalidArgs(parser: OptionParser, options: OptionSet, usedOption: OptionSpec[_], invalidOptions: Set[OptionSpec[_]]) {
     if(options.has(usedOption)) {
       for(arg <- invalidOptions) {
         if(options.has(arg))

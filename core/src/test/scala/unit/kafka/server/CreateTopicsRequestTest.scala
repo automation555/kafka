@@ -17,41 +17,14 @@
 
 package kafka.server
 
-import java.util
-import java.util.Properties
-
-import kafka.security.authorizer.AclAuthorizer
 import kafka.utils._
-import org.apache.kafka.common.message.CreateTopicsRequestData
-import org.apache.kafka.common.message.CreateTopicsRequestData.CreatableTopicCollection
-import org.apache.kafka.common.protocol.ApiKeys
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.requests.CreateTopicsRequest
-import org.apache.kafka.common.security.auth.{AuthenticationContext, KafkaPrincipal, KafkaPrincipalBuilder}
-import org.apache.kafka.server.authorizer.{Action, AuthorizableRequestContext, AuthorizationResult}
 import org.junit.Assert._
-import org.junit.rules.TestName
-import org.junit.{Rule, Test}
-
-import scala.jdk.CollectionConverters._
+import org.junit.Test
 
 class CreateTopicsRequestTest extends AbstractCreateTopicsRequestTest {
-  override def brokerPropertyOverrides(properties: Properties): Unit = {
-    super.brokerPropertyOverrides(properties)
-    properties.put(KafkaConfig.AuthorizerClassNameProp, classOf[CreateTopicsTest.TestAuthorizer].getName)
-    properties.put(KafkaConfig.PrincipalBuilderClassProp,
-      if (testName.getMethodName.contains("NotAuthorized")) {
-        classOf[CreateTopicsTest.TestPrincipalBuilderReturningUnauthorized].getName
-      } else {
-        classOf[CreateTopicsTest.TestPrincipalBuilderReturningAuthorized].getName
-      })
-  }
-
-  private val _testName = new TestName
-  @Rule def testName = _testName
-
   @Test
-  def testValidCreateTopicsRequests(): Unit = {
+  def testValidCreateTopicsRequests() {
     // Generated assignments
     validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic1"))))
     validateValidCreateTopicsRequests(topicsReq(Seq(topicReq("topic2", replicationFactor = 3))))
@@ -70,26 +43,19 @@ class CreateTopicsRequestTest extends AbstractCreateTopicsRequestTest {
       topicReq("topic10", numPartitions = 5, replicationFactor = 2),
       topicReq("topic11", assignment = Map(0 -> List(0, 1), 1 -> List(1, 0), 2 -> List(1, 2)))),
       validateOnly = true))
-    // Defaults
-    validateValidCreateTopicsRequests(topicsReq(Seq(
-      topicReq("topic12", replicationFactor = -1, numPartitions = -1))))
-    validateValidCreateTopicsRequests(topicsReq(Seq(
-      topicReq("topic13", replicationFactor = 2, numPartitions = -1))))
-    validateValidCreateTopicsRequests(topicsReq(Seq(
-      topicReq("topic14", replicationFactor = -1, numPartitions = 2))))
   }
 
   @Test
-  def testErrorCreateTopicsRequests(): Unit = {
+  def testErrorCreateTopicsRequests() {
     val existingTopic = "existing-topic"
     createTopic(existingTopic, 1, 1)
     // Basic
     validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq(existingTopic))),
       Map(existingTopic -> error(Errors.TOPIC_ALREADY_EXISTS, Some("Topic 'existing-topic' already exists."))))
-    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-partitions", numPartitions = -2))),
+    validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-partitions", numPartitions = -1))),
       Map("error-partitions" -> error(Errors.INVALID_PARTITIONS)), checkErrorMessage = false)
     validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-replication",
-      replicationFactor = brokerCount + 1))),
+      replicationFactor = (numBrokers + 1).toShort))),
       Map("error-replication" -> error(Errors.INVALID_REPLICATION_FACTOR)), checkErrorMessage = false)
     validateErrorCreateTopicsRequests(topicsReq(Seq(topicReq("error-config",
       config=Map("not.a.property" -> "error")))),
@@ -104,8 +70,8 @@ class CreateTopicsRequestTest extends AbstractCreateTopicsRequestTest {
     // Partial
     validateErrorCreateTopicsRequests(topicsReq(Seq(
       topicReq(existingTopic),
-      topicReq("partial-partitions", numPartitions = -2),
-      topicReq("partial-replication", replicationFactor=brokerCount + 1),
+      topicReq("partial-partitions", numPartitions = -1),
+      topicReq("partial-replication", replicationFactor=numBrokers + 1),
       topicReq("partial-assignment", assignment=Map(0 -> List(0, 1), 1 -> List(0))),
       topicReq("partial-none"))),
       Map(
@@ -140,7 +106,7 @@ class CreateTopicsRequestTest extends AbstractCreateTopicsRequestTest {
   }
 
   @Test
-  def testInvalidCreateTopicsRequests(): Unit = {
+  def testInvalidCreateTopicsRequests() {
     // Partitions/ReplicationFactor and ReplicaAssignment
     validateErrorCreateTopicsRequests(topicsReq(Seq(
       topicReq("bad-args-topic", numPartitions = 10, replicationFactor = 3,
@@ -154,89 +120,9 @@ class CreateTopicsRequestTest extends AbstractCreateTopicsRequestTest {
   }
 
   @Test
-  def testNotController(): Unit = {
-    val req = topicsReq(Seq(topicReq("topic1"), topicReq("topic2")))
+  def testNotController() {
+    val req = topicsReq(Seq(topicReq("topic1")))
     val response = sendCreateTopicRequest(req, notControllerSocketServer)
-    assertEquals(2, response.errorCounts().get(Errors.NOT_CONTROLLER))
-  }
-
-  @Test
-  def testNotAuthorized(): Unit = { // "NotAuthorized" in method name signals authorizer to reject requests
-    val req = topicsReq(Seq(topicReq("topic1"), topicReq("topic2")))
-    val response = sendCreateTopicRequest(req)
-    assertEquals(2, response.errorCounts().get(Errors.TOPIC_AUTHORIZATION_FAILED))
-  }
-
-  @Test
-  def testNotControllerAndNotAuthorized(): Unit = { // "NotAuthorized" in method name signals authorizer to reject requests
-    // make sure we get the authorization error rather than the not-controller error when not authorized
-    // and the not-controller error only when authorized
-    val req = topicsReq(Seq(topicReq("topic1"), topicReq(CreateTopicsTest.alwaysAuthorizedTopic)))
-    val response = sendCreateTopicRequest(req, notControllerSocketServer)
-    assertEquals(1, response.errorCounts().get(Errors.TOPIC_AUTHORIZATION_FAILED))
     assertEquals(1, response.errorCounts().get(Errors.NOT_CONTROLLER))
-  }
-
-  @Test
-  def testCreateTopicsRequestVersions(): Unit = {
-    for (version <- ApiKeys.CREATE_TOPICS.oldestVersion to ApiKeys.CREATE_TOPICS.latestVersion) {
-      val topic = s"topic_$version"
-      val data = new CreateTopicsRequestData()
-      data.setTimeoutMs(10000)
-      data.setValidateOnly(false)
-      data.setTopics(new CreatableTopicCollection(List(
-        topicReq(topic, numPartitions = 1, replicationFactor = 1,
-          config = Map("min.insync.replicas" -> "2"))
-      ).asJava.iterator()))
-
-      val request = new CreateTopicsRequest.Builder(data).build(version.asInstanceOf[Short])
-      val response = sendCreateTopicRequest(request)
-
-      val topicResponse = response.data.topics.find(topic)
-      assertNotNull(topicResponse)
-      assertEquals(topic, topicResponse.name)
-      assertEquals(Errors.NONE.code, topicResponse.errorCode)
-      if (version >= 5) {
-        assertEquals(1, topicResponse.numPartitions)
-        assertEquals(1, topicResponse.replicationFactor)
-        val config = topicResponse.configs().asScala.find(_.name == "min.insync.replicas")
-        assertTrue(config.isDefined)
-        assertEquals("2", config.get.value)
-      } else {
-        assertEquals(-1, topicResponse.numPartitions)
-        assertEquals(-1, topicResponse.replicationFactor)
-        assertTrue(topicResponse.configs.isEmpty)
-      }
-    }
-  }
-}
-
-object CreateTopicsTest {
-  val UnauthorizedPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "Unauthorized")
-  val AuthorizedPrincipal = KafkaPrincipal.ANONYMOUS
-  val alwaysAuthorizedTopic = "always_authorized_topic"
-
-  class TestAuthorizer extends AclAuthorizer {
-    override def authorize(requestContext: AuthorizableRequestContext, actions: util.List[Action]): util.List[AuthorizationResult] = {
-      actions.asScala.map { action =>
-        if (requestContext.requestType == ApiKeys.CREATE_TOPICS.id && requestContext.principal == UnauthorizedPrincipal
-          && action.resourcePattern().name() != alwaysAuthorizedTopic) {
-          AuthorizationResult.DENIED
-        } else
-          AuthorizationResult.ALLOWED
-      }.asJava
-    }
-  }
-
-  class TestPrincipalBuilderReturningAuthorized extends KafkaPrincipalBuilder {
-    override def build(context: AuthenticationContext): KafkaPrincipal = {
-      AuthorizedPrincipal
-    }
-  }
-
-  class TestPrincipalBuilderReturningUnauthorized extends KafkaPrincipalBuilder {
-    override def build(context: AuthenticationContext): KafkaPrincipal = {
-      UnauthorizedPrincipal
-    }
   }
 }

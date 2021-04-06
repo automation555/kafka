@@ -30,8 +30,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiConsumer;
-import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -675,6 +673,12 @@ public class ConfigDef {
                         return value;
                     } else if (value instanceof String) {
                         return Short.parseShort(trimmed);
+                    } else if (value instanceof Integer || value instanceof Long) {
+                        Long longValue = ((Number) value).longValue();
+                        if (longValue > Short.MAX_VALUE || longValue < Short.MIN_VALUE) {
+                            throw new ConfigException(name, value, "Expected value to be a 16-bit integer (short), but it was > " + Short.MAX_VALUE);
+                        }
+                        return ((Number) value).shortValue();
                     } else {
                         throw new ConfigException(name, value, "Expected value to be a 16-bit integer (short), but it was a " + value.getClass().getName());
                     }
@@ -954,32 +958,6 @@ public class ConfigDef {
         }
     }
 
-    public static class LambdaValidator implements Validator {
-        BiConsumer<String, Object> ensureValid;
-        Supplier<String> toStringFunction;
-
-        private LambdaValidator(BiConsumer<String, Object> ensureValid,
-                                Supplier<String> toStringFunction) {
-            this.ensureValid = ensureValid;
-            this.toStringFunction = toStringFunction;
-        }
-
-        public static LambdaValidator with(BiConsumer<String, Object> ensureValid,
-                                           Supplier<String> toStringFunction) {
-            return new LambdaValidator(ensureValid, toStringFunction);
-        }
-
-        @Override
-        public void ensureValid(String name, Object value) {
-            ensureValid.accept(name, value);
-        }
-
-        @Override
-        public String toString() {
-            return toStringFunction.get();
-        }
-    }
-
     public static class CompositeValidator implements Validator {
         private final List<Validator> validators;
 
@@ -1106,10 +1084,6 @@ public class ConfigDef {
         public boolean hasDefault() {
             return !NO_DEFAULT_VALUE.equals(this.defaultValue);
         }
-
-        public Type type() {
-            return type;
-        }
     }
 
     protected List<String> headers() {
@@ -1188,6 +1162,7 @@ public class ConfigDef {
             // print column values
             for (String headerName : headers()) {
                 addColumnValue(b, getConfigValue(key, headerName));
+                b.append("</td>");
             }
             if (hasUpdateModes) {
                 String updateMode = dynamicUpdateModes.get(key.name);
@@ -1345,16 +1320,7 @@ public class ConfigDef {
      */
     private static Validator embeddedValidator(final String keyPrefix, final Validator base) {
         if (base == null) return null;
-        return new Validator() {
-            public void ensureValid(String name, Object value) {
-                base.ensureValid(name.substring(keyPrefix.length()), value);
-            }
-
-            @Override
-            public String toString() {
-                return base.toString();
-            }
-        };
+        return (name, value) -> base.ensureValid(name.substring(keyPrefix.length()), value);
     }
 
     /**

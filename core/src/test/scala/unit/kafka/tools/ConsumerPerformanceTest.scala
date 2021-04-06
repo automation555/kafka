@@ -20,9 +20,8 @@ package kafka.tools
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 
-import kafka.utils.Exit
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
-import org.junit.jupiter.api.Test
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class ConsumerPerformanceTest {
 
@@ -31,89 +30,24 @@ class ConsumerPerformanceTest {
 
   @Test
   def testDetailedHeaderMatchBody(): Unit = {
-    testHeaderMatchContent(detailed = true, 2,
-      () => ConsumerPerformance.printConsumerProgress(1, 1024 * 1024, 0, 1, 0, 0, 1, dateFormat, 1L))
+    testHeaderMatchContent(detailed = true, useOldConsumer = false, 2,
+      () => ConsumerPerformance.printNewConsumerProgress(1, 1024 * 1024, 0, 1, 0, 0, 1, dateFormat, 1L, false))
+    testHeaderMatchContent(detailed = true, useOldConsumer = true, 4,
+      () => ConsumerPerformance.printOldConsumerProgress(1, 1024 * 1024, 0, 1, 0, 0, 1,
+      dateFormat, false))
   }
 
   @Test
   def testNonDetailedHeaderMatchBody(): Unit = {
-    testHeaderMatchContent(detailed = false, 2, () => println(s"${dateFormat.format(System.currentTimeMillis)}, " +
+    testHeaderMatchContent(detailed = false, useOldConsumer = false, 2, () => println(s"${dateFormat.format(System.currentTimeMillis)}, " +
       s"${dateFormat.format(System.currentTimeMillis)}, 1.0, 1.0, 1, 1.0, 1, 1, 1.1, 1.1"))
+    testHeaderMatchContent(detailed = false, useOldConsumer = true, 4, () => println(s"${dateFormat.format(System.currentTimeMillis)}, " +
+      s"${dateFormat.format(System.currentTimeMillis)}, 1.0, 1.0, 1, 1.0"))
   }
 
-  @Test
-  def testConfigBrokerList(): Unit = {
-    //Given
-    val args: Array[String] = Array(
-      "--broker-list", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10"
-    )
-
-    //When
-    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
-
-    //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
-    assertEquals("test", config.topic)
-    assertEquals(10, config.numMessages)
-  }
-
-  @Test
-  def testConfigBootStrapServer(): Unit = {
-    //Given
-    val args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10",
-      "--print-metrics"
-    )
-
-    //When
-    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
-
-    //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
-    assertEquals("test", config.topic)
-    assertEquals(10, config.numMessages)
-  }
-
-  @Test
-  def testBrokerListOverride(): Unit = {
-    //Given
-    val args: Array[String] = Array(
-      "--broker-list", "localhost:9094",
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10"
-    )
-
-    //When
-    val config = new ConsumerPerformance.ConsumerPerfConfig(args)
-
-    //Then
-    assertEquals("localhost:9092", config.brokerHostsAndPorts)
-    assertEquals("test", config.topic)
-    assertEquals(10, config.numMessages)
-  }
-
-  @Test
-  def testConfigWithUnrecognizedOption(): Unit = {
-    Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
-    //Given
-    val args: Array[String] = Array(
-      "--broker-list", "localhost:9092",
-      "--topic", "test",
-      "--messages", "10",
-      "--new-consumer"
-    )
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsumerPerformance.ConsumerPerfConfig(args))
-    finally Exit.resetExitProcedure()
-  }
-
-  private def testHeaderMatchContent(detailed: Boolean, expectedOutputLineCount: Int, fun: () => Unit): Unit = {
+  private def testHeaderMatchContent(detailed: Boolean, useOldConsumer: Boolean, expectedOutputLineCount: Int, fun: () => Unit): Unit = {
     Console.withOut(outContent) {
-      ConsumerPerformance.printHeader(detailed)
+      ConsumerPerformance.printHeader(detailed, useOldConsumer)
       fun()
 
       val contents = outContent.toString.split("\n")

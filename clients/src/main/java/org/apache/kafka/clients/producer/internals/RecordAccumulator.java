@@ -29,14 +29,17 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.metrics.Measurable;
@@ -179,17 +182,19 @@ public final class RecordAccumulator {
      * @param headers the Headers for the record
      * @param callback The user-supplied callback to execute when the request is complete
      * @param maxTimeToBlock The maximum time in milliseconds to block for buffer memory to be available
-     * @param abortOnNewBatch A boolean that indicates returning before a new batch is created and 
+     * @param abortOnNewBatch A boolean that indicates returning before a new batch is created and
      *                        running the the partitioner's onNewBatch method before trying to append again
+     * @param nowMs The current time, in milliseconds
      */
     public RecordAppendResult append(TopicPartition tp,
                                      long timestamp,
-                                     ByteBuffer key,
-                                     ByteBuffer value,
+                                     byte[] key,
+                                     byte[] value,
                                      Header[] headers,
                                      Callback callback,
                                      long maxTimeToBlock,
-                                     boolean abortOnNewBatch) throws InterruptedException {
+                                     boolean abortOnNewBatch,
+                                     long nowMs) throws InterruptedException {
         // We keep track of the number of appending thread to make sure we do not miss batches in
         // abortIncompleteBatches().
         appendsInProgress.incrementAndGet();
@@ -201,7 +206,7 @@ public final class RecordAccumulator {
             synchronized (dq) {
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
                 if (appendResult != null)
                     return appendResult;
             }
@@ -211,26 +216,29 @@ public final class RecordAccumulator {
                 // Return a result that will cause another call to append.
                 return new RecordAppendResult(null, false, false, true);
             }
-            
+
             byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
             int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
             buffer = free.allocate(size, maxTimeToBlock);
+
+            // Update the current time in case the buffer allocation blocked above.
+            nowMs = time.milliseconds();
             synchronized (dq) {
                 // Need to check if producer is closed again after grabbing the dequeue lock.
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
 
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq, nowMs);
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     return appendResult;
                 }
 
                 MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
-                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, time.milliseconds());
+                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, nowMs);
                 FutureRecordMetadata future = Objects.requireNonNull(batch.tryAppend(timestamp, key, value, headers,
-                        callback, time.milliseconds()));
+                        callback, nowMs));
 
                 dq.addLast(batch);
                 incomplete.add(batch);
@@ -262,11 +270,11 @@ public final class RecordAccumulator {
      *  and memory records built) in one of the following cases (whichever comes first): right before send,
      *  if it is expired, or when the producer is closed.
      */
-    private RecordAppendResult tryAppend(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers,
-                                         Callback callback, Deque<ProducerBatch> deque) {
+    private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
+                                         Callback callback, Deque<ProducerBatch> deque, long nowMs) {
         ProducerBatch last = deque.peekLast();
         if (last != null) {
-            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, time.milliseconds());
+            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, nowMs);
             if (future == null)
                 last.closeForRecordAppends();
             else
@@ -286,7 +294,7 @@ public final class RecordAccumulator {
             muted.remove(tp);
             return false;
         }
-        
+
         return true;
     }
 
@@ -703,12 +711,25 @@ public final class RecordAccumulator {
     }
 
     /**
-     * Mark all partitions as ready to send and block until the send is complete
+     * Mark all partitions as ready to send and block until the send is complete or time expires
      */
-    public void awaitFlushCompletion() throws InterruptedException {
+    public void awaitFlushCompletion(long timeoutMs) throws InterruptedException {
         try {
-            for (ProducerBatch batch : this.incomplete.copyAll())
-                batch.produceFuture.await();
+            Long expireMs = System.currentTimeMillis() + timeoutMs;
+            int numBatchesFlushed = 0;
+            for (ProducerBatch batch : this.incomplete.copyAll()) {
+                Long currentMs = System.currentTimeMillis();
+                if (currentMs > expireMs) {
+                    throw new TimeoutException(String.format("Failed to flush accumulated records within %d milliseconds,"
+                        + " successfully completed %d batches.", timeoutMs, numBatchesFlushed));
+                }
+                boolean completed = batch.produceFuture.await(Math.max(expireMs - currentMs, 0), TimeUnit.MILLISECONDS);
+                if (!completed) {
+                    throw new TimeoutException(String.format("Failed to flush accumulated records within %d milliseconds,"
+                        + " successfully completed %d batches.", timeoutMs, numBatchesFlushed));
+                }
+                numBatchesFlushed++;
+            }
         } finally {
             this.flushesInProgress.decrementAndGet();
         }
@@ -796,6 +817,7 @@ public final class RecordAccumulator {
      */
     public void close() {
         this.closed = true;
+        this.free.close();
     }
 
     /*

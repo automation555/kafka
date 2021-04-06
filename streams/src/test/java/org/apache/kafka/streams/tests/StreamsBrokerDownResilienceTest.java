@@ -17,21 +17,21 @@
 
 package org.apache.kafka.streams.tests;
 
+import java.time.Duration;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
-import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.ForeachAction;
 
 import java.io.IOException;
-import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -47,37 +47,27 @@ public class StreamsBrokerDownResilienceTest {
     private static final String SINK_TOPIC = "streamsResilienceSink";
 
     public static void main(final String[] args) throws IOException {
-        if (args.length < 2) {
-            System.err.println("StreamsBrokerDownResilienceTest are expecting two parameters: propFile, additionalConfigs; but only see " + args.length + " parameter");
-            Exit.exit(1);
+        if (args.length < 1) {
+            System.err.println("StreamsBrokerDownResilienceTest requires one argument (properties-file) but none provided.");
+            System.exit(1);
         }
 
-        System.out.println("StreamsTest instance started");
+        System.out.println("StreamsTest instance started with arguments: " + Arrays.toString(args));
 
         final String propFileName = args[0];
-        final String additionalConfigs = args[1];
 
         final Properties streamsProperties = Utils.loadProps(propFileName);
         final String kafka = streamsProperties.getProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG);
 
         if (kafka == null) {
             System.err.println("No bootstrap kafka servers specified in " + StreamsConfig.BOOTSTRAP_SERVERS_CONFIG);
-            Exit.exit(1);
+            System.exit(1);
         }
 
         streamsProperties.put(StreamsConfig.APPLICATION_ID_CONFIG, "kafka-streams-resilience");
         streamsProperties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         streamsProperties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         streamsProperties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
-
-
-        // it is expected that max.poll.interval, retries, request.timeout and max.block.ms set
-        // streams_broker_down_resilience_test and passed as args
-        if (additionalConfigs != null && !additionalConfigs.equalsIgnoreCase("none")) {
-            final Map<String, String> updated = updatedConfigs(additionalConfigs);
-            System.out.println("Updating configs with " + updated);
-            streamsProperties.putAll(updated);
-        }
 
         if (!confirmCorrectConfigs(streamsProperties)) {
             System.err.println(String.format("ERROR: Did not have all required configs expected  to contain %s %s %s %s",
@@ -86,7 +76,7 @@ public class StreamsBrokerDownResilienceTest {
                                              StreamsConfig.producerPrefix(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG),
                                              StreamsConfig.producerPrefix(ProducerConfig.MAX_BLOCK_MS_CONFIG)));
 
-            Exit.exit(1);
+            System.exit(1);
         }
 
         final StreamsBuilder builder = new StreamsBuilder();
@@ -106,10 +96,10 @@ public class StreamsBrokerDownResilienceTest {
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), streamsProperties);
 
-        streams.setUncaughtExceptionHandler(e -> {
+        streams.setUncaughtExceptionHandler((t, e) -> {
                 System.err.println("FATAL: An unexpected exception " + e);
                 System.err.flush();
-                return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
+                streams.close(Duration.ofSeconds(30));
             }
         );
 

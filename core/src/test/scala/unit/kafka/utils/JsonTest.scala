@@ -37,7 +37,7 @@ object JsonTest {
 class JsonTest {
 
   @Test
-  def testJsonParse(): Unit = {
+  def testJsonParse() {
     val jnf = JsonNodeFactory.instance
 
     assertEquals(Json.parseFull("{}"), Some(JsonValue(new ObjectNode(jnf))))
@@ -59,14 +59,10 @@ class JsonTest {
     val encoded = Json.legacyEncodeAsString(map)
     val decoded = Json.parseFull(encoded)
     assertEquals(Json.parseFull("""{"foo1":"bar1\\,bar2", "foo2":"\\bar"}"""), decoded)
-
-    // Test strings with non-escaped backslash and quotes. This is to verify that ACLs
-    // containing non-escaped chars persisted using 1.0 can be parsed.
-    assertEquals(decoded, Json.parseFull("""{"foo1":"bar1\,bar2", "foo2":"\bar"}"""))
   }
 
   @Test
-  def testLegacyEncodeAsString(): Unit = {
+  def testLegacyEncodeAsString() {
     assertEquals("null", Json.legacyEncodeAsString(null))
     assertEquals("1", Json.legacyEncodeAsString(1))
     assertEquals("1", Json.legacyEncodeAsString(1L))
@@ -88,7 +84,7 @@ class JsonTest {
   }
 
   @Test
-  def testEncodeAsString(): Unit = {
+  def testEncodeAsString() {
     assertEquals("null", Json.encodeAsString(null))
     assertEquals("1", Json.encodeAsString(1))
     assertEquals("1", Json.encodeAsString(1L))
@@ -111,7 +107,7 @@ class JsonTest {
   }
 
   @Test
-  def testEncodeAsBytes(): Unit = {
+  def testEncodeAsBytes() {
     assertEquals("null", new String(Json.encodeAsBytes(null), StandardCharsets.UTF_8))
     assertEquals("1", new String(Json.encodeAsBytes(1), StandardCharsets.UTF_8))
     assertEquals("1", new String(Json.encodeAsBytes(1L), StandardCharsets.UTF_8))

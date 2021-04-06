@@ -29,7 +29,7 @@ import org.apache.kafka.common.config.{AbstractConfig, ConfigDef, TopicConfig}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.utils.Utils
 
-import scala.collection.{Map, mutable}
+import scala.collection.mutable
 import org.apache.kafka.common.config.ConfigDef.{ConfigKey, ValidList, Validator}
 
 object Defaults {
@@ -58,6 +58,7 @@ object Defaults {
   val CompressionType = kafka.server.Defaults.CompressionType
   val PreAllocateEnable = kafka.server.Defaults.LogPreAllocateEnable
   val MessageFormatVersion = kafka.server.Defaults.LogMessageFormatVersion
+  val ValidMessageTimestampTypes = kafka.server.Defaults.ValidLogMessageTimestampTypes
   val MessageTimestampType = kafka.server.Defaults.LogMessageTimestampType
   val MessageTimestampDifferenceMaxMs = kafka.server.Defaults.LogMessageTimestampDifferenceMaxMs
   val LeaderReplicationThrottledReplicas = Collections.emptyList[String]()
@@ -65,8 +66,7 @@ object Defaults {
   val MaxIdMapSnapshots = kafka.server.Defaults.MaxIdMapSnapshots
 }
 
-case class LogConfig(props: java.util.Map[_, _], overriddenConfigs: Set[String] = Set.empty)
-  extends AbstractConfig(LogConfig.configDef, props, false) {
+case class LogConfig(props: java.util.Map[_, _]) extends AbstractConfig(LogConfig.configDef, props, false) {
   /**
    * Important note: Any configuration parameter that is passed along from KafkaConfig to LogConfig
    * should also go in [[kafka.server.KafkaServer.copyKafkaConfigToLog]].
@@ -103,7 +103,7 @@ case class LogConfig(props: java.util.Map[_, _], overriddenConfigs: Set[String] 
 
 object LogConfig {
 
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     println(configDef.toHtmlTable)
   }
 
@@ -214,7 +214,7 @@ object LogConfig {
     new LogConfigDef()
       .define(SegmentBytesProp, INT, Defaults.SegmentSize, atLeast(Message.MinMessageOverhead), MEDIUM,
         SegmentSizeDoc, KafkaConfig.LogSegmentBytesProp)
-      .define(SegmentMsProp, LONG, Defaults.SegmentMs, atLeast(1), MEDIUM, SegmentMsDoc,
+      .define(SegmentMsProp, LONG, Defaults.SegmentMs, atLeast(0), MEDIUM, SegmentMsDoc,
         KafkaConfig.LogRollTimeMillisProp)
       .define(SegmentJitterMsProp, LONG, Defaults.SegmentJitterMs, atLeast(0), MEDIUM, SegmentJitterMsDoc,
         KafkaConfig.LogRollTimeJitterMillisProp)
@@ -254,7 +254,7 @@ object LogConfig {
         KafkaConfig.LogPreAllocateProp)
       .define(MessageFormatVersionProp, STRING, Defaults.MessageFormatVersion, MEDIUM, MessageFormatVersionDoc,
         KafkaConfig.LogMessageFormatVersionProp)
-      .define(MessageTimestampTypeProp, STRING, Defaults.MessageTimestampType, MEDIUM, MessageTimestampTypeDoc,
+      .define(MessageTimestampTypeProp, STRING, Defaults.MessageTimestampType, Defaults.ValidMessageTimestampTypes, MEDIUM, MessageTimestampTypeDoc,
         KafkaConfig.LogMessageTimestampTypeProp)
       .define(MessageTimestampDifferenceMaxMsProp, LONG, Defaults.MessageTimestampDifferenceMaxMs,
         atLeast(0), MEDIUM, MessageTimestampDifferenceMaxMsDoc, KafkaConfig.LogMessageTimestampDifferenceMaxMsProp)
@@ -277,14 +277,13 @@ object LogConfig {
     val props = new Properties()
     defaults.asScala.foreach { case (k, v) => props.put(k, v) }
     props ++= overrides
-    val overriddenKeys = overrides.keySet.asScala.map(_.asInstanceOf[String]).toSet
-    new LogConfig(props, overriddenKeys)
+    LogConfig(props)
   }
 
   /**
    * Check that property names are valid
    */
-  def validateNames(props: Properties): Unit = {
+  def validateNames(props: Properties) {
     val names = configNames
     for(name <- props.asScala.keys)
       if (!names.contains(name))
@@ -294,38 +293,9 @@ object LogConfig {
   /**
    * Check that the given properties contain only valid log config names and that all values can be parsed and are valid
    */
-  def validate(props: Properties): Unit = {
+  def validate(props: Properties) {
     validateNames(props)
     configDef.parse(props)
   }
-
-  /**
-   * Map topic config to the broker config with highest priority. Some of these have additional synonyms
-   * that can be obtained using [[kafka.server.DynamicBrokerConfig#brokerConfigSynonyms]]
-   */
-  val TopicConfigSynonyms = Map(
-    SegmentBytesProp -> KafkaConfig.LogSegmentBytesProp,
-    SegmentMsProp -> KafkaConfig.LogRollTimeMillisProp,
-    SegmentJitterMsProp -> KafkaConfig.LogRollTimeJitterMillisProp,
-    SegmentIndexBytesProp -> KafkaConfig.LogIndexSizeMaxBytesProp,
-    FlushMessagesProp -> KafkaConfig.LogFlushIntervalMessagesProp,
-    FlushMsProp -> KafkaConfig.LogFlushIntervalMsProp,
-    RetentionBytesProp -> KafkaConfig.LogRetentionBytesProp,
-    RetentionMsProp -> KafkaConfig.LogRetentionTimeMillisProp,
-    MaxMessageBytesProp -> KafkaConfig.MessageMaxBytesProp,
-    IndexIntervalBytesProp -> KafkaConfig.LogIndexIntervalBytesProp,
-    DeleteRetentionMsProp -> KafkaConfig.LogCleanerDeleteRetentionMsProp,
-    MinCompactionLagMsProp -> KafkaConfig.LogCleanerMinCompactionLagMsProp,
-    FileDeleteDelayMsProp -> KafkaConfig.LogDeleteDelayMsProp,
-    MinCleanableDirtyRatioProp -> KafkaConfig.LogCleanerMinCleanRatioProp,
-    CleanupPolicyProp -> KafkaConfig.LogCleanupPolicyProp,
-    UncleanLeaderElectionEnableProp -> KafkaConfig.UncleanLeaderElectionEnableProp,
-    MinInSyncReplicasProp -> KafkaConfig.MinInSyncReplicasProp,
-    CompressionTypeProp -> KafkaConfig.CompressionTypeProp,
-    PreAllocateEnableProp -> KafkaConfig.LogPreAllocateProp,
-    MessageFormatVersionProp -> KafkaConfig.LogMessageFormatVersionProp,
-    MessageTimestampTypeProp -> KafkaConfig.LogMessageTimestampTypeProp,
-    MessageTimestampDifferenceMaxMsProp -> KafkaConfig.LogMessageTimestampDifferenceMaxMsProp
-  )
 
 }

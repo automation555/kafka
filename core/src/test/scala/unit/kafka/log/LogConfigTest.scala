@@ -22,7 +22,6 @@ import java.util.Properties
 import kafka.server.KafkaConfig
 import kafka.server.KafkaServer
 import kafka.utils.TestUtils
-import kafka.utils.Os
 import org.apache.kafka.common.config.ConfigException
 import org.junit.{Assert, Test}
 import org.junit.Assert._
@@ -38,22 +37,11 @@ class LogConfigTest {
     kafkaProps.put(KafkaConfig.LogRollTimeJitterHoursProp, "2")
     kafkaProps.put(KafkaConfig.LogRetentionTimeHoursProp, "2")
 
-    var kafkaConfig = KafkaConfig.fromProps(kafkaProps)
-    var logProps = KafkaServer.copyKafkaConfigToLog(kafkaConfig)
+    val kafkaConfig = KafkaConfig.fromProps(kafkaProps)
+    val logProps = KafkaServer.copyKafkaConfigToLog(kafkaConfig)
     assertEquals(2 * millisInHour, logProps.get(LogConfig.SegmentMsProp))
     assertEquals(2 * millisInHour, logProps.get(LogConfig.SegmentJitterMsProp))
     assertEquals(2 * millisInHour, logProps.get(LogConfig.RetentionMsProp))
-    assertEquals(!Os.isWindows, logProps.get(LogConfig.MemoryMappedFileUpdatesEnabledProp).asInstanceOf[Boolean])
-    
-    kafkaProps.put(KafkaConfig.MemoryMappedFileUpdatesEnabledProp, "true")
-    kafkaConfig = KafkaConfig.fromProps(kafkaProps)
-    logProps = KafkaServer.copyKafkaConfigToLog(kafkaConfig)
-    assertTrue(logProps.get(LogConfig.MemoryMappedFileUpdatesEnabledProp).asInstanceOf[Boolean])
-    
-    kafkaProps.put(KafkaConfig.MemoryMappedFileUpdatesEnabledProp, "false")
-    kafkaConfig = KafkaConfig.fromProps(kafkaProps)
-    logProps = KafkaServer.copyKafkaConfigToLog(kafkaConfig)
-    assertFalse(logProps.get(LogConfig.MemoryMappedFileUpdatesEnabledProp).asInstanceOf[Boolean])
   }
 
   @Test
@@ -75,6 +63,21 @@ class LogConfigTest {
       case LogConfig.MessageFormatVersionProp => assertPropertyInvalid(name, "")
       case positiveIntProperty => assertPropertyInvalid(name, "not_a_number", "-1")
     })
+  }
+
+  @Test
+  def testMaxIndexSize() {
+    val kafkaProps = TestUtils.createBrokerConfig(nodeId = 0, zkConnect = "")
+    kafkaProps.put(LogConfig.SegmentBytesProp, "1024")
+    kafkaProps.put(LogConfig.IndexIntervalBytesProp, "256")
+
+    kafkaProps.put(LogConfig.SegmentIndexBytesProp, "4096")
+    val logConfig1 = new LogConfig(kafkaProps)
+    assertEquals("The max offset index size should be 40.", logConfig1.maxIndexSize, 40)
+
+    kafkaProps.put(LogConfig.SegmentIndexBytesProp, "16")
+    val logConfig2 = new LogConfig(kafkaProps)
+    assertEquals("The max offset index size should be 16.", logConfig2.maxIndexSize, 16)
   }
 
   private def assertPropertyInvalid(name: String, values: AnyRef*) {

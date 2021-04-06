@@ -60,18 +60,18 @@ class ProducerBounceTest extends KafkaServerTestHarness {
   private val topic1 = "topic-1"
 
   /**
-   * With replication, producer should able to find new leader after it detects broker failure
+   * With replication, producer should able able to find new leader after it detects broker failure
    */
   @Ignore // To be re-enabled once we can make it less flaky (KAFKA-2837)
   @Test
-  def testBrokerFailure(): Unit = {
+  def testBrokerFailure() {
     val numPartitions = 3
     val topicConfig = new Properties()
     topicConfig.put(KafkaConfig.MinInSyncReplicasProp, 2.toString)
-    createTopic(topic1, numPartitions, numServers, topicConfig)
+    TestUtils.createTopic(zkUtils, topic1, numPartitions, numServers, servers, topicConfig)
 
     val scheduler = new ProducerScheduler()
-    scheduler.start()
+    scheduler.start
 
     // rolling bounce brokers
 
@@ -89,10 +89,10 @@ class ProducerBounceTest extends KafkaServerTestHarness {
       assertFalse(scheduler.failed)
 
       // Make sure the leader still exists after bouncing brokers
-      (0 until numPartitions).foreach(partition => TestUtils.waitUntilLeaderIsElectedOrChanged(zkClient, topic1, partition))
+      (0 until numPartitions).foreach(partition => TestUtils.waitUntilLeaderIsElectedOrChanged(zkUtils, topic1, partition))
     }
 
-    scheduler.shutdown()
+    scheduler.shutdown
 
     // Make sure the producer do not see any exception
     // when draining the left messages on shutdown
@@ -122,7 +122,7 @@ class ProducerBounceTest extends KafkaServerTestHarness {
 
     val producerConfig = new Properties()
     producerConfig.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true")
-    producerConfig.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5")
+    producerConfig.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "1")
     val producerConfigWithCompression = new Properties()
     producerConfigWithCompression ++= producerConfig
     producerConfigWithCompression.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4")
@@ -138,9 +138,10 @@ class ProducerBounceTest extends KafkaServerTestHarness {
       val responses = new ArrayBuffer[IndexedSeq[Future[RecordMetadata]]]()
       for (producer <- producers) {
         val response =
-          for (i <- sent+1 to sent+numRecords)
-            yield producer.send(new ProducerRecord[Array[Byte],Array[Byte]](topic1, null, null, ((producerId + 1) * i).toString.getBytes),
-              new ErrorLoggingCallback(topic1, null, null, true))
+          for (i <- sent+1 to sent+numRecords) yield {
+            val record = new ProducerRecord[Array[Byte],Array[Byte]](topic1, null, null, ((producerId + 1) * i).toString.getBytes)
+            producer.send(record, new ErrorLoggingCallback(record))
+          }
         responses.append(response)
         producerId += 1
       }
@@ -160,7 +161,7 @@ class ProducerBounceTest extends KafkaServerTestHarness {
       }
     }
 
-    override def shutdown(): Unit ={
+    override def shutdown(){
       super.shutdown()
       for (producer <- producers) {
         producer.close()

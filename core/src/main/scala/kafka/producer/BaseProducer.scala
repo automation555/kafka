@@ -19,19 +19,21 @@ package kafka.producer
 
 import java.util.Properties
 
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
+
 // A base producer used whenever we need to have options for both old and new producers;
 // this class will be removed once we fully rolled out 0.9
 @deprecated("This trait has been deprecated and will be removed in a future release. " +
             "Please use org.apache.kafka.clients.producer.KafkaProducer instead.", "0.10.0.0")
 trait BaseProducer {
-  def send(topic: String, key: Array[Byte], value: Array[Byte]): Unit
-  def close(): Unit
+  def send(topic: String, key: Array[Byte], value: Array[Byte])
+  def send(record: ProducerRecord[Array[Byte], Array[Byte]])
+  def close()
 }
 
 @deprecated("This class has been deprecated and will be removed in a future release. " +
             "Please use org.apache.kafka.clients.producer.KafkaProducer instead.", "0.10.0.0")
 class NewShinyProducer(producerProps: Properties) extends BaseProducer {
-  import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
   import org.apache.kafka.clients.producer.internals.ErrorLoggingCallback
 
   // decide whether to send synchronously based on producer properties
@@ -39,17 +41,22 @@ class NewShinyProducer(producerProps: Properties) extends BaseProducer {
 
   val producer = new KafkaProducer[Array[Byte],Array[Byte]](producerProps)
 
-  override def send(topic: String, key: Array[Byte], value: Array[Byte]): Unit = {
+  override def send(topic: String, key: Array[Byte], value: Array[Byte]) {
     val record = new ProducerRecord[Array[Byte],Array[Byte]](topic, key, value)
-    if(sync) {
-      this.producer.send(record).get()
-    } else {
-      this.producer.send(record,
-        new ErrorLoggingCallback(topic, key, value, false))
+    this.send(record)
+  }
+
+  override def send(record: ProducerRecord[Array[Byte], Array[Byte]]) {
+    if (record != null) {
+      if (sync) {
+        this.producer.send(record).get()
+      } else {
+        this.producer.send(record, new ErrorLoggingCallback(record))
+      }
     }
   }
 
-  override def close(): Unit = {
+  override def close() {
     this.producer.close()
   }
 }
@@ -63,11 +70,17 @@ class OldProducer(producerProps: Properties) extends BaseProducer {
     producerProps.setProperty("partitioner.class", classOf[kafka.producer.ByteArrayPartitioner].getName)
   val producer = new kafka.producer.Producer[Array[Byte], Array[Byte]](new ProducerConfig(producerProps))
 
-  override def send(topic: String, key: Array[Byte], value: Array[Byte]): Unit = {
+  override def send(topic: String, key: Array[Byte], value: Array[Byte]) {
     this.producer.send(new KeyedMessage[Array[Byte], Array[Byte]](topic, key, value))
   }
 
-  override def close(): Unit = {
+  override def send(record: ProducerRecord[Array[Byte], Array[Byte]]) {
+    if (record != null) {
+      this.send(record.topic(), record.key(), record.value())
+    }
+  }
+
+  override def close() {
     this.producer.close()
   }
 }

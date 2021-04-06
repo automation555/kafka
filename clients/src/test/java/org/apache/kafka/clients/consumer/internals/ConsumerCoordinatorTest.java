@@ -23,7 +23,6 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetCommitCallback;
-import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.clients.consumer.RetriableCommitFailedException;
@@ -52,7 +51,6 @@ import org.apache.kafka.common.requests.OffsetCommitResponse;
 import org.apache.kafka.common.requests.OffsetFetchResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
 import org.apache.kafka.common.requests.SyncGroupResponse;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
@@ -60,7 +58,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -125,7 +122,7 @@ public class ConsumerCoordinatorTest {
         this.metadata = new Metadata(0, Long.MAX_VALUE, true);
         this.metadata.update(cluster, Collections.<String>emptySet(), time.milliseconds());
         this.client = new MockClient(time, metadata);
-        this.consumerClient = new ConsumerNetworkClient(new LogContext(), client, metadata, time, 100, 1000);
+        this.consumerClient = new ConsumerNetworkClient(client, metadata, time, 100, 1000);
         this.metrics = new Metrics(time);
         this.rebalanceListener = new MockRebalanceListener();
         this.mockOffsetCommitCallback = new MockCommitCallback();
@@ -158,10 +155,16 @@ public class ConsumerCoordinatorTest {
         assertTrue(future.succeeded());
     }
 
-    @Test(expected = GroupAuthorizationException.class)
+    @Test
     public void testGroupDescribeUnauthorized() {
-        client.prepareResponse(groupCoordinatorResponse(node, Errors.GROUP_AUTHORIZATION_FAILED));
-        coordinator.ensureCoordinatorReady();
+        try {
+            client.prepareResponse(groupCoordinatorResponse(node, Errors.GROUP_AUTHORIZATION_FAILED));
+            coordinator.ensureCoordinatorReady();
+        } catch (GroupAuthorizationException e) {
+            Throwable[] suppressed = e.getSuppressed();
+            assertTrue(suppressed != null && suppressed.length == 1);
+            assertEquals(KafkaException.class, e.getSuppressed()[0].getClass());
+        }
     }
 
     @Test(expected = GroupAuthorizationException.class)
@@ -624,7 +627,7 @@ public class ConsumerCoordinatorTest {
 
         // join initially, but let coordinator rebalance on sync
         client.prepareResponse(joinGroupFollowerResponse(1, consumerId, "leader", Errors.NONE));
-        client.prepareResponse(syncGroupResponse(Collections.<TopicPartition>emptyList(), Errors.UNKNOWN_SERVER_ERROR));
+        client.prepareResponse(syncGroupResponse(Collections.<TopicPartition>emptyList(), Errors.UNKNOWN));
         coordinator.joinGroupIfNeeded();
     }
 
@@ -954,37 +957,6 @@ public class ConsumerCoordinatorTest {
     }
 
     @Test
-    public void testCoordinatorDisconnectAfterNotCoordinatorError() {
-        testInFlightRequestsFailedAfterCoordinatorMarkedDead(Errors.NOT_COORDINATOR);
-    }
-
-    @Test
-    public void testCoordinatorDisconnectAfterCoordinatorNotAvailableError() {
-        testInFlightRequestsFailedAfterCoordinatorMarkedDead(Errors.COORDINATOR_NOT_AVAILABLE);
-    }
-
-    private void testInFlightRequestsFailedAfterCoordinatorMarkedDead(Errors error) {
-        client.prepareResponse(groupCoordinatorResponse(node, Errors.NONE));
-        coordinator.ensureCoordinatorReady();
-
-        // Send two async commits and fail the first one with an error.
-        // This should cause a coordinator disconnect which will cancel the second request.
-
-        MockCommitCallback firstCommitCallback = new MockCommitCallback();
-        MockCommitCallback secondCommitCallback = new MockCommitCallback();
-        coordinator.commitOffsetsAsync(Collections.singletonMap(t1p, new OffsetAndMetadata(100L)), firstCommitCallback);
-        coordinator.commitOffsetsAsync(Collections.singletonMap(t1p, new OffsetAndMetadata(100L)), secondCommitCallback);
-
-        client.respond(offsetCommitResponse(Collections.singletonMap(t1p, error)));
-        consumerClient.pollNoWakeup();
-        coordinator.invokeCompletedOffsetCommitCallbacks();
-
-        assertTrue(coordinator.coordinatorUnknown());
-        assertTrue(firstCommitCallback.exception instanceof RetriableCommitFailedException);
-        assertTrue(secondCommitCallback.exception instanceof RetriableCommitFailedException);
-    }
-
-    @Test
     public void testAutoCommitDynamicAssignment() {
         final String consumerId = "consumer";
 
@@ -1246,42 +1218,6 @@ public class ConsumerCoordinatorTest {
         coordinator.commitOffsetsSync(Collections.singletonMap(t1p, new OffsetAndMetadata(100L)), Long.MAX_VALUE);
     }
 
-    @Test
-    public void testAsyncCommitCallbacksInvokedPriorToSyncCommitCompletion() throws Exception {
-        client.prepareResponse(groupCoordinatorResponse(node, Errors.NONE));
-        coordinator.ensureCoordinatorReady();
-
-        final List<OffsetAndMetadata> committedOffsets = Collections.synchronizedList(new ArrayList<OffsetAndMetadata>());
-        final OffsetAndMetadata firstOffset = new OffsetAndMetadata(0L);
-        final OffsetAndMetadata secondOffset = new OffsetAndMetadata(1L);
-
-        coordinator.commitOffsetsAsync(Collections.singletonMap(t1p, firstOffset), new OffsetCommitCallback() {
-            @Override
-            public void onComplete(Map<TopicPartition, OffsetAndMetadata> offsets, Exception exception) {
-                committedOffsets.add(firstOffset);
-            }
-        });
-
-        // Do a synchronous commit in the background so that we can send both responses at the same time
-        Thread thread = new Thread() {
-            @Override
-            public void run() {
-                coordinator.commitOffsetsSync(Collections.singletonMap(t1p, secondOffset), 10000);
-                committedOffsets.add(secondOffset);
-            }
-        };
-
-        thread.start();
-
-        client.waitForRequests(2, 5000);
-        client.respond(offsetCommitResponse(Collections.singletonMap(t1p, Errors.NONE)));
-        client.respond(offsetCommitResponse(Collections.singletonMap(t1p, Errors.NONE)));
-
-        thread.join();
-
-        assertEquals(Arrays.asList(firstOffset, secondOffset), committedOffsets);
-    }
-
     @Test(expected = KafkaException.class)
     public void testCommitUnknownTopicOrPartition() {
         client.prepareResponse(groupCoordinatorResponse(node, Errors.NONE));
@@ -1337,11 +1273,11 @@ public class ConsumerCoordinatorTest {
         coordinator.ensureCoordinatorReady();
 
         // sync commit with invalid partitions should throw if we have no callback
-        client.prepareResponse(offsetCommitResponse(Collections.singletonMap(t1p, Errors.UNKNOWN_SERVER_ERROR)), false);
+        client.prepareResponse(offsetCommitResponse(Collections.singletonMap(t1p, Errors.UNKNOWN)), false);
         coordinator.commitOffsetsSync(Collections.singletonMap(t1p, new OffsetAndMetadata(100L)), Long.MAX_VALUE);
     }
 
-    @Test(expected = OffsetOutOfRangeException.class)
+    @Test(expected = IllegalArgumentException.class)
     public void testCommitSyncNegativeOffset() {
         client.prepareResponse(groupCoordinatorResponse(node, Errors.NONE));
         coordinator.commitOffsetsSync(Collections.singletonMap(t1p, new OffsetAndMetadata(-1L)), Long.MAX_VALUE);
@@ -1354,14 +1290,7 @@ public class ConsumerCoordinatorTest {
         coordinator.commitOffsetsAsync(Collections.singletonMap(t1p, new OffsetAndMetadata(-1L)), mockOffsetCommitCallback);
         coordinator.invokeCompletedOffsetCommitCallbacks();
         assertEquals(invokedBeforeTest + 1, mockOffsetCommitCallback.invoked);
-        assertTrue(mockOffsetCommitCallback.exception instanceof OffsetOutOfRangeException);
-    }
-
-    @Test
-    public void testCommitOffsetSyncWithoutFutureGetsCompleted() {
-        client.prepareResponse(groupCoordinatorResponse(node, Errors.NONE));
-        coordinator.ensureCoordinatorReady();
-        assertFalse(coordinator.commitOffsetsSync(Collections.singletonMap(t1p, new OffsetAndMetadata(100L)), 0));
+        assertTrue(mockOffsetCommitCallback.exception instanceof IllegalArgumentException);
     }
 
     @Test
@@ -1666,7 +1595,6 @@ public class ConsumerCoordinatorTest {
                                                  final boolean autoCommitEnabled,
                                                  final boolean leaveGroup) {
         return new ConsumerCoordinator(
-                new LogContext(),
                 consumerClient,
                 groupId,
                 rebalanceTimeoutMs,

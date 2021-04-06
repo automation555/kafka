@@ -19,14 +19,16 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, Future, TimeUnit}
 
 import kafka.admin.AdminClient.DeleteRecordsResult
-import kafka.common.KafkaException
+import kafka.common.{KafkaException => OldKafkaException}
 import kafka.coordinator.group.GroupOverview
 import kafka.utils.Logging
+
 import org.apache.kafka.clients._
 import org.apache.kafka.clients.consumer.internals.{ConsumerNetworkClient, ConsumerProtocol, RequestFuture, RequestFutureAdapter}
+import org.apache.kafka.common.{KafkaException => NewKafkaException}
 import org.apache.kafka.common.config.ConfigDef.{Importance, Type}
 import org.apache.kafka.common.config.{AbstractConfig, ConfigDef}
-import org.apache.kafka.common.errors.{AuthenticationException, TimeoutException}
+import org.apache.kafka.common.errors.TimeoutException
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.network.Selector
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
@@ -34,7 +36,7 @@ import org.apache.kafka.common.requests._
 import org.apache.kafka.common.requests.ApiVersionsResponse.ApiVersion
 import org.apache.kafka.common.requests.DescribeGroupsResponse.GroupMetadata
 import org.apache.kafka.common.requests.OffsetFetchResponse
-import org.apache.kafka.common.utils.{LogContext, KafkaThread, Time, Utils}
+import org.apache.kafka.common.utils.{KafkaThread, Time, Utils}
 import org.apache.kafka.common.{Cluster, Node, TopicPartition}
 
 import scala.collection.JavaConverters._
@@ -57,15 +59,16 @@ class AdminClient(val time: Time,
   val networkThread = new KafkaThread("admin-client-network-thread", new Runnable {
     override def run() {
       try {
-        while (running)
+        while (running) {
           client.poll(Long.MaxValue)
+        }
       } catch {
         case t : Throwable =>
           error("admin-client-network-thread exited", t)
       } finally {
         pendingFutures.asScala.foreach { future =>
           try {
-            future.raise(Errors.UNKNOWN_SERVER_ERROR)
+            future.raise(Errors.UNKNOWN)
           } catch {
             case _: IllegalStateException => // It is OK if the future has been completed
           }
@@ -86,8 +89,10 @@ class AdminClient(val time: Time,
     pendingFutures.remove(future)
     if (future.succeeded())
       future.value().responseBody()
-    else
+    else {
+      future.exception().addSuppressed(new NewKafkaException("An error occurred in the broker."))
       throw future.exception()
+    }
   }
 
   private def sendAnyNode(api: ApiKeys, request: AbstractRequest.Builder[_ <: AbstractRequest]): AbstractResponse = {
@@ -95,8 +100,6 @@ class AdminClient(val time: Time,
       try {
         return send(broker, api, request)
       } catch {
-        case e: AuthenticationException =>
-          throw e
         case e: Exception =>
           debug(s"Request $api failed against node $broker", e)
       }
@@ -250,7 +253,7 @@ class AdminClient(val time: Time,
     // prepare requests and generate Future objects
     val futures = partitionsGroupByLeader.map{ case (node, partitionAndOffsets) =>
       val convertedMap: java.util.Map[TopicPartition, java.lang.Long] = partitionAndOffsets.mapValues(_.asInstanceOf[java.lang.Long]).asJava
-      val future = client.send(node, new DeleteRecordsRequest.Builder(requestTimeoutMs, convertedMap, false))
+      val future = client.send(node, new DeleteRecordsRequest.Builder(requestTimeoutMs, convertedMap))
       pendingFutures.add(future)
       future.compose(new RequestFutureAdapter[ClientResponse, Map[TopicPartition, DeleteRecordsResult]]() {
           override def onSuccess(response: ClientResponse, future: RequestFuture[Map[TopicPartition, DeleteRecordsResult]]) {
@@ -298,7 +301,7 @@ class AdminClient(val time: Time,
     val response = responseBody.asInstanceOf[DescribeGroupsResponse]
     val metadata = response.groups.get(groupId)
     if (metadata == null)
-      throw new KafkaException(s"Response from broker contained no metadata for group $groupId")
+      throw new OldKafkaException(s"Response from broker contained no metadata for group $groupId")
     metadata
   }
 
@@ -453,8 +456,7 @@ object AdminClient {
       metrics,
       time,
       "admin",
-      channelBuilder,
-      new LogContext())
+      channelBuilder)
 
     val networkClient = new NetworkClient(
       selector,
@@ -468,17 +470,14 @@ object AdminClient {
       requestTimeoutMs,
       time,
       true,
-      new ApiVersions,
-      new LogContext())
+      new ApiVersions)
 
     val highLevelClient = new ConsumerNetworkClient(
-      new LogContext(),
       networkClient,
       metadata,
       time,
       retryBackoffMs,
-      requestTimeoutMs.toLong,
-      Integer.MAX_VALUE)
+      requestTimeoutMs.toLong)
 
     new AdminClient(
       time,

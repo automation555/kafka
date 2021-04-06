@@ -54,7 +54,6 @@ import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.processor.internals.testutil.LogCaptureAppender;
-import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.internals.OffsetCheckpoint;
 import org.apache.kafka.test.MockKeyValueStore;
 import org.apache.kafka.test.MockProcessorNode;
@@ -96,7 +95,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -152,7 +150,8 @@ public class StreamTaskTest {
     private final byte[] recordValue = intSerializer.serialize(null, 10);
     private final byte[] recordKey = intSerializer.serialize(null, 1);
     private final Metrics metrics = new Metrics(new MetricConfig().recordLevel(Sensor.RecordingLevel.DEBUG));
-    private final StreamsMetricsImpl streamsMetrics = new MockStreamsMetrics(metrics);
+    private final StreamsMetricsImpl streamsMetrics =
+        new StreamsMetricsImpl(metrics, "test", StreamsConfig.METRICS_LATEST);
     private final TaskId taskId00 = new TaskId(0, 0);
     private final MockTime time = new MockTime();
     private StateDirectory stateDirectory;
@@ -1067,8 +1066,25 @@ public class StreamTaskTest {
     @Test
     public void shouldFlushRecordCollectorOnFlushState() {
         final AtomicBoolean flushed = new AtomicBoolean(false);
-        task = createTaskToCommit(flushed, null, null);
-        task.flushState();
+        final StreamTask streamTask = new StreamTask(
+            taskId00,
+            partitions,
+            topology,
+            consumer,
+            changelogReader,
+            createConfig(false),
+            streamsMetrics,
+            stateDirectory,
+            null,
+            time,
+            () -> producer = new MockProducer<>(false, bytesSerializer, bytesSerializer),
+            new NoOpRecordCollector() {
+                @Override
+                public void flush() {
+                    flushed.set(true);
+                }
+            });
+        streamTask.flushState();
         assertTrue(flushed.get());
     }
 
@@ -1716,83 +1732,6 @@ public class StreamTaskTest {
                 new IntegerSerializer(),  new IntegerSerializer()));
         task.commit();
         assertEquals(1, producer.history().size());
-    }
-
-    @Test
-    public void shouldNotFlushProducerOnEosEnabledCommit() {
-        final AtomicBoolean flushed = new AtomicBoolean(false);
-        final MockKeyValueStore store = new MockKeyValueStore("store", true);
-
-        task = createTaskToCommit(flushed, store, null);
-        task.getProducer().beginTransaction();
-        task.commit();
-        assertTrue(store.flushed);
-        assertFalse(flushed.get());
-    }
-
-    @Test
-    public void shouldNotUpdateStateStoreIfEosEnabledWhenCommitFailed() {
-        final AtomicBoolean flushed = new AtomicBoolean(false);
-        final MockKeyValueStore store = new MockKeyValueStore("store", true);
-
-        task = createTaskToCommit(flushed, store, null);
-        assertThrows(IllegalStateException.class, task::commit);
-        assertFalse(store.flushed);
-        assertFalse(flushed.get());
-    }
-
-    @Test
-    public void shouldUpdateStateStoreIfEosEnabledWhenTxnCommitted() {
-        final AtomicBoolean flushed = new AtomicBoolean(false);
-        final MockKeyValueStore store = new MockKeyValueStore("store", true);
-
-        task = createTaskToCommit(flushed, store, new OneTimeTransactionProducer());
-        assertThrows(IllegalStateException.class, task::commit);
-        assertFalse(store.flushed);
-        assertFalse(flushed.get());
-    }
-
-    private StreamTask createTaskToCommit(final AtomicBoolean flushed,
-                                          final KeyValueStore store,
-                                          final MockProducer<byte[], byte[]> providedProducer) {
-        final StreamsMetricsImpl streamsMetrics = new MockStreamsMetrics(new Metrics());
-        final StreamTask task = new StreamTask(
-            taskId00,
-            partitions,
-            topology,
-            consumer,
-            changelogReader,
-            createConfig(true),
-            streamsMetrics,
-            stateDirectory,
-            null,
-            time,
-            () -> producer = providedProducer != null ? providedProducer
-                                 : new MockProducer<>(false, bytesSerializer, bytesSerializer),
-            new NoOpRecordCollector() {
-                @Override
-                public void flush() {
-                    flushed.set(true);
-                }
-            });
-
-        if (store != null) {
-            task.stateMgr.register(store, null);
-        }
-        return task;
-    }
-
-    class OneTimeTransactionProducer extends MockProducer<byte[], byte[]> {
-        boolean oneTimeTxnFinished = false;
-
-        @Override
-        public void beginTransaction() throws ProducerFencedException {
-            if (oneTimeTxnFinished) {
-                throw new ProducerFencedException("Transaction already committed");
-            }
-            oneTimeTxnFinished = true;
-            super.beginTransaction();
-        }
     }
 
     @Test(expected = ProcessorStateException.class)

@@ -23,7 +23,7 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
+import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.junit.Before;
 import org.junit.Test;
@@ -50,7 +50,7 @@ public class NamedCacheTest {
     @Before
     public void setUp() {
         innerMetrics = new Metrics();
-        metrics = new MockStreamsMetrics(innerMetrics);
+        metrics = new StreamsMetricsImpl(innerMetrics, "test", StreamsConfig.METRICS_LATEST);
         cache = new NamedCache(taskIDString + "-" + underlyingStoreName, metrics);
     }
 
@@ -157,7 +157,12 @@ public class NamedCacheTest {
         cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}));
         cache.put(Bytes.wrap(new byte[]{2}), new LRUCacheEntry(new byte[]{30}, headers, true, 0, 0, 0, ""));
 
-        cache.setListener(flushed::addAll);
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                flushed.addAll(dirty);
+            }
+        });
 
         cache.evict();
 
@@ -183,8 +188,11 @@ public class NamedCacheTest {
 
     @Test
     public void shouldRemoveDeletedValuesOnFlush() {
-        cache.setListener(dirty -> {
-            // no-op
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                // no-op
+            }
         });
         cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(null, headers, true, 0, 0, 0, ""));
         cache.put(Bytes.wrap(new byte[]{1}), new LRUCacheEntry(new byte[]{20}, null, true, 0, 0, 0, ""));
@@ -201,12 +209,15 @@ public class NamedCacheTest {
         cache.put(Bytes.wrap(new byte[]{1}), clean);
         cache.put(Bytes.wrap(new byte[]{2}), clean);
         assertEquals(3 * cache.head().size(), cache.sizeInBytes());
-        cache.setListener(dirty1 -> {
-            cache.put(Bytes.wrap(new byte[]{3}), clean);
-            // evict key 1
-            cache.evict();
-            // evict key 2
-            cache.evict();
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                cache.put(Bytes.wrap(new byte[]{3}), clean);
+                // evict key 1
+                cache.evict();
+                // evict key 2
+                cache.evict();
+            }
         });
 
         assertEquals(3 * cache.head().size(), cache.sizeInBytes());
@@ -241,7 +252,12 @@ public class NamedCacheTest {
         final LRUCacheEntry dirty = new LRUCacheEntry(new byte[]{3}, null, true, 0, 0, 0, "");
         final LRUCacheEntry clean = new LRUCacheEntry(new byte[]{3});
         final Bytes key = Bytes.wrap(new byte[] {3});
-        cache.setListener(dirty1 -> cache.put(key, clean));
+        cache.setListener(new ThreadCache.DirtyEntryFlushListener() {
+            @Override
+            public void apply(final List<ThreadCache.DirtyEntry> dirty) {
+                cache.put(key, clean);
+            }
+        });
         cache.put(key, dirty);
         cache.evict();
     }

@@ -20,8 +20,8 @@ then
   exit 1
 fi
 
-# CYGWIN == 1 if CYGWIN is detected or Msys is detected, else 0.
-if [[ $(uname -a) =~ "CYGWIN" ]] || [[ $(uname -a) =~ "Msys" ]]; then
+# CYGINW == 1 if Cygwin is detected, else 0.
+if [[ $(uname -a) =~ "CYGWIN" ]]; then
   CYGWIN=1
 else
   CYGWIN=0
@@ -38,10 +38,10 @@ should_include_file() {
     return 0
   fi
   file=$1
-  if [ -z "$(echo "$file" | egrep "$regex")" ] ; then
-    return 0
-  else
+  if [[ "$file" =~ $regex ]] ; then
     return 1
+  else
+    return 0
   fi
 }
 
@@ -69,50 +69,28 @@ do
   fi
 done
 
-if [ -z "$UPGRADE_KAFKA_STREAMS_TEST_VERSION" ]; then
-  clients_lib_dir=$(dirname $0)/../clients/build/libs
-  streams_lib_dir=$(dirname $0)/../streams/build/libs
-  rocksdb_lib_dir=$(dirname $0)/../streams/build/dependant-libs-${SCALA_VERSION}
-else
-  clients_lib_dir=/opt/kafka-$UPGRADE_KAFKA_STREAMS_TEST_VERSION/libs
-  streams_lib_dir=$clients_lib_dir
-  rocksdb_lib_dir=$streams_lib_dir
-fi
-
-
-for file in "$clients_lib_dir"/kafka-clients*.jar;
+for file in "$base_dir"/clients/build/libs/kafka-clients*.jar;
 do
   if should_include_file "$file"; then
     CLASSPATH="$CLASSPATH":"$file"
   fi
 done
 
-for file in "$streams_lib_dir"/kafka-streams*.jar;
+for file in "$base_dir"/streams/build/libs/kafka-streams*.jar;
 do
   if should_include_file "$file"; then
     CLASSPATH="$CLASSPATH":"$file"
   fi
 done
 
-if [ -z "$UPGRADE_KAFKA_STREAMS_TEST_VERSION" ]; then
-  for file in "$base_dir"/streams/examples/build/libs/kafka-streams-examples*.jar;
-  do
-    if should_include_file "$file"; then
-      CLASSPATH="$CLASSPATH":"$file"
-    fi
-  done
-else
-  VERSION_NO_DOTS=`echo $UPGRADE_KAFKA_STREAMS_TEST_VERSION | sed 's/\.//g'`
-  SHORT_VERSION_NO_DOTS=${VERSION_NO_DOTS:0:((${#VERSION_NO_DOTS} - 1))} # remove last char, ie, bug-fix number
-  for file in "$base_dir"/streams/upgrade-system-tests-$SHORT_VERSION_NO_DOTS/build/libs/kafka-streams-upgrade-system-tests*.jar;
-  do
-    if should_include_file "$file"; then
-      CLASSPATH="$CLASSPATH":"$file"
-    fi
-  done
-fi
+for file in "$base_dir"/streams/examples/build/libs/kafka-streams-examples*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
 
-for file in "$rocksdb_lib_dir"/rocksdb*.jar;
+for file in "$base_dir"/streams/build/dependant-libs-${SCALA_VERSION}/rocksdb*.jar;
 do
   CLASSPATH="$CLASSPATH":"$file"
 done
@@ -159,7 +137,7 @@ done
 shopt -u nullglob
 
 if [ -z "$CLASSPATH" ] ; then
-  echo "Classpath is empty. Please build the project first e.g. by running './gradlew jar -PscalaVersion=$SCALA_VERSION'"
+  echo "Classpath is empty. Please build the project first e.g. by running './gradlew jar -Pscala_version=$SCALA_VERSION'"
   exit 1
 fi
 
@@ -238,12 +216,6 @@ if [ -z "$KAFKA_JVM_PERFORMANCE_OPTS" ]; then
   KAFKA_JVM_PERFORMANCE_OPTS="-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent -Djava.awt.headless=true"
 fi
 
-# version option
-for args in "$@" ; do
-  if [ "$args" = "--version" ]; then
-    exec $JAVA $KAFKA_HEAP_OPTS $KAFKA_JVM_PERFORMANCE_OPTS $KAFKA_GC_LOG_OPTS $KAFKA_JMX_OPTS $KAFKA_LOG4J_OPTS -cp $CLASSPATH $KAFKA_OPTS "kafka.utils.VersionInfo"
-  fi
-done
 
 while [ $# -gt 0 ]; do
   COMMAND=$1
@@ -274,16 +246,9 @@ GC_FILE_SUFFIX='-gc.log'
 GC_LOG_FILE_NAME=''
 if [ "x$GC_LOG_ENABLED" = "xtrue" ]; then
   GC_LOG_FILE_NAME=$DAEMON_NAME$GC_FILE_SUFFIX
-
-  # The first segment of the version number, which is '1' for releases before Java 9
+  # the first segment of the version number, which is '1' for releases before Java 9
   # it then becomes '9', '10', ...
-  # Some examples of the first line of `java --version`:
-  # 8 -> java version "1.8.0_152"
-  # 9.0.4 -> java version "9.0.4"
-  # 10 -> java version "10" 2018-03-20
-  # 10.0.1 -> java version "10.0.1" 2018-04-17
-  # We need to match to the end of the line to prevent sed from printing the characters that do not match
-  JAVA_MAJOR_VERSION=$($JAVA -version 2>&1 | sed -E -n 's/.* version "([0-9]*).*$/\1/p')
+  JAVA_MAJOR_VERSION=$($JAVA -version 2>&1 | sed -E -n 's/.* version "([^.-]*).*"/\1/p')
   if [[ "$JAVA_MAJOR_VERSION" -ge "9" ]] ; then
     KAFKA_GC_LOG_OPTS="-Xlog:gc*:file=$LOG_DIR/$GC_LOG_FILE_NAME:time,tags:filecount=10,filesize=102400"
   else

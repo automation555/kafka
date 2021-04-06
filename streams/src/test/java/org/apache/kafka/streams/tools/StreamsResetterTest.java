@@ -30,16 +30,20 @@ import org.apache.kafka.common.TopicPartitionInfo;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.IntStream;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class StreamsResetterTest {
 
@@ -52,23 +56,11 @@ public class StreamsResetterTest {
     @Before
     public void setUp() {
         consumer.assign(Collections.singletonList(topicPartition));
-
-        consumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 0L, new byte[] {}, new byte[] {}));
-        consumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 1L, new byte[] {}, new byte[] {}));
-        consumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 2L, new byte[] {}, new byte[] {}));
-        consumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 3L, new byte[] {}, new byte[] {}));
-        consumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 4L, new byte[] {}, new byte[] {}));
     }
 
     @Test
     public void testResetToSpecificOffsetWhenBetweenBeginningAndEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 5).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.resetOffsetsTo(consumer, inputTopicPartitions, 2L);
 
@@ -78,45 +70,30 @@ public class StreamsResetterTest {
 
     @Test
     public void testResetToSpecificOffsetWhenBeforeBeginningOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 3L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(3, 6).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.resetOffsetsTo(consumer, inputTopicPartitions, 2L);
 
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(3, records.count());
     }
 
     @Test
     public void testResetToSpecificOffsetWhenAfterEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 3L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 3).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.resetOffsetsTo(consumer, inputTopicPartitions, 4L);
 
+        //Emulate new message received after reset
+        consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), 3, new byte[0], new byte[0]));
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(1, records.count());
+        assertEquals(3, records.records(topicPartition).get(0).offset());
     }
 
     @Test
     public void testShiftOffsetByWhenBetweenBeginningAndEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 5).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.shiftOffsetsBy(consumer, inputTopicPartitions, 3L);
 
@@ -126,13 +103,7 @@ public class StreamsResetterTest {
 
     @Test
     public void testShiftOffsetByWhenBeforeBeginningOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 5).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.shiftOffsetsBy(consumer, inputTopicPartitions, -3L);
 
@@ -142,29 +113,20 @@ public class StreamsResetterTest {
 
     @Test
     public void testShiftOffsetByWhenAfterEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 3L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 3).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         streamsResetter.shiftOffsetsBy(consumer, inputTopicPartitions, 5L);
 
+        //Emulate new message received after reset
+        consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), 3, new byte[0], new byte[0]));
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(1, records.count());
+        assertEquals(3, records.records(topicPartition).get(0).offset());
     }
 
     @Test
     public void testResetUsingPlanWhenBetweenBeginningAndEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 5).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         final Map<TopicPartition, Long> topicPartitionsAndOffset = new HashMap<>();
         topicPartitionsAndOffset.put(topicPartition, 3L);
@@ -176,56 +138,41 @@ public class StreamsResetterTest {
 
     @Test
     public void testResetUsingPlanWhenBeforeBeginningOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 4L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 3L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(3, 6).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         final Map<TopicPartition, Long> topicPartitionsAndOffset = new HashMap<>();
         topicPartitionsAndOffset.put(topicPartition, 1L);
         streamsResetter.resetOffsetsFromResetPlan(consumer, inputTopicPartitions, topicPartitionsAndOffset);
 
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(3, records.count());
     }
 
     @Test
     public void testResetUsingPlanWhenAfterEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 3L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 3).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         final Map<TopicPartition, Long> topicPartitionsAndOffset = new HashMap<>();
         topicPartitionsAndOffset.put(topicPartition, 5L);
         streamsResetter.resetOffsetsFromResetPlan(consumer, inputTopicPartitions, topicPartitionsAndOffset);
 
+        //Emulate new message received after reset
+        consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), 3, new byte[0], new byte[0]));
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(1, records.count());
+        assertEquals(3, records.records(topicPartition).get(0).offset());
     }
 
     @Test
     public void shouldSeekToEndOffset() {
-        final Map<TopicPartition, Long> endOffsets = new HashMap<>();
-        endOffsets.put(topicPartition, 3L);
-        consumer.updateEndOffsets(endOffsets);
-
-        final Map<TopicPartition, Long> beginningOffsets = new HashMap<>();
-        beginningOffsets.put(topicPartition, 0L);
-        consumer.updateBeginningOffsets(beginningOffsets);
+        IntStream.range(0, 3).forEach(i -> consumer.addRecord(new ConsumerRecord<>(topicPartition.topic(), topicPartition.partition(), i, new byte[0], new byte[0])));
 
         final Set<TopicPartition> intermediateTopicPartitions = new HashSet<>();
         intermediateTopicPartitions.add(topicPartition);
         streamsResetter.maybeSeekToEnd("g1", consumer, intermediateTopicPartitions);
 
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
-        assertEquals(2, records.count());
+        assertEquals(0, records.count());
     }
 
     @Test
@@ -239,14 +186,6 @@ public class StreamsResetterTest {
         }
     }
 
-    @Test
-    public void shouldDetermineInternalTopicBasedOnTopicName1() {
-        assertTrue(streamsResetter.matchesInternalTopicFormat("appId-named-subscription-response-topic"));
-        assertTrue(streamsResetter.matchesInternalTopicFormat("appId-named-subscription-registration-topic"));
-        assertTrue(streamsResetter.matchesInternalTopicFormat("appId-KTABLE-FK-JOIN-SUBSCRIPTION-RESPONSE-12323232-topic"));
-        assertTrue(streamsResetter.matchesInternalTopicFormat("appId-KTABLE-FK-JOIN-SUBSCRIPTION-REGISTRATION-12323232-topic"));
-    }
-
     private Cluster createCluster(final int numNodes) {
         final HashMap<Integer, Node> nodes = new HashMap<>();
         for (int i = 0; i < numNodes; ++i) {
@@ -257,4 +196,38 @@ public class StreamsResetterTest {
             Collections.<String>emptySet(), nodes.get(0));
     }
 
+    @Test
+    public void shouldAcceptValidDateFormats() throws ParseException {
+        //check valid formats
+        invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS"));
+        invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ"));
+        invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX"));
+        invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXX"));
+        invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX"));
+    }
+
+    @Test
+    public void shouldThrowOnInvalidDateFormat() throws ParseException {
+        //check some invalid formats
+        try {
+            invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss"));
+            fail("Call to getDateTime should fail");
+        } catch (final Exception e) {
+            e.printStackTrace();
+        }
+
+        try {
+            invokeGetDateTimeMethod(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.X"));
+            fail("Call to getDateTime should fail");
+        } catch (final Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void invokeGetDateTimeMethod(final SimpleDateFormat format) throws ParseException {
+        final Date checkpoint = new Date();
+        final StreamsResetter streamsResetter = new StreamsResetter();
+        final String formattedCheckpoint = format.format(checkpoint);
+        streamsResetter.getDateTime(formattedCheckpoint);
+    }
 }

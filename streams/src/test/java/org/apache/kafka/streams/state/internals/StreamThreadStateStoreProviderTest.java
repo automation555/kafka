@@ -28,12 +28,12 @@ import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.TopologyWrapper;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.processor.TaskId;
+import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
 import org.apache.kafka.streams.processor.internals.ProcessorTopology;
 import org.apache.kafka.streams.processor.internals.StateDirectory;
 import org.apache.kafka.streams.processor.internals.StoreChangelogReader;
 import org.apache.kafka.streams.processor.internals.StreamTask;
 import org.apache.kafka.streams.processor.internals.StreamThread;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
 import org.apache.kafka.streams.state.ReadOnlyWindowStore;
@@ -301,9 +301,10 @@ public class StreamThreadStateStoreProviderTest {
                                          final MockClientSupplier clientSupplier,
                                          final ProcessorTopology topology,
                                          final TaskId taskId) {
+        final Metrics metrics = new Metrics();
         return new StreamTask(
             taskId,
-            Collections.singleton(new TopicPartition(topicName, taskId.partition)),
+            Collections.singletonList(new TopicPartition(topicName, taskId.partition)),
             topology,
             clientSupplier.consumer,
             new StoreChangelogReader(
@@ -312,7 +313,7 @@ public class StreamThreadStateStoreProviderTest {
                 new MockStateRestoreListener(),
                 new LogContext("test-stream-task ")),
             streamsConfig,
-            new StreamsMetricsImpl(new Metrics(), "test", StreamsConfig.METRICS_LATEST),
+            new MockStreamsMetrics(metrics),
             stateDirectory,
             null,
             new MockTime(),
@@ -336,12 +337,5 @@ public class StreamThreadStateStoreProviderTest {
         final TopicPartition tp2 = new TopicPartition(topic, 1);
 
         clientSupplier.restoreConsumer.assign(Arrays.asList(tp1, tp2));
-
-        final Map<TopicPartition, Long> offsets = new HashMap<>();
-        offsets.put(tp1, 0L);
-        offsets.put(tp2, 0L);
-
-        clientSupplier.restoreConsumer.updateBeginningOffsets(offsets);
-        clientSupplier.restoreConsumer.updateEndOffsets(offsets);
     }
 }

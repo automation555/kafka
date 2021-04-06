@@ -707,16 +707,9 @@ public class ConfigDef {
                 case CLASS:
                     if (value instanceof Class)
                         return value;
-                    else if (value instanceof String) {
-                        ClassLoader contextOrKafkaClassLoader = Utils.getContextOrKafkaClassLoader();
-                        // Use loadClass here instead of Class.forName because the name we use here may be an alias
-                        // and not match the name of the class that gets loaded. If that happens, Class.forName can
-                        // throw an exception.
-                        Class<?> klass = contextOrKafkaClassLoader.loadClass(trimmed);
-                        // Invoke forName here with the true name of the requested class to cause class
-                        // initialization to take place.
-                        return Class.forName(klass.getName(), true, contextOrKafkaClassLoader);
-                    } else
+                    else if (value instanceof String)
+                        return Class.forName(trimmed, true, Utils.getContextOrKafkaClassLoader());
+                    else
                         throw new ConfigException(name, value, "Expected a Class instance or class name.");
                 default:
                     throw new IllegalStateException("Unknown type.");
@@ -1033,10 +1026,6 @@ public class ConfigDef {
         public String toString() {
             return "non-empty string";
         }
-
-        public static NonEmptyString nonEmptyString() {
-            return new NonEmptyString();
-        }
     }
 
     public static class NonEmptyStringWithoutControlChars implements Validator {
@@ -1199,7 +1188,6 @@ public class ConfigDef {
             // print column values
             for (String headerName : headers()) {
                 addColumnValue(b, getConfigValue(key, headerName));
-                b.append("</td>");
             }
             if (hasUpdateModes) {
                 String updateMode = dynamicUpdateModes.get(key.name);

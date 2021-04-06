@@ -19,7 +19,7 @@ package kafka.log
 
 import java.io.File
 
-import org.apache.kafka.common.record.FileRecords
+import org.apache.kafka.common.record.{FileRecords, RecordsBackupNameStrategy}
 import org.apache.kafka.common.utils.Time
 
 object LogUtils {
@@ -29,16 +29,15 @@ object LogUtils {
   def createSegment(offset: Long,
                     logDir: File,
                     indexIntervalBytes: Int = 10,
-                    time: Time = Time.SYSTEM): LogSegment = {
-    val segDir = new File(logDir, String.valueOf(offset))
-    segDir.mkdirs()
-    val statusFile = new File(segDir, SegmentFile.STATUS.getName)
-    SegmentStatusHandler.setStatus(statusFile, SegmentStatus.HOT)
+                    time: Time = Time.SYSTEM,
+                    backupOnTruncateToZero: Boolean = false,
+                    recordsBackupNameStrategy: Option[RecordsBackupNameStrategy] = None): LogSegment = {
+    val ms = FileRecords.open(Log.logFile(logDir, offset))
+    val idx = new LazyOffsetIndex(Log.offsetIndexFile(logDir, offset), offset, maxIndexSize = 1000)
+    val timeIdx = new LazyTimeIndex(Log.timeIndexFile(logDir, offset), offset, maxIndexSize = 1500)
+    val txnIndex = new TransactionIndex(offset, Log.transactionIndexFile(logDir, offset))
 
-    val ms = FileRecords.open(new File(segDir, SegmentFile.LOG.getName))
-    val idx = LazyIndex.forOffset(new File(segDir, SegmentFile.OFFSET_INDEX.getName), offset, maxIndexSize = 1000)
-    val timeIdx = LazyIndex.forTime(new File(segDir, SegmentFile.TIME_INDEX.getName), offset, maxIndexSize = 1500)
-    val txnIndex = new TransactionIndex(offset, new File(segDir, SegmentFile.TXN_INDEX.getName))
-    new LogSegment(ms, idx, timeIdx, txnIndex, offset, indexIntervalBytes, 0, time, statusFile)
+    new LogSegment(ms, idx, timeIdx, txnIndex, offset, indexIntervalBytes, 0,
+      time, backupOnTruncateToZero, recordsBackupNameStrategy)
   }
 }

@@ -780,7 +780,7 @@
 
   <h3><a id="monitoring" href="#monitoring">6.6 Monitoring</a></h3>
 
-  Kafka uses Dropwizard Metrics for metrics reporting in the server. The Java clients use Kafka Metrics, a built-in metrics registry that minimizes transitive dependencies pulled into client applications. Both expose metrics via JMX and can be configured to report stats using pluggable stats reporters to hook up to your monitoring system.
+  Kafka uses Yammer Metrics for metrics reporting in the server. The Java clients use Kafka Metrics, a built-in metrics registry that minimizes transitive dependencies pulled into client applications. Both expose metrics via JMX and can be configured to report stats using pluggable stats reporters to hook up to your monitoring system.
   <p>
   All Kafka rate metrics have a corresponding cumulative count metric with suffix <code>-total</code>. For example,
   <code>records-consumed-rate</code> has a corresponding metric named <code>records-consumed-total</code>.
@@ -862,8 +862,13 @@
       </tr>
       <tr>
         <td>Log flush rate and time</td>
-        <td>kafka.log:type=LogFlushStats,name=LogFlushRateAndTime</td>
+        <td>kafka.log:type=LogFlushStats,name=LogFlushRateAndTimeMs</td>
         <td></td>
+      </tr>
+      <tr>
+        <td>Rate of backup files created</td>
+        <td>kafka.log:type=LogBackupStats,name=SegmentFileBackupPerMin</td>
+        <td>0</td>
       </tr>
       <tr>
         <td># of under replicated partitions (|ISR| &lt |all replicas|)</td>
@@ -892,33 +897,13 @@
       </tr>
       <tr>
         <td>Leader election rate</td>
-        <td>kafka.controller:type=ControllerStats,name=LeaderElectionRateAndTime</td>
+        <td>kafka.controller:type=ControllerStats,name=LeaderElectionRateAndTimeMs</td>
         <td>non-zero when there are broker failures</td>
       </tr>
       <tr>
         <td>Unclean leader election rate</td>
         <td>kafka.controller:type=ControllerStats,name=UncleanLeaderElectionsPerSec</td>
         <td>0</td>
-      </tr>
-      <tr>
-        <td>Pending topic deletes</td>
-        <td>kafka.controller:type=KafkaController,name=TopicsToDeleteCount</td>
-        <td></td>
-      </tr>
-      <tr>
-        <td>Pending replica deletes</td>
-        <td>kafka.controller:type=KafkaController,name=ReplicasToDeleteCount</td>
-        <td></td>
-      </tr>
-      <tr>
-        <td>Ineligible pending topic deletes</td>
-        <td>kafka.controller:type=KafkaController,name=TopicsIneligibleToDeleteCount</td>
-        <td></td>
-      </tr>
-      <tr>
-        <td>Ineligible pending replica deletes</td>
-        <td>kafka.controller:type=KafkaController,name=ReplicasIneligibleToDeleteCount</td>
-        <td></td>
       </tr>
       <tr>
         <td>Partition counts</td>
@@ -1048,26 +1033,6 @@
         <td>kafka.server:type=SessionExpireListener,name=SessionState</td>
         <td>Connection status of broker's ZooKeeper session which may be one of
             Disconnected|SyncConnected|AuthFailed|ConnectedReadOnly|SaslAuthenticated|Expired.</td>
-      </tr>
-      <tr>
-        <td>Max time to load group metadata</td>
-        <td>kafka.server:type=group-coordinator-metrics,name=partition-load-time-max</td>
-        <td>maximum time, in milliseconds, it took to load offsets and group metadata from the consumer offset partitions loaded in the last 30 seconds</td>
-      </tr>
-      <tr>
-        <td>Avg time to load group metadata</td>
-        <td>kafka.server:type=group-coordinator-metrics,name=partition-load-time-avg</td>
-        <td>average time, in milliseconds, it took to load offsets and group metadata from the consumer offset partitions loaded in the last 30 seconds</td>
-      </tr>
-      <tr>
-        <td>Max time to load transaction metadata</td>
-        <td>kafka.server:type=transaction-coordinator-metrics,name=partition-load-time-max</td>
-        <td>maximum time, in milliseconds, it took to load transaction metadata from the consumer offset partitions loaded in the last 30 seconds</td>
-      </tr>
-      <tr>
-        <td>Avg time to load transaction metadata</td>
-        <td>kafka.server:type=transaction-coordinator-metrics,name=partition-load-time-avg</td>
-        <td>average time, in milliseconds, it took to load transaction metadata from the consumer offset partitions loaded in the last 30 seconds</td>
       </tr>
   </tbody></table>
 
@@ -2054,7 +2019,7 @@ All the following metrics have a recording level of <code>debug</code>:
   <h3><a id="zk" href="#zk">6.7 ZooKeeper</a></h3>
 
   <h4><a id="zkversion" href="#zkversion">Stable version</a></h4>
-  The current stable branch is 3.5. Kafka is regularly updated to include the latest release in the 3.5 series.
+  The current stable branch is 3.4 and the latest release of that branch is 3.4.9.
 
   <h4><a id="zkops" href="#zkops">Operationalizing ZooKeeper</a></h4>
   Operationally, we do the following for a healthy ZooKeeper installation:

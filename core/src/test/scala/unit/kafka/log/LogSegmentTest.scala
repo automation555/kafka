@@ -26,7 +26,7 @@ import org.apache.kafka.common.utils.{MockTime, Time, Utils}
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection._
 
 class LogSegmentTest {
@@ -38,8 +38,10 @@ class LogSegmentTest {
   /* create a segment with the given base offset */
   def createSegment(offset: Long,
                     indexIntervalBytes: Int = 10,
-                    time: Time = Time.SYSTEM): LogSegment = {
-    val seg = LogUtils.createSegment(offset, logDir, indexIntervalBytes, time)
+                    time: Time = Time.SYSTEM,
+                    backupOnTruncateToZero: Boolean = false,
+                    recordsBackupNameStrategy: Option[RecordsBackupNameStrategy] = None): LogSegment = {
+    val seg = LogUtils.createSegment(offset, logDir, indexIntervalBytes, time, backupOnTruncateToZero, recordsBackupNameStrategy)
     segments += seg
     seg
   }
@@ -56,7 +58,7 @@ class LogSegmentTest {
   }
 
   @After
-  def teardown(): Unit = {
+  def teardown() {
     segments.foreach(_.close())
     Utils.delete(logDir)
   }
@@ -65,9 +67,9 @@ class LogSegmentTest {
    * A read on an empty log segment should return null
    */
   @Test
-  def testReadOnEmptySegment(): Unit = {
+  def testReadOnEmptySegment() {
     val seg = createSegment(40)
-    val read = seg.read(startOffset = 40, maxSize = 300)
+    val read = seg.read(startOffset = 40, maxSize = 300, maxOffset = None)
     assertNull("Read beyond the last offset in the segment should be null", read)
   }
 
@@ -76,23 +78,41 @@ class LogSegmentTest {
    * beginning with the first message in the segment
    */
   @Test
-  def testReadBeforeFirstOffset(): Unit = {
+  def testReadBeforeFirstOffset() {
     val seg = createSegment(40)
     val ms = records(50, "hello", "there", "little", "bee")
     seg.append(53, RecordBatch.NO_TIMESTAMP, -1L, ms)
-    val read = seg.read(startOffset = 41, maxSize = 300).records
+    val read = seg.read(startOffset = 41, maxSize = 300, maxOffset = None).records
     checkEquals(ms.records.iterator, read.records.iterator)
+  }
+
+  /**
+   * If we set the startOffset and maxOffset for the read to be the same value
+   * we should get only the first message in the log
+   */
+  @Test
+  def testMaxOffset() {
+    val baseOffset = 50
+    val seg = createSegment(baseOffset)
+    val ms = records(baseOffset, "hello", "there", "beautiful")
+    seg.append(52, RecordBatch.NO_TIMESTAMP, -1L, ms)
+    def validate(offset: Long) =
+      assertEquals(ms.records.asScala.filter(_.offset == offset).toList,
+                   seg.read(startOffset = offset, maxSize = 1024, maxOffset = Some(offset+1)).records.records.asScala.toList)
+    validate(50)
+    validate(51)
+    validate(52)
   }
 
   /**
    * If we read from an offset beyond the last offset in the segment we should get null
    */
   @Test
-  def testReadAfterLast(): Unit = {
+  def testReadAfterLast() {
     val seg = createSegment(40)
     val ms = records(50, "hello", "there")
     seg.append(51, RecordBatch.NO_TIMESTAMP, -1L, ms)
-    val read = seg.read(startOffset = 52, maxSize = 200)
+    val read = seg.read(startOffset = 52, maxSize = 200, maxOffset = None)
     assertNull("Read beyond the last offset in the segment should give null", read)
   }
 
@@ -101,13 +121,13 @@ class LogSegmentTest {
    * with the least offset greater than the given startOffset.
    */
   @Test
-  def testReadFromGap(): Unit = {
+  def testReadFromGap() {
     val seg = createSegment(40)
     val ms = records(50, "hello", "there")
     seg.append(51, RecordBatch.NO_TIMESTAMP, -1L, ms)
     val ms2 = records(60, "alpha", "beta")
     seg.append(61, RecordBatch.NO_TIMESTAMP, -1L, ms2)
-    val read = seg.read(startOffset = 55, maxSize = 200)
+    val read = seg.read(startOffset = 55, maxSize = 200, maxOffset = None)
     checkEquals(ms2.records.iterator, read.records.records.iterator)
   }
 
@@ -116,7 +136,7 @@ class LogSegmentTest {
    * the first but not the second message.
    */
   @Test
-  def testTruncate(): Unit = {
+  def testTruncate() {
     val seg = createSegment(40)
     var offset = 40
     for (_ <- 0 until 30) {
@@ -125,11 +145,11 @@ class LogSegmentTest {
       val ms2 = records(offset + 1, "hello")
       seg.append(offset + 1, RecordBatch.NO_TIMESTAMP, -1L, ms2)
       // check that we can read back both messages
-      val read = seg.read(offset, 10000)
+      val read = seg.read(offset, None, 10000)
       assertEquals(List(ms1.records.iterator.next(), ms2.records.iterator.next()), read.records.records.asScala.toList)
       // now truncate off the last message
       seg.truncateTo(offset + 1)
-      val read2 = seg.read(offset, 10000)
+      val read2 = seg.read(offset, None, 10000)
       assertEquals(1, read2.records.records.asScala.size)
       checkEquals(ms1.records.iterator, read2.records.records.iterator)
       offset += 1
@@ -137,7 +157,7 @@ class LogSegmentTest {
   }
 
   @Test
-  def testTruncateEmptySegment(): Unit = {
+  def testTruncateEmptySegment() {
     // This tests the scenario in which the follower truncates to an empty segment. In this
     // case we must ensure that the index is resized so that the log segment is not mistakenly
     // rolled due to a full index
@@ -145,9 +165,6 @@ class LogSegmentTest {
     val maxSegmentMs = 300000
     val time = new MockTime
     val seg = createSegment(0, time = time)
-    // Force load indexes before closing the segment
-    seg.timeIndex
-    seg.offsetIndex
     seg.close()
 
     val reopened = createSegment(0, time = time)
@@ -178,7 +195,7 @@ class LogSegmentTest {
   }
 
   @Test
-  def testReloadLargestTimestampAndNextOffsetAfterTruncation(): Unit = {
+  def testReloadLargestTimestampAndNextOffsetAfterTruncation() {
     val numMessages = 30
     val seg = createSegment(40, 2 * records(0, "hello").sizeInBytes - 1)
     var offset = 40
@@ -201,7 +218,7 @@ class LogSegmentTest {
    * Test truncating the whole segment, and check that we can reappend with the original offset.
    */
   @Test
-  def testTruncateFull(): Unit = {
+  def testTruncateFull() {
     // test the case where we fully truncate the log
     val time = new MockTime
     val seg = createSegment(40, time = time)
@@ -215,16 +232,47 @@ class LogSegmentTest {
     assertEquals(0, seg.timeWaitedForRoll(time.milliseconds(), RecordBatch.NO_TIMESTAMP))
     assertFalse(seg.timeIndex.isFull)
     assertFalse(seg.offsetIndex.isFull)
-    assertNull("Segment should be empty.", seg.read(0, 1024))
+    assertNull("Segment should be empty.", seg.read(0, None, 1024))
 
     seg.append(41, RecordBatch.NO_TIMESTAMP, -1L, records(40, "hello", "there"))
+  }
+
+  @Test
+  def testTruncateFullWithBackup(): Unit = {
+    // test the case where we fully truncate the log
+    val time = new MockTime
+    val backupFiles: mutable.Set[File] = mutable.Set()
+    val fileNameStrategy: RecordsBackupNameStrategy = originalFile => {
+      val backupFile = new LogBackupNameStrategy(time).getBackupFile(originalFile)
+      backupFiles += backupFile
+      backupFile
+    }
+
+    val seg = createSegment(40, time = time, backupOnTruncateToZero = true, recordsBackupNameStrategy = Some(fileNameStrategy))
+    seg.append(41, RecordBatch.NO_TIMESTAMP, -1L, records(40, "hello", "there"))
+
+    // If the segment is empty after truncation, the create time should be reset
+    time.sleep(500)
+    assertEquals(500, seg.timeWaitedForRoll(time.milliseconds(), RecordBatch.NO_TIMESTAMP))
+
+    seg.truncateTo(0)
+    assertEquals(0, seg.timeWaitedForRoll(time.milliseconds(), RecordBatch.NO_TIMESTAMP))
+    assertFalse(seg.timeIndex.isFull)
+    assertFalse(seg.offsetIndex.isFull)
+    assertNull("Segment should be empty.", seg.read(0, None, 1024))
+    assertTrue("backup segment should have been created", backupFiles.nonEmpty)
+    val backupFile: File = backupFiles.toVector(0)
+    assertTrue(backupFile.getAbsolutePath.endsWith(".log.backup"))
+
+    val backedUpFile = FileRecords.open(backupFile, false)
+    assertEquals(78, backedUpFile.sizeInBytes())
   }
 
   /**
    * Append messages with timestamp and search message by timestamp.
    */
   @Test
-  def testFindOffsetByTimestamp(): Unit = {
+  def testFindOffsetByTimestamp() {
     val messageSize = records(0, s"msg00").sizeInBytes
     val seg = createSegment(40, messageSize * 2 - 1)
     // Produce some messages
@@ -250,7 +298,7 @@ class LogSegmentTest {
    * Test that offsets are assigned sequentially and that the nextOffset variable is incremented
    */
   @Test
-  def testNextOffsetCalculation(): Unit = {
+  def testNextOffsetCalculation() {
     val seg = createSegment(40)
     assertEquals(40, seg.readNextOffset)
     seg.append(52, RecordBatch.NO_TIMESTAMP, -1L, records(50, "hello", "there", "you"))
@@ -261,29 +309,15 @@ class LogSegmentTest {
    * Test that we can change the file suffixes for the log and index files
    */
   @Test
-  def testChangeFileSuffixes(): Unit = {
+  def testChangeFileSuffixes() {
     val seg = createSegment(40)
     val logFile = seg.log.file
     val indexFile = seg.lazyOffsetIndex.file
-    val timeIndexFile = seg.lazyTimeIndex.file
-    // Ensure that files for offset and time indices have not been created eagerly.
-    assertFalse(seg.lazyOffsetIndex.file.exists)
-    assertFalse(seg.lazyTimeIndex.file.exists)
     seg.changeFileSuffixes("", ".deleted")
-    // Ensure that attempt to change suffixes for non-existing offset and time indices does not create new files.
-    assertFalse(seg.lazyOffsetIndex.file.exists)
-    assertFalse(seg.lazyTimeIndex.file.exists)
-    // Ensure that file names are updated accordingly.
     assertEquals(logFile.getAbsolutePath + ".deleted", seg.log.file.getAbsolutePath)
     assertEquals(indexFile.getAbsolutePath + ".deleted", seg.lazyOffsetIndex.file.getAbsolutePath)
-    assertEquals(timeIndexFile.getAbsolutePath + ".deleted", seg.lazyTimeIndex.file.getAbsolutePath)
     assertTrue(seg.log.file.exists)
-    // Ensure lazy creation of offset index file upon accessing it.
-    seg.lazyOffsetIndex.get
     assertTrue(seg.lazyOffsetIndex.file.exists)
-    // Ensure lazy creation of time index file upon accessing it.
-    seg.lazyTimeIndex.get
-    assertTrue(seg.lazyTimeIndex.file.exists)
   }
 
   /**
@@ -291,17 +325,15 @@ class LogSegmentTest {
    * and recover the segment, the entries should all be readable.
    */
   @Test
-  def testRecoveryFixesCorruptIndex(): Unit = {
+  def testRecoveryFixesCorruptIndex() {
     val seg = createSegment(0)
     for(i <- 0 until 100)
       seg.append(i, RecordBatch.NO_TIMESTAMP, -1L, records(i, i.toString))
     val indexFile = seg.lazyOffsetIndex.file
     TestUtils.writeNonsenseToFile(indexFile, 5, indexFile.length.toInt)
     seg.recover(new ProducerStateManager(topicPartition, logDir))
-    for(i <- 0 until 100) {
-      val records = seg.read(i, 1, minOneMessage = true).records.records
-      assertEquals(i, records.iterator.next().offset)
-    }
+    for(i <- 0 until 100)
+      assertEquals(i, seg.read(i, Some(i + 1), 1024).records.records.iterator.next().offset)
   }
 
   @Test
@@ -353,8 +385,7 @@ class LogSegmentTest {
     // recover again, but this time assuming the transaction from pid2 began on a previous segment
     stateManager = new ProducerStateManager(topicPartition, logDir)
     stateManager.loadProducerEntry(new ProducerStateEntry(pid2,
-      mutable.Queue[BatchMetadata](BatchMetadata(10, 10L, 5, RecordBatch.NO_TIMESTAMP)), producerEpoch,
-      0, RecordBatch.NO_TIMESTAMP, Some(75L)))
+      mutable.Queue[BatchMetadata](BatchMetadata(10, 10L, 5, RecordBatch.NO_TIMESTAMP)), producerEpoch, 0, Some(75L)))
     segment.recover(stateManager)
     assertEquals(108L, stateManager.mapEndOffset)
 
@@ -383,7 +414,7 @@ class LogSegmentTest {
    * and recover the segment, the entries should all be readable.
    */
   @Test
-  def testRecoveryFixesCorruptTimeIndex(): Unit = {
+  def testRecoveryFixesCorruptTimeIndex() {
     val seg = createSegment(0)
     for(i <- 0 until 100)
       seg.append(i, i * 10, i, records(i, i.toString))
@@ -401,7 +432,7 @@ class LogSegmentTest {
    * Randomly corrupt a log a number of times and attempt recovery.
    */
   @Test
-  def testRecoveryWithCorruptMessage(): Unit = {
+  def testRecoveryWithCorruptMessage() {
     val messagesAppended = 20
     for (_ <- 0 until 10) {
       val seg = createSegment(0)
@@ -428,26 +459,26 @@ class LogSegmentTest {
       LogConfig.SegmentJitterMsProp -> 0
     ).asJava)
     val seg = LogSegment.open(tempDir, baseOffset, logConfig, Time.SYSTEM, fileAlreadyExists = fileAlreadyExists,
-      initFileSize = initFileSize, preallocate = preallocate, recovery = _ => 0)
+      initFileSize = initFileSize, preallocate = preallocate)
     segments += seg
     seg
   }
 
   /* create a segment with   pre allocate, put message to it and verify */
   @Test
-  def testCreateWithInitFileSizeAppendMessage(): Unit = {
+  def testCreateWithInitFileSizeAppendMessage() {
     val seg = createSegment(40, false, 512*1024*1024, true)
     val ms = records(50, "hello", "there")
     seg.append(51, RecordBatch.NO_TIMESTAMP, -1L, ms)
     val ms2 = records(60, "alpha", "beta")
     seg.append(61, RecordBatch.NO_TIMESTAMP, -1L, ms2)
-    val read = seg.read(startOffset = 55, maxSize = 200)
+    val read = seg.read(startOffset = 55, maxSize = 200, maxOffset = None)
     checkEquals(ms2.records.iterator, read.records.records.iterator)
   }
 
-  /* create a segment with pre allocate and cleanly shut down*/
+  /* create a segment with   pre allocate and clearly shut down*/
   @Test
-  def testCreateWithInitFileSizeClearShutdown(): Unit = {
+  def testCreateWithInitFileSizeClearShutdown() {
     val tempDir = TestUtils.tempDir()
     val logConfig = LogConfig(Map(
       LogConfig.IndexIntervalBytesProp -> 10,
@@ -456,13 +487,13 @@ class LogSegmentTest {
     ).asJava)
 
     val seg = LogSegment.open(tempDir, baseOffset = 40, logConfig, Time.SYSTEM, fileAlreadyExists = false,
-      initFileSize = 512 * 1024 * 1024, preallocate = true, recovery = _ => 0)
+      initFileSize = 512 * 1024 * 1024, preallocate = true)
 
     val ms = records(50, "hello", "there")
     seg.append(51, RecordBatch.NO_TIMESTAMP, -1L, ms)
     val ms2 = records(60, "alpha", "beta")
     seg.append(61, RecordBatch.NO_TIMESTAMP, -1L, ms2)
-    val read = seg.read(startOffset = 55, maxSize = 200)
+    val read = seg.read(startOffset = 55, maxSize = 200, maxOffset = None)
     checkEquals(ms2.records.iterator, read.records.records.iterator)
     val oldSize = seg.log.sizeInBytes()
     val oldPosition = seg.log.channel.position
@@ -473,10 +504,10 @@ class LogSegmentTest {
     assertEquals(oldSize, seg.log.file.length)
 
     val segReopen = LogSegment.open(tempDir, baseOffset = 40, logConfig, Time.SYSTEM, fileAlreadyExists = true,
-      initFileSize = 512 * 1024 * 1024, preallocate = true, recovery = _ => 0)
+      initFileSize = 512 * 1024 * 1024, preallocate = true)
     segments += segReopen
 
-    val readAgain = segReopen.read(startOffset = 55, maxSize = 200)
+    val readAgain = segReopen.read(startOffset = 55, maxSize = 200, maxOffset = None)
     checkEquals(ms2.records.iterator, readAgain.records.records.iterator)
     val size = segReopen.log.sizeInBytes()
     val position = segReopen.log.channel.position
@@ -487,7 +518,7 @@ class LogSegmentTest {
   }
 
   @Test
-  def shouldTruncateEvenIfOffsetPointsToAGapInTheLog(): Unit = {
+  def shouldTruncateEvenIfOffsetPointsToAGapInTheLog() {
     val seg = createSegment(40)
     val offset = 40
 
@@ -505,7 +536,7 @@ class LogSegmentTest {
     seg.truncateTo(offset + 1)
 
     //Then we should still truncate the record that was present (i.e. offset + 3 is gone)
-    val log = seg.read(offset, 10000)
+    val log = seg.read(offset, None, 10000)
     assertEquals(offset, log.records.batches.iterator.next().baseOffset())
     assertEquals(1, log.records.batches.asScala.size)
   }

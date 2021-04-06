@@ -18,10 +18,8 @@
 package org.apache.kafka.tools;
 
 import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import org.apache.kafka.common.utils.Exit;
-
-import java.io.IOException;
-import java.util.List;
 
 /**
  * Helper functions for dealing with command line utilities
@@ -33,44 +31,21 @@ public class CommandLineUtils {
      *
      * @param parser    parser used for command line arguments
      * @param message   message to print as an error before die
-     * @throws IOException
      */
-    public static void printUsageAndDie(ArgumentParser parser, String message) throws IOException {
+    public static void printUsageAndDie(ArgumentParser parser, String message) {
         System.err.println(message);
         parser.printHelp();
         Exit.exit(1);
     }
 
     /**
-     * Check that all the listed options are present
+     * Handle and print error information and exit
      *
      * @param parser    parser used for command line arguments
-     * @param options   options specified as arguments on the command line
-     * @param required  required options on the command line
-     * @throws IOException
+     * @param e exception to handle
      */
-    public static void checkRequiredArgs(ArgumentParser parser, CommandOptions options, List<String> required) throws IOException {
-        for (String arg: required) {
-            if (!options.has(arg))
-                printUsageAndDie(parser, "Missing required argument \"" + arg + "\"");
-        }
-    }
-
-    /**
-     * Check that none of the listed options are present
-     *
-     * @param parser    parser used for command line arguments
-     * @param options   options specified as arguments on the command line
-     * @param usedOption    option for which check invalid options
-     * @param invalidOptions    invalid options to check against the specified used option
-     * @throws IOException
-     */
-    public static void checkInvalidArgs(ArgumentParser parser, CommandOptions options, String usedOption, List<String> invalidOptions) throws IOException {
-        if (options.has(usedOption)) {
-            for (String arg: invalidOptions) {
-                if (options.has(arg))
-                    printUsageAndDie(parser, "Option \"" + usedOption + "\" can't be used with option\"" + arg + "\"");
-            }
-        }
+    public static void printErrorAndDie(ArgumentParser parser, ArgumentParserException e) {
+        parser.handleError(e);
+        Exit.exit(1);
     }
 }

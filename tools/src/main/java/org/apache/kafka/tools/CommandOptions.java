@@ -19,6 +19,7 @@ package org.apache.kafka.tools;
 
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
 
 /**
@@ -26,21 +27,36 @@ import net.sourceforge.argparse4j.inf.Namespace;
  */
 public abstract class CommandOptions {
 
-    public ArgumentParser parser;
-    protected Namespace ns;
+    protected final ArgumentParser parser;
+    protected final Namespace ns;
 
     /**
      * Constructor
      *
      * @param command   command
      * @param description   command description
+     * @param args  arguments to parse for building command options
      */
-    public CommandOptions(String command, String description) {
+    public CommandOptions(String command, String description, String[] args) {
 
         this.parser = ArgumentParsers
                 .newArgumentParser(command)
                 .defaultHelp(true)
                 .description(description);
+
+        this.prepareArgs();
+
+        if (args.length == 0) {
+            CommandLineUtils.printUsageAndDie(this.parser, description);
+        }
+
+        Namespace ns = null;
+        try {
+            ns = this.parser.parseArgs(args);
+        } catch (ArgumentParserException e) {
+            CommandLineUtils.printErrorAndDie(this.parser, e);
+        }
+        this.ns = ns;
     }
 
     /**
@@ -58,9 +74,7 @@ public abstract class CommandOptions {
     }
 
     /**
-     * Checking arguments needs (required, invalid, ...)
-     *
-     * @throws Exception
+     * Preparing arguments for the command
      */
-    public abstract void checkArgs() throws Exception;
+    public abstract void prepareArgs();
 }

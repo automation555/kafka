@@ -18,6 +18,7 @@
 package kafka.admin
 
 import java.util.Properties
+
 import joptsimple._
 import kafka.common.{AdminCommandFailedException, Topic, TopicExistsException}
 import kafka.consumer.{ConsumerConfig, Whitelist}
@@ -29,9 +30,9 @@ import kafka.utils._
 import org.I0Itec.zkclient.exception.ZkNodeExistsException
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.utils.Utils
+
 import scala.collection.JavaConversions._
 import scala.collection._
-import org.apache.kafka.common.internals.TopicConstants
 
 
 object TopicCommand extends Logging {
@@ -104,9 +105,7 @@ object TopicCommand extends Logging {
         val partitions = opts.options.valueOf(opts.partitionsOpt).intValue
         val replicas = opts.options.valueOf(opts.replicationFactorOpt).intValue
         warnOnMaxMessagesChange(configs, replicas)
-        val rackAwareMode = if (opts.options.has(opts.disableRackAware)) RackAwareMode.Disabled
-                            else RackAwareMode.Enforced
-        AdminUtils.createTopic(zkUtils, topic, partitions, replicas, configs, rackAwareMode)
+        AdminUtils.createTopic(zkUtils, topic, partitions, replicas, configs)
       }
       println("Created topic \"%s\".".format(topic))
     } catch  {
@@ -137,7 +136,7 @@ object TopicCommand extends Logging {
       }
 
       if(opts.options.has(opts.partitionsOpt)) {
-        if (topic == TopicConstants.GROUP_METADATA_TOPIC_NAME) {
+        if (topic == GroupCoordinator.GroupMetadataTopicName) {
           throw new IllegalArgumentException("The number of partitions for the offsets topic cannot be changed.")
         }
         println("WARNING: If partitions are increased for a topic that has a key, the partition " +
@@ -170,7 +169,7 @@ object TopicCommand extends Logging {
     }
     topics.foreach { topic =>
       try {
-        if (TopicConstants.INTERNAL_TOPICS.contains(topic)) {
+        if (Topic.InternalTopics.contains(topic)) {
           throw new AdminOperationException("Topic %s is a kafka internal topic and is not allowed to be marked for deletion.".format(topic))
         } else {
           zkUtils.createPersistentPath(getDeleteTopicPath(topic))
@@ -190,22 +189,38 @@ object TopicCommand extends Logging {
 
   def describeTopic(zkUtils: ZkUtils, opts: TopicCommandOptions) {
     val topics = getTopics(zkUtils, opts)
-    val liveBrokers = zkUtils.getAllBrokersInCluster().map(_.id).toSet
-
     val reportUnderReplicatedPartitions = opts.options.has(opts.reportUnderReplicatedPartitionsOpt)
     val reportUnavailablePartitions = opts.options.has(opts.reportUnavailablePartitionsOpt)
+    val reportUnbalancedPartitions = opts.options.has(opts.reportUnbalancedPartitionsOpt)
     val reportOverriddenConfigs = opts.options.has(opts.topicsWithOverridesOpt)
-    val noReportOverrides = !reportUnderReplicatedPartitions && !reportUnavailablePartitions && !reportOverriddenConfigs
-
+    val liveBrokers = zkUtils.getAllBrokersInCluster().map(_.id).toSet
     for (topic <- topics) {
       zkUtils.getPartitionAssignmentForTopics(List(topic)).get(topic) match {
         case Some(topicPartitionAssignment) =>
-          val sortedPartitionReplicas = topicPartitionAssignment.toList.sortBy(_._1)
-          if (noReportOverrides || reportOverriddenConfigs) {
-            printOverridenConfigs(topic, sortedPartitionReplicas, AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic))
+          val describeConfigs: Boolean = !reportUnavailablePartitions && !reportUnderReplicatedPartitions && !reportUnbalancedPartitions
+          val describePartitions: Boolean = !reportOverriddenConfigs
+          val sortedPartitions = topicPartitionAssignment.toList.sortWith((m1, m2) => m1._1 < m2._1)
+          if (describeConfigs) {
+            val configs = AdminUtils.fetchEntityConfig(zkUtils, ConfigType.Topic, topic)
+            if (!reportOverriddenConfigs || configs.size() != 0) {
+              val numPartitions = topicPartitionAssignment.size
+              val replicationFactor = topicPartitionAssignment.head._2.size
+              println("Topic:%s\tPartitionCount:%d\tReplicationFactor:%d\tConfigs:%s"
+                .format(topic, numPartitions, replicationFactor, configs.map(kv => kv._1 + "=" + kv._2).mkString(",")))
+            }
           }
-          if (noReportOverrides || reportUnderReplicatedPartitions || reportUnavailablePartitions) {
-            describePartitions(zkUtils, liveBrokers, reportUnderReplicatedPartitions, reportUnavailablePartitions, topic, topicPartitionAssignment, sortedPartitionReplicas)
+          if (describePartitions) {
+            for ((partitionId, assignedReplicas) <- sortedPartitions) {
+              val inSyncReplicas = zkUtils.getInSyncReplicasForPartition(topic, partitionId)
+              val leader = zkUtils.getLeaderForPartition(topic, partitionId)
+              if (shouldPrintDescription(reportUnderReplicatedPartitions, reportUnavailablePartitions, reportUnbalancedPartitions, liveBrokers, assignedReplicas, inSyncReplicas, leader)) {
+                print("\tTopic: " + topic)
+                print("\tPartition: " + partitionId)
+                print("\tLeader: " + (if(leader.isDefined) leader.get else "none"))
+                print("\tReplicas: " + assignedReplicas.mkString(","))
+                println("\tIsr: " + inSyncReplicas.mkString(","))
+              }
+            }
           }
         case None =>
           println("Topic " + topic + " doesn't exist!")
@@ -213,25 +228,16 @@ object TopicCommand extends Logging {
     }
   }
 
-  private[admin] def printOverridenConfigs(topic: String, partitionReplicas: List[(Int, Seq[Int])], configs: Properties): String = {
-    if (configs.size() != 0) {
-      val numPartitions = partitionReplicas.size
-      val replicationFactor = partitionReplicas.head._2.size
-      val configDescription = "Topic:%s\tPartitionCount:%d\tReplicationFactor:%d\tConfigs:%s"
-        .format(topic, numPartitions, replicationFactor, configs.map(kv => kv._1 + "=" + kv._2).mkString(","))
-      println(configDescription)
-      configDescription
-    } else ""
-  }
-
-  private def describePartitions(zkUtils: ZkUtils, liveBrokers: Set[Int], reportUnderReplicatedPartitions: Boolean, reportUnavailablePartitions: Boolean, topic: String, topicPartitionAssignment: Map[Int, Seq[Int]], partitionReplicas: List[(Int, Seq[Int])]): Unit = {
-    val topicAndPartitionToLeaderAndIsr = topicPartitionAssignment.map(x =>
-      (topic, x._1) ->(zkUtils.getLeaderForPartition(topic, x._1), zkUtils.getInSyncReplicasForPartition(topic, x._1))
-    )
-    if (reportUnderReplicatedPartitions)
-      new UnderReplicatedPartitionsDescription(topic, partitionReplicas, liveBrokers, topicAndPartitionToLeaderAndIsr).describeAndPrint()
-    if (reportUnavailablePartitions)
-      new UnavailablePartitionsDescription(topic, partitionReplicas, liveBrokers, topicAndPartitionToLeaderAndIsr).describeAndPrint()
+  private def shouldPrintDescription(reportUnderReplicatedPartitions: Boolean, reportUnavailablePartitions: Boolean, reportUnbalancedPartitions: Boolean,
+                             liveBrokers: Set[Int], assignedReplicas: Seq[Int], inSyncReplicas: Seq[Int], leader: Option[Int]): Boolean = {
+    // If not asked for any specific report
+    (!reportUnderReplicatedPartitions && !reportUnavailablePartitions && !reportUnbalancedPartitions) ||
+    // If asked for only under-replicated partitions description and the partition is under-replicated
+      (reportUnderReplicatedPartitions && inSyncReplicas.size < assignedReplicas.size) ||
+    // If asked for only unavailable partitions and the partition is unavailable
+      (reportUnavailablePartitions && (leader.isEmpty || !liveBrokers.contains(leader.get))) ||
+    // If asked for only unbalanced partitions and the partition is unbalanced
+      (reportUnbalancedPartitions && (leader.isDefined && (leader.get != assignedReplicas.head)))
   }
 
   def parseTopicConfigsToBeAdded(opts: TopicCommandOptions): Properties = {
@@ -243,7 +249,7 @@ object TopicCommand extends Logging {
     LogConfig.validate(props)
     if (props.containsKey(LogConfig.MessageFormatVersionProp)) {
       println(s"WARNING: The configuration ${LogConfig.MessageFormatVersionProp}=${props.getProperty(LogConfig.MessageFormatVersionProp)} is specified. " +
-      s"This configuration will be ignored if the version is newer than the inter.broker.protocol.version specified in the broker.")
+      s"This configuration will be ignored if the value is on a version newer than the specified inter.broker.protocol.version in the broker.")
     }
     props
   }
@@ -273,43 +279,6 @@ object TopicCommand extends Logging {
         throw new AdminOperationException("Partition " + i + " has different replication factor: " + brokerList)
     }
     ret.toMap
-  }
-
-  private[admin] class PartitionsDescription(topic: String, partitions: List[(Int, Seq[Int])], liveBrokers: Set[Int], topicAndPartitionToLeaderAndIsr: Map[(String, Int), (Option[Int], Seq[Int])]) {
-
-    def describeAndPrint(): String = {
-      val sb = new StringBuilder
-      for ((partitionId, assignedReplicas) <- partitions) {
-        val (leader, inSyncReplicas) = topicAndPartitionToLeaderAndIsr.get(topic, partitionId).get
-        if (shouldPrint(assignedReplicas, leader, inSyncReplicas)) {
-          sb.append("\tTopic: " + topic)
-          sb.append("\tPartition: " + partitionId)
-          sb.append("\tLeader: " + (if (leader.isDefined) leader.get else "none"))
-          sb.append("\tReplicas: " + assignedReplicas.mkString(","))
-          sb.append("\tIsr: " + inSyncReplicas.mkString(","))
-          sb.append(System.lineSeparator())
-        }
-      }
-      val description = sb.toString()
-      print(description)
-      description
-    }
-
-    def shouldPrint(assignedReplicas: scala.Seq[Int], leader: Option[Int], inSyncReplicas: scala.Seq[Int]): Boolean = true
-  }
-
-  private[admin] class UnderReplicatedPartitionsDescription(topic: String, partitions: List[(Int, Seq[Int])], liveBrokers: Set[Int], topicAndPartitionToLeaderAndIsr: Map[(String, Int), (Option[Int], Seq[Int])])
-    extends PartitionsDescription(topic, partitions, liveBrokers, topicAndPartitionToLeaderAndIsr) {
-    override def shouldPrint(assignedReplicas: scala.Seq[Int], leader: Option[Int], inSyncReplicas: scala.Seq[Int]): Boolean = {
-      inSyncReplicas.size < assignedReplicas.size
-    }
-  }
-
-  private[admin] class UnavailablePartitionsDescription(topic: String, partitions: List[(Int, Seq[Int])], liveBrokers: Set[Int], topicAndPartitionToLeaderAndIsr: Map[(String, Int), (Option[Int], Seq[Int])])
-    extends PartitionsDescription(topic, partitions, liveBrokers, topicAndPartitionToLeaderAndIsr) {
-    override def shouldPrint(assignedReplicas: scala.Seq[Int], leader: Option[Int], inSyncReplicas: scala.Seq[Int]): Boolean = {
-      leader.isEmpty || !liveBrokers.contains(leader.get)
-    }
   }
 
   class TopicCommandOptions(args: Array[String]) {
@@ -359,6 +328,8 @@ object TopicCommand extends Logging {
                                                             "if set when describing topics, only show under replicated partitions")
     val reportUnavailablePartitionsOpt = parser.accepts("unavailable-partitions",
                                                             "if set when describing topics, only show partitions whose leader is not available")
+    val reportUnbalancedPartitionsOpt = parser.accepts("unbalanced-partitions",
+                                                       "if set when describing topics, only show partitions whose leader is not on its preferred replica")
     val topicsWithOverridesOpt = parser.accepts("topics-with-overrides",
                                                 "if set when describing topics, only show topics that have overridden configs")
     val ifExistsOpt = parser.accepts("if-exists",
@@ -366,7 +337,6 @@ object TopicCommand extends Logging {
     val ifNotExistsOpt = parser.accepts("if-not-exists",
                                         "if set when creating topics, the action will only execute if the topic does not already exist")
 
-    val disableRackAware = parser.accepts("disable-rack-aware", "Disable rack aware replica assignment")
     val options = parser.parse(args : _*)
 
     val allTopicLevelOpts: Set[OptionSpec[_]] = Set(alterOpt, createOpt, describeOpt, listOpt, deleteOpt)
@@ -386,11 +356,13 @@ object TopicCommand extends Logging {
       if(options.has(createOpt))
           CommandLineUtils.checkInvalidArgs(parser, options, replicaAssignmentOpt, Set(partitionsOpt, replicationFactorOpt))
       CommandLineUtils.checkInvalidArgs(parser, options, reportUnderReplicatedPartitionsOpt,
-        allTopicLevelOpts -- Set(describeOpt) + reportUnavailablePartitionsOpt + topicsWithOverridesOpt)
+        allTopicLevelOpts -- Set(describeOpt) + reportUnavailablePartitionsOpt + topicsWithOverridesOpt + reportUnbalancedPartitionsOpt)
       CommandLineUtils.checkInvalidArgs(parser, options, reportUnavailablePartitionsOpt,
-        allTopicLevelOpts -- Set(describeOpt) + reportUnderReplicatedPartitionsOpt + topicsWithOverridesOpt)
+        allTopicLevelOpts -- Set(describeOpt) + reportUnderReplicatedPartitionsOpt + topicsWithOverridesOpt + reportUnbalancedPartitionsOpt)
       CommandLineUtils.checkInvalidArgs(parser, options, topicsWithOverridesOpt,
-        allTopicLevelOpts -- Set(describeOpt) + reportUnderReplicatedPartitionsOpt + reportUnavailablePartitionsOpt)
+        allTopicLevelOpts -- Set(describeOpt) + reportUnderReplicatedPartitionsOpt + reportUnavailablePartitionsOpt + reportUnbalancedPartitionsOpt)
+      CommandLineUtils.checkInvalidArgs(parser, options, reportUnbalancedPartitionsOpt,
+        allTopicLevelOpts -- Set(describeOpt) + reportUnderReplicatedPartitionsOpt + reportUnavailablePartitionsOpt + topicsWithOverridesOpt)
       CommandLineUtils.checkInvalidArgs(parser, options, ifExistsOpt, allTopicLevelOpts -- Set(alterOpt, deleteOpt))
       CommandLineUtils.checkInvalidArgs(parser, options, ifNotExistsOpt, allTopicLevelOpts -- Set(createOpt))
     }

@@ -5,7 +5,7 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- *
+ * 
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -20,109 +20,75 @@ package kafka.message
 import java.nio._
 import java.util.HashMap
 
-import org.apache.kafka.common.protocol.Errors
+import kafka.utils.TestUtils
+import org.apache.kafka.common.errors.UnsupportedVersionException
+import org.apache.kafka.common.utils.Utils
+import org.junit.Assert._
+import org.junit.{Before, Test}
+import org.scalatest.junit.JUnitSuite
 
 import scala.collection._
-import org.junit.Assert._
-import org.scalatest.junit.JUnitSuite
-import org.junit.{Before, Test}
-import kafka.utils.TestUtils
-import org.apache.kafka.common.utils.ByteUtils
 
-case class MessageTestVal(key: Array[Byte],
-                          payload: Array[Byte],
-                          codec: CompressionCodec,
-                          timestamp: Long,
-                          magicValue: Byte,
-                          message: Message)
+case class MessageTestVal(val key: Array[Byte], 
+                          val payload: Array[Byte], 
+                          val codec: CompressionCodec, 
+                          val message: Message)
 
 class MessageTest extends JUnitSuite {
-
+  
   var messages = new mutable.ArrayBuffer[MessageTestVal]()
-
+  
   @Before
   def setUp(): Unit = {
     val keys = Array(null, "key".getBytes, "".getBytes)
     val vals = Array("value".getBytes, "".getBytes, null)
     val codecs = Array(NoCompressionCodec, GZIPCompressionCodec, SnappyCompressionCodec, LZ4CompressionCodec)
-    val timestamps = Array(Message.NoTimestamp, 0L, 1L)
-    val magicValues = Array(Message.MagicValue_V0, Message.MagicValue_V1)
-    for(k <- keys; v <- vals; codec <- codecs; t <- timestamps; mv <- magicValues) {
-      val timestamp = ensureValid(mv, t)
-      messages += MessageTestVal(k, v, codec, timestamp, mv, new Message(v, k, timestamp, codec, mv))
-    }
-
-    def ensureValid(magicValue: Byte, timestamp: Long): Long =
-      if (magicValue > Message.MagicValue_V0) timestamp else Message.NoTimestamp
+    for(k <- keys; v <- vals; codec <- codecs)
+      messages += new MessageTestVal(k, v, codec, new Message(v, k, codec))
   }
-
+  
   @Test
-  def testFieldValues(): Unit = {
+  def testFieldValues {
     for(v <- messages) {
-      // check payload
       if(v.payload == null) {
         assertTrue(v.message.isNull)
         assertEquals("Payload should be null", null, v.message.payload)
       } else {
         TestUtils.checkEquals(ByteBuffer.wrap(v.payload), v.message.payload)
       }
-      // check timestamp
-      if (v.magicValue > Message.MagicValue_V0)
-        assertEquals("Timestamp should be the same", v.timestamp, v.message.timestamp)
-       else
-        assertEquals("Timestamp should be the NoTimestamp", Message.NoTimestamp, v.message.timestamp)
-
-      // check magic value
-      assertEquals(v.magicValue, v.message.magic)
-      // check key
+      assertEquals(Message.CurrentMagicValue, v.message.magic)
       if(v.message.hasKey)
         TestUtils.checkEquals(ByteBuffer.wrap(v.key), v.message.key)
       else
         assertEquals(null, v.message.key)
-      // check compression codec
       assertEquals(v.codec, v.message.compressionCodec)
     }
   }
 
   @Test
-  def testChecksum(): Unit = {
+  def testChecksum() {
     for(v <- messages) {
       assertTrue("Auto-computed checksum should be valid", v.message.isValid)
       // garble checksum
       val badChecksum: Int = (v.message.checksum + 1 % Int.MaxValue).toInt
-      ByteUtils.writeUnsignedInt(v.message.buffer, Message.CrcOffset, badChecksum)
+      Utils.writeUnsignedInt(v.message.buffer, Message.CrcOffset, badChecksum)
       assertFalse("Message with invalid checksum should be invalid", v.message.isValid)
     }
   }
-
+  
   @Test
-  def testEquality(): Unit = {
-    for (v <- messages) {
+  def testEquality() {
+    for(v <- messages) {
       assertFalse("Should not equal null", v.message.equals(null))
       assertFalse("Should not equal a random string", v.message.equals("asdf"))
       assertTrue("Should equal itself", v.message.equals(v.message))
-      val copy = new Message(bytes = v.payload, key = v.key, v.timestamp, codec = v.codec, v.magicValue)
+      val copy = new Message(bytes = v.payload, key = v.key, codec = v.codec)
       assertTrue("Should equal another message with the same content.", v.message.equals(copy))
     }
   }
-
-  @Test(expected = classOf[IllegalArgumentException])
-  def testInvalidTimestampAndMagicValueCombination(): Unit = {
-      new Message("hello".getBytes, 0L, Message.MagicValue_V0)
-  }
-
-  @Test(expected = classOf[IllegalArgumentException])
-  def testInvalidTimestamp(): Unit = {
-    new Message("hello".getBytes, -3L, Message.MagicValue_V1)
-  }
-
-  @Test(expected = classOf[IllegalArgumentException])
-  def testInvalidMagicByte(): Unit = {
-    new Message("hello".getBytes, 0L, 2.toByte)
-  }
-
+  
   @Test
-  def testIsHashable(): Unit = {
+  def testIsHashable() {
     // this is silly, but why not
     val m = new HashMap[Message, Message]()
     for(v <- messages)
@@ -131,13 +97,13 @@ class MessageTest extends JUnitSuite {
       assertEquals(v.message, m.get(v.message))
   }
 
-  @Test
-  def testExceptionMapping(): Unit = {
-    val expected = Errors.CORRUPT_MESSAGE
-    val actual = Errors.forException(new InvalidMessageException())
-
-    assertEquals("InvalidMessageException should map to a corrupt message error", expected, actual)
+  @Test(expected = classOf[UnsupportedVersionException])
+  def testInvalidMagicByte() {
+    // Create a message
+    val message = new Message("value".getBytes, "key".getBytes, NoCompressionCodec)
+    message.buffer.put(Message.MagicOffset, (Message.CurrentMagicValue + 1).toByte)
+    message.buffer.putInt(Message.CrcOffset, (message.computeChecksum() & 0xffffffffL).toInt)
+    message.ensureValid()
   }
-
 }
-
+ 	

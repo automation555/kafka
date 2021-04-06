@@ -44,7 +44,11 @@ object ConsoleProducer {
 
         val producer = new KafkaProducer[Array[Byte], Array[Byte]](producerProps(config))
 
-    Exit.addShutdownHook("producer-shutdown-hook", producer.close)
+        Runtime.getRuntime.addShutdownHook(new Thread() {
+          override def run(): Unit = {
+            producer.close()
+          }
+        })
 
         var record: ProducerRecord[Array[Byte], Array[Byte]] = null
         do {
@@ -86,11 +90,7 @@ object ConsoleProducer {
 
     props ++= config.extraProducerProps
 
-    if(config.bootstrapServer != null)
-      props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServer)
-    else
-      props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.brokerList)
-
+    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.brokerList)
     props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, config.compressionCodec)
     props.put(ProducerConfig.CLIENT_ID_CONFIG, "console-producer")
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer")
@@ -125,14 +125,9 @@ object ConsoleProducer {
       .withRequiredArg
       .describedAs("topic")
       .ofType(classOf[String])
-    val brokerListOpt = parser.accepts("broker-list", "DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified. The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
+    val brokerListOpt = parser.accepts("broker-list", "REQUIRED: The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
       .withRequiredArg
       .describedAs("broker-list")
-      .ofType(classOf[String])
-    val bootstrapServerOpt = parser.accepts("bootstrap-server", "REQUIRED. The server(s) to connect to. The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
-      .requiredUnless("broker-list")
-      .withRequiredArg
-      .describedAs("server to connect to")
       .ofType(classOf[String])
     val syncOpt = parser.accepts("sync", "If set message send requests to the brokers are synchronously, one at a time as they arrive.")
     val compressionCodecOpt = parser.accepts("compression-codec", "The compression codec: either 'none', 'gzip', 'snappy', 'lz4', or 'zstd'." +
@@ -206,10 +201,7 @@ object ConsoleProducer {
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(1024*100)
     val propertyOpt = parser.accepts("property", "A mechanism to pass user-defined properties in the form key=value to the message reader. " +
-      "This allows custom configuration for a user-defined message reader. Default properties include:\n" +
-      "\tparse.key=true|false\n" +
-      "\tkey.separator=<key.separator>\n" +
-      "\tignore.error=true|false")
+      "This allows custom configuration for a user-defined message reader.")
       .withRequiredArg
       .describedAs("prop")
       .ofType(classOf[String])
@@ -225,17 +217,11 @@ object ConsoleProducer {
     options = tryParse(parser, args)
 
     CommandLineUtils.printHelpAndExitIfNeeded(this, "This tool helps to read data from standard input and publish it to Kafka.")
-
-    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt)
+    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, brokerListOpt)
 
     val topic = options.valueOf(topicOpt)
-
-    val bootstrapServer = options.valueOf(bootstrapServerOpt)
     val brokerList = options.valueOf(brokerListOpt)
-
-    val brokerHostsAndPorts = options.valueOf(if (options.has(bootstrapServerOpt)) bootstrapServerOpt else brokerListOpt)
-    ToolsUtils.validatePortOrDie(parser, brokerHostsAndPorts)
-
+    ToolsUtils.validatePortOrDie(parser,brokerList)
     val sync = options.has(syncOpt)
     val compressionCodecOptionValue = options.valueOf(compressionCodecOpt)
     val compressionCodec = if (options.has(compressionCodecOpt))
@@ -265,6 +251,7 @@ object ConsoleProducer {
     var keySeparator = "\t"
     var ignoreError = false
     var lineNumber = 0
+    var nullValue: String = null
 
     override def init(inputStream: InputStream, props: Properties): Unit = {
       topic = props.getProperty("topic")
@@ -274,6 +261,8 @@ object ConsoleProducer {
         keySeparator = props.getProperty("key.separator")
       if (props.containsKey("ignore.error"))
         ignoreError = props.getProperty("ignore.error").trim.equalsIgnoreCase("true")
+      if (props.containsKey("null.value"))
+        nullValue = props.getProperty("null.value")
       reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))
     }
 
@@ -288,8 +277,9 @@ object ConsoleProducer {
               if (ignoreError) new ProducerRecord(topic, line.getBytes(StandardCharsets.UTF_8))
               else throw new KafkaException(s"No key found on line $lineNumber: $line")
             case n =>
-              val value = (if (n + keySeparator.size > line.size) "" else line.substring(n + keySeparator.size)).getBytes(StandardCharsets.UTF_8)
-              new ProducerRecord(topic, line.substring(0, n).getBytes(StandardCharsets.UTF_8), value)
+              val value = if (n + keySeparator.size > line.size) "" else line.substring(n + keySeparator.size)
+              val valueBytes = if (value == nullValue) null else value.getBytes(StandardCharsets.UTF_8)
+              new ProducerRecord(topic, line.substring(0, n).getBytes(StandardCharsets.UTF_8), valueBytes)
           }
         case (line, false) =>
           new ProducerRecord(topic, line.getBytes(StandardCharsets.UTF_8))

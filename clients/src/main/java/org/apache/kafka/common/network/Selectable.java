@@ -19,9 +19,10 @@ package org.apache.kafka.common.network;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+
+import org.apache.kafka.common.Node;
 
 /**
  * An interface for asynchronous, multi-channel network I/O
@@ -35,13 +36,13 @@ public interface Selectable {
 
     /**
      * Begin establishing a socket connection to the given address identified by the given address
-     * @param id The id for this connection
+     * @param node The node to connect to
      * @param address The address to connect to
      * @param sendBufferSize The send buffer for the socket
      * @param receiveBufferSize The receive buffer for the socket
      * @throws IOException If we cannot begin connecting
      */
-    void connect(String id, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException;
+    void connect(Node node, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException;
 
     /**
      * Wakeup this selector if it is blocked on I/O
@@ -62,7 +63,7 @@ public interface Selectable {
      * Queue the given request for sending in the subsequent {@link #poll(long) poll()} calls
      * @param send The request to send
      */
-    void send(NetworkSend send);
+    void send(Send send);
 
     /**
      * Do I/O. Reads, writes, connection establishment, etc.
@@ -74,12 +75,12 @@ public interface Selectable {
     /**
      * The list of sends that completed on the last {@link #poll(long) poll()} call.
      */
-    List<NetworkSend> completedSends();
+    List<Send> completedSends();
 
     /**
-     * The collection of receives that completed on the last {@link #poll(long) poll()} call.
+     * The list of receives that completed on the last {@link #poll(long) poll()} call.
      */
-    Collection<NetworkReceive> completedReceives();
+    List<NetworkReceive> completedReceives();
 
     /**
      * The connections that finished disconnecting on the last {@link #poll(long) poll()}

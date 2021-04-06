@@ -20,8 +20,8 @@ package kafka.server
 
 import java.net.InetSocketAddress
 import java.time.Duration
-import java.util.{Collections, Properties}
-import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+import java.util.Properties
+import java.util.concurrent.{Executors, TimeUnit}
 
 import kafka.api.{Both, IntegrationTestHarness, SaslSetup}
 import kafka.utils.TestUtils
@@ -29,20 +29,19 @@ import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.config.SaslConfigs
 import org.apache.kafka.common.errors.SaslAuthenticationException
-import org.apache.kafka.common.message.ApiMessageType.ListenerType
 import org.apache.kafka.common.network._
-import org.apache.kafka.common.requests.ApiVersionsResponse
 import org.apache.kafka.common.security.{JaasContext, TestSecurityConfig}
-import org.apache.kafka.common.security.auth.{Login, SecurityProtocol}
-import org.apache.kafka.common.security.kerberos.KerberosLogin
-import org.apache.kafka.common.utils.{LogContext, MockTime}
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.apache.kafka.common.utils.MockTime
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
+import org.apache.kafka.common.Node
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
+import org.apache.kafka.common.Node
 
 class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
-  override val brokerCount = 1
+  override val serverCount = 1
   override protected def securityProtocol = SecurityProtocol.SASL_PLAINTEXT
 
   private val kafkaClientSaslMechanism = "GSSAPI"
@@ -58,9 +57,8 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
   val tp = new TopicPartition(topic, part)
   private val failedAuthenticationDelayMs = 2000
 
-  @BeforeEach
-  override def setUp(): Unit = {
-    TestableKerberosLogin.reset()
+  @Before
+  override def setUp() {
     startSasl(jaasSections(kafkaServerSaslMechanisms, Option(kafkaClientSaslMechanism), Both))
     serverConfig.put(KafkaConfig.SslClientAuthProp, "required")
     serverConfig.put(KafkaConfig.FailedAuthenticationDelayMsProp, failedAuthenticationDelayMs.toString)
@@ -74,15 +72,14 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
     clientConfig.put(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG, "5000")
 
     // create the test topic with all the brokers as replicas
-    createTopic(topic, 2, brokerCount)
+    createTopic(topic, 2, serverCount)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     executor.shutdownNow()
     super.tearDown()
     closeSasl()
-    TestableKerberosLogin.reset()
   }
 
   /**
@@ -98,36 +95,7 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
     futures.foreach(_.get(60, TimeUnit.SECONDS))
     assertEquals(0, TestUtils.totalMetricValue(servers.head, "failed-authentication-total"))
     val successfulAuths = TestUtils.totalMetricValue(servers.head, "successful-authentication-total")
-    assertTrue(successfulAuths > successfulAuthsPerThread * numThreads, "Too few authentications: " + successfulAuths)
-  }
-
-  /**
-   * Verifies that there are no authentication failures during Kerberos re-login. If authentication
-   * is performed when credentials are unavailable between logout and login, we handle it as a
-   * transient error and not an authentication failure so that clients may retry.
-   */
-  @Test
-  def testReLogin(): Unit = {
-    val selector = createSelectorWithRelogin()
-    try {
-      val login = TestableKerberosLogin.instance
-      assertNotNull(login)
-      executor.submit(() => login.reLogin(), 0)
-
-      val node1 = "1"
-      selector.connect(node1, serverAddr, 1024, 1024)
-      login.logoutResumeLatch.countDown()
-      login.logoutCompleteLatch.await(15, TimeUnit.SECONDS)
-      assertFalse(pollUntilReadyOrDisconnected(selector, node1), "Authenticated during re-login")
-
-      login.reLoginResumeLatch.countDown()
-      login.reLoginCompleteLatch.await(15, TimeUnit.SECONDS)
-      val node2 = "2"
-      selector.connect(node2, serverAddr, 1024, 1024)
-      assertTrue(pollUntilReadyOrDisconnected(selector, node2), "Authenticated failed after re-login")
-    } finally {
-      selector.close()
-    }
+    assertTrue("Too few authentications: " + successfulAuths, successfulAuths > successfulAuthsPerThread * numThreads)
   }
 
   /**
@@ -157,7 +125,12 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
     consumer.assign(List(tp).asJava)
 
     val startMs = System.currentTimeMillis()
-    assertThrows(classOf[SaslAuthenticationException], () => consumer.poll(Duration.ofMillis(50)))
+    try {
+      consumer.poll(Duration.ofMillis(50))
+      fail()
+    } catch {
+      case _: SaslAuthenticationException =>
+    }
     val endMs = System.currentTimeMillis()
     require(endMs - startMs < failedAuthenticationDelayMs, "Failed authentication must not be delayed on the client")
     consumer.close()
@@ -176,32 +149,24 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
     try {
       var actualSuccessfulAuths = 0
       while (actualSuccessfulAuths < numSuccessfulAuths) {
-        val nodeId = actualSuccessfulAuths.toString
-        selector.connect(nodeId, serverAddr, 1024, 1024)
-        val isReady = pollUntilReadyOrDisconnected(selector, nodeId)
-        if (isReady)
+        val node = new Node(actualSuccessfulAuths, serverAddr.getHostName, serverAddr.getPort)
+        selector.connect(node, serverAddr, 1024, 1024)
+        TestUtils.waitUntilTrue(() => {
+          selector.poll(100)
+          val disconnectState = selector.disconnected().get(node.idString)
+          // Verify that disconnect state is not AUTHENTICATION_FAILED
+          if (disconnectState != null)
+            assertEquals(s"Authentication failed with exception ${disconnectState.exception()}",
+              ChannelState.State.AUTHENTICATE, disconnectState.state())
+          selector.isChannelReady(node.idString) || disconnectState != null
+        }, "Client not ready or disconnected within timeout")
+        if (selector.isChannelReady(node.idString))
           actualSuccessfulAuths += 1
-        selector.close(nodeId)
+        selector.close(node.idString)
       }
     } finally {
       selector.close()
     }
-  }
-
-  private def pollUntilReadyOrDisconnected(selector: Selector, nodeId: String): Boolean = {
-    TestUtils.waitUntilTrue(() => {
-      selector.poll(100)
-      val disconnectState = selector.disconnected().get(nodeId)
-      // Verify that disconnect state is not AUTHENTICATION_FAILED
-      if (disconnectState != null) {
-        assertEquals(ChannelState.State.AUTHENTICATE, disconnectState.state(),
-          s"Authentication failed with exception ${disconnectState.exception()}")
-      }
-      selector.isChannelReady(nodeId) || disconnectState != null
-    }, "Client not ready or disconnected within timeout")
-    val isReady = selector.isChannelReady(nodeId)
-    selector.close(nodeId)
-    isReady
   }
 
   /**
@@ -212,11 +177,11 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
    */
   private def verifyNonRetriableAuthenticationFailure(): Unit = {
     val selector = createSelector()
-    val nodeId = "1"
-    selector.connect(nodeId, serverAddr, 1024, 1024)
+    val node = new Node(1, serverAddr.getHostName, serverAddr.getPort)
+    selector.connect(node, serverAddr, 1024, 1024)
     TestUtils.waitUntilTrue(() => {
       selector.poll(100)
-      val disconnectState = selector.disconnected().get(nodeId)
+      val disconnectState = selector.disconnected().get(node.idString)
       if (disconnectState != null)
         assertEquals(ChannelState.State.AUTHENTICATION_FAILED, disconnectState.state())
       disconnectState != null
@@ -225,50 +190,7 @@ class GssapiAuthenticationTest extends IntegrationTestHarness with SaslSetup {
 
   private def createSelector(): Selector = {
     val channelBuilder = ChannelBuilders.clientChannelBuilder(securityProtocol,
-      JaasContext.Type.CLIENT, new TestSecurityConfig(clientConfig), null, kafkaClientSaslMechanism,
-      time, true, new LogContext())
+      JaasContext.Type.CLIENT, new TestSecurityConfig(clientConfig), null, kafkaClientSaslMechanism, time, true)
     NetworkTestUtils.createSelector(channelBuilder, time)
-  }
-
-  private def createSelectorWithRelogin(): Selector = {
-    clientConfig.setProperty(SaslConfigs.SASL_KERBEROS_MIN_TIME_BEFORE_RELOGIN, "0")
-    val config = new TestSecurityConfig(clientConfig)
-    val jaasContexts = Collections.singletonMap("GSSAPI", JaasContext.loadClientContext(config.values()))
-    val channelBuilder = new SaslChannelBuilder(Mode.CLIENT, jaasContexts, securityProtocol,
-      null, false, kafkaClientSaslMechanism, true, null, null, null, time, new LogContext(),
-      () => ApiVersionsResponse.defaultApiVersionsResponse(ListenerType.ZK_BROKER)) {
-      override protected def defaultLoginClass(): Class[_ <: Login] = classOf[TestableKerberosLogin]
-    }
-    channelBuilder.configure(config.values())
-    NetworkTestUtils.createSelector(channelBuilder, time)
-  }
-}
-
-object TestableKerberosLogin {
-  @volatile var instance: TestableKerberosLogin = _
-  def reset(): Unit = {
-    instance = null
-  }
-}
-
-class TestableKerberosLogin extends KerberosLogin {
-  val logoutResumeLatch = new CountDownLatch(1)
-  val logoutCompleteLatch = new CountDownLatch(1)
-  val reLoginResumeLatch = new CountDownLatch(1)
-  val reLoginCompleteLatch = new CountDownLatch(1)
-
-  assertNull(TestableKerberosLogin.instance)
-  TestableKerberosLogin.instance = this
-
-  override def reLogin(): Unit = {
-    super.reLogin()
-    reLoginCompleteLatch.countDown()
-  }
-
-  override protected def logout(): Unit = {
-    logoutResumeLatch.await(15, TimeUnit.SECONDS)
-    super.logout()
-    logoutCompleteLatch.countDown()
-    reLoginResumeLatch.await(15, TimeUnit.SECONDS)
   }
 }

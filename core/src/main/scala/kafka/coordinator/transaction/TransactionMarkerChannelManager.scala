@@ -51,16 +51,15 @@ object TransactionMarkerChannelManager {
       config,
       config.interBrokerListenerName,
       config.saslMechanismInterBrokerProtocol,
+      time,
       config.saslInterBrokerHandshakeRequestEnable
     )
     val selector = new Selector(
-      NetworkReceive.UNLIMITED,
       config.connectionsMaxIdleMs,
       metrics,
       time,
       "txn-marker-channel",
       Map.empty[String, String].asJava,
-      false,
       channelBuilder,
       logContext
     )
@@ -74,6 +73,7 @@ object TransactionMarkerChannelManager {
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       config.socketReceiveBufferBytes,
       config.requestTimeoutMs,
+      ClientDnsLookup.DEFAULT,
       time,
       false,
       new ApiVersions,
@@ -135,7 +135,7 @@ class TransactionMarkerChannelManager(config: KafkaConfig,
 
   private val txnLogAppendRetryQueue = new LinkedBlockingQueue[TxnLogAppend]()
 
-  override val unsentExpiryMs: Int = config.requestTimeoutMs
+  override val requestTimeoutMs: Int = config.requestTimeoutMs
 
   newGauge(
     "UnknownDestinationQueueSize",
@@ -167,7 +167,7 @@ class TransactionMarkerChannelManager(config: KafkaConfig,
   // visible for testing
   private[transaction] def queueForUnknownBroker = markersQueueForUnknownBroker
 
-  private[transaction] def addMarkersForBroker(broker: Node, txnTopicPartition: Int, txnIdAndMarker: TxnIdAndMarkerEntry): Unit = {
+  private[transaction] def addMarkersForBroker(broker: Node, txnTopicPartition: Int, txnIdAndMarker: TxnIdAndMarkerEntry) {
     val brokerId = broker.id
 
     // we do not synchronize on the update of the broker node with the enqueuing,

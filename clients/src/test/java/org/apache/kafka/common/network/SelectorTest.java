@@ -18,6 +18,7 @@ package org.apache.kafka.common.network;
 
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.Node;
 import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.memory.SimpleMemoryPool;
 import org.apache.kafka.common.metrics.KafkaMetric;
@@ -29,13 +30,10 @@ import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.test.TestCondition;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
@@ -44,28 +42,22 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
+import java.util.Optional;
 
-import static java.util.Arrays.asList;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -76,30 +68,31 @@ import static org.mockito.Mockito.when;
 /**
  * A set of tests for the selector. These use a test harness that runs a simple socket server that echos back responses.
  */
-@Timeout(240)
 public class SelectorTest {
+
     protected static final int BUFFER_SIZE = 4 * 1024;
-    private static final String METRIC_GROUP = "MetricGroup";
 
     protected EchoServer server;
     protected Time time;
     protected Selector selector;
     protected ChannelBuilder channelBuilder;
     protected Metrics metrics;
+    protected Node defaultNode;
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
         Map<String, Object> configs = new HashMap<>();
         this.server = new EchoServer(SecurityProtocol.PLAINTEXT, configs);
         this.server.start();
         this.time = new MockTime();
         this.channelBuilder = new PlaintextChannelBuilder(ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT));
-        this.channelBuilder.configure(clientConfigs());
+        this.channelBuilder.configure(configs);
         this.metrics = new Metrics();
-        this.selector = new Selector(5000, this.metrics, time, METRIC_GROUP, channelBuilder, new LogContext());
+        this.selector = new Selector(5000L, this.metrics, time, "MetricGroup", channelBuilder, MemoryPool.NONE, new LogContext());
+        this.defaultNode = new Node(0, "localhost", server.port);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
         try {
             verifySelectorEmpty();
@@ -114,22 +107,16 @@ public class SelectorTest {
         return SecurityProtocol.PLAINTEXT;
     }
 
-    protected Map<String, Object> clientConfigs() {
-        return new HashMap<>();
-    }
-
     /**
      * Validate that when the server disconnects, a client send ends up with that node in the disconnected list.
      */
     @Test
     public void testServerDisconnect() throws Exception {
-        final String node = "0";
-
         // connect and do a simple request
-        blockingConnect(node);
-        assertEquals("hello", blockingRequest(node, "hello"));
+        blockingConnect(defaultNode);
+        assertEquals("hello", blockingRequest(defaultNode, "hello"));
 
-        KafkaChannel channel = selector.channel(node);
+        KafkaChannel channel = selector.channel(defaultNode.idString());
 
         // disconnect
         this.server.closeConnections();
@@ -138,7 +125,7 @@ public class SelectorTest {
             public boolean conditionMet() {
                 try {
                     selector.poll(1000L);
-                    return selector.disconnected().containsKey(node);
+                    return selector.disconnected().containsKey(defaultNode.idString());
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
@@ -148,8 +135,8 @@ public class SelectorTest {
         assertNull(channel.selectionKey().attachment());
 
         // reconnect and do another request
-        blockingConnect(node);
-        assertEquals("hello", blockingRequest(node, "hello"));
+        blockingConnect(defaultNode);
+        assertEquals("hello", blockingRequest(defaultNode, "hello"));
     }
 
     /**
@@ -157,35 +144,36 @@ public class SelectorTest {
      */
     @Test
     public void testCantSendWithInProgress() throws Exception {
-        String node = "0";
-        blockingConnect(node);
-        selector.send(createSend(node, "test1"));
+        blockingConnect(defaultNode);
+        selector.send(createSend(defaultNode.idString(), "test1"));
         try {
-            selector.send(createSend(node, "test2"));
+            selector.send(createSend(defaultNode.idString(), "test2"));
             fail("IllegalStateException not thrown when sending a request with one in flight");
         } catch (IllegalStateException e) {
             // Expected exception
         }
-        selector.poll(0);
-        assertTrue(selector.disconnected().containsKey(node), "Channel not closed");
-        assertEquals(ChannelState.FAILED_SEND, selector.disconnected().get(node));
+        selector.poll(0L);
+        assertTrue("Channel not closed", selector.disconnected().containsKey(defaultNode.idString()));
+        assertEquals(ChannelState.FAILED_SEND, selector.disconnected().get(defaultNode.idString()));
     }
 
     /**
      * Sending a request to a node without an existing connection should result in an exception
      */
-    @Test
-    public void testSendWithoutConnecting() {
-        assertThrows(IllegalStateException.class, () -> selector.send(createSend("0", "test")));
+    @Test(expected = IllegalStateException.class)
+    public void testCantSendWithoutConnecting() throws Exception {
+        selector.send(createSend("0", "test"));
+        selector.poll(1000L);
     }
 
     /**
      * Sending a request to a node with a bad hostname should result in an exception during connect
      */
-    @Test
-    public void testNoRouteToHost() {
-        assertThrows(IOException.class,
-            () -> selector.connect("0", new InetSocketAddress("some.invalid.hostname.foo.bar.local", server.port), BUFFER_SIZE, BUFFER_SIZE));
+    @Test(expected = IOException.class)
+    public void testNoRouteToHost() throws Exception {
+        Node node = new Node(0, "some.invalid.hostname.foo.bar.local", server.port);
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
     }
 
     /**
@@ -193,12 +181,13 @@ public class SelectorTest {
      */
     @Test
     public void testConnectionRefused() throws Exception {
-        String node = "0";
         ServerSocket nonListeningSocket = new ServerSocket(0);
         int nonListeningPort = nonListeningSocket.getLocalPort();
-        selector.connect(node, new InetSocketAddress("localhost", nonListeningPort), BUFFER_SIZE, BUFFER_SIZE);
-        while (selector.disconnected().containsKey(node)) {
-            assertEquals(ChannelState.NOT_CONNECTED, selector.disconnected().get(node));
+        Node node = new Node(0, "localhost", nonListeningPort);
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
+        while (selector.disconnected().containsKey(node.idString())) {
+            assertEquals(ChannelState.NOT_CONNECTED, selector.disconnected().get(node.idString()));
             selector.poll(1000L);
         }
         nonListeningSocket.close();
@@ -214,9 +203,10 @@ public class SelectorTest {
         int reqs = 500;
 
         // create connections
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        for (int i = 0; i < conns; i++)
-            connect(Integer.toString(i), addr);
+        for (int i = 0; i < conns; i++) {
+            Node node = new Node(i, "localhost", server.port);
+            connect(node);
+        }
         // send echo requests and receive responses
         Map<String, Integer> requests = new HashMap<>();
         Map<String, Integer> responses = new HashMap<>();
@@ -231,27 +221,27 @@ public class SelectorTest {
             // do the i/o
             selector.poll(0L);
 
-            assertEquals(0, selector.disconnected().size(), "No disconnects should have occurred.");
+            assertEquals("No disconnects should have occurred.", 0, selector.disconnected().size());
 
             // handle any responses we may have gotten
             for (NetworkReceive receive : selector.completedReceives()) {
                 String[] pieces = asString(receive).split("-");
-                assertEquals(2, pieces.length, "Should be in the form 'conn-counter'");
-                assertEquals(receive.source(), pieces[0], "Check the source");
-                assertEquals(0, receive.payload().position(), "Check that the receive has kindly been rewound");
+                assertEquals("Should be in the form 'conn-counter'", 2, pieces.length);
+                assertEquals("Check the source", receive.source(), pieces[0]);
+                assertEquals("Check that the receive has kindly been rewound", 0, receive.payload().position());
                 if (responses.containsKey(receive.source())) {
-                    assertEquals((int) responses.get(receive.source()), Integer.parseInt(pieces[1]), "Check the request counter");
+                    assertEquals("Check the request counter", (int) responses.get(receive.source()), Integer.parseInt(pieces[1]));
                     responses.put(receive.source(), responses.get(receive.source()) + 1);
                 } else {
-                    assertEquals(0, Integer.parseInt(pieces[1]), "Check the request counter");
+                    assertEquals("Check the request counter", 0, Integer.parseInt(pieces[1]));
                     responses.put(receive.source(), 1);
                 }
                 responseCount++;
             }
 
             // prepare new sends for the next round
-            for (NetworkSend send : selector.completedSends()) {
-                String dest = send.destinationId();
+            for (Send send : selector.completedSends()) {
+                String dest = send.destination();
                 if (requests.containsKey(dest))
                     requests.put(dest, requests.get(dest) + 1);
                 else
@@ -260,21 +250,6 @@ public class SelectorTest {
                     selector.send(createSend(dest, dest + "-" + requests.get(dest)));
             }
         }
-        if (channelBuilder instanceof PlaintextChannelBuilder) {
-            assertEquals(0, cipherMetrics(metrics).size());
-        } else {
-            TestUtils.waitForCondition(() -> cipherMetrics(metrics).size() == 1,
-                "Waiting for cipher metrics to be created.");
-            assertEquals(Integer.valueOf(5), cipherMetrics(metrics).get(0).metricValue());
-        }
-    }
-
-    static List<KafkaMetric> cipherMetrics(Metrics metrics) {
-        return metrics.metrics().entrySet().stream().
-            filter(e -> e.getKey().description().
-                contains("The number of connections with this SSL cipher and protocol.")).
-            map(e -> e.getValue()).
-            collect(Collectors.toList());
     }
 
     /**
@@ -282,106 +257,37 @@ public class SelectorTest {
      */
     @Test
     public void testSendLargeRequest() throws Exception {
-        String node = "0";
-        blockingConnect(node);
+        blockingConnect(defaultNode);
         String big = TestUtils.randomString(10 * BUFFER_SIZE);
-        assertEquals(big, blockingRequest(node, big));
-    }
-
-    @Test
-    public void testPartialSendAndReceiveReflectedInMetrics() throws Exception {
-        // We use a large payload to attempt to trigger the partial send and receive logic.
-        int payloadSize = 20 * BUFFER_SIZE;
-        String payload = TestUtils.randomString(payloadSize);
-        String nodeId = "0";
-        blockingConnect(nodeId);
-        ByteBufferSend send = ByteBufferSend.sizePrefixed(ByteBuffer.wrap(payload.getBytes()));
-        NetworkSend networkSend = new NetworkSend(nodeId, send);
-
-        selector.send(networkSend);
-        KafkaChannel channel = selector.channel(nodeId);
-
-        KafkaMetric outgoingByteTotal = findUntaggedMetricByName("outgoing-byte-total");
-        KafkaMetric incomingByteTotal = findUntaggedMetricByName("incoming-byte-total");
-
-        TestUtils.waitForCondition(() -> {
-            long bytesSent = send.size() - send.remaining();
-            assertEquals(bytesSent, ((Double) outgoingByteTotal.metricValue()).longValue());
-
-            NetworkReceive currentReceive = channel.currentReceive();
-            if (currentReceive != null) {
-                assertEquals(currentReceive.bytesRead(), ((Double) incomingByteTotal.metricValue()).intValue());
-            }
-
-            selector.poll(50);
-            return !selector.completedReceives().isEmpty();
-        }, "Failed to receive expected response");
-
-        KafkaMetric requestTotal = findUntaggedMetricByName("request-total");
-        assertEquals(1, ((Double) requestTotal.metricValue()).intValue());
-
-        KafkaMetric responseTotal = findUntaggedMetricByName("response-total");
-        assertEquals(1, ((Double) responseTotal.metricValue()).intValue());
+        assertEquals(big, blockingRequest(defaultNode, big));
     }
 
     @Test
     public void testLargeMessageSequence() throws Exception {
         int bufferSize = 512 * 1024;
-        String node = "0";
+        Node node = new Node(0, "localhost", server.port);
         int reqs = 50;
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        connect(node, addr);
+        connect(node);
         String requestPrefix = TestUtils.randomString(bufferSize);
-        sendAndReceive(node, requestPrefix, 0, reqs);
+        sendAndReceive(node.idString(), requestPrefix, 0, reqs);
     }
 
     @Test
     public void testEmptyRequest() throws Exception {
-        String node = "0";
-        blockingConnect(node);
-        assertEquals("", blockingRequest(node, ""));
+        blockingConnect(defaultNode);
+        assertEquals("", blockingRequest(defaultNode, ""));
     }
 
-    @Test
-    public void testClearCompletedSendsAndReceives() throws Exception {
-        int bufferSize = 1024;
-        String node = "0";
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        connect(node, addr);
-        String request = TestUtils.randomString(bufferSize);
-        selector.send(createSend(node, request));
-        boolean sent = false;
-        boolean received = false;
-        while (!sent || !received) {
-            selector.poll(1000L);
-            assertEquals(0, selector.disconnected().size(), "No disconnects should have occurred.");
-            if (!selector.completedSends().isEmpty()) {
-                assertEquals(1, selector.completedSends().size());
-                selector.clearCompletedSends();
-                assertEquals(0, selector.completedSends().size());
-                sent = true;
-            }
-
-            if (!selector.completedReceives().isEmpty()) {
-                assertEquals(1, selector.completedReceives().size());
-                assertEquals(request, asString(selector.completedReceives().iterator().next()));
-                selector.clearCompletedReceives();
-                assertEquals(0, selector.completedReceives().size());
-                received = true;
-            }
-        }
-    }
-
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void testExistingConnectionId() throws IOException {
-        blockingConnect("0");
-        assertThrows(IllegalStateException.class, () -> blockingConnect("0"));
+        blockingConnect(defaultNode);
+        blockingConnect(defaultNode);
     }
 
     @Test
     public void testMute() throws Exception {
-        blockingConnect("0");
-        blockingConnect("1");
+        blockingConnect(defaultNode);
+        blockingConnect(new Node(1, "localhost", server.port));
 
         selector.send(createSend("0", "hello"));
         selector.send(createSend("1", "hi"));
@@ -389,44 +295,16 @@ public class SelectorTest {
         selector.mute("1");
 
         while (selector.completedReceives().isEmpty())
-            selector.poll(5);
-        assertEquals(1, selector.completedReceives().size(), "We should have only one response");
-        assertEquals("0", selector.completedReceives().iterator().next().source(),
-            "The response should not be from the muted node");
+            selector.poll(5L);
+        assertEquals("We should have only one response", 1, selector.completedReceives().size());
+        assertEquals("The response should not be from the muted node", "0", selector.completedReceives().get(0).source());
 
         selector.unmute("1");
         do {
-            selector.poll(5);
+            selector.poll(5L);
         } while (selector.completedReceives().isEmpty());
-        assertEquals(1, selector.completedReceives().size(), "We should have only one response");
-        assertEquals("1", selector.completedReceives().iterator().next().source(), "The response should be from the previously muted node");
-    }
-
-    @Test
-    public void testCloseAllChannels() throws Exception {
-        AtomicInteger closedChannelsCount = new AtomicInteger(0);
-        ChannelBuilder channelBuilder = new PlaintextChannelBuilder(null) {
-            private int channelIndex = 0;
-            @Override
-            KafkaChannel buildChannel(String id, TransportLayer transportLayer, Supplier<Authenticator> authenticatorCreator,
-                                      int maxReceiveSize, MemoryPool memoryPool, ChannelMetadataRegistry metadataRegistry) {
-                return new KafkaChannel(id, transportLayer, authenticatorCreator, maxReceiveSize, memoryPool, metadataRegistry) {
-                    private final int index = channelIndex++;
-                    @Override
-                    public void close() throws IOException {
-                        closedChannelsCount.getAndIncrement();
-                        if (index == 0) throw new RuntimeException("you should fail");
-                        else super.close();
-                    }
-                };
-            }
-        };
-        channelBuilder.configure(clientConfigs());
-        Selector selector = new Selector(5000, new Metrics(), new MockTime(), "MetricGroup", channelBuilder, new LogContext());
-        selector.connect("0", new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-        selector.connect("1", new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-        assertThrows(RuntimeException.class, selector::close);
-        assertEquals(2, closedChannelsCount.get());
+        assertEquals("We should have only one response", 1, selector.completedReceives().size());
+        assertEquals("The response should be from the previously muted node", "1", selector.completedReceives().get(0).source());
     }
 
     @Test
@@ -434,51 +312,84 @@ public class SelectorTest {
         ChannelBuilder channelBuilder = new PlaintextChannelBuilder(null) {
             @Override
             public KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize,
-                    MemoryPool memoryPool, ChannelMetadataRegistry metadataRegistry) throws KafkaException {
+                    MemoryPool memoryPool, boolean privileged) throws KafkaException {
                 throw new RuntimeException("Test exception");
             }
             @Override
             public void close() {
             }
         };
-        Selector selector = new Selector(5000, new Metrics(), new MockTime(), "MetricGroup", channelBuilder, new LogContext());
+        Selector selector = new Selector(5000L, new Metrics(), new MockTime(), "MetricGroup", channelBuilder, MemoryPool.NONE, new LogContext());
         SocketChannel socketChannel = SocketChannel.open();
         socketChannel.configureBlocking(false);
-        IOException e = assertThrows(IOException.class, () -> selector.register("1", socketChannel));
-        assertTrue(e.getCause().getMessage().contains("Test exception"), "Unexpected exception: " + e);
-        assertFalse(socketChannel.isOpen(), "Socket not closed");
+        try {
+            selector.register("1", socketChannel);
+            fail("Register did not fail");
+        } catch (IOException e) {
+            assertTrue("Unexpected exception: " + e, e.getCause().getMessage().contains("Test exception"));
+            assertFalse("Socket not closed", socketChannel.isOpen());
+        }
         selector.close();
     }
 
     @Test
+    public void testCloseConnectionInClosingState() throws Exception {
+        KafkaChannel channel = createConnectionWithStagedReceives(5);
+        String id = channel.id();
+        selector.mute(id); // Mute to allow channel to be expired even if more data is available for read
+        time.sleep(6000L);  // The max idle time is 5000ms
+        selector.poll(0L);
+        assertNull("Channel not expired", selector.channel(id));
+        assertEquals(channel, selector.closingChannel(id));
+        assertEquals(ChannelState.EXPIRED, channel.state());
+        selector.close(id);
+        assertNull("Channel not removed from channels", selector.channel(id));
+        assertNull("Channel not removed from closingChannels", selector.closingChannel(id));
+        assertTrue("Unexpected disconnect notification", selector.disconnected().isEmpty());
+        assertEquals(ChannelState.EXPIRED, channel.state());
+        assertNull(channel.selectionKey().attachment());
+        selector.poll(0L);
+        assertTrue("Unexpected disconnect notification", selector.disconnected().isEmpty());
+    }
+
+    @Test
     public void testCloseOldestConnection() throws Exception {
-        String id = "0";
-        blockingConnect(id);
+        blockingConnect(defaultNode);
 
-        time.sleep(6000); // The max idle time is 5000ms
-        selector.poll(0);
+        time.sleep(6000L); // The max idle time is 5000ms
+        selector.poll(0L);
 
-        assertTrue(selector.disconnected().containsKey(id), "The idle connection should have been closed");
-        assertEquals(ChannelState.EXPIRED, selector.disconnected().get(id));
+        assertTrue("The idle connection should have been closed", selector.disconnected().containsKey(defaultNode.idString()));
+        assertEquals(ChannelState.EXPIRED, selector.disconnected().get(defaultNode.idString()));
     }
 
     @Test
     public void testIdleExpiryWithoutReadyKeys() throws IOException {
-        String id = "0";
-        selector.connect(id, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-        KafkaChannel channel = selector.channel(id);
+        Node node = new Node(0, "localhost", server.port);
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
+        KafkaChannel channel = selector.channel(node.idString());
         channel.selectionKey().interestOps(0);
 
         time.sleep(6000); // The max idle time is 5000ms
         selector.poll(0);
-        assertTrue(selector.disconnected().containsKey(id), "The idle connection should have been closed");
-        assertEquals(ChannelState.EXPIRED, selector.disconnected().get(id));
+        assertTrue("The idle connection should have been closed", selector.disconnected().containsKey(node.idString()));
+        assertEquals(ChannelState.EXPIRED, selector.disconnected().get(node.idString()));
     }
 
     @Test
     public void testImmediatelyConnectedCleaned() throws Exception {
         Metrics metrics = new Metrics(); // new metrics object to avoid metric registration conflicts
-        Selector selector = new ImmediatelyConnectingSelector(5000, metrics, time, "MetricGroup", channelBuilder, new LogContext());
+        Selector selector = new Selector(5000L, metrics, time, "MetricGroup", channelBuilder, MemoryPool.NONE, new LogContext()) {
+            @Override
+            protected boolean doConnect(SocketChannel channel, InetSocketAddress address) throws IOException {
+                // Use a blocking connect to trigger the immediately connected path
+                channel.configureBlocking(true);
+                boolean connected = super.doConnect(channel, address);
+                channel.configureBlocking(false);
+                return connected;
+            }
+        };
 
         try {
             testImmediatelyConnectedCleaned(selector, true);
@@ -489,207 +400,87 @@ public class SelectorTest {
         }
     }
 
-    private static class ImmediatelyConnectingSelector extends Selector {
-        public ImmediatelyConnectingSelector(long connectionMaxIdleMS,
-                                             Metrics metrics,
-                                             Time time,
-                                             String metricGrpPrefix,
-                                             ChannelBuilder channelBuilder,
-                                             LogContext logContext) {
-            super(connectionMaxIdleMS, metrics, time, metricGrpPrefix, channelBuilder, logContext);
-        }
-
-        @Override
-        protected boolean doConnect(SocketChannel channel, InetSocketAddress address) throws IOException {
-            // Use a blocking connect to trigger the immediately connected path
-            channel.configureBlocking(true);
-            boolean connected = super.doConnect(channel, address);
-            channel.configureBlocking(false);
-            return connected;
-        }
-    }
-
     private void testImmediatelyConnectedCleaned(Selector selector, boolean closeAfterFirstPoll) throws Exception {
-        String id = "0";
-        selector.connect(id, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
+        Node node = new Node(0, "localhost", server.port);
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
         verifyNonEmptyImmediatelyConnectedKeys(selector);
         if (closeAfterFirstPoll) {
-            selector.poll(0);
+            selector.poll(0L);
             verifyEmptyImmediatelyConnectedKeys(selector);
         }
-        selector.close(id);
+        selector.close(node.idString());
         verifySelectorEmpty(selector);
     }
 
-    /**
-     * Verify that if Selector#connect fails and throws an Exception, all related objects
-     * are cleared immediately before the exception is propagated.
-     */
     @Test
-    public void testConnectException() throws Exception {
-        Metrics metrics = new Metrics();
-        AtomicBoolean throwIOException = new AtomicBoolean();
-        Selector selector = new ImmediatelyConnectingSelector(5000, metrics, time, "MetricGroup", channelBuilder, new LogContext()) {
-            @Override
-            protected SelectionKey registerChannel(String id, SocketChannel socketChannel, int interestedOps) throws IOException {
-                SelectionKey key = super.registerChannel(id, socketChannel, interestedOps);
-                key.cancel();
-                if (throwIOException.get())
-                    throw new IOException("Test exception");
-                return key;
+    public void testCloseOldestConnectionWithOneStagedReceive() throws Exception {
+        verifyCloseOldestConnectionWithStagedReceives(1);
+    }
+
+    @Test
+    public void testCloseOldestConnectionWithMultipleStagedReceives() throws Exception {
+        verifyCloseOldestConnectionWithStagedReceives(5);
+    }
+
+    private KafkaChannel createConnectionWithStagedReceives(int maxStagedReceives) throws Exception {
+        blockingConnect(defaultNode);
+        KafkaChannel channel = selector.channel(defaultNode.idString());
+        int retries = 100;
+
+        do {
+            selector.mute(defaultNode.idString());
+            for (int i = 0; i <= maxStagedReceives; i++) {
+                selector.send(createSend(defaultNode.idString(), String.valueOf(i)));
+                do {
+                    selector.poll(1000);
+                } while (selector.completedSends().isEmpty());
             }
-        };
 
-        try {
-            verifyImmediatelyConnectedException(selector, "0");
-            throwIOException.set(true);
-            verifyImmediatelyConnectedException(selector, "1");
-        } finally {
-            selector.close();
-            metrics.close();
-        }
+            selector.unmute(defaultNode.idString());
+            do {
+                selector.poll(1000L);
+            } while (selector.completedReceives().isEmpty());
+        } while (selector.numStagedReceives(channel) == 0 && --retries > 0);
+        assertTrue("No staged receives after 100 attempts", selector.numStagedReceives(channel) > 0);
+
+        return channel;
     }
 
-    private void verifyImmediatelyConnectedException(Selector selector, String id) throws Exception {
-        try {
-            selector.connect(id, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-            fail("Expected exception not thrown");
-        } catch (Exception e) {
-            verifyEmptyImmediatelyConnectedKeys(selector);
-            assertNull(selector.channel(id), "Channel not removed");
-            ensureEmptySelectorFields(selector);
-        }
-    }
-
-    /*
-     * Verifies that a muted connection is expired on idle timeout even if there are pending
-     * receives on the socket.
-     */
-    @Test
-    public void testExpireConnectionWithPendingReceives() throws Exception {
-        KafkaChannel channel = createConnectionWithPendingReceives(5);
-        verifyChannelExpiry(channel);
-    }
-
-    /**
-     * Verifies that a muted connection closed by peer is expired on idle timeout even if there are pending
-     * receives on the socket.
-     */
-    @Test
-    public void testExpireClosedConnectionWithPendingReceives() throws Exception {
-        KafkaChannel channel = createConnectionWithPendingReceives(5);
-        server.closeConnections();
-        verifyChannelExpiry(channel);
-    }
-
-    private void verifyChannelExpiry(KafkaChannel channel) throws Exception {
+    private void verifyCloseOldestConnectionWithStagedReceives(int maxStagedReceives) throws Exception {
+        KafkaChannel channel = createConnectionWithStagedReceives(maxStagedReceives);
         String id = channel.id();
-        selector.mute(id); // Mute to allow channel to be expired even if more data is available for read
-        time.sleep(6000);  // The max idle time is 5000ms
-        selector.poll(0);
-        assertNull(selector.channel(id), "Channel not expired");
-        assertNull(selector.closingChannel(id), "Channel not removed from closingChannels");
-        assertEquals(ChannelState.EXPIRED, channel.state());
-        assertNull(channel.selectionKey().attachment());
-        assertTrue(selector.disconnected().containsKey(id), "Disconnect not notified");
-        assertEquals(ChannelState.EXPIRED, selector.disconnected().get(id));
-        verifySelectorEmpty();
-    }
-
-    /**
-     * Verifies that sockets with incoming data available are not expired.
-     * For PLAINTEXT, pending receives are always read from socket without any buffering, so this
-     * test is only verifying that channels are not expired while there is data to read from socket.
-     * For SSL, pending receives may also be in SSL netReadBuffer or appReadBuffer. So the test verifies
-     * that connection is not expired when data is available from buffers or network.
-     */
-    @Test
-    public void testCloseOldestConnectionWithMultiplePendingReceives() throws Exception {
-        int expectedReceives = 5;
-        KafkaChannel channel = createConnectionWithPendingReceives(expectedReceives);
-        String id = channel.id();
+        int stagedReceives = selector.numStagedReceives(channel);
         int completedReceives = 0;
         while (selector.disconnected().isEmpty()) {
-            time.sleep(6000); // The max idle time is 5000ms
-            selector.poll(completedReceives == expectedReceives ? 0 : 1000);
+            time.sleep(6000L); // The max idle time is 5000ms
+            selector.poll(0L);
             completedReceives += selector.completedReceives().size();
-            if (!selector.completedReceives().isEmpty()) {
+            // With SSL, more receives may be staged from buffered data
+            int newStaged = selector.numStagedReceives(channel) - (stagedReceives - completedReceives);
+            if (newStaged > 0) {
+                stagedReceives += newStaged;
+                assertNotNull("Channel should not have been expired", selector.channel(id));
+                assertFalse("Channel should not have been disconnected", selector.disconnected().containsKey(id));
+            } else if (!selector.completedReceives().isEmpty()) {
                 assertEquals(1, selector.completedReceives().size());
-                assertNotNull(selector.channel(id), "Channel should not have been expired");
-                assertTrue(selector.closingChannel(id) != null || selector.channel(id) != null, "Channel not found");
-                assertFalse(selector.disconnected().containsKey(id), "Disconnect notified too early");
+                assertTrue("Channel not found", selector.closingChannel(id) != null || selector.channel(id) != null);
+                assertFalse("Disconnect notified too early", selector.disconnected().containsKey(id));
             }
         }
-        assertEquals(expectedReceives, completedReceives);
-        assertNull(selector.channel(id), "Channel not removed");
-        assertNull(selector.closingChannel(id), "Channel not removed");
-        assertTrue(selector.disconnected().containsKey(id), "Disconnect not notified");
-        assertTrue(selector.completedReceives().isEmpty(), "Unexpected receive");
-    }
-
-    /**
-     * Tests that graceful close of channel processes remaining data from socket read buffers.
-     * Since we cannot determine how much data is available in the buffers, this test verifies that
-     * multiple receives are completed after server shuts down connections, with retries to tolerate
-     * cases where data may not be available in the socket buffer.
-     */
-    @Test
-    public void testGracefulClose() throws Exception {
-        int maxReceiveCountAfterClose = 0;
-        for (int i = 6; i <= 100 && maxReceiveCountAfterClose < 5; i++) {
-            int receiveCount = 0;
-            KafkaChannel channel = createConnectionWithPendingReceives(i);
-            // Poll until one or more receives complete and then close the server-side connection
-            TestUtils.waitForCondition(() -> {
-                selector.poll(1000);
-                return selector.completedReceives().size() > 0;
-            }, 5000, "Receive not completed");
-            server.closeConnections();
-            while (selector.disconnected().isEmpty()) {
-                selector.poll(1);
-                receiveCount += selector.completedReceives().size();
-                assertTrue(selector.completedReceives().size() <= 1, "Too many completed receives in one poll");
-            }
-            assertEquals(channel.id(), selector.disconnected().keySet().iterator().next());
-            maxReceiveCountAfterClose = Math.max(maxReceiveCountAfterClose, receiveCount);
-        }
-        assertTrue(maxReceiveCountAfterClose >= 5, "Too few receives after close: " + maxReceiveCountAfterClose);
-    }
-
-    /**
-     * Tests that graceful close is not delayed if only part of an incoming receive is
-     * available in the socket buffer.
-     */
-    @Test
-    public void testPartialReceiveGracefulClose() throws Exception {
-        String id = "0";
-        blockingConnect(id);
-        KafkaChannel channel = selector.channel(id);
-        // Inject a NetworkReceive into Kafka channel with a large size
-        injectNetworkReceive(channel, 100000);
-        sendNoReceive(channel, 2); // Send some data that gets received as part of injected receive
-        selector.poll(1000); // Wait until some data arrives, but not a completed receive
-        assertEquals(0, selector.completedReceives().size());
-        server.closeConnections();
-        TestUtils.waitForCondition(() -> {
-            try {
-                selector.poll(100);
-                return !selector.disconnected().isEmpty();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        }, 10000, "Channel not disconnected");
-        assertEquals(1, selector.disconnected().size());
-        assertEquals(channel.id(), selector.disconnected().keySet().iterator().next());
-        assertEquals(0, selector.completedReceives().size());
+        assertEquals(stagedReceives, completedReceives);
+        assertNull("Channel not removed", selector.channel(id));
+        assertNull("Channel not removed", selector.closingChannel(id));
+        assertTrue("Disconnect not notified", selector.disconnected().containsKey(id));
+        assertTrue("Unexpected receive", selector.completedReceives().isEmpty());
     }
 
     @Test
     public void testMuteOnOOM() throws Exception {
         //clean up default selector, replace it with one that uses a finite mem pool
         selector.close();
-        MemoryPool pool = new SimpleMemoryPool(900, 900, false, null);
-        selector = new Selector(NetworkReceive.UNLIMITED, 5000, metrics, time, "MetricGroup",
+        MemoryPool pool = SimpleMemoryPool.create(900L, 900, null);
+        selector = new Selector(NetworkReceive.UNLIMITED, 5000L, metrics, time, "MetricGroup",
             new HashMap<String, String>(), true, false, channelBuilder, pool, new LogContext());
 
         try (ServerSocketChannel ss = ServerSocketChannel.open()) {
@@ -704,8 +495,8 @@ public class SelectorTest {
 
             //wait until everything has been flushed out to network (assuming payload size is smaller than OS buffer size)
             //this is important because we assume both requests' prefixes (1st 4 bytes) have made it.
-            sender1.join(5000);
-            sender2.join(5000);
+            sender1.join(5000L);
+            sender2.join(5000L);
 
             SocketChannel channelX = ss.accept(); //not defined if its 1 or 2
             channelX.configureBlocking(false);
@@ -714,33 +505,33 @@ public class SelectorTest {
             selector.register("clientX", channelX);
             selector.register("clientY", channelY);
 
-            Collection<NetworkReceive> completed = Collections.emptyList();
-            long deadline = System.currentTimeMillis() + 5000;
+            List<NetworkReceive> completed = Collections.emptyList();
+            long deadline = System.currentTimeMillis() + 5000L;
             while (System.currentTimeMillis() < deadline && completed.isEmpty()) {
-                selector.poll(1000);
+                selector.poll(1000L);
                 completed = selector.completedReceives();
             }
-            assertEquals(1, completed.size(), "could not read a single request within timeout");
-            NetworkReceive firstReceive = completed.iterator().next();
-            assertEquals(0, pool.availableMemory());
+            assertEquals("could not read a single request within timeout", 1, completed.size());
+            NetworkReceive firstReceive = completed.get(0);
+            assertEquals(0L, pool.availableMemory());
             assertTrue(selector.isOutOfMemory());
 
-            selector.poll(10);
+            selector.poll(10L);
             assertTrue(selector.completedReceives().isEmpty());
-            assertEquals(0, pool.availableMemory());
+            assertEquals(0L, pool.availableMemory());
             assertTrue(selector.isOutOfMemory());
 
             firstReceive.close();
-            assertEquals(900, pool.availableMemory()); //memory has been released back to pool
+            assertEquals(900L, pool.availableMemory()); //memory has been released back to pool
 
             completed = Collections.emptyList();
             deadline = System.currentTimeMillis() + 5000;
             while (System.currentTimeMillis() < deadline && completed.isEmpty()) {
-                selector.poll(1000);
+                selector.poll(1000L);
                 completed = selector.completedReceives();
             }
-            assertEquals(1, selector.completedReceives().size(), "could not read a single request within timeout");
-            assertEquals(0, pool.availableMemory());
+            assertEquals("could not read a single request within timeout", 1, selector.completedReceives().size());
+            assertEquals(0L, pool.availableMemory());
             assertFalse(selector.isOutOfMemory());
         }
     }
@@ -749,20 +540,19 @@ public class SelectorTest {
         return new PlaintextSender(serverAddress, payload);
     }
 
-    protected byte[] randomPayload(int sizeBytes) throws Exception {
+    // Prepend size in front of random data
+    protected byte[] randomPayload(int sizeBytes) {
+        ByteBuffer payload = ByteBuffer.allocate(sizeBytes + 4);
+        payload.putInt(sizeBytes);
+        payload.put(randomData(sizeBytes));
+        return payload.array();
+    }
+
+    protected byte[] randomData(int sizeBytes) {
         Random random = new Random();
-        byte[] payload = new byte[sizeBytes + 4];
-        random.nextBytes(payload);
-        ByteArrayOutputStream prefixOs = new ByteArrayOutputStream();
-        DataOutputStream prefixDos = new DataOutputStream(prefixOs);
-        prefixDos.writeInt(sizeBytes);
-        prefixDos.flush();
-        prefixDos.close();
-        prefixOs.flush();
-        prefixOs.close();
-        byte[] prefix = prefixOs.toByteArray();
-        System.arraycopy(prefix, 0, payload, 0, prefix.length);
-        return payload;
+        byte[] data = new byte[sizeBytes];
+        random.nextBytes(data);
+        return data;
     }
 
     /**
@@ -804,9 +594,10 @@ public class SelectorTest {
     public void testOutboundConnectionsCountInConnectionCreationMetric() throws Exception {
         // create connections
         int expectedConnections = 5;
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        for (int i = 0; i < expectedConnections; i++)
-            connect(Integer.toString(i), addr);
+        for (int i = 0; i < expectedConnections; i++) {
+            Node node = new Node(i, "localhost", server.port);
+            connect(node);
+        }
 
         // Poll continuously, as we cannot guarantee that the first call will see all connections
         int seenConnections = 0;
@@ -843,206 +634,34 @@ public class SelectorTest {
         assertEquals((double) conns, getMetric("connection-count").metricValue());
     }
 
-    @Test
-    public void testConnectionsByClientMetric() throws Exception {
-        String node = "0";
-        Map<String, String> unknownNameAndVersion = softwareNameAndVersionTags(
-            ClientInformation.UNKNOWN_NAME_OR_VERSION, ClientInformation.UNKNOWN_NAME_OR_VERSION);
-        Map<String, String> knownNameAndVersion = softwareNameAndVersionTags("A", "B");
-
-        try (ServerSocketChannel ss = ServerSocketChannel.open()) {
-            ss.bind(new InetSocketAddress(0));
-            InetSocketAddress serverAddress = (InetSocketAddress) ss.getLocalAddress();
-
-            Thread sender = createSender(serverAddress, randomPayload(1));
-            sender.start();
-            SocketChannel channel = ss.accept();
-            channel.configureBlocking(false);
-
-            // Metric with unknown / unknown should be there
-            selector.register(node, channel);
-            assertEquals(1,
-                getMetric("connections", unknownNameAndVersion).metricValue());
-            assertEquals(ClientInformation.EMPTY,
-                selector.channel(node).channelMetadataRegistry().clientInformation());
-
-            // Metric with unknown / unknown should not be there, metric with A / B should be there
-            ClientInformation clientInformation = new ClientInformation("A", "B");
-            selector.channel(node).channelMetadataRegistry()
-                .registerClientInformation(clientInformation);
-            assertEquals(clientInformation,
-                selector.channel(node).channelMetadataRegistry().clientInformation());
-            assertEquals(0, getMetric("connections", unknownNameAndVersion).metricValue());
-            assertEquals(1, getMetric("connections", knownNameAndVersion).metricValue());
-
-            // Metric with A / B should not be there,
-            selector.close(node);
-            assertEquals(0, getMetric("connections", knownNameAndVersion).metricValue());
-        }
-    }
-
-    private Map<String, String> softwareNameAndVersionTags(String clientSoftwareName, String clientSoftwareVersion) {
-        Map<String, String> tags = new HashMap<>(2);
-        tags.put("clientSoftwareName", clientSoftwareName);
-        tags.put("clientSoftwareVersion", clientSoftwareVersion);
-        return tags;
-    }
-
-    private KafkaMetric getMetric(String name, Map<String, String> tags) throws Exception {
-        Optional<Map.Entry<MetricName, KafkaMetric>> metric = metrics.metrics().entrySet().stream()
-            .filter(entry ->
-                entry.getKey().name().equals(name) && entry.getKey().tags().equals(tags))
-            .findFirst();
-        if (!metric.isPresent())
-            throw new Exception(String.format("Could not find metric called %s with tags %s", name, tags.toString()));
-
-        return metric.get().getValue();
-    }
-
-    @SuppressWarnings("unchecked")
-    @Test
-    public void testLowestPriorityChannel() throws Exception {
-        int conns = 5;
-        InetSocketAddress addr = new InetSocketAddress("localhost", server.port);
-        for (int i = 0; i < conns; i++) {
-            connect(String.valueOf(i), addr);
-        }
-        assertNotNull(selector.lowestPriorityChannel());
-        for (int i = conns - 1; i >= 0; i--) {
-            if (i != 2)
-              assertEquals("", blockingRequest(String.valueOf(i), ""));
-            time.sleep(10);
-        }
-        assertEquals("2", selector.lowestPriorityChannel().id());
-
-        Field field = Selector.class.getDeclaredField("closingChannels");
-        field.setAccessible(true);
-        Map<String, KafkaChannel> closingChannels = (Map<String, KafkaChannel>) field.get(selector);
-        closingChannels.put("3", selector.channel("3"));
-        assertEquals("3", selector.lowestPriorityChannel().id());
-        closingChannels.remove("3");
-
-        for (int i = 0; i < conns; i++) {
-            selector.close(String.valueOf(i));
-        }
-        assertNull(selector.lowestPriorityChannel());
-    }
-
-    @Test
-    public void testMetricsCleanupOnSelectorClose() throws Exception {
-        Metrics metrics = new Metrics();
-        Selector selector = new ImmediatelyConnectingSelector(5000, metrics, time, "MetricGroup", channelBuilder, new LogContext()) {
-            @Override
-            public void close(String id) {
-                throw new RuntimeException();
-            }
-        };
-        assertTrue(metrics.metrics().size() > 1);
-        String id = "0";
-        selector.connect(id, new InetSocketAddress("localhost", server.port), BUFFER_SIZE, BUFFER_SIZE);
-
-        // Close the selector and ensure a RuntimeException has been throw
-        assertThrows(RuntimeException.class, selector::close);
-
-        // We should only have one remaining metric for kafka-metrics-count, which is a global metric
-        assertEquals(1, metrics.metrics().size());
-    }
-
-    @Test
-    public void testWriteCompletesSendWithNoBytesWritten() throws IOException {
-        KafkaChannel channel = mock(KafkaChannel.class);
-        when(channel.id()).thenReturn("1");
-        when(channel.write()).thenReturn(0L);
-        NetworkSend send = new NetworkSend("destination", new ByteBufferSend(ByteBuffer.allocate(0)));
-        when(channel.maybeCompleteSend()).thenReturn(send);
-        selector.write(channel);
-        assertEquals(asList(send), selector.completedSends());
-    }
-
-    /**
-     * Ensure that no errors are thrown if channels are closed while processing multiple completed receives
-     */
-    @Test
-    public void testChannelCloseWhileProcessingReceives() throws Exception {
-        int numChannels = 4;
-        Map<String, KafkaChannel> channels = TestUtils.fieldValue(selector, Selector.class, "channels");
-        Set<SelectionKey> selectionKeys = new HashSet<>();
-        for (int i = 0; i < numChannels; i++) {
-            String id = String.valueOf(i);
-            KafkaChannel channel = mock(KafkaChannel.class);
-            channels.put(id, channel);
-            when(channel.id()).thenReturn(id);
-            when(channel.state()).thenReturn(ChannelState.READY);
-            when(channel.isConnected()).thenReturn(true);
-            when(channel.ready()).thenReturn(true);
-            when(channel.read()).thenReturn(1L);
-
-            SelectionKey selectionKey = mock(SelectionKey.class);
-            when(channel.selectionKey()).thenReturn(selectionKey);
-            when(selectionKey.isValid()).thenReturn(true);
-            when(selectionKey.readyOps()).thenReturn(SelectionKey.OP_READ);
-            selectionKey.attach(channel);
-            selectionKeys.add(selectionKey);
-
-            NetworkReceive receive = mock(NetworkReceive.class);
-            when(receive.source()).thenReturn(id);
-            when(receive.size()).thenReturn(10);
-            when(receive.bytesRead()).thenReturn(1);
-            when(receive.payload()).thenReturn(ByteBuffer.allocate(10));
-            when(channel.maybeCompleteReceive()).thenReturn(receive);
-        }
-
-        selector.pollSelectionKeys(selectionKeys, false, System.nanoTime());
-        assertEquals(numChannels, selector.completedReceives().size());
-        Set<KafkaChannel> closed = new HashSet<>();
-        Set<KafkaChannel> notClosed = new HashSet<>();
-        for (NetworkReceive receive : selector.completedReceives()) {
-            KafkaChannel channel = selector.channel(receive.source());
-            assertNotNull(channel);
-            if (closed.size() < 2) {
-                selector.close(channel.id());
-                closed.add(channel);
-            } else
-                notClosed.add(channel);
-        }
-        assertEquals(notClosed, new HashSet<>(selector.channels()));
-        closed.forEach(channel -> assertNull(selector.channel(channel.id())));
-
-        selector.poll(0);
-        assertEquals(0, selector.completedReceives().size());
-    }
-
-
-    private String blockingRequest(String node, String s) throws IOException {
-        selector.send(createSend(node, s));
+    private String blockingRequest(Node node, String s) throws IOException {
+        selector.send(createSend(node.idString(), s));
         selector.poll(1000L);
         while (true) {
             selector.poll(1000L);
             for (NetworkReceive receive : selector.completedReceives())
-                if (receive.source().equals(node))
+                if (receive.source().equals(node.idString()))
                     return asString(receive);
         }
     }
 
-    protected void connect(String node, InetSocketAddress serverAddr) throws IOException {
-        selector.connect(node, serverAddr, BUFFER_SIZE, BUFFER_SIZE);
+    protected void connect(Node node) throws IOException {
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
     }
 
     /* connect and wait for the connection to complete */
-    private void blockingConnect(String node) throws IOException {
-        blockingConnect(node, new InetSocketAddress("localhost", server.port));
-    }
-
-    protected void blockingConnect(String node, InetSocketAddress serverAddr) throws IOException {
-        selector.connect(node, serverAddr, BUFFER_SIZE, BUFFER_SIZE);
-        while (!selector.connected().contains(node))
+    protected void blockingConnect(Node node) throws IOException {
+        InetSocketAddress addr = new InetSocketAddress(node.host(), node.port());
+        selector.connect(node, addr, BUFFER_SIZE, BUFFER_SIZE);
+        while (!selector.connected().contains(node.idString()))
             selector.poll(10000L);
-        while (!selector.isChannelReady(node))
+        while (!selector.isChannelReady(node.idString()))
             selector.poll(10000L);
     }
 
-    protected final NetworkSend createSend(String node, String payload) {
-        return new NetworkSend(node, ByteBufferSend.sizePrefixed(ByteBuffer.wrap(payload.getBytes())));
+    protected NetworkSend createSend(String node, String s) {
+        return new NetworkSend(node, ByteBuffer.wrap(s.getBytes()));
     }
 
     protected String asString(NetworkReceive receive) {
@@ -1057,7 +676,8 @@ public class SelectorTest {
         while (responses < endIndex) {
             // do the i/o
             selector.poll(0L);
-            assertEquals(0, selector.disconnected().size(), "No disconnects should have occurred.");
+            assertEquals("No disconnects should have occurred.", 0, selector.disconnected().size());
+
             // handle requests and responses of the fast node
             for (NetworkReceive receive : selector.completedReceives()) {
                 assertEquals(requestPrefix + "-" + responses, asString(receive));
@@ -1086,17 +706,13 @@ public class SelectorTest {
         verifySelectorEmpty(this.selector);
     }
 
-    public void verifySelectorEmpty(Selector selector) throws Exception {
+    private void verifySelectorEmpty(Selector selector) throws Exception {
         for (KafkaChannel channel : selector.channels()) {
             selector.close(channel.id());
             assertNull(channel.selectionKey().attachment());
         }
-        selector.poll(0);
-        selector.poll(0); // Poll a second time to clear everything
-        ensureEmptySelectorFields(selector);
-    }
-
-    private void ensureEmptySelectorFields(Selector selector) throws Exception {
+        selector.poll(0L);
+        selector.poll(0L); // Poll a second time to clear everything
         for (Field field : Selector.class.getDeclaredFields()) {
             ensureEmptySelectorField(selector, field);
         }
@@ -1106,9 +722,9 @@ public class SelectorTest {
         field.setAccessible(true);
         Object obj = field.get(selector);
         if (obj instanceof Collection)
-            assertTrue(((Collection<?>) obj).isEmpty(), "Field not empty: " + field + " " + obj);
+            assertTrue("Field not empty: " + field + " " + obj, ((Collection<?>) obj).isEmpty());
         else if (obj instanceof Map)
-            assertTrue(((Map<?, ?>) obj).isEmpty(), "Field not empty: " + field + " " + obj);
+            assertTrue("Field not empty: " + field + " " + obj, ((Map<?, ?>) obj).isEmpty());
     }
 
     private KafkaMetric getMetric(String name) throws Exception {
@@ -1121,53 +737,68 @@ public class SelectorTest {
         return metric.get().getValue();
     }
 
-    private KafkaMetric findUntaggedMetricByName(String name) {
-        MetricName metricName = new MetricName(name, METRIC_GROUP + "-metrics", "", new HashMap<>());
-        KafkaMetric metric = metrics.metrics().get(metricName);
-        assertNotNull(metric);
-        return metric;
-    }
+    @Test
+    public void testPrivilegedNodes() throws Exception {
+        //clean up default selector, replace it with one that uses a finite memory pool
+        selector.close();
+        MemoryPool pool = SimpleMemoryPool.create(100L, 100, null);
+        selector = new Selector(NetworkReceive.UNLIMITED, 5000L, metrics, time, "MetricGroup",
+            new HashMap<String, String>(), true, false, channelBuilder, pool, new LogContext());
 
-    /**
-     * Creates a connection, sends the specified number of requests and returns without reading
-     * any incoming data. Some of the incoming data may be in the socket buffers when this method
-     * returns, but there is no guarantee that all the data from the server will be available
-     * immediately.
-     */
-    private KafkaChannel createConnectionWithPendingReceives(int pendingReceives) throws Exception {
-        String id = "0";
-        blockingConnect(id);
-        KafkaChannel channel = selector.channel(id);
-        sendNoReceive(channel, pendingReceives);
-        return channel;
-    }
-
-    /**
-     * Sends the specified number of requests and waits for the requests to be sent. The channel
-     * is muted during polling to ensure that incoming data is not received.
-     */
-    private KafkaChannel sendNoReceive(KafkaChannel channel, int numRequests) throws Exception {
-        channel.mute();
-        for (int i = 0; i < numRequests; i++) {
-            selector.send(createSend(channel.id(), String.valueOf(i)));
-            do {
-                selector.poll(10);
-            } while (selector.completedSends().isEmpty());
+        // Build 3 nodes; only the 2nd node is privileged
+        List<Node> nodes = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            nodes.add(new Node(i, "localhost", server.port, i == 1));
         }
-        channel.maybeUnmute();
+        // create connections
+        for (Node node : nodes) {
+            connect(node);
+        }
 
-        return channel;
+        selector.send(createSend(nodes.get(0).idString(), randomData(100)));
+        List<NetworkReceive> completed = Collections.emptyList();
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline && completed.isEmpty()) {
+            selector.poll(1000L);
+            completed = selector.completedReceives();
+        }
+        assertEquals(1, completed.size());
+        NetworkReceive firstReceive = completed.get(0);
+        assertEquals(0L, pool.availableMemory());
+
+        // send 2 extra payloads, only the payload sent by the privileged node (1) should be received
+        selector.send(createSend(nodes.get(1).idString(), randomData(50)));
+        selector.send(createSend(nodes.get(2).idString(), randomData(30)));
+        completed = Collections.emptyList();
+        deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline && completed.isEmpty()) {
+            selector.poll(1000L);
+            completed = selector.completedReceives();
+        }
+        // the pool is still out of memory but we have received a new payload
+        assertEquals(0L, pool.availableMemory());
+        assertTrue(pool.isOutOfMemory());
+        assertEquals(1, completed.size());
+        assertEquals(nodes.get(1).idString(), completed.get(0).source());
+
+        // Free up the 1st receive so the payload sent by node 2 can be received
+        firstReceive.close();
+        assertEquals(100L, pool.availableMemory());
+
+        completed = Collections.emptyList();
+        deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline && completed.isEmpty()) {
+            selector.poll(1000L);
+            completed = selector.completedReceives();
+        }
+        // the pool is not out of memory and we have received the last payload
+        assertEquals(70L, pool.availableMemory());
+        assertFalse(pool.isOutOfMemory());
+        assertEquals(1, completed.size());
+        assertEquals(nodes.get(2).idString(), completed.get(0).source());
     }
 
-    /**
-     * Injects a NetworkReceive for channel with size buffer filled in with the provided size
-     * and a payload buffer allocated with that size, but no data in the payload buffer.
-     */
-    private void injectNetworkReceive(KafkaChannel channel, int size) throws Exception {
-        NetworkReceive receive = new NetworkReceive();
-        TestUtils.setFieldValue(channel, "receive", receive);
-        ByteBuffer sizeBuffer = TestUtils.fieldValue(receive, NetworkReceive.class, "size");
-        sizeBuffer.putInt(size);
-        TestUtils.setFieldValue(receive, "buffer", ByteBuffer.allocate(size));
+    protected NetworkSend createSend(String node, byte[] buf) {
+        return new NetworkSend(node, ByteBuffer.wrap(buf));
     }
 }

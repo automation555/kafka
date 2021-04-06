@@ -21,28 +21,24 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.internals.Topic;
 import org.apache.kafka.common.network.NetworkReceive;
-import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.record.UnalignedRecords;
-import org.apache.kafka.common.requests.ByteBufferChannel;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.RequestHeader;
-import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -56,17 +52,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static java.util.Arrays.asList;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * Helper functions for writing unit tests
@@ -83,11 +77,14 @@ public class TestUtils {
     /* A consistent random number generator to make tests repeatable */
     public static final Random SEEDED_RANDOM = new Random(192348092834L);
     public static final Random RANDOM = new Random();
-    public static final long DEFAULT_POLL_INTERVAL_MS = 100;
     public static final long DEFAULT_MAX_WAIT_MS = 15000;
 
     public static Cluster singletonCluster() {
         return clusterWith(1);
+    }
+
+    public static Cluster singletonCluster(final Map<String, Integer> topicPartitionCounts) {
+        return clusterWith(1, topicPartitionCounts);
     }
 
     public static Cluster singletonCluster(final String topic, final int partitions) {
@@ -95,7 +92,7 @@ public class TestUtils {
     }
 
     public static Cluster clusterWith(int nodes) {
-        return clusterWith(nodes, new HashMap<>());
+        return clusterWith(nodes, new HashMap<String, Integer>());
     }
 
     public static Cluster clusterWith(final int nodes, final Map<String, Integer> topicPartitionCounts) {
@@ -109,7 +106,52 @@ public class TestUtils {
             for (int i = 0; i < partitions; i++)
                 parts.add(new PartitionInfo(topic, i, ns[i % ns.length], ns, ns));
         }
-        return new Cluster("kafka-cluster", asList(ns), parts, Collections.emptySet(), Collections.emptySet());
+        return new Cluster("kafka-cluster", asList(ns), parts, Collections.emptySet(), Topic.INTERNAL_TOPICS);
+    }
+
+    public static MetadataResponse metadataUpdateWith(final int numNodes,
+                                                      final Map<String, Integer> topicPartitionCounts) {
+        return metadataUpdateWith("kafka-cluster", numNodes, topicPartitionCounts);
+    }
+
+    public static MetadataResponse metadataUpdateWith(final String clusterId,
+                                                      final int numNodes,
+                                                      final Map<String, Integer> topicPartitionCounts) {
+        return metadataUpdateWith(clusterId, numNodes, Collections.emptyMap(), topicPartitionCounts);
+    }
+
+    public static MetadataResponse metadataUpdateWith(final String clusterId,
+                                                      final int numNodes,
+                                                      final Map<String, Errors> topicErrors,
+                                                      final Map<String, Integer> topicPartitionCounts) {
+        final List<Node> nodes = new ArrayList<>(numNodes);
+        for (int i = 0; i < numNodes; i++)
+            nodes.add(new Node(i, "localhost", 1969 + i));
+
+        List<MetadataResponse.TopicMetadata> topicMetadata = new ArrayList<>();
+        for (Map.Entry<String, Integer> topicPartitionCountEntry : topicPartitionCounts.entrySet()) {
+            String topic = topicPartitionCountEntry.getKey();
+            int numPartitions = topicPartitionCountEntry.getValue();
+
+            List<MetadataResponse.PartitionMetadata> partitionMetadata = new ArrayList<>(numPartitions);
+            for (int i = 0; i < numPartitions; i++) {
+                Node leader = nodes.get(i % nodes.size());
+                List<Node> replicas = Collections.singletonList(leader);
+                partitionMetadata.add(new MetadataResponse.PartitionMetadata(
+                        Errors.NONE, i, leader, Optional.empty(), replicas, replicas, replicas));
+            }
+
+            topicMetadata.add(new MetadataResponse.TopicMetadata(Errors.NONE, topic,
+                    Topic.isInternal(topic), partitionMetadata));
+        }
+
+        for (Map.Entry<String, Errors> topicErrorEntry : topicErrors.entrySet()) {
+            String topic = topicErrorEntry.getKey();
+            topicMetadata.add(new MetadataResponse.TopicMetadata(topicErrorEntry.getValue(), topic,
+                    Topic.isInternal(topic), Collections.emptyList()));
+        }
+
+        return new MetadataResponse(nodes, clusterId, 0, topicMetadata);
     }
 
     public static Cluster clusterWith(final int nodes, final String topic, final int partitions) {
@@ -152,19 +194,6 @@ public class TestUtils {
     }
 
     /**
-     * Create a file with the given contents in the default temporary-file directory,
-     * using `kafka` as the prefix and `tmp` as the suffix to generate its name.
-     */
-    public static File tempFile(final String contents) throws IOException {
-        final File file = tempFile();
-        final FileWriter writer = new FileWriter(file);
-        writer.write(contents);
-        writer.close();
-
-        return file;
-    }
-
-    /**
      * Create a temporary relative directory in the default temporary-file directory with the given prefix.
      *
      * @param prefix The prefix of the temporary directory, if null using "kafka-" as default prefix
@@ -200,11 +229,14 @@ public class TestUtils {
         }
         file.deleteOnExit();
 
-        Exit.addShutdownHook("delete-temp-file-shutdown-hook", () -> {
-            try {
-                Utils.delete(file);
-            } catch (IOException e) {
-                log.error("Error deleting {}", file.getAbsolutePath(), e);
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                try {
+                    Utils.delete(file);
+                } catch (IOException e) {
+                    log.error("Error deleting {}", file.getAbsolutePath(), e);
+                }
             }
         });
 
@@ -218,6 +250,7 @@ public class TestUtils {
         final Properties properties = new Properties();
         properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         properties.put(ProducerConfig.ACKS_CONFIG, "all");
+        properties.put(ProducerConfig.RETRIES_CONFIG, 0);
         properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, keySerializer);
         properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer);
         properties.putAll(additional);
@@ -289,7 +322,7 @@ public class TestUtils {
     public static void waitForCondition(final TestCondition testCondition, final long maxWaitMs, String conditionDetails) throws InterruptedException {
         waitForCondition(testCondition, maxWaitMs, () -> conditionDetails);
     }
-
+    
     /**
      * Wait for condition to be met for at most {@code maxWaitMs} and throw assertion failure otherwise.
      * This should be used instead of {@code Thread.sleep} whenever possible as it allows a longer timeout to be used
@@ -297,87 +330,20 @@ public class TestUtils {
      * avoid transient failures due to slow or overloaded machines.
      */
     public static void waitForCondition(final TestCondition testCondition, final long maxWaitMs, Supplier<String> conditionDetailsSupplier) throws InterruptedException {
-        waitForCondition(testCondition, DEFAULT_POLL_INTERVAL_MS, maxWaitMs, conditionDetailsSupplier);
-    }
+        final long startTime = System.currentTimeMillis();
 
-    /**
-     * Wait for condition to be met for at most {@code maxWaitMs} with a polling interval of {@code pollIntervalMs}
-     * and throw assertion failure otherwise. This should be used instead of {@code Thread.sleep} whenever possible
-     * as it allows a longer timeout to be used without unnecessarily increasing test time (as the condition is
-     * checked frequently). The longer timeout is needed to avoid transient failures due to slow or overloaded
-     * machines.
-     */
-    public static void waitForCondition(
-        final TestCondition testCondition,
-        final long pollIntervalMs,
-        final long maxWaitMs,
-        Supplier<String> conditionDetailsSupplier
-    ) throws InterruptedException {
-        retryOnExceptionWithTimeout(pollIntervalMs, maxWaitMs, () -> {
+        boolean testConditionMet;
+        while (!(testConditionMet = testCondition.conditionMet()) && ((System.currentTimeMillis() - startTime) < maxWaitMs)) {
+            Thread.sleep(Math.min(maxWaitMs, 100L));
+        }
+
+        // don't re-evaluate testCondition.conditionMet() because this might slow down some tests significantly (this
+        // could be avoided by making the implementations more robust, but we have a large number of such implementations
+        // and it's easier to simply avoid the issue altogether)
+        if (!testConditionMet) {
             String conditionDetailsSupplied = conditionDetailsSupplier != null ? conditionDetailsSupplier.get() : null;
             String conditionDetails = conditionDetailsSupplied != null ? conditionDetailsSupplied : "";
-            assertTrue(testCondition.conditionMet(),
-                "Condition not met within timeout " + maxWaitMs + ". " + conditionDetails);
-        });
-    }
-
-    /**
-     * Wait for the given runnable to complete successfully, i.e. throw now {@link Exception}s or
-     * {@link AssertionError}s, or for the given timeout to expire. If the timeout expires then the
-     * last exception or assertion failure will be thrown thus providing context for the failure.
-     *
-     * @param timeoutMs the total time in milliseconds to wait for {@code runnable} to complete successfully.
-     * @param runnable the code to attempt to execute successfully.
-     * @throws InterruptedException if the current thread is interrupted while waiting for {@code runnable} to complete successfully.
-     */
-    public static void retryOnExceptionWithTimeout(final long timeoutMs,
-                                                   final ValuelessCallable runnable) throws InterruptedException {
-        retryOnExceptionWithTimeout(DEFAULT_POLL_INTERVAL_MS, timeoutMs, runnable);
-    }
-
-    /**
-     * Wait for the given runnable to complete successfully, i.e. throw now {@link Exception}s or
-     * {@link AssertionError}s, or for the default timeout to expire. If the timeout expires then the
-     * last exception or assertion failure will be thrown thus providing context for the failure.
-     *
-     * @param runnable the code to attempt to execute successfully.
-     * @throws InterruptedException if the current thread is interrupted while waiting for {@code runnable} to complete successfully.
-     */
-    public static void retryOnExceptionWithTimeout(final ValuelessCallable runnable) throws InterruptedException {
-        retryOnExceptionWithTimeout(DEFAULT_POLL_INTERVAL_MS, DEFAULT_MAX_WAIT_MS, runnable);
-    }
-
-    /**
-     * Wait for the given runnable to complete successfully, i.e. throw now {@link Exception}s or
-     * {@link AssertionError}s, or for the given timeout to expire. If the timeout expires then the
-     * last exception or assertion failure will be thrown thus providing context for the failure.
-     *
-     * @param pollIntervalMs the interval in milliseconds to wait between invoking {@code runnable}.
-     * @param timeoutMs the total time in milliseconds to wait for {@code runnable} to complete successfully.
-     * @param runnable the code to attempt to execute successfully.
-     * @throws InterruptedException if the current thread is interrupted while waiting for {@code runnable} to complete successfully.
-     */
-    public static void retryOnExceptionWithTimeout(final long pollIntervalMs,
-                                                   final long timeoutMs,
-                                                   final ValuelessCallable runnable) throws InterruptedException {
-        final long expectedEnd = System.currentTimeMillis() + timeoutMs;
-
-        while (true) {
-            try {
-                runnable.call();
-                return;
-            } catch (final NoRetryException e) {
-                throw e;
-            } catch (final AssertionError t) {
-                if (expectedEnd <= System.currentTimeMillis()) {
-                    throw t;
-                }
-            } catch (final Exception e) {
-                if (expectedEnd <= System.currentTimeMillis()) {
-                    throw new AssertionError(String.format("Assertion failed with an exception after %s ms", timeoutMs), e);
-                }
-            }
-            Thread.sleep(Math.min(pollIntervalMs, timeoutMs));
+            throw new AssertionError("Condition not met within timeout " + maxWaitMs + ". " + conditionDetails);
         }
     }
 
@@ -439,59 +405,11 @@ public class TestUtils {
         return list;
     }
 
-    public static <T> Set<T> toSet(Collection<T> collection) {
-        return new HashSet<>(collection);
-    }
-
-    public static ByteBuffer toBuffer(Send send) {
-        ByteBufferChannel channel = new ByteBufferChannel(send.size());
-        try {
-            assertEquals(send.size(), send.writeTo(channel));
-            channel.close();
-            return channel.buffer();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public static ByteBuffer toBuffer(UnalignedRecords records) {
-        return toBuffer(records.toSend());
-    }
-
-    public static Set<TopicPartition> generateRandomTopicPartitions(int numTopic, int numPartitionPerTopic) {
-        Set<TopicPartition> tps = new HashSet<>();
-        for (int i = 0; i < numTopic; i++) {
-            String topic = randomString(32);
-            for (int j = 0; j < numPartitionPerTopic; j++) {
-                tps.add(new TopicPartition(topic, j));
-            }
-        }
-        return tps;
-    }
-
-    /**
-     * Assert that a future raises an expected exception cause type. Return the exception cause
-     * if the assertion succeeds; otherwise raise AssertionError.
-     *
-     * @param future The future to await
-     * @param exceptionCauseClass Class of the expected exception cause
-     * @param <T> Exception cause type parameter
-     * @return The caught exception cause
-     */
-    public static <T extends Throwable> T assertFutureThrows(Future<?> future, Class<T> exceptionCauseClass) {
-        ExecutionException exception = assertThrows(ExecutionException.class, future::get);
-        assertTrue(exceptionCauseClass.isInstance(exception.getCause()),
-            "Unexpected exception cause " + exception.getCause());
-        return exceptionCauseClass.cast(exception.getCause());
-    }
-
-    public static <T extends Throwable> void assertFutureThrows(
-        Future<?> future,
-        Class<T> expectedCauseClassApiException,
-        String expectedMessage
-    ) {
-        T receivedException = assertFutureThrows(future, expectedCauseClassApiException);
-        assertEquals(expectedMessage, receivedException.getMessage());
+    public static ByteBuffer toBuffer(Struct struct) {
+        ByteBuffer buffer = ByteBuffer.allocate(struct.sizeOf());
+        struct.writeTo(buffer);
+        buffer.rewind();
+        return buffer;
     }
 
     public static void assertFutureError(Future<?> future, Class<? extends Throwable> exceptionClass)
@@ -501,38 +419,13 @@ public class TestUtils {
             fail("Expected a " + exceptionClass.getSimpleName() + " exception, but got success.");
         } catch (ExecutionException ee) {
             Throwable cause = ee.getCause();
-            assertEquals(exceptionClass, cause.getClass(),
-                "Expected a " + exceptionClass.getSimpleName() + " exception, but got " +
-                    cause.getClass().getSimpleName());
+            assertEquals("Expected a " + exceptionClass.getSimpleName() + " exception, but got " +
+                    cause.getClass().getSimpleName(),
+                exceptionClass, cause.getClass());
         }
     }
 
     public static ApiKeys apiKeyFrom(NetworkReceive networkReceive) {
         return RequestHeader.parse(networkReceive.payload().duplicate()).apiKey();
-    }
-
-    public static <T> void assertOptional(Optional<T> optional, Consumer<T> assertion) {
-        if (optional.isPresent()) {
-            assertion.accept(optional.get());
-        } else {
-            fail("Missing value from Optional");
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    public static <T> T fieldValue(Object o, Class<?> clazz, String fieldName)  {
-        try {
-            Field field = clazz.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            return (T) field.get(o);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public static void setFieldValue(Object obj, String fieldName, Object value) throws Exception {
-        Field field = obj.getClass().getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(obj, value);
     }
 }

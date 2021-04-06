@@ -35,7 +35,7 @@ trait BlockingSend {
 
   def sendRequest(requestBuilder: AbstractRequest.Builder[_ <: AbstractRequest]): ClientResponse
 
-  def close(): Unit
+  def close()
 }
 
 class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
@@ -56,16 +56,15 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       brokerConfig,
       brokerConfig.interBrokerListenerName,
       brokerConfig.saslMechanismInterBrokerProtocol,
+      time,
       brokerConfig.saslInterBrokerHandshakeRequestEnable
     )
     val selector = new Selector(
-      NetworkReceive.UNLIMITED,
       brokerConfig.connectionsMaxIdleMs,
       metrics,
       time,
       "replica-fetcher",
       Map("broker-id" -> sourceBroker.id.toString, "fetcher-id" -> fetcherId.toString).asJava,
-      false,
       channelBuilder,
       logContext
     )
@@ -79,6 +78,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       brokerConfig.replicaSocketReceiveBufferBytes,
       brokerConfig.requestTimeoutMs,
+      ClientDnsLookup.DEFAULT,
       time,
       false,
       new ApiVersions,
@@ -86,7 +86,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
     )
   }
 
-  override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse =  {
+  override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse = {
     try {
       if (!NetworkClientUtils.awaitReady(networkClient, sourceNode, time, socketTimeout))
         throw new SocketTimeoutException(s"Failed to connect within $socketTimeout ms")

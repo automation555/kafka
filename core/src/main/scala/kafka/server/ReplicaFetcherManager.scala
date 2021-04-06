@@ -32,9 +32,9 @@ class ReplicaFetcherManager(brokerConfig: KafkaConfig, protected val replicaMana
     new ReplicaFetcherThread(threadName, fetcherId, sourceBroker, brokerConfig, replicaManager, metrics, time, quotaManager)
   }
 
-  def shutdown(): Unit = {
-    info("shutting down")
+  def shutdown() {
+    info("Shutting down")
     closeAllFetchers()
-    info("shutdown completed")
+    info("Shutdown completed")
   }
 }

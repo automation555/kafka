@@ -23,7 +23,7 @@ import serializer.Encoder
 
 object TestKafkaAppender extends Logging {
   
-  def main(args:Array[String]): Unit = {
+  def main(args:Array[String]) {
     
     if(args.length < 1) {
       println("USAGE: " + TestKafkaAppender.getClass.getName + " log4j_config")
@@ -40,7 +40,7 @@ object TestKafkaAppender extends Logging {
     }
 
     for (_ <- 1 to 10)
-      info("test")    
+      info("Test")
   }
 }
 

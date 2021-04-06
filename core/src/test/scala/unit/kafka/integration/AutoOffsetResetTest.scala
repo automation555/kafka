@@ -43,14 +43,14 @@ class AutoOffsetResetTest extends KafkaServerTestHarness with Logging {
   val requestHandlerLogger = Logger.getLogger(classOf[kafka.server.KafkaRequestHandler])
 
   @Before
-  override def setUp(): Unit = {
+  override def setUp() {
     super.setUp()
     // temporarily set request handler logger to a higher level
     requestHandlerLogger.setLevel(Level.FATAL)
   }
 
   @After
-  override def tearDown(): Unit = {
+  override def tearDown() {
     // restore set request handler logger to a higher level
     requestHandlerLogger.setLevel(Level.ERROR)
     super.tearDown
@@ -77,7 +77,7 @@ class AutoOffsetResetTest extends KafkaServerTestHarness with Logging {
    * Returns the count of messages received.
    */
   def resetAndConsume(numMessages: Int, resetTo: String, offset: Long): Int = {
-    createTopic(topic, 1, 1)
+    TestUtils.createTopic(zkUtils, topic, 1, 1, servers)
 
     val producer: Producer[String, Array[Byte]] = TestUtils.createProducer(
       TestUtils.getBrokerListStrFromServers(servers),
@@ -86,7 +86,7 @@ class AutoOffsetResetTest extends KafkaServerTestHarness with Logging {
     for(_ <- 0 until numMessages)
       producer.send(new KeyedMessage[String, Array[Byte]](topic, topic, "test".getBytes))
 
-    // update offset in ZooKeeper for consumer to jump "forward" in time
+    // update offset in zookeeper for consumer to jump "forward" in time
     val dirs = new ZKGroupTopicDirs(group, topic)
     val consumerProps = TestUtils.createConsumerProperties(zkConnect, group, testConsumer)
     consumerProps.put("auto.offset.reset", resetTo)
@@ -109,7 +109,7 @@ class AutoOffsetResetTest extends KafkaServerTestHarness with Logging {
       }
     } catch {
       case _: ConsumerTimeoutException =>
-        info("consumer timed out after receiving " + received + " messages.")
+        info("Consumer timed out after receiving " + received + " messages.")
     } finally {
       producer.close()
       consumerConnector.shutdown

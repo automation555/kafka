@@ -175,7 +175,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
    */
   def startup() {
     try {
-      info("starting")
+      info("Starting")
 
       if(isShuttingDown.get)
         throw new IllegalStateException("Kafka server is still shutting down, cannot re-start!")
@@ -222,7 +222,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         logManager = LogManager(config, initialOfflineDirs, zkUtils, brokerState, kafkaScheduler, time, brokerTopicStats, logDirFailureChannel)
         logManager.startup()
 
-        metadataCache = new MetadataCache(config.brokerId, logManager.topicConfigs)
+        metadataCache = new MetadataCache(config.brokerId)
         credentialProvider = new CredentialProvider(config.saslEnabledMechanisms)
 
         socketServer = new SocketServer(config, metrics, time, credentialProvider)
@@ -266,7 +266,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         Mx4jLoader.maybeLoad()
 
         /* start dynamic config manager */
-        dynamicConfigHandlers = Map[String, ConfigHandler](ConfigType.Topic -> new TopicConfigHandler(logManager, config, quotaManagers, metadataCache),
+        dynamicConfigHandlers = Map[String, ConfigHandler](ConfigType.Topic -> new TopicConfigHandler(logManager, config, quotaManagers),
                                                            ConfigType.Client -> new ClientIdConfigHandler(quotaManagers),
                                                            ConfigType.User -> new UserConfigHandler(quotaManagers, credentialProvider),
                                                            ConfigType.Broker -> new BrokerConfigHandler(config, quotaManagers))
@@ -294,7 +294,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         startupComplete.set(true)
         isStartingUp.set(false)
         AppInfoParser.registerAppInfo(jmxPrefix, config.brokerId.toString)
-        info("started")
+        info("Started")
       }
     }
     catch {
@@ -500,7 +500,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
    */
   def shutdown() {
     try {
-      info("shutting down")
+      info("Shutting down")
 
       if (isStartingUp.get)
         throw new IllegalStateException("Kafka server is still starting up, cannot shut down!")
@@ -551,7 +551,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         isShuttingDown.set(false)
         CoreUtils.swallow(AppInfoParser.unregisterAppInfo(jmxPrefix, config.brokerId.toString))
         shutdownLatch.countDown()
-        info("shut down completed")
+        info("Shut down completed")
       }
     }
     catch {
@@ -598,7 +598,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
       } catch {
         case e : IOException =>
           offlineDirs += logDir
-          error(s"Fail to read $brokerMetaPropsFile under log directory $logDir", e)
+          error(s"Fail to read ${brokerMetaPropsFile} under log directory ${logDir}", e)
       }
     }
 

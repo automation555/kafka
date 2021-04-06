@@ -52,12 +52,12 @@ class ZookeeperConsumerConnectorTest extends KafkaServerTestHarness with Logging
   val nMessages = 2
 
   @Test
-  def testBasic(): Unit = {
+  def testBasic() {
     val requestHandlerLogger = Logger.getLogger(classOf[KafkaRequestHandler])
     requestHandlerLogger.setLevel(Level.FATAL)
 
     // create the topic
-    createTopic(topic, numParts, 1)
+    TestUtils.createTopic(zkUtils, topic, numParts, 1, servers)
 
     // send some messages to each broker
     val sentMessages1 = sendMessages(servers, nMessages, "batch1")
@@ -78,7 +78,7 @@ class ZookeeperConsumerConnectorTest extends KafkaServerTestHarness with Logging
       case _: MessageStreamsExistException => // expected
     }
     zkConsumerConnector1.shutdown
-    info("all consumer connectors stopped")
+    info("All consumer connectors stopped")
     requestHandlerLogger.setLevel(Level.ERROR)
   }
 

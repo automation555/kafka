@@ -23,6 +23,7 @@ import scala.collection.JavaConverters._
 import java.util.concurrent.atomic.AtomicLong
 import java.nio.channels.ClosedByInterruptException
 
+import org.apache.log4j.Logger
 import org.apache.kafka.clients.consumer.{ConsumerRebalanceListener, KafkaConsumer}
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Utils
@@ -37,14 +38,13 @@ import kafka.consumer.ConsumerTimeoutException
 import java.text.SimpleDateFormat
 import java.util.concurrent.atomic.AtomicBoolean
 
-import com.typesafe.scalalogging.LazyLogging
-
 import scala.collection.mutable
 
 /**
  * Performance test for the full zookeeper consumer
  */
-object ConsumerPerformance extends LazyLogging {
+object ConsumerPerformance {
+  private val logger = Logger.getLogger(getClass())
 
   def main(args: Array[String]): Unit = {
 
@@ -65,7 +65,7 @@ object ConsumerPerformance extends LazyLogging {
       val consumer = new KafkaConsumer[Array[Byte], Array[Byte]](config.props)
       consumer.subscribe(Collections.singletonList(config.topic))
       startMs = System.currentTimeMillis
-      consume(consumer, List(config.topic), config.numMessages, 1000, config, totalMessagesRead, totalBytesRead, joinGroupTimeInMs, startMs)
+      consume(consumer, List(config.topic), config.numMessages, 1000, config, totalMessagesRead, totalBytesRead, joinGroupTimeInMs, startMs, config.runContinuously)
       endMs = System.currentTimeMillis
 
       if (config.printMetrics) {
@@ -141,7 +141,9 @@ object ConsumerPerformance extends LazyLogging {
               totalMessagesRead: AtomicLong,
               totalBytesRead: AtomicLong,
               joinTime: AtomicLong,
-              testStartTime: Long): Unit = {
+              testStartTime: Long,
+              readContinuously: Boolean = false
+             ) {
     var bytesRead = 0L
     var messagesRead = 0L
     var lastBytesRead = 0L
@@ -150,13 +152,15 @@ object ConsumerPerformance extends LazyLogging {
     var joinTimeMsInSingleRound = 0L
 
     consumer.subscribe(topics.asJava, new ConsumerRebalanceListener {
-      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsAssigned(partitions: util.Collection[TopicPartition]) {
         joinTime.addAndGet(System.currentTimeMillis - joinStart)
         joinTimeMsInSingleRound += System.currentTimeMillis - joinStart
       }
-      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
+      def onPartitionsRevoked(partitions: util.Collection[TopicPartition]) {
         joinStart = System.currentTimeMillis
       }})
+    consumer.poll(0)
+    consumer.seekToBeginning(Collections.emptyList())
 
     // Now start the benchmark
     val startMs = System.currentTimeMillis
@@ -164,7 +168,23 @@ object ConsumerPerformance extends LazyLogging {
     var lastConsumedTime = System.currentTimeMillis
     var currentTimeMillis = lastConsumedTime
 
-    while (messagesRead < count && currentTimeMillis - lastConsumedTime <= timeout) {
+    def maybeReport = {
+      if (currentTimeMillis - lastReportTime >= config.reportingInterval) {
+        if (config.showDetailedStats)
+          printNewConsumerProgress(0, bytesRead, lastBytesRead, messagesRead, lastMessagesRead,
+            lastReportTime, currentTimeMillis, config.dateFormat, joinTimeMsInSingleRound)
+        joinTimeMsInSingleRound = 0L
+        lastReportTime = currentTimeMillis
+        lastMessagesRead = messagesRead
+        lastBytesRead = bytesRead
+      }
+    }
+
+    var moreToRead = true
+    var timeSinceLastConsume = 0L
+    var withinTimeout = true
+
+    while (moreToRead && withinTimeout || readContinuously) {
       val records = consumer.poll(100).asScala
       currentTimeMillis = System.currentTimeMillis
       if (records.nonEmpty)
@@ -176,16 +196,13 @@ object ConsumerPerformance extends LazyLogging {
         if (record.value != null)
           bytesRead += record.value.size
 
-        if (currentTimeMillis - lastReportTime >= config.reportingInterval) {
-          if (config.showDetailedStats)
-            printNewConsumerProgress(0, bytesRead, lastBytesRead, messagesRead, lastMessagesRead,
-              lastReportTime, currentTimeMillis, config.dateFormat, joinTimeMsInSingleRound)
-          joinTimeMsInSingleRound = 0L
-          lastReportTime = currentTimeMillis
-          lastMessagesRead = messagesRead
-          lastBytesRead = bytesRead
-        }
+        maybeReport
       }
+      moreToRead = messagesRead < count
+      timeSinceLastConsume = currentTimeMillis - lastConsumedTime
+      withinTimeout = timeSinceLastConsume <= timeout
+
+      maybeReport
     }
 
     totalMessagesRead.set(messagesRead)
@@ -302,6 +319,7 @@ object ConsumerPerformance extends LazyLogging {
     val printMetricsOpt = parser.accepts("print-metrics", "Print out the metrics. This only applies to new consumer.")
     val showDetailedStatsOpt = parser.accepts("show-detailed-stats", "If set, stats are reported for each reporting " +
       "interval as configured by reporting-interval")
+    val runContinuouslyOpt = parser.accepts("run-continuously", "Consume messages continuously, without end. Overrides message-count")
 
     val options = parser.parse(args: _*)
 
@@ -309,6 +327,7 @@ object ConsumerPerformance extends LazyLogging {
 
     val useOldConsumer = options.has(zkConnectOpt)
     val printMetrics = options.has(printMetricsOpt)
+    val runContinuously = options.has(runContinuouslyOpt)
 
     val props = if (options.has(consumerConfigOpt))
       Utils.loadProps(options.valueOf(consumerConfigOpt))
@@ -318,8 +337,8 @@ object ConsumerPerformance extends LazyLogging {
       CommandLineUtils.checkRequiredArgs(parser, options, bootstrapServersOpt)
 
       if (options.has(newConsumerOpt)) {
-        Console.err.println("The --new-consumer option is deprecated and will be removed in a future major release. " +
-          "The new consumer is used by default if the --broker-list option is provided.")
+        Console.err.println("The --new-consumer option is deprecated and will be removed in a future major release." +
+          "The new consumer is used by default if the --bootstrap-server option is provided.")
       }
 
       import org.apache.kafka.clients.consumer.ConsumerConfig
@@ -365,17 +384,18 @@ object ConsumerPerformance extends LazyLogging {
                            consumerTimeout: AtomicBoolean)
     extends Thread(name) {
 
-    override def run(): Unit = {
+    override def run() {
       var bytesRead = 0L
       var messagesRead = 0L
       val startMs = System.currentTimeMillis
       var lastReportTime: Long = startMs
       var lastBytesRead = 0L
       var lastMessagesRead = 0L
+      var runContinuously = true
 
       try {
         val iter = stream.iterator
-        while (iter.hasNext && messagesRead < config.numMessages) {
+        while ((iter.hasNext && messagesRead < config.numMessages) || runContinuously) {
           val messageAndMetadata = iter.next()
           messagesRead += 1
           bytesRead += messageAndMetadata.message.length

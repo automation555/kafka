@@ -25,26 +25,22 @@
     || { echo 'Validation steps failed'; exit 1; }
 
 # Run tests
-./gradlew unitTest integrationTest \
+#./gradlew core:test --tests GroupEndToEndAuthorizationTest.testNoDescribeProduceOrConsumeWithoutTopicDescribeAcl \
+#    --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
+#    || { echo 'Test steps failed'; exit 1; }
+./gradlew integrationTest \
     --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
     || { echo 'Test steps failed'; exit 1; }
+#./gradlew unitTest integrationTest \
+#    --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
+#    || { echo 'Test steps failed'; exit 1; }
 
-# Verify that at least one JMH benchmark is able to compile and be run
-# runs this benchmark with 0 warmup forks, 0 warmup iterations
-./jmh-benchmarks/jmh.sh -wf 0 -f 1 -wi 0 -i 1 org.apache.kafka.jmh.cache.LRUCacheBenchmark.testCachePerformance \
-    || { echo 'Benchmark smoke test step failed'; exit 1; }
-
+# Verify that Kafka Streams archetype compiles
 if [ $JAVA_HOME = "/home/jenkins/tools/java/latest11" ] ; then
   echo "Skipping Kafka Streams archetype test for Java 11"
   exit 0
 fi
 
-if [ $JAVA_HOME = "/home/jenkins/tools/java/latest14" ] ; then
-  echo "Skipping Kafka Streams archetype test for Java 14"
-  exit 0
-fi
-
-# Verify that Kafka Streams archetype compiles
 ./gradlew streams:install clients:install connect:json:install connect:api:install \
     || { echo 'Could not install kafka-streams.jar (and dependencies) locally`'; exit 1; }
 

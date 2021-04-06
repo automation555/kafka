@@ -18,10 +18,7 @@ package org.apache.kafka.connect.runtime.rest.resources;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 
-import javax.crypto.Mac;
 import javax.ws.rs.core.HttpHeaders;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.connect.errors.AlreadyExistsException;
 import org.apache.kafka.connect.errors.NotFoundException;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
@@ -29,7 +26,6 @@ import org.apache.kafka.connect.runtime.Herder;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.distributed.NotAssignedException;
 import org.apache.kafka.connect.runtime.distributed.NotLeaderException;
-import org.apache.kafka.connect.runtime.rest.InternalRequestSignature;
 import org.apache.kafka.connect.runtime.rest.RestClient;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorInfo;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorStateInfo;
@@ -54,13 +50,12 @@ import org.powermock.modules.junit4.PowerMockRunner;
 import javax.ws.rs.BadRequestException;
 import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
+import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriInfo;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -72,7 +67,7 @@ import static org.junit.Assert.assertEquals;
 
 @RunWith(PowerMockRunner.class)
 @PrepareForTest(RestClient.class)
-@PowerMockIgnore({"javax.management.*", "javax.crypto.*"})
+@PowerMockIgnore("javax.management.*")
 @SuppressWarnings("unchecked")
 public class ConnectorsResourceTest {
     // Note trailing / and that we do *not* use LEADER_URL to construct our reference values. This checks that we handle
@@ -96,6 +91,17 @@ public class ConnectorsResourceTest {
     static {
         CONNECTOR_CONFIG.put("name", CONNECTOR_NAME);
         CONNECTOR_CONFIG.put("sample_config", "test_config");
+    }
+
+    private static final Map<String, String> CONNECTOR_CONFIG_PATCH = new HashMap<>();
+    static {
+        CONNECTOR_CONFIG_PATCH.put("sample_config", "test_config_new");
+        CONNECTOR_CONFIG_PATCH.put("sample_config_2", "test_config_2");
+    }
+
+    private static final Map<String, String> CONNECTOR_CONFIG_PATCHED = new HashMap<>(CONNECTOR_CONFIG);
+    static {
+        CONNECTOR_CONFIG_PATCHED.putAll(CONNECTOR_CONFIG_PATCH);
     }
 
     private static final Map<String, String> CONNECTOR_CONFIG_CONTROL_SEQUENCES = new HashMap<>();
@@ -139,7 +145,7 @@ public class ConnectorsResourceTest {
     public void setUp() throws NoSuchMethodException {
         PowerMock.mockStatic(RestClient.class,
                 RestClient.class.getMethod("httpRequest", String.class, String.class, HttpHeaders.class, Object.class, TypeReference.class, WorkerConfig.class));
-        connectorsResource = new ConnectorsResource(herder, null, URI.create("http://localhost:8083"));
+        connectorsResource = new ConnectorsResource(herder, null);
         forward = EasyMock.mock(UriInfo.class);
         MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
         queryParams.putSingle("forward", "true");
@@ -601,6 +607,56 @@ public class ConnectorsResourceTest {
     }
 
     @Test
+    public void testPatchConnectorConfig() throws Throwable {
+        final Capture<Callback<Herder.Created<ConnectorInfo>>> cb = Capture.newInstance();
+        herder.patchConnectorConfig(EasyMock.eq(CONNECTOR_NAME), EasyMock.eq(CONNECTOR_CONFIG_PATCH), EasyMock.capture(cb));
+        expectAndCallbackResult(cb, new Herder.Created<>(false, new ConnectorInfo(CONNECTOR_NAME, CONNECTOR_CONFIG_PATCHED, CONNECTOR_TASK_NAMES,
+                ConnectorType.SINK)));
+
+        PowerMock.replayAll();
+
+        Response response = connectorsResource.patchConnectorConfig(CONNECTOR_NAME, NULL_HEADERS, FORWARD, CONNECTOR_CONFIG_PATCH);
+        assertEquals(200, response.getStatus());
+        assertEquals(CONNECTOR_CONFIG_PATCHED, ((ConnectorInfo) response.getEntity()).config());
+
+        PowerMock.verifyAll();
+    }
+
+    @Test
+    public void testPatchConnectorConfigNotLeader() throws Throwable {
+        final Capture<Callback<Herder.Created<ConnectorInfo>>> cb = Capture.newInstance();
+        herder.patchConnectorConfig(EasyMock.eq(CONNECTOR_NAME), EasyMock.eq(CONNECTOR_CONFIG_PATCH), EasyMock.capture(cb));
+        expectAndCallbackNotLeaderException(cb);
+        // Should forward request
+        String forwardUrl = "http://leader:8083/connectors/" + CONNECTOR_NAME + "/config?forward=false";
+        EasyMock.expect(RestClient.httpRequest(EasyMock.eq(forwardUrl), EasyMock.eq("PATCH"),
+                EasyMock.isNull(), EasyMock.eq(CONNECTOR_CONFIG_PATCH), EasyMock.<TypeReference>anyObject(), EasyMock.anyObject(WorkerConfig.class))
+        ).andReturn(new RestClient.HttpResponse<>(200, new HashMap<String, String>(),
+                new ConnectorInfo(CONNECTOR_NAME, CONNECTOR_CONFIG_PATCHED, CONNECTOR_TASK_NAMES, ConnectorType.SOURCE)));
+
+        PowerMock.replayAll();
+
+        Response response = connectorsResource.patchConnectorConfig(CONNECTOR_NAME, NULL_HEADERS, FORWARD, CONNECTOR_CONFIG_PATCH);
+        assertEquals(200, response.getStatus());
+        assertEquals(CONNECTOR_CONFIG_PATCHED, ((ConnectorInfo) response.getEntity()).config());
+
+        PowerMock.verifyAll();
+    }
+
+    @Test(expected = NotFoundException.class)
+    public void testPatchConnectorConfigNotFound() throws Throwable {
+        final Capture<Callback<Herder.Created<ConnectorInfo>>> cb = Capture.newInstance();
+        herder.patchConnectorConfig(EasyMock.eq(CONNECTOR_NAME), EasyMock.eq(CONNECTOR_CONFIG_PATCH), EasyMock.capture(cb));
+        expectAndCallbackException(cb, new NotFoundException("Connector " + CONNECTOR_NAME + " not found", null));
+
+        PowerMock.replayAll();
+
+        connectorsResource.patchConnectorConfig(CONNECTOR_NAME, NULL_HEADERS, FORWARD, CONNECTOR_CONFIG_PATCH);
+
+        PowerMock.verifyAll();
+    }
+
+    @Test
     public void testGetConnectorTaskConfigs() throws Throwable {
         final Capture<Callback<List<TaskInfo>>> cb = Capture.newInstance();
         herder.taskConfigs(EasyMock.eq(CONNECTOR_NAME), EasyMock.capture(cb));
@@ -628,76 +684,27 @@ public class ConnectorsResourceTest {
     }
 
     @Test
-    public void testPutConnectorTaskConfigsNoInternalRequestSignature() throws Throwable {
+    public void testPutConnectorTaskConfigs() throws Throwable {
         final Capture<Callback<Void>> cb = Capture.newInstance();
-        herder.putTaskConfigs(
-            EasyMock.eq(CONNECTOR_NAME),
-            EasyMock.eq(TASK_CONFIGS),
-            EasyMock.capture(cb),
-            EasyMock.anyObject(InternalRequestSignature.class)
-        );
+        herder.putTaskConfigs(EasyMock.eq(CONNECTOR_NAME), EasyMock.eq(TASK_CONFIGS), EasyMock.capture(cb));
         expectAndCallbackResult(cb, null);
 
         PowerMock.replayAll();
 
-        connectorsResource.putTaskConfigs(CONNECTOR_NAME, NULL_HEADERS, FORWARD, serializeAsBytes(TASK_CONFIGS));
+        connectorsResource.putTaskConfigs(CONNECTOR_NAME, NULL_HEADERS, FORWARD, TASK_CONFIGS);
 
         PowerMock.verifyAll();
-    }
-
-    @Test
-    public void testPutConnectorTaskConfigsWithInternalRequestSignature() throws Throwable {
-        final String signatureAlgorithm = "HmacSHA256";
-        final String encodedSignature = "Kv1/OSsxzdVIwvZ4e30avyRIVrngDfhzVUm/kAZEKc4=";
-
-        final Capture<Callback<Void>> cb = Capture.newInstance();
-        final Capture<InternalRequestSignature> signatureCapture = Capture.newInstance();
-        herder.putTaskConfigs(
-            EasyMock.eq(CONNECTOR_NAME),
-            EasyMock.eq(TASK_CONFIGS),
-            EasyMock.capture(cb),
-            EasyMock.capture(signatureCapture)
-        );
-        expectAndCallbackResult(cb, null);
-
-        HttpHeaders headers = EasyMock.mock(HttpHeaders.class);
-        EasyMock.expect(headers.getHeaderString(InternalRequestSignature.SIGNATURE_ALGORITHM_HEADER))
-            .andReturn(signatureAlgorithm)
-            .once();
-        EasyMock.expect(headers.getHeaderString(InternalRequestSignature.SIGNATURE_HEADER))
-            .andReturn(encodedSignature)
-            .once();
-
-        PowerMock.replayAll(headers);
-
-        connectorsResource.putTaskConfigs(CONNECTOR_NAME, headers, FORWARD, serializeAsBytes(TASK_CONFIGS));
-
-        PowerMock.verifyAll();
-        InternalRequestSignature expectedSignature = new InternalRequestSignature(
-            serializeAsBytes(TASK_CONFIGS),
-            Mac.getInstance(signatureAlgorithm),
-            Base64.getDecoder().decode(encodedSignature)
-        );
-        assertEquals(
-            expectedSignature,
-            signatureCapture.getValue()
-        );
     }
 
     @Test(expected = NotFoundException.class)
     public void testPutConnectorTaskConfigsConnectorNotFound() throws Throwable {
         final Capture<Callback<Void>> cb = Capture.newInstance();
-        herder.putTaskConfigs(
-            EasyMock.eq(CONNECTOR_NAME),
-            EasyMock.eq(TASK_CONFIGS),
-            EasyMock.capture(cb),
-            EasyMock.anyObject(InternalRequestSignature.class)
-        );
+        herder.putTaskConfigs(EasyMock.eq(CONNECTOR_NAME), EasyMock.eq(TASK_CONFIGS), EasyMock.capture(cb));
         expectAndCallbackException(cb, new NotFoundException("not found"));
 
         PowerMock.replayAll();
 
-        connectorsResource.putTaskConfigs(CONNECTOR_NAME, NULL_HEADERS, FORWARD, serializeAsBytes(TASK_CONFIGS));
+        connectorsResource.putTaskConfigs(CONNECTOR_NAME, NULL_HEADERS, FORWARD, TASK_CONFIGS);
 
         PowerMock.verifyAll();
     }
@@ -801,10 +808,6 @@ public class ConnectorsResourceTest {
         connectorsResource.restartTask(CONNECTOR_NAME, 0, NULL_HEADERS, true);
 
         PowerMock.verifyAll();
-    }
-
-    private <T> byte[] serializeAsBytes(final T value) throws IOException {
-        return new ObjectMapper().writeValueAsBytes(value);
     }
 
     private  <T> void expectAndCallbackResult(final Capture<Callback<T>> cb, final T value) {

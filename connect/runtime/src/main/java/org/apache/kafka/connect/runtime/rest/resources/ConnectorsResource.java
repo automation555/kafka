@@ -19,15 +19,12 @@ package org.apache.kafka.connect.runtime.rest.resources;
 import com.fasterxml.jackson.core.type.TypeReference;
 
 import javax.ws.rs.core.HttpHeaders;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.connect.errors.NotFoundException;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
 import org.apache.kafka.connect.runtime.Herder;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.distributed.RebalanceNeededException;
 import org.apache.kafka.connect.runtime.distributed.RequestTargetException;
-import org.apache.kafka.connect.runtime.rest.InternalRequestSignature;
 import org.apache.kafka.connect.runtime.rest.RestClient;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorInfo;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorStateInfo;
@@ -44,6 +41,7 @@ import javax.ws.rs.BadRequestException;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
+import javax.ws.rs.PATCH;
 import javax.ws.rs.POST;
 import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
@@ -69,8 +67,6 @@ import java.util.concurrent.TimeoutException;
 @Consumes(MediaType.APPLICATION_JSON)
 public class ConnectorsResource {
     private static final Logger log = LoggerFactory.getLogger(ConnectorsResource.class);
-    private static final TypeReference<List<Map<String, String>>> TASK_CONFIGS_TYPE =
-        new TypeReference<List<Map<String, String>>>() { };
 
     // TODO: This should not be so long. However, due to potentially long rebalances that may have to wait a full
     // session timeout to complete, during which we cannot serve some requests. Ideally we could reduce this, but
@@ -80,14 +76,12 @@ public class ConnectorsResource {
 
     private final Herder herder;
     private final WorkerConfig config;
-    private final URI advertisedUrl;
     @javax.ws.rs.core.Context
     private ServletContext context;
 
-    public ConnectorsResource(Herder herder, WorkerConfig config, URI advertisedUrl) {
+    public ConnectorsResource(Herder herder, WorkerConfig config) {
         this.herder = herder;
         this.config = config;
-        this.advertisedUrl = advertisedUrl;
     }
 
     @GET
@@ -197,6 +191,19 @@ public class ConnectorsResource {
         return response.entity(createdInfo.result()).build();
     }
 
+    @PATCH
+    @Path("/{connector}/config")
+    public Response patchConnectorConfig(final @PathParam("connector") String connector,
+                                         final @Context HttpHeaders headers,
+                                         final @QueryParam("forward") Boolean forward,
+                                         final Map<String, String> connectorConfigPatch) throws Throwable {
+        FutureCallback<Herder.Created<ConnectorInfo>> cb = new FutureCallback<>();
+        herder.patchConnectorConfig(connector, connectorConfigPatch, cb);
+        Herder.Created<ConnectorInfo> createdInfo = completeOrForwardRequest(cb, "/connectors/" + connector + "/config",
+                "PATCH", headers, connectorConfigPatch, new TypeReference<ConnectorInfo>() { }, new CreatedConnectorInfoTranslator(), forward);
+        return Response.ok().entity(createdInfo.result()).build();
+    }
+
     @POST
     @Path("/{connector}/restart")
     public void restartConnector(final @PathParam("connector") String connector,
@@ -237,10 +244,9 @@ public class ConnectorsResource {
     public void putTaskConfigs(final @PathParam("connector") String connector,
                                final @Context HttpHeaders headers,
                                final @QueryParam("forward") Boolean forward,
-                               final byte[] requestBody) throws Throwable {
-        List<Map<String, String>> taskConfigs = new ObjectMapper().readValue(requestBody, TASK_CONFIGS_TYPE);
+                               final List<Map<String, String>> taskConfigs) throws Throwable {
         FutureCallback<Void> cb = new FutureCallback<>();
-        herder.putTaskConfigs(connector, taskConfigs, cb, InternalRequestSignature.fromHeaders(requestBody, headers));
+        herder.putTaskConfigs(connector, taskConfigs, cb);
         completeOrForwardRequest(cb, "/connectors/" + connector + "/tasks", "POST", headers, taskConfigs, forward);
     }
 
@@ -308,11 +314,6 @@ public class ConnectorsResource {
                     // this gives two total hops to resolve the request before giving up.
                     boolean recursiveForward = forward == null;
                     RequestTargetException targetException = (RequestTargetException) cause;
-
-                    if (this.advertisedUrl.compareTo(URI.create(targetException.forwardUrl())) == 0) {
-                        log.warn("Request will be forwarded to URL {} same as this server's advertised URL (potential loop)",
-                                targetException.forwardUrl());
-                    }
                     String forwardUrl = UriBuilder.fromUri(targetException.forwardUrl())
                             .path(path)
                             .queryParam("forward", recursiveForward)

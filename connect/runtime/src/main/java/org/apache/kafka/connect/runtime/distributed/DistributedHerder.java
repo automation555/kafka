@@ -22,8 +22,8 @@ import org.apache.kafka.common.config.ConfigValue;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Avg;
-import org.apache.kafka.common.metrics.stats.CumulativeSum;
 import org.apache.kafka.common.metrics.stats.Max;
+import org.apache.kafka.common.metrics.stats.Total;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
@@ -42,18 +42,14 @@ import org.apache.kafka.connect.runtime.ConnectMetricsRegistry;
 import org.apache.kafka.connect.runtime.ConnectorConfig;
 import org.apache.kafka.connect.runtime.HerderConnectorContext;
 import org.apache.kafka.connect.runtime.HerderRequest;
-import org.apache.kafka.connect.runtime.SessionKey;
 import org.apache.kafka.connect.runtime.SinkConnectorConfig;
 import org.apache.kafka.connect.runtime.SourceConnectorConfig;
 import org.apache.kafka.connect.runtime.TargetState;
 import org.apache.kafka.connect.runtime.Worker;
-import org.apache.kafka.connect.runtime.rest.InternalRequestSignature;
 import org.apache.kafka.connect.runtime.rest.RestClient;
 import org.apache.kafka.connect.runtime.rest.RestServer;
 import org.apache.kafka.connect.runtime.rest.entities.ConnectorInfo;
 import org.apache.kafka.connect.runtime.rest.entities.TaskInfo;
-import org.apache.kafka.connect.runtime.rest.errors.BadRequestException;
-import org.apache.kafka.connect.runtime.rest.errors.ConnectRestException;
 import org.apache.kafka.connect.sink.SinkConnector;
 import org.apache.kafka.connect.storage.ConfigBackingStore;
 import org.apache.kafka.connect.storage.StatusBackingStore;
@@ -62,12 +58,10 @@ import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.SinkUtils;
 import org.slf4j.Logger;
 
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-import javax.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -91,7 +85,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import static org.apache.kafka.connect.runtime.distributed.ConnectProtocol.CONNECT_PROTOCOL_V0;
-import static org.apache.kafka.connect.runtime.distributed.IncrementalCooperativeConnectProtocol.CONNECT_PROTOCOL_V2;
 
 /**
  * <p>
@@ -140,10 +133,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     private final int workerSyncTimeoutMs;
     private final long workerTasksShutdownTimeoutMs;
     private final int workerUnsyncBackoffMs;
-    private final int keyRotationIntervalMs;
-    private final String requestSignatureAlgorithm;
-    private final List<String> keySignatureVerificationAlgorithms;
-    private final KeyGenerator keyGenerator;
 
     private final ExecutorService herderExecutor;
     private final ExecutorService forwardRequestExecutor;
@@ -173,9 +162,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     private boolean needsReconfigRebalance;
     private volatile int generation;
     private volatile long scheduledRebalance;
-    private SecretKey sessionKey;
-    private volatile long keyExpiration;
-    private short currentProtocolVersion;
 
     private final DistributedConfig config;
 
@@ -212,10 +198,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         this.workerSyncTimeoutMs = config.getInt(DistributedConfig.WORKER_SYNC_TIMEOUT_MS_CONFIG);
         this.workerTasksShutdownTimeoutMs = config.getLong(DistributedConfig.TASK_SHUTDOWN_GRACEFUL_TIMEOUT_MS_CONFIG);
         this.workerUnsyncBackoffMs = config.getInt(DistributedConfig.WORKER_UNSYNC_BACKOFF_MS_CONFIG);
-        this.requestSignatureAlgorithm = config.getString(DistributedConfig.INTER_WORKER_SIGNATURE_ALGORITHM_CONFIG);
-        this.keyRotationIntervalMs = config.getInt(DistributedConfig.INTER_WORKER_KEY_TTL_MS_CONFIG);
-        this.keySignatureVerificationAlgorithms = config.getList(DistributedConfig.INTER_WORKER_VERIFICATION_ALGORITHMS_CONFIG);
-        this.keyGenerator = config.getInternalRequestKeyGenerator();
 
         String clientIdConfig = config.getString(CommonClientConfigs.CLIENT_ID_CONFIG);
         String clientId = clientIdConfig.length() <= 0 ? "connect-" + CONNECT_CLIENT_ID_SEQUENCE.getAndIncrement() : clientIdConfig;
@@ -244,24 +226,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         needsReconfigRebalance = false;
         canReadConfigs = true; // We didn't try yet, but Configs are readable until proven otherwise
         scheduledRebalance = Long.MAX_VALUE;
-        keyExpiration = Long.MAX_VALUE;
-        sessionKey = null;
-
-        currentProtocolVersion = ConnectProtocolCompatibility.compatibility(
-            config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG)
-        ).protocolVersion();
-        if (!internalRequestValidationEnabled(currentProtocolVersion)) {
-            log.warn(
-                "Internal request verification will be disabled for this cluster as this worker's {} configuration has been set to '{}'. "
-                    + "If this is not intentional, either remove the '{}' configuration from the worker config file or change its value "
-                    + "to '{}'. If this configuration is left as-is, the cluster will be insecure; for more information, see KIP-507: "
-                    + "https://cwiki.apache.org/confluence/display/KAFKA/KIP-507%3A+Securing+Internal+Connect+REST+Endpoints",
-                DistributedConfig.CONNECT_PROTOCOL_CONFIG,
-                config.getString(DistributedConfig.CONNECT_PROTOCOL_CONFIG),
-                DistributedConfig.CONNECT_PROTOCOL_CONFIG,
-                ConnectProtocolCompatibility.SESSIONED.name()
-            );
-        }
     }
 
     @Override
@@ -315,17 +279,8 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             return;
         }
 
-        long now = time.milliseconds();
-
-        if (checkForKeyRotation(now)) {
-            keyExpiration = Long.MAX_VALUE;
-            configBackingStore.putSessionKey(new SessionKey(
-                keyGenerator.generateKey(),
-                now
-            ));
-        }
-
         // Process any external requests
+        final long now = time.milliseconds();
         long nextRequestTimeoutMs = Long.MAX_VALUE;
         while (true) {
             final DistributedHerderRequest next = peekWithoutException();
@@ -351,11 +306,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             rebalanceResolved = false;
             log.debug("Scheduled rebalance at: {} (now: {} nextRequestTimeoutMs: {}) ",
                     scheduledRebalance, now, nextRequestTimeoutMs);
-        }
-        if (internalRequestValidationEnabled() && keyExpiration < Long.MAX_VALUE) {
-            nextRequestTimeoutMs = Math.min(nextRequestTimeoutMs, Math.max(keyExpiration - now, 0));
-            log.debug("Scheduled next key rotation at: {} (now: {} nextRequestTimeoutMs: {}) ",
-                    keyExpiration, now, nextRequestTimeoutMs);
         }
 
         // Process any configuration updates
@@ -409,31 +359,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         } catch (WakeupException e) { // FIXME should not be WakeupException
             // Ignore. Just indicates we need to check the exit flag, for requested actions, etc.
         }
-    }
-
-    private synchronized boolean checkForKeyRotation(long now) {
-        if (internalRequestValidationEnabled()) {
-            if (isLeader()) {
-                if (sessionKey == null) {
-                    log.debug("Internal request signing is enabled but no session key has been distributed yet. "
-                        + "Distributing new key now.");
-                    return true;
-                } else if (keyExpiration <= now) {
-                    log.debug("Existing key has expired. Distributing new key now.");
-                    return true;
-                } else if (!sessionKey.getAlgorithm().equals(keyGenerator.getAlgorithm())
-                        || sessionKey.getEncoded().length != keyGenerator.generateKey().getEncoded().length) {
-                    log.debug("Previously-distributed key uses different algorithm/key size "
-                        + "than required by current worker configuration. Distributing new key now.");
-                    return true;
-                }
-            } else if (sessionKey == null && configState.sessionKey() != null) {
-                // This happens on startup for follower workers; the snapshot contains the session key,
-                // but no callback in the config update listener has been fired for it yet.
-                sessionKey = configState.sessionKey().key();
-            }
-        }
-        return false;
     }
 
     private synchronized boolean updateConfigsWithEager(AtomicReference<Set<String>> connectorConfigUpdatesCopy,
@@ -557,7 +482,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // additionally, if the worker is running the connector itself, then we need to
             // request reconfiguration to ensure that config changes while paused take effect
             if (targetState == TargetState.STARTED)
-                reconfigureConnectorTasksWithRetry(time.milliseconds(), connector);
+                reconfigureConnectorTasksWithRetry(connector);
         }
     }
 
@@ -623,7 +548,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             if (!startAndStopExecutor.awaitTermination(START_AND_STOP_SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS))
                 startAndStopExecutor.shutdownNow();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            // ignore
         }
 
         log.info("Herder stopped");
@@ -775,6 +700,51 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     }
 
     @Override
+    public void patchConnectorConfig(String connName, Map<String, String> configPatch, Callback<Created<ConnectorInfo>> callback) {
+        log.trace("Submitting connector config write request {}", connName);
+        addRequest(
+                new Callable<Void>() {
+                    @Override
+                    public Void call() {
+                        if (checkRebalanceNeeded(callback)) {
+                            return null;
+                        }
+
+                        if (!configState.contains(connName)) {
+                            callback.onCompletion(new NotFoundException("Connector " + connName + " not found"), null);
+                            return null;
+                        }
+
+                        if (!isLeader()) {
+                            callback.onCompletion(new NotLeaderException("Only the leader can set connector configs.", leaderUrl()), null);
+                            return null;
+                        }
+
+                        Map<String, String> patchedConfig = new HashMap<>(connectorInfo(connName).config());
+                        patchedConfig.putAll(configPatch);
+
+                        if (maybeAddConfigErrors(validateConnectorConfig(patchedConfig), callback)) {
+                            return null;
+                        }
+
+                        log.trace("Submitting connector config {} {}", connName, configState.connectors());
+                        configBackingStore.putConnectorConfig(connName, patchedConfig);
+
+                        // Note that we use the updated connector config despite the fact that we don't have an updated
+                        // snapshot yet. The existing task info should still be accurate.
+                        ConnectorInfo info = new ConnectorInfo(connName, patchedConfig, configState.tasks(connName),
+                                // validateConnectorConfig have checked the existence of CONNECTOR_CLASS_CONFIG
+                                connectorTypeForClass(patchedConfig.get(ConnectorConfig.CONNECTOR_CLASS_CONFIG)));
+                        callback.onCompletion(null, new Created<>(false, info));
+                        return null;
+                    }
+                },
+                forwardErrorCallback(callback)
+        );
+
+    }
+
+    @Override
     public void requestTaskReconfiguration(final String connName) {
         log.trace("Submitting connector task reconfiguration request {}", connName);
 
@@ -782,7 +752,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 new Callable<Void>() {
                     @Override
                     public Void call() throws Exception {
-                        reconfigureConnectorTasksWithRetry(time.milliseconds(), connName);
+                        reconfigureConnectorTasksWithRetry(connName);
                         return null;
                     }
                 },
@@ -827,36 +797,8 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
     }
 
     @Override
-    public void putTaskConfigs(final String connName, final List<Map<String, String>> configs, final Callback<Void> callback, InternalRequestSignature requestSignature) {
+    public void putTaskConfigs(final String connName, final List<Map<String, String>> configs, final Callback<Void> callback) {
         log.trace("Submitting put task configuration request {}", connName);
-        if (internalRequestValidationEnabled()) {
-            ConnectRestException requestValidationError = null;
-            if (requestSignature == null) {
-                requestValidationError = new BadRequestException("Internal request missing required signature");
-            } else if (!keySignatureVerificationAlgorithms.contains(requestSignature.keyAlgorithm())) {
-                requestValidationError = new BadRequestException(String.format(
-                    "This worker does not support the '%s' key signing algorithm used by other workers. " 
-                        + "This worker is currently configured to use: %s. " 
-                        + "Check that all workers' configuration files permit the same set of signature algorithms, " 
-                        + "and correct any misconfigured worker and restart it.",
-                    requestSignature.keyAlgorithm(),
-                    keySignatureVerificationAlgorithms
-                ));
-            } else {
-                synchronized (this) {
-                    if (!requestSignature.isValid(sessionKey)) {
-                        requestValidationError = new ConnectRestException(
-                            Response.Status.FORBIDDEN,
-                            "Internal request contained invalid signature."
-                        );
-                    }
-                }
-            }
-            if (requestValidationError != null) {
-                callback.onCompletion(requestValidationError, null);
-                return;
-            }
-        }
 
         addRequest(
                 new Callable<Void>() {
@@ -1081,7 +1023,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // in case reading the log takes too long, leave the group to ensure a quick rebalance (although by default we should be out of the group already)
             // and back off to avoid a tight loop of rejoin-attempt-to-catch-up-leave
             log.warn("Didn't reach end of config log quickly enough", e);
-            member.maybeLeaveGroup("taking too long to read the log");
+            member.maybeLeaveGroup();
             backoff(workerUnsyncBackoffMs);
             return false;
         }
@@ -1095,7 +1037,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         try {
             startAndStopExecutor.invokeAll(callables);
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            // ignore
         }
     }
 
@@ -1186,7 +1128,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         // task configs if they are actually different from the existing ones to avoid unnecessary updates when this is
         // just restoring an existing connector.
         if (started && initialState == TargetState.STARTED)
-            reconfigureConnectorTasksWithRetry(time.milliseconds(), connectorName);
+            reconfigureConnectorTasksWithRetry(connectorName);
 
         return started;
     }
@@ -1221,7 +1163,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         };
     }
 
-    private void reconfigureConnectorTasksWithRetry(long initialRequestTime, final String connName) {
+    private void reconfigureConnectorTasksWithRetry(final String connName) {
         reconfigureConnector(connName, new Callback<Void>() {
             @Override
             public void onCompletion(Throwable error, Void result) {
@@ -1230,16 +1172,12 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 // never makes progress. The retry has to run through a DistributedHerderRequest since this callback could be happening
                 // from the HTTP request forwarding thread.
                 if (error != null) {
-                    if (isPossibleExpiredKeyException(initialRequestTime, error)) {
-                        log.debug("Failed to reconfigure connector's tasks, possibly due to expired session key. Retrying after backoff");
-                    } else {
-                        log.error("Failed to reconfigure connector's tasks, retrying after backoff:", error);
-                    }
+                    log.error("Failed to reconfigure connector's tasks, retrying after backoff:", error);
                     addRequest(RECONFIGURE_CONNECTOR_TASKS_BACKOFF_MS,
                             new Callable<Void>() {
                                 @Override
                                 public Void call() throws Exception {
-                                    reconfigureConnectorTasksWithRetry(initialRequestTime, connName);
+                                    reconfigureConnectorTasksWithRetry(connName);
                                     return null;
                                 }
                             }, new Callback<Void>() {
@@ -1253,15 +1191,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 }
             }
         });
-    }
-
-    boolean isPossibleExpiredKeyException(long initialRequestTime, Throwable error) {
-        if (error instanceof ConnectRestException) {
-            ConnectRestException connectError = (ConnectRestException) error;
-            return connectError.statusCode() == Response.Status.FORBIDDEN.getStatusCode()
-                && initialRequestTime + TimeUnit.MINUTES.toMillis(1) >= time.milliseconds();
-        }
-        return false;
     }
 
     // Updates configurations for a connector by requesting them from the connector, filling in parameters provided
@@ -1319,8 +1248,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                                     return;
                                 }
                                 String reconfigUrl = RestServer.urlJoin(leaderUrl, "/connectors/" + connName + "/tasks");
-                                log.trace("Forwarding task configurations for connector {} to leader", connName);
-                                RestClient.httpRequest(reconfigUrl, "POST", null, rawTaskProps, null, config, sessionKey, requestSignatureAlgorithm);
+                                RestClient.httpRequest(reconfigUrl, "POST", null, rawTaskProps, null, config);
                                 cb.onCompletion(null, null);
                             } catch (ConnectException e) {
                                 log.error("Request to leader to reconfigure connector tasks failed", e);
@@ -1355,14 +1283,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
         if (peekWithoutException() == req)
             member.wakeup();
         return req;
-    }
-
-    private boolean internalRequestValidationEnabled() {
-        return internalRequestValidationEnabled(member.currentProtocolVersion());
-    }
-
-    private static boolean internalRequestValidationEnabled(short protocolVersion) {
-        return protocolVersion >= CONNECT_PROTOCOL_V2;
     }
 
     private DistributedHerderRequest peekWithoutException() {
@@ -1431,21 +1351,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
                 connectorTargetStateChanges.add(connector);
             }
             member.wakeup();
-        }
-
-        @Override
-        public void onSessionKeyUpdate(SessionKey sessionKey) {
-            log.info("Session key updated");
-
-            synchronized (DistributedHerder.this) {
-                DistributedHerder.this.sessionKey = sessionKey.key();
-                // Track the expiration of the key if and only if this worker is the leader
-                // Followers will receive rotated keys from the follower and won't be responsible for
-                // tracking expiration and distributing new keys themselves
-                if (isLeader() && keyRotationIntervalMs > 0) {
-                    DistributedHerder.this.keyExpiration = sessionKey.creationTimestamp() + keyRotationIntervalMs;
-                }
-            }
         }
     }
 
@@ -1535,46 +1440,14 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             // catch up (or backoff if we fail) not executed in a callback, and so we'll be able to invoke other
             // group membership actions (e.g., we may need to explicitly leave the group if we cannot handle the
             // assigned tasks).
-            short priorProtocolVersion = currentProtocolVersion;
-            DistributedHerder.this.currentProtocolVersion = member.currentProtocolVersion();
-            log.info(
-                "Joined group at generation {} with protocol version {} and got assignment: {} with rebalance delay: {}",
-                generation,
-                DistributedHerder.this.currentProtocolVersion,
-                assignment,
-                assignment.delay()
-            );
+            log.info("Joined group at generation {} and got assignment: {}", generation, assignment);
             synchronized (DistributedHerder.this) {
                 DistributedHerder.this.assignment = assignment;
                 DistributedHerder.this.generation = generation;
                 int delay = assignment.delay();
                 DistributedHerder.this.scheduledRebalance = delay > 0
-                    ? time.milliseconds() + delay
-                    : Long.MAX_VALUE;
-
-                boolean requestValidationWasEnabled = internalRequestValidationEnabled(priorProtocolVersion);
-                boolean requestValidationNowEnabled = internalRequestValidationEnabled(currentProtocolVersion);
-                if (requestValidationNowEnabled != requestValidationWasEnabled) {
-                    // Internal request verification has been switched on or off; let the user know
-                    if (requestValidationNowEnabled) {
-                        log.info("Internal request validation has been re-enabled");
-                    } else {
-                        log.warn(
-                            "The protocol used by this Connect cluster has been downgraded from '{}' to '{}' and internal request "
-                                + "validation is now disabled. This is most likely caused by a new worker joining the cluster with an "
-                                + "older protocol specified for the {} configuration; if this is not intentional, either remove the {} "
-                                + "configuration from that worker's config file, or change its value to '{}'. If this configuration is "
-                                + "left as-is, the cluster will be insecure; for more information, see KIP-507: "
-                                + "https://cwiki.apache.org/confluence/display/KAFKA/KIP-507%3A+Securing+Internal+Connect+REST+Endpoints",
-                            ConnectProtocolCompatibility.fromProtocolVersion(priorProtocolVersion),
-                            ConnectProtocolCompatibility.fromProtocolVersion(DistributedHerder.this.currentProtocolVersion),
-                            DistributedConfig.CONNECT_PROTOCOL_CONFIG,
-                            DistributedConfig.CONNECT_PROTOCOL_CONFIG,
-                            ConnectProtocolCompatibility.SESSIONED.name()
-                        );
-                    }
-                }
-
+                                                            ? time.milliseconds() + delay
+                                                            : Long.MAX_VALUE;
                 rebalanceResolved = false;
                 herderMetrics.rebalanceStarted(time.milliseconds());
             }
@@ -1612,13 +1485,12 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
 
                 // The actual timeout for graceful task stop is applied in worker's stopAndAwaitTask method.
                 startAndStop(callables);
-                log.info("Finished stopping tasks in preparation for rebalance");
 
                 // Ensure that all status updates have been pushed to the storage system before rebalancing.
                 // Otherwise, we may inadvertently overwrite the state with a stale value after the rebalance
                 // completes.
                 statusBackingStore.flush();
-                log.info("Finished flushing status backing store in preparation for rebalance");
+                log.info("Finished stopping tasks in preparation for rebalance");
             } else {
                 log.info("Wasn't unable to resume work after last rebalance, can skip stopping connectors and tasks");
             }
@@ -1637,12 +1509,6 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             ConnectMetricsRegistry registry = connectMetrics.registry();
             metricGroup = connectMetrics.group(registry.workerRebalanceGroupName());
 
-            metricGroup.addValueMetric(registry.connectProtocol, new LiteralSupplier<String>() {
-                @Override
-                public String metricValue(long now) {
-                    return ConnectProtocolCompatibility.fromProtocolVersion(member.currentProtocolVersion()).name();
-                }
-            });
             metricGroup.addValueMetric(registry.leaderName, new LiteralSupplier<String>() {
                 @Override
                 public String metricValue(long now) {
@@ -1663,7 +1529,7 @@ public class DistributedHerder extends AbstractHerder implements Runnable {
             });
 
             rebalanceCompletedCounts = metricGroup.sensor("completed-rebalance-count");
-            rebalanceCompletedCounts.add(metricGroup.metricName(registry.rebalanceCompletedTotal), new CumulativeSum());
+            rebalanceCompletedCounts.add(metricGroup.metricName(registry.rebalanceCompletedTotal), new Total());
 
             rebalanceTime = metricGroup.sensor("rebalance-time");
             rebalanceTime.add(metricGroup.metricName(registry.rebalanceTimeMax), new Max());

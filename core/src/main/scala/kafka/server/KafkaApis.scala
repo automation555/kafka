@@ -94,7 +94,7 @@ class KafkaApis(val requestChannel: RequestChannel,
    */
   def handle(request: RequestChannel.Request) {
     try {
-      trace(s"Handling request:${request.requestDesc(true)} from connection ${request.context.connectionId};" +
+      trace(s"Handling request:${request.description} from connection ${request.context.connectionId};" +
         s"securityProtocol:${request.context.securityProtocol},principal:${request.context.principal}")
       request.header.apiKey match {
         case ApiKeys.PRODUCE => handleProduceRequest(request)
@@ -140,7 +140,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       case e: FatalExitError => throw e
       case e: Throwable => handleError(request, e)
     } finally {
-      request.apiLocalCompleteTimeNanos = time.nanoseconds
+      request.timers.apiLocalCompleteTimeNanos = time.nanoseconds
     }
   }
 
@@ -364,7 +364,7 @@ class KafkaApis(val requestChannel: RequestChannel,
    */
   def handleProduceRequest(request: RequestChannel.Request) {
     val produceRequest = request.body[ProduceRequest]
-    val numBytesAppended = request.header.toStruct.sizeOf + request.sizeOfBodyInBytes
+    val numBytesAppended = request.header.toStruct.sizeOf + request.bodyAndSize.size
 
     if (produceRequest.isTransactional) {
       if (!authorize(request.session, Write, new Resource(TransactionalId, produceRequest.transactionalId))) {
@@ -433,7 +433,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       // When this callback is triggered, the remote API call has completed
-      request.apiRemoteCompleteTimeNanos = time.nanoseconds
+      request.timers.apiRemoteCompleteTimeNanos = time.nanoseconds
 
       quotas.produce.maybeRecordAndThrottle(
         request.session.sanitizedUser,
@@ -569,7 +569,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       // When this callback is triggered, the remote API call has completed.
       // Record time before any byte-rate throttling.
-      request.apiRemoteCompleteTimeNanos = time.nanoseconds
+      request.timers.apiRemoteCompleteTimeNanos = time.nanoseconds
 
       if (fetchRequest.isFromFollower) {
         // We've already evaluated against the quota and are good to go. Just need to record it now.
@@ -975,7 +975,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     sendResponseMaybeThrottle(request, requestThrottleMs =>
       new MetadataResponse(
         requestThrottleMs,
-        brokers.map(_.getNode(request.context.listenerName)).asJava,
+        brokers.flatMap(_.getNode(request.context.listenerName)).asJava,
         clusterId,
         metadataCache.getControllerId.getOrElse(MetadataResponse.NO_CONTROLLER_ID),
         completeTopicMetadata.asJava
@@ -1334,8 +1334,6 @@ class KafkaApis(val requestChannel: RequestChannel,
         createTopicsRequest.timeout,
         createTopicsRequest.validateOnly,
         validTopics,
-        request.session.principal,
-        request.context.listenerName,
         sendResponseWithDuplicatesCallback
       )
     }
@@ -1383,37 +1381,22 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleDeleteTopicsRequest(request: RequestChannel.Request) {
     val deleteTopicRequest = request.body[DeleteTopicsRequest]
 
-    val unauthorizedTopicErrors = mutable.Map[String, ApiError]()
-    val nonExistingTopicErrors = mutable.Map[String, ApiError]()
+    val unauthorizedTopicErrors = mutable.Map[String, Errors]()
+    val nonExistingTopicErrors = mutable.Map[String, Errors]()
     val authorizedForDeleteTopics =  mutable.Set[String]()
 
     for (topic <- deleteTopicRequest.topics.asScala) {
       if (!authorize(request.session, Delete, new Resource(Topic, topic)))
-        unauthorizedTopicErrors += topic -> new ApiError(Errors.TOPIC_AUTHORIZATION_FAILED, null)
+        unauthorizedTopicErrors += topic -> Errors.TOPIC_AUTHORIZATION_FAILED
       else if (!metadataCache.contains(topic))
-        nonExistingTopicErrors += topic -> new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION, null)
+        nonExistingTopicErrors += topic -> Errors.UNKNOWN_TOPIC_OR_PARTITION
       else
         authorizedForDeleteTopics.add(topic)
     }
 
-    def sendResponseCallback(authorizedTopicErrors: Map[String, ApiError]): Unit = {
+    def sendResponseCallback(authorizedTopicErrors: Map[String, Errors]): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
-        val mappedResults = if (deleteTopicRequest.version() >= 2) {
-          authorizedTopicErrors
-        } else {
-          // before version 2 the API didn't return POLICY_VIOLATION
-          authorizedTopicErrors.map { case (topic, error) =>
-            val mappedError = if (error.error == Errors.POLICY_VIOLATION) {
-              info(s"DeleteTopicsResponse(version < 2) with error_code=POLICY_VIOLATION, error_message='${error.message}', using error code UNKNOWN_SERVER_ERROR")
-              // no point adding a message since version < 2 doesn't support message
-              new ApiError(Errors.UNKNOWN_SERVER_ERROR, null)
-            } else
-              error
-            topic -> mappedError
-          }
-        }
-        val completeResults = nonExistingTopicErrors ++
-          unauthorizedTopicErrors ++ mappedResults
+        val completeResults = unauthorizedTopicErrors ++ nonExistingTopicErrors ++ authorizedTopicErrors
         val responseBody = new DeleteTopicsResponse(requestThrottleMs, completeResults.asJava)
         trace(s"Sending delete topics response $responseBody for correlation id ${request.header.correlationId} to client ${request.header.clientId}.")
         responseBody
@@ -1423,7 +1406,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     if (!controller.isActive) {
       val results = deleteTopicRequest.topics.asScala.map { topic =>
-        (topic, new ApiError(Errors.NOT_CONTROLLER, null))
+        (topic, Errors.NOT_CONTROLLER)
       }.toMap
       sendResponseCallback(results)
     } else {
@@ -1434,9 +1417,6 @@ class KafkaApis(val requestChannel: RequestChannel,
         adminManager.deleteTopics(
           deleteTopicRequest.timeout.toInt,
           authorizedForDeleteTopics,
-          deleteTopicRequest.validateOnly,
-          request.context.listenerName,
-          request.session.principal,
           sendResponseCallback
         )
       }
@@ -1453,46 +1433,24 @@ class KafkaApis(val requestChannel: RequestChannel,
     for ((topicPartition, offset) <- deleteRecordsRequest.partitionOffsets.asScala) {
       if (!authorize(request.session, Delete, new Resource(Topic, topicPartition.topic)))
         unauthorizedTopicResponses += topicPartition -> new DeleteRecordsResponse.PartitionResponse(
-          DeleteRecordsResponse.INVALID_LOW_WATERMARK, new ApiError(Errors.TOPIC_AUTHORIZATION_FAILED, null))
+          DeleteRecordsResponse.INVALID_LOW_WATERMARK, Errors.TOPIC_AUTHORIZATION_FAILED)
       else if (!metadataCache.contains(topicPartition.topic))
         nonExistingTopicResponses += topicPartition -> new DeleteRecordsResponse.PartitionResponse(
-          DeleteRecordsResponse.INVALID_LOW_WATERMARK, new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION, null))
+          DeleteRecordsResponse.INVALID_LOW_WATERMARK, Errors.UNKNOWN_TOPIC_OR_PARTITION)
       else
         authorizedForDeleteTopicOffsets += (topicPartition -> offset)
     }
 
     // the callback for sending a DeleteRecordsResponse
-
     def sendResponseCallback(authorizedTopicResponses: Map[TopicPartition, DeleteRecordsResponse.PartitionResponse]) {
-
-      val mappedStatus = if (deleteRecordsRequest.version() >= 1) {
-        authorizedTopicResponses
-      } else {
-        // before version 1 the API didn't return POLICY_VIOLATION
-        authorizedTopicResponses.map { case (topicPartition, partitionResponse) =>
-          val mappedPartitionResponse = if (partitionResponse.error.error == Errors.POLICY_VIOLATION) {
-            info(s"DeleteRecordsResponse(version < 1) with error_code=POLICY_VIOLATION, error_message='${partitionResponse.error.error.message}', using error code UNKNOWN_SERVER_ERROR")
-            // no point adding a message since version < 1 doesn't support message
-            new DeleteRecordsResponse.PartitionResponse(partitionResponse.lowWatermark, new ApiError(Errors.UNKNOWN_SERVER_ERROR, null))
-          } else
-            partitionResponse
-          topicPartition -> mappedPartitionResponse
-        }
-      }
-
-      val mergedResponseStatus = mappedStatus ++
-        unauthorizedTopicResponses.mapValues(_ =>
-          new DeleteRecordsResponse.PartitionResponse(DeleteRecordsResponse.INVALID_LOW_WATERMARK, new ApiError(Errors.TOPIC_AUTHORIZATION_FAILED, null))) ++
-        nonExistingTopicResponses.mapValues(_ =>
-          new DeleteRecordsResponse.PartitionResponse(DeleteRecordsResponse.INVALID_LOW_WATERMARK, new ApiError(Errors.UNKNOWN_TOPIC_OR_PARTITION, null)))
-
+      val mergedResponseStatus = authorizedTopicResponses ++ unauthorizedTopicResponses ++ nonExistingTopicResponses
       mergedResponseStatus.foreach { case (topicPartition, status) =>
-        if (status.error.isFailure) {
+        if (status.error != Errors.NONE) {
           debug("DeleteRecordsRequest with correlation id %d from client %s on partition %s failed due to %s".format(
             request.header.correlationId,
             request.header.clientId,
             topicPartition,
-            status.error))
+            status.error.exceptionName))
         }
       }
 
@@ -1503,13 +1461,10 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (authorizedForDeleteTopicOffsets.isEmpty)
       sendResponseCallback(Map.empty)
     else {
-      // call the replica manager to delete messages from the replicas
+      // call the replica manager to append messages to the replicas
       replicaManager.deleteRecords(
         deleteRecordsRequest.timeout.toLong,
         authorizedForDeleteTopicOffsets,
-        deleteRecordsRequest.validateOnly,
-        request.context.listenerName,
-        request.session.principal,
         sendResponseCallback)
     }
   }
@@ -1962,8 +1917,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case rt => throw new InvalidRequestException(s"Unexpected resource type $rt")
       }
     }
-
-    val authorizedResult = adminManager.alterConfigs(authorizedResources, alterConfigsRequest.validateOnly, request.session.principal, request.context.listenerName)
+    val authorizedResult = adminManager.alterConfigs(authorizedResources, alterConfigsRequest.validateOnly)
     val unauthorizedResult = unauthorizedResources.keys.map { resource =>
       resource -> configsAuthorizationApiError(request.session, resource)
     }
@@ -2060,9 +2014,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         case _ =>
           throw new IllegalStateException("Message conversion info is recorded only for Produce/Fetch requests")
       }
-      request.messageConversionsTimeNanos = processingStats.conversionTimeNanos
+      request.timers.messageConversionsTimeNanos = processingStats.conversionTimeNanos
     }
-    request.temporaryMemoryBytes = processingStats.temporaryMemoryBytes
+    request.timers.temporaryMemoryBytes = processingStats.temporaryMemoryBytes
   }
 
   private def handleError(request: RequestChannel.Request, e: Throwable) {
@@ -2111,22 +2065,24 @@ class KafkaApis(val requestChannel: RequestChannel,
     // This case is used when the request handler has encountered an error, but the client
     // does not expect a response (e.g. when produce request has acks set to 0)
     requestChannel.updateErrorMetrics(request.header.apiKey, errorCounts.asScala)
-    requestChannel.sendResponse(new RequestChannel.Response(request, None, CloseConnectionAction, None))
+    requestChannel.sendResponse(new RequestChannel.Response(request.toSummary, None, CloseConnectionAction, None))
   }
 
   private def sendResponse(request: RequestChannel.Request, responseOpt: Option[AbstractResponse]): Unit = {
     // Update error metrics for each error code in the response including Errors.NONE
     responseOpt.foreach(response => requestChannel.updateErrorMetrics(request.header.apiKey, response.errorCounts.asScala))
 
+    val requestSummary = request.toSummary
     responseOpt match {
       case Some(response) =>
         val responseSend = request.context.buildResponse(response)
         val responseString =
           if (RequestChannel.isRequestLoggingEnabled) Some(response.toString(request.context.apiVersion))
           else None
-        requestChannel.sendResponse(new RequestChannel.Response(request, Some(responseSend), SendAction, responseString))
+        requestChannel.sendResponse(new RequestChannel.Response(requestSummary, Some(responseSend), SendAction,
+          responseString))
       case None =>
-        requestChannel.sendResponse(new RequestChannel.Response(request, None, NoOpAction, None))
+        requestChannel.sendResponse(new RequestChannel.Response(requestSummary, None, NoOpAction, None))
     }
   }
 

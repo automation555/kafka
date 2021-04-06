@@ -46,10 +46,11 @@ class LogManager(val logDirs: Array[File],
                  val retentionCheckMs: Long,
                  scheduler: Scheduler,
                  val brokerState: BrokerState,
-                 private val time: Time) extends Logging {
+                 private val time: Time,
+                 initialTaskDelayMs: Int = 30 * 1000) extends Logging {
   val RecoveryPointCheckpointFile = "recovery-point-offset-checkpoint"
   val LockFile = ".lock"
-  val InitialTaskDelayMs = 30*1000
+  val InitialTaskDelayMs = initialTaskDelayMs
   private val logCreationOrDeletionLock = new Object
   private val logs = new Pool[TopicAndPartition, Log]()
 
@@ -293,7 +294,6 @@ class LogManager(val logDirs: Array[File],
 
   /**
    *  Delete all data in a partition and start the log at the new offset
- *
    *  @param newOffset The new offset to start the log with
    */
   def truncateFullyAndStartAt(topicAndPartition: TopicAndPartition, newOffset: Long) {
@@ -418,7 +418,7 @@ class LogManager(val logDirs: Array[File],
   private def cleanupExpiredSegments(log: Log): Int = {
     if (log.config.retentionMs < 0)
       return 0
-    val startMs = time.absoluteMilliseconds
+    val startMs = time.milliseconds
     log.deleteOldSegments(startMs - _.lastModified > log.config.retentionMs)
   }
 
@@ -447,13 +447,13 @@ class LogManager(val logDirs: Array[File],
   def cleanupLogs() {
     debug("Beginning log cleanup...")
     var total = 0
-    val startMs = time.absoluteMilliseconds
+    val startMs = time.milliseconds
     for(log <- allLogs; if !log.config.compact) {
       debug("Garbage collecting '" + log.name + "'")
       total += cleanupExpiredSegments(log) + cleanupSegmentsToMaintainSize(log)
     }
     debug("Log cleanup completed. " + total + " files deleted in " +
-                  (time.absoluteMilliseconds - startMs) / 1000 + " seconds")
+                  (time.milliseconds - startMs) / 1000 + " seconds")
   }
 
   /**
@@ -483,7 +483,7 @@ class LogManager(val logDirs: Array[File],
 
     for ((topicAndPartition, log) <- logs) {
       try {
-        val timeSinceLastFlush = time.absoluteMilliseconds - log.lastFlushTime
+        val timeSinceLastFlush = time.milliseconds - log.lastFlushTime
         debug("Checking if flush is needed on " + topicAndPartition.topic + " flush interval  " + log.config.flushMs +
               " last flushed " + log.lastFlushTime + " time since last flush: " + timeSinceLastFlush)
         if(timeSinceLastFlush >= log.config.flushMs)

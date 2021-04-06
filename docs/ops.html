@@ -62,6 +62,8 @@
   <pre class="brush: bash;">
   &gt; bin/kafka-topics.sh --zookeeper zk_host:port/chroot --delete --topic my_topic_name
   </pre>
+  Topic deletion option is disabled by default. To enable it set the server config
+    <pre class="brush: text;">delete.topic.enable=true</pre>
   <p>
   Kafka does not currently support reducing the number of partitions for a topic.
   <p>
@@ -126,7 +128,7 @@
         --consumer.config consumer.properties
         --producer.config producer.properties --whitelist my-topic
   </pre>
-  Note that we specify the list of topics with the <code>--whitelist</code> option. This option allows any regular expression using <a href="http://docs.oracle.com/javase/7/docs/api/java/util/regex/Pattern.html">Java-style regular expressions</a>. So you could mirror two topics named <i>A</i> and <i>B</i> using <code>--whitelist 'A|B'</code>. Or you could mirror <i>all</i> topics using <code>--whitelist '.*'</code>. Make sure to quote any regular expression to ensure the shell doesn't try to expand it as a file path. For convenience we allow the use of ',' instead of '|' to specify a list of topics.
+  Note that we specify the list of topics with the <code>--whitelist</code> option. This option allows any regular expression using <a href="http://docs.oracle.com/javase/7/docs/api/java/util/regex/Pattern.html">Java-style regular expressions</a>. So you could mirror two topics named <i>A</i> and <i>B</i> using <code>--whitelist 'A|B'</code>. Or you could mirror <i>all</i> topics using <code>--whitelist '*'</code>. Make sure to quote any regular expression to ensure the shell doesn't try to expand it as a file path. For convenience we allow the use of ',' instead of '|' to specify a list of topics.
   <p>
   Sometimes it is easier to say what it is that you <i>don't</i> want. Instead of using <code>--whitelist</code> to say what you want
   to mirror you can use <code>--blacklist</code> to say what to exclude. This also takes a regular expression argument.
@@ -138,27 +140,14 @@
   <h4><a id="basic_ops_consumer_lag" href="#basic_ops_consumer_lag">Checking consumer position</a></h4>
   Sometimes it's useful to see the position of your consumers. We have a tool that will show the position of all consumers in a consumer group as well as how far behind the end of the log they are. To run this tool on a consumer group named <i>my-group</i> consuming a topic named <i>my-topic</i> would look like this:
   <pre class="brush: bash;">
-  &gt; bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group my-group
-
-  Note: This will only show information about consumers that use the Java consumer API (non-ZooKeeper-based consumers).
-  
-  TOPIC                          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG        CONSUMER-ID                                       HOST                           CLIENT-ID
-  my-topic                       0          2               4               2          consumer-1-029af89c-873c-4751-a720-cefd41a669d6   /127.0.0.1                     consumer-1
-  my-topic                       1          2               3               1          consumer-1-029af89c-873c-4751-a720-cefd41a669d6   /127.0.0.1                     consumer-1
-  my-topic                       2          2               3               1          consumer-2-42c1abd4-e3b2-425d-a8bb-e1ea49b29bb2   /127.0.0.1                     consumer-2
+  &gt; bin/kafka-run-class.sh kafka.tools.ConsumerOffsetChecker --zookeeper localhost:2181 --group test
+  Group           Topic                          Pid Offset          logSize         Lag             Owner
+  my-group        my-topic                       0   0               0               0               test_jkreps-mn-1394154511599-60744496-0
+  my-group        my-topic                       1   0               0               0               test_jkreps-mn-1394154521217-1a0be913-0
   </pre>
 
-  This tool also works with ZooKeeper-based consumers:
-  <pre class="brush: bash;">
-  &gt; bin/kafka-consumer-groups.sh --zookeeper localhost:2181 --describe --group my-group
 
-  Note: This will only show information about consumers that use ZooKeeper (not those using the Java consumer API).
-
-  TOPIC                          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG        CONSUMER-ID
-  my-topic                       0          2               4               2          my-group_consumer-1
-  my-topic                       1          2               3               1          my-group_consumer-1
-  my-topic                       2          2               3               1          my-group_consumer-2
-  </pre>
+  NOTE: Since 0.9.0.0, the kafka.tools.ConsumerOffsetChecker tool has been deprecated. You should use the kafka.admin.ConsumerGroupCommand (or the bin/kafka-consumer-groups.sh script) to manage consumer groups, including consumers created with the <a href="http://kafka.apache.org/documentation.html#newconsumerapi">new consumer API</a>.
 
   <h4><a id="basic_ops_consumer_group" href="#basic_ops_consumer_group">Managing Consumer Groups</a></h4>
 
@@ -169,15 +158,15 @@
   For example, to list all consumer groups across all topics:
 
   <pre class="brush: bash;">
-  &gt; bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --list
+  &gt; bin/kafka-consumer-groups.sh --bootstrap-server broker1:9092 --list
 
   test-consumer-group
   </pre>
 
-  To view offsets, as mentioned earlier, we "describe" the consumer group like this:
+  To view offsets as in the previous example with the ConsumerOffsetChecker, we "describe" the consumer group like this:
 
   <pre class="brush: bash;">
-  &gt; bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group test-consumer-group
+  &gt; bin/kafka-consumer-groups.sh --bootstrap-server broker1:9092 --describe --group test-consumer-group
 
   TOPIC                          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG        CONSUMER-ID                                       HOST                           CLIENT-ID
   test-foo                       0          1               3               2          consumer-1-a5d61779-4d04-4c50-a6d6-fb35d942642d   /127.0.0.1                     consumer-1
@@ -1024,39 +1013,8 @@
 
   The following metrics are available on producer instances.
 
-  <table class="data-table">
-  <tbody><tr>
-        <th>Metric/Attribute name</th>
-        <th>Description</th>
-        <th>Mbean name</th>
-      </tr>
-        <tr>
-        <td>waiting-threads</td>
-        <td>The number of user threads blocked waiting for buffer memory to enqueue their records.</td>
-        <td>kafka.producer:type=producer-metrics,client-id=([-.\w]+)</td>
-      </tr>
-      <tr>
-        <td>buffer-total-bytes</td>
-        <td>The maximum amount of buffer memory the client can use (whether or not it is currently used).</td>
-        <td>kafka.producer:type=producer-metrics,client-id=([-.\w]+)</td>
-      </tr>
-      <tr>
-        <td>buffer-available-bytes</td>
-        <td>The total amount of buffer memory that is not being used (either unallocated or in the free list).</td>
-        <td>kafka.producer:type=producer-metrics,client-id=([-.\w]+)</td>
-      </tr>
-      <tr>
-        <td>bufferpool-wait-time</td>
-        <td>The fraction of time an appender waits for space allocation.</td>
-        <td>kafka.producer:type=producer-metrics,client-id=([-.\w]+)</td>
-      </tr>
-
-  </tbody></table>
-
-  <h5><a id="producer_sender_monitoring" href="#producer_sender_monitoring">Producer Sender Metrics</a></h5>
-
+  
   <!--#include virtual="generated/producer_metrics.html" -->
-
 
   <h4><a id="new_consumer_monitoring" href="#new_consumer_monitoring">New consumer monitoring</a></h4>
 
@@ -1141,13 +1099,6 @@
   <h5><a id="new_consumer_fetch_monitoring" href="#new_consumer_fetch_monitoring">Consumer Fetch Metrics</a></h5>
 
   <!--#include virtual="generated/consumer_metrics.html" -->
-
-  <h4><a id="connect_monitoring" href="#connect_monitoring">Connect Monitoring</a></h4>
-
-  A Connect worker process contains all the producer and consumer metrics as well as metrics specific to Connect.
-  The worker process itself has a number of metrics, while each connector and task have additional metrics.
-
-  <!--#include virtual="generated/connect_metrics.html" -->
 
   <h4><a id="kafka_streams_monitoring" href="#kafka_streams_monitoring">Streams Monitoring</a></h4>
 

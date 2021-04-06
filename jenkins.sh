@@ -21,19 +21,14 @@
 # Run validation checks (compilation and static analysis)
 ./gradlew clean compileJava compileScala compileTestJava compileTestScala \
     spotlessScalaCheck checkstyleMain checkstyleTest spotbugsMain rat \
+    javaDoc scalaDoc \
     --profile --no-daemon --continue -PxmlSpotBugsReport=true "$@" \
     || { echo 'Validation steps failed'; exit 1; }
 
 # Run tests
-#./gradlew core:test --tests GroupEndToEndAuthorizationTest.testNoDescribeProduceOrConsumeWithoutTopicDescribeAcl \
-#    --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
-#    || { echo 'Test steps failed'; exit 1; }
-./gradlew integrationTest \
+./gradlew unitTest integrationTest \
     --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
     || { echo 'Test steps failed'; exit 1; }
-#./gradlew unitTest integrationTest \
-#    --profile --no-daemon --continue -PtestLoggingEvents=started,passed,skipped,failed "$@" \
-#    || { echo 'Test steps failed'; exit 1; }
 
 # Verify that Kafka Streams archetype compiles
 if [ $JAVA_HOME = "/home/jenkins/tools/java/latest11" ] ; then

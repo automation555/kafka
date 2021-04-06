@@ -16,30 +16,27 @@
  */
 package org.apache.kafka.connect.file;
 
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.source.SourceTaskContext;
 import org.apache.kafka.connect.storage.OffsetStorageReader;
 import org.easymock.EasyMock;
-import org.easymock.EasyMockSupport;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.powermock.api.easymock.PowerMock;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.file.Files;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.Assert.assertEquals;
 
-public class FileStreamSourceTaskTest extends EasyMockSupport {
+public class FileStreamSourceTaskTest {
 
     private static final String TOPIC = "test";
 
@@ -51,29 +48,28 @@ public class FileStreamSourceTaskTest extends EasyMockSupport {
 
     private boolean verifyMocks = false;
 
-    @BeforeEach
+    @Before
     public void setup() throws IOException {
         tempFile = File.createTempFile("file-stream-source-task-test", null);
         config = new HashMap<>();
         config.put(FileStreamSourceConnector.FILE_CONFIG, tempFile.getAbsolutePath());
         config.put(FileStreamSourceConnector.TOPIC_CONFIG, TOPIC);
-        config.put(FileStreamSourceConnector.TASK_BATCH_SIZE_CONFIG, String.valueOf(FileStreamSourceConnector.DEFAULT_TASK_BATCH_SIZE));
-        task = new FileStreamSourceTask(2);
-        offsetStorageReader = createMock(OffsetStorageReader.class);
-        context = createMock(SourceTaskContext.class);
+        task = new FileStreamSourceTask();
+        offsetStorageReader = PowerMock.createMock(OffsetStorageReader.class);
+        context = PowerMock.createMock(SourceTaskContext.class);
         task.initialize(context);
     }
 
-    @AfterEach
+    @After
     public void teardown() {
         tempFile.delete();
 
         if (verifyMocks)
-            verifyAll();
+            PowerMock.verifyAll();
     }
 
     private void replay() {
-        replayAll();
+        PowerMock.replayAll();
         verifyMocks = true;
     }
 
@@ -84,20 +80,20 @@ public class FileStreamSourceTaskTest extends EasyMockSupport {
 
         task.start(config);
 
-        OutputStream os = Files.newOutputStream(tempFile.toPath());
-        assertNull(task.poll());
+        FileOutputStream os = new FileOutputStream(tempFile);
+        assertEquals(null, task.poll());
         os.write("partial line".getBytes());
         os.flush();
-        assertNull(task.poll());
+        assertEquals(null, task.poll());
         os.write(" finished\n".getBytes());
         os.flush();
         List<SourceRecord> records = task.poll();
         assertEquals(1, records.size());
         assertEquals(TOPIC, records.get(0).topic());
         assertEquals("partial line finished", records.get(0).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(0).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(0).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 22L), records.get(0).sourceOffset());
-        assertNull(task.poll());
+        assertEquals(null, task.poll());
 
         // Different line endings, and make sure the final \r doesn't result in a line until we can
         // read the subsequent byte.
@@ -106,16 +102,16 @@ public class FileStreamSourceTaskTest extends EasyMockSupport {
         records = task.poll();
         assertEquals(4, records.size());
         assertEquals("line1", records.get(0).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(0).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(0).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 28L), records.get(0).sourceOffset());
         assertEquals("line2", records.get(1).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(1).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(1).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 35L), records.get(1).sourceOffset());
         assertEquals("line3", records.get(2).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(2).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(2).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 41L), records.get(2).sourceOffset());
         assertEquals("line4", records.get(3).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(3).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(3).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 47L), records.get(3).sourceOffset());
 
         os.write("subsequent text".getBytes());
@@ -123,101 +119,18 @@ public class FileStreamSourceTaskTest extends EasyMockSupport {
         records = task.poll();
         assertEquals(1, records.size());
         assertEquals("", records.get(0).value());
-        assertEquals(Collections.singletonMap(FileStreamSourceTask.FILENAME_FIELD, tempFile.getAbsolutePath()), records.get(0).sourcePartition());
+        assertEquals(FileStreamSourceTask.getFileAttributes(tempFile), records.get(0).sourcePartition());
         assertEquals(Collections.singletonMap(FileStreamSourceTask.POSITION_FIELD, 48L), records.get(0).sourceOffset());
 
-        os.close();
         task.stop();
     }
 
-    @Test
-    public void testBatchSize() throws IOException, InterruptedException {
-        expectOffsetLookupReturnNone();
+    @Test(expected = ConnectException.class)
+    public void testMissingTopic() throws InterruptedException {
         replay();
 
-        config.put(FileStreamSourceConnector.TASK_BATCH_SIZE_CONFIG, "5000");
+        config.remove(FileStreamSourceConnector.TOPIC_CONFIG);
         task.start(config);
-
-        OutputStream os = Files.newOutputStream(tempFile.toPath());
-        writeTimesAndFlush(os, 10_000,
-                "Neque porro quisquam est qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit...\n".getBytes()
-        );
-
-        assertEquals(2, task.bufferSize());
-        List<SourceRecord> records = task.poll();
-        assertEquals(5000, records.size());
-        assertEquals(128, task.bufferSize());
-
-        records = task.poll();
-        assertEquals(5000, records.size());
-        assertEquals(128, task.bufferSize());
-
-        os.close();
-        task.stop();
-    }
-
-    @Test
-    public void testBufferResize() throws IOException, InterruptedException {
-        int batchSize = 1000;
-        expectOffsetLookupReturnNone();
-        replay();
-
-        config.put(FileStreamSourceConnector.TASK_BATCH_SIZE_CONFIG, Integer.toString(batchSize));
-        task.start(config);
-
-        OutputStream os = Files.newOutputStream(tempFile.toPath());
-
-        assertEquals(2, task.bufferSize());
-        writeAndAssertBufferSize(batchSize, os, "1\n".getBytes(), 2);
-        writeAndAssertBufferSize(batchSize, os, "3 \n".getBytes(), 4);
-        writeAndAssertBufferSize(batchSize, os, "7     \n".getBytes(), 8);
-        writeAndAssertBufferSize(batchSize, os, "8      \n".getBytes(), 8);
-        writeAndAssertBufferSize(batchSize, os, "9       \n".getBytes(), 16);
-
-        byte[] bytes = new byte[1025];
-        Arrays.fill(bytes, (byte) '*');
-        bytes[bytes.length - 1] = '\n';
-        writeAndAssertBufferSize(batchSize, os, bytes, 2048);
-        writeAndAssertBufferSize(batchSize, os, "9       \n".getBytes(), 2048);
-        os.close();
-        task.stop();
-    }
-
-    private void writeAndAssertBufferSize(int batchSize, OutputStream os, byte[] bytes, int expectBufferSize)
-            throws IOException, InterruptedException {
-        writeTimesAndFlush(os, batchSize, bytes);
-        List<SourceRecord> records = task.poll();
-        assertEquals(batchSize, records.size());
-        String expectedLine = new String(bytes, 0, bytes.length - 1); // remove \n
-        for (SourceRecord record : records) {
-            assertEquals(expectedLine, record.value());
-        }
-        assertEquals(expectBufferSize, task.bufferSize());
-    }
-
-    private void writeTimesAndFlush(OutputStream os, int times, byte[] line) throws IOException {
-        for (int i = 0; i < times; i++) {
-            os.write(line);
-        }
-        os.flush();
-    }
-
-    @Test
-    public void testMissingFile() throws InterruptedException {
-        replay();
-
-        String data = "line\n";
-        System.setIn(new ByteArrayInputStream(data.getBytes()));
-
-        config.remove(FileStreamSourceConnector.FILE_CONFIG);
-        task.start(config);
-
-        List<SourceRecord> records = task.poll();
-        assertEquals(1, records.size());
-        assertEquals(TOPIC, records.get(0).topic());
-        assertEquals("line", records.get(0).value());
-
-        task.stop();
     }
 
     public void testInvalidFile() throws InterruptedException {
@@ -225,12 +138,12 @@ public class FileStreamSourceTaskTest extends EasyMockSupport {
         task.start(config);
         // Currently the task retries indefinitely if the file isn't found, but shouldn't return any data.
         for (int i = 0; i < 100; i++)
-            assertNull(task.poll());
+            assertEquals(null, task.poll());
     }
 
 
     private void expectOffsetLookupReturnNone() {
         EasyMock.expect(context.offsetStorageReader()).andReturn(offsetStorageReader);
-        EasyMock.expect(offsetStorageReader.offset(EasyMock.<Map<String, String>>anyObject())).andReturn(null);
+        EasyMock.expect(offsetStorageReader.offset(EasyMock.anyObject(Map.class))).andReturn(null);
     }
 }

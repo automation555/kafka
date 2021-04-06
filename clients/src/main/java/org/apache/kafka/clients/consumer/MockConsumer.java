@@ -117,16 +117,6 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public void subscribe(String topic, ConsumerRebalanceListener listener) {
-        subscribe(Collections.singleton(topic), listener);
-    }
-
-    @Override
-    public void subscribe(String topic) {
-        subscribe(topic, new NoOpConsumerRebalanceListener());
-    }
-
-    @Override
     public void assign(Collection<TopicPartition> partitions) {
         ensureNotClosed();
         this.subscriptions.assignFromUser(new HashSet<>(partitions));
@@ -264,6 +254,11 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
+    public void seekToBeginning() {
+        seekToBeginning(Collections.<TopicPartition>emptyList());
+    }
+
+    @Override
     public void seekToBeginning(Collection<TopicPartition> partitions) {
         ensureNotClosed();
         for (TopicPartition tp : partitions)
@@ -272,6 +267,11 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
 
     public void updateBeginningOffsets(Map<TopicPartition, Long> newOffsets) {
         beginningOffsets.putAll(newOffsets);
+    }
+
+    @Override
+    public void seekToEnd() {
+        seekToEnd(Collections.<TopicPartition>emptyList());
     }
 
     @Override

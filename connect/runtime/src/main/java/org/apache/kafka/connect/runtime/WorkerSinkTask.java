@@ -45,7 +45,6 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
 import org.apache.kafka.connect.storage.Converter;
 import org.apache.kafka.connect.storage.HeaderConverter;
-import org.apache.kafka.connect.storage.StatusBackingStore;
 import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.slf4j.Logger;
@@ -61,7 +60,6 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import static java.util.Collections.singleton;
-import static org.apache.kafka.connect.runtime.WorkerConfig.TOPIC_TRACKING_ENABLE_CONFIG;
 
 /**
  * WorkerTask that uses a SinkTask to export data from Kafka.
@@ -73,12 +71,12 @@ class WorkerSinkTask extends WorkerTask {
     private final SinkTask task;
     private final ClusterConfigState configState;
     private Map<String, String> taskConfig;
+    private final Time time;
     private final Converter keyConverter;
     private final Converter valueConverter;
     private final HeaderConverter headerConverter;
     private final TransformationChain<SinkRecord> transformationChain;
     private final SinkTaskMetricsGroup sinkTaskMetricsGroup;
-    private final boolean isTopicTrackingEnabled;
     private KafkaConsumer<byte[], byte[]> consumer;
     private WorkerSinkTaskContext context;
     private final List<SinkRecord> messageBatch;
@@ -107,10 +105,8 @@ class WorkerSinkTask extends WorkerTask {
                           KafkaConsumer<byte[], byte[]> consumer,
                           ClassLoader loader,
                           Time time,
-                          RetryWithToleranceOperator retryWithToleranceOperator,
-                          StatusBackingStore statusBackingStore) {
-        super(id, statusListener, initialState, loader, connectMetrics,
-                retryWithToleranceOperator, time, statusBackingStore);
+                          RetryWithToleranceOperator retryWithToleranceOperator) {
+        super(id, statusListener, initialState, loader, connectMetrics, retryWithToleranceOperator);
 
         this.workerConfig = workerConfig;
         this.task = task;
@@ -119,6 +115,7 @@ class WorkerSinkTask extends WorkerTask {
         this.valueConverter = valueConverter;
         this.headerConverter = headerConverter;
         this.transformationChain = transformationChain;
+        this.time = time;
         this.messageBatch = new ArrayList<>();
         this.currentOffsets = new HashMap<>();
         this.origOffsets = new HashMap<>();
@@ -133,7 +130,6 @@ class WorkerSinkTask extends WorkerTask {
         this.sinkTaskMetricsGroup = new SinkTaskMetricsGroup(id, connectMetrics);
         this.sinkTaskMetricsGroup.recordOffsetSequenceNumber(commitSeqno);
         this.consumer = consumer;
-        this.isTopicTrackingEnabled = workerConfig.getBoolean(TOPIC_TRACKING_ENABLE_CONFIG);
     }
 
     @Override
@@ -277,6 +273,7 @@ class WorkerSinkTask extends WorkerTask {
             }
             committing = false;
         }
+        task.postCommit(error, committedOffsets);
     }
 
     public int commitFailures() {
@@ -291,7 +288,6 @@ class WorkerSinkTask extends WorkerTask {
 
         if (SinkConnectorConfig.hasTopicsConfig(taskConfig)) {
             String[] topics = taskConfig.get(SinkTask.TOPICS_CONFIG).split(",");
-            Arrays.setAll(topics, i -> topics[i].trim());
             consumer.subscribe(Arrays.asList(topics), new HandleRebalance());
             log.debug("{} Initializing and starting task for topics {}", this, topics);
         } else {
@@ -485,29 +481,16 @@ class WorkerSinkTask extends WorkerTask {
         sinkTaskMetricsGroup.recordConsumedOffsets(origOffsets);
     }
 
-    private SinkRecord generateSinkRecordWithRawData(final ConsumerRecord<byte[], byte[]> msg) {
-        return new SinkRecord(msg.topic(), msg.partition(),
-          null, msg.key(),
-          null, msg.value(),
-          msg.offset(),
-          ConnectUtils.checkAndConvertTimestamp(msg.timestamp()),
-          msg.timestampType(),
-          new ConnectHeaders());
-    }
-
     private SinkRecord convertAndTransformRecord(final ConsumerRecord<byte[], byte[]> msg) {
-        SchemaAndValue keyAndSchema = retryWithToleranceOperator.execute(() -> keyConverter.toConnectData(msg.topic(), msg.headers(), msg.key()),
+        SchemaAndValue keyAndSchema = retryWithToleranceOperator.execute(() -> keyConverter.toConnectData(msg.topic(), msg.key()),
                 Stage.KEY_CONVERTER, keyConverter.getClass());
 
-        SchemaAndValue valueAndSchema = retryWithToleranceOperator.execute(() -> valueConverter.toConnectData(msg.topic(), msg.headers(), msg.value()),
+        SchemaAndValue valueAndSchema = retryWithToleranceOperator.execute(() -> valueConverter.toConnectData(msg.topic(), msg.value()),
                 Stage.VALUE_CONVERTER, valueConverter.getClass());
 
         Headers headers = retryWithToleranceOperator.execute(() -> convertHeadersFor(msg), Stage.HEADER_CONVERTER, headerConverter.getClass());
 
         if (retryWithToleranceOperator.failed()) {
-            if (retryWithToleranceOperator.continueOnError()) {
-                return generateSinkRecordWithRawData(msg);
-            }
             return null;
         }
 
@@ -521,14 +504,7 @@ class WorkerSinkTask extends WorkerTask {
                 headers);
         log.trace("{} Applying transformations to record in topic '{}' partition {} at offset {} and timestamp {} with key {} and value {}",
                 this, msg.topic(), msg.partition(), msg.offset(), timestamp, keyAndSchema.value(), valueAndSchema.value());
-        if (isTopicTrackingEnabled) {
-            recordActiveTopic(origRecord.topic());
-        }
-        SinkRecord transformedRecord = transformationChain.apply(origRecord);
-        if (transformedRecord == null && retryWithToleranceOperator.continueOnError()) {
-            return generateSinkRecordWithRawData(msg);
-        }
-        return transformedRecord;
+        return transformationChain.apply(origRecord);
     }
 
     private Headers convertHeadersFor(ConsumerRecord<byte[], byte[]> record) {
@@ -581,7 +557,7 @@ class WorkerSinkTask extends WorkerTask {
             // Let this exit normally, the batch will be reprocessed on the next loop.
         } catch (Throwable t) {
             log.error("{} Task threw an uncaught and unrecoverable exception. Task is being killed and will not "
-                    + "recover until manually restarted. Error: {}", this, t.getMessage(), t);
+                    + "recover until manually restarted.", this, t);
             throw new ConnectException("Exiting WorkerSinkTask due to unrecoverable exception.", t);
         }
     }

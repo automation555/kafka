@@ -546,19 +546,20 @@ public class SslTransportLayer implements TransportLayer {
                     read += readFromAppBuffer(dst);
                 } else if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
                     int currentApplicationBufferSize = applicationBufferSize();
-                    appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize);
-                    if (appReadBuffer.position() >= currentApplicationBufferSize) {
-                        throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
-                                                        ") >= application buffer size (" + currentApplicationBufferSize + ")");
-                    }
+                    appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize + appReadBuffer.position());
 
-                    // appReadBuffer will extended upto currentApplicationBufferSize
-                    // we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
-                    // we can break here.
-                    if (dst.hasRemaining())
-                        read += readFromAppBuffer(dst);
-                    else
-                        break;
+//                    if (appReadBuffer.position() >= currentApplicationBufferSize) {
+//                        throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
+//                                                        ") >= application buffer size (" + currentApplicationBufferSize + ")");
+//                    }
+//
+//                    // appReadBuffer will extended upto currentApplicationBufferSize
+//                    // we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
+//                    // we can break here.
+//                    if (dst.hasRemaining())
+//                        read += readFromAppBuffer(dst);
+//                    else
+//                        break;
                 } else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
                     int currentNetReadBufferSize = netReadBufferSize();
                     netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);
@@ -642,42 +643,37 @@ public class SslTransportLayer implements TransportLayer {
     */
     @Override
     public int write(ByteBuffer src) throws IOException {
+        int written = 0;
         if (state == State.CLOSING)
             throw closingException();
         if (state != State.READY)
-            return 0;
+            return written;
+
         if (!flush(netWriteBuffer))
-            return 0;
+            return written;
 
-        int written = 0;
-        while (src.remaining() != 0) {
-            netWriteBuffer.clear();
-            SSLEngineResult wrapResult = sslEngine.wrap(src, netWriteBuffer);
+        netWriteBuffer.clear();
+        SSLEngineResult wrapResult = sslEngine.wrap(src, netWriteBuffer);
+        netWriteBuffer.flip();
+
+        //handle ssl renegotiation
+        if (wrapResult.getHandshakeStatus() != HandshakeStatus.NOT_HANDSHAKING && wrapResult.getStatus() == Status.OK)
+            throw renegotiationException();
+
+        if (wrapResult.getStatus() == Status.OK) {
+            written = wrapResult.bytesConsumed();
+            flush(netWriteBuffer);
+        } else if (wrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
+            int currentNetWriteBufferSize = netWriteBufferSize();
+            netWriteBuffer.compact();
+            netWriteBuffer = Utils.ensureCapacity(netWriteBuffer, currentNetWriteBufferSize);
             netWriteBuffer.flip();
-
-            //handle ssl renegotiation
-            if (wrapResult.getHandshakeStatus() != HandshakeStatus.NOT_HANDSHAKING && wrapResult.getStatus() == Status.OK)
-                throw renegotiationException();
-
-            if (wrapResult.getStatus() == Status.OK) {
-                written += wrapResult.bytesConsumed();
-                if (!flush(netWriteBuffer)) {
-                    // break if socketChannel can't accept all data in netWriteBuffer
-                    break;
-                }
-                // otherwise, we are safe to go to next iteration.
-            } else if (wrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
-                int currentNetWriteBufferSize = netWriteBufferSize();
-                netWriteBuffer.compact();
-                netWriteBuffer = Utils.ensureCapacity(netWriteBuffer, currentNetWriteBufferSize);
-                netWriteBuffer.flip();
-                if (netWriteBuffer.limit() >= currentNetWriteBufferSize) throw new IllegalStateException(
-                    "SSL BUFFER_OVERFLOW when available data size (" + netWriteBuffer.limit() + ") >= network buffer size (" + currentNetWriteBufferSize + ")");
-            } else if (wrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
-                throw new IllegalStateException("SSL BUFFER_UNDERFLOW during write");
-            } else if (wrapResult.getStatus() == Status.CLOSED) {
-                throw new EOFException();
-            }
+            if (netWriteBuffer.limit() >= currentNetWriteBufferSize)
+                throw new IllegalStateException("SSL BUFFER_OVERFLOW when available data size (" + netWriteBuffer.limit() + ") >= network buffer size (" + currentNetWriteBufferSize + ")");
+        } else if (wrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
+            throw new IllegalStateException("SSL BUFFER_UNDERFLOW during write");
+        } else if (wrapResult.getStatus() == Status.CLOSED) {
+            throw new EOFException();
         }
         return written;
     }
@@ -868,8 +864,7 @@ public class SslTransportLayer implements TransportLayer {
     private void maybeProcessHandshakeFailure(SSLException sslException, boolean flush, IOException ioException) throws IOException {
         if (sslException instanceof SSLHandshakeException || sslException instanceof SSLProtocolException ||
                 sslException instanceof SSLPeerUnverifiedException || sslException instanceof SSLKeyException ||
-                sslException.getMessage().contains("Unrecognized SSL message") ||
-                sslException.getMessage().contains("Received fatal alert: "))
+                sslException.getMessage().contains("Unrecognized SSL message"))
             handshakeFailure(sslException, flush);
         else if (ioException == null)
             throw sslException;

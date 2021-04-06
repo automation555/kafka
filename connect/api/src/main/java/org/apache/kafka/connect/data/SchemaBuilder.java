@@ -336,14 +336,12 @@ public class SchemaBuilder implements Schema {
      * Get the list of fields for this Schema. Throws a DataException if this schema is not a struct.
      * @return the list of fields for this Schema
      */
-    @Override
     public List<Field> fields() {
         if (type != Type.STRUCT)
             throw new DataException("Cannot list fields on non-struct type");
         return new ArrayList<>(fields.values());
     }
 
-    @Override
     public Field field(String fieldName) {
         if (type != Type.STRUCT)
             throw new DataException("Cannot look up fields on non-struct type");
@@ -382,26 +380,6 @@ public class SchemaBuilder implements Schema {
         return builder;
     }
 
-    static SchemaBuilder arrayOfNull() {
-        return new SchemaBuilder(Type.ARRAY);
-    }
-
-    static SchemaBuilder mapOfNull() {
-        return new SchemaBuilder(Type.MAP);
-    }
-
-    static SchemaBuilder mapWithNullKeys(Schema valueSchema) {
-        SchemaBuilder result = new SchemaBuilder(Type.MAP);
-        result.valueSchema = valueSchema;
-        return result;
-    }
-
-    static SchemaBuilder mapWithNullValues(Schema keySchema) {
-        SchemaBuilder result = new SchemaBuilder(Type.MAP);
-        result.keySchema = keySchema;
-        return result;
-    }
-
     @Override
     public Schema keySchema() {
         return keySchema;
@@ -412,6 +390,36 @@ public class SchemaBuilder implements Schema {
         return valueSchema;
     }
 
+    /**
+     * @param schema the schema to clone the SchemaBuilder from.
+     * @return a new SchemaBuilder from the supplied schema.
+     */
+    public static SchemaBuilder from(Schema schema) {
+        if (null == schema)
+            throw new SchemaBuilderException("schema cannot be null.");
+
+        SchemaBuilder builder = new SchemaBuilder(schema.type());
+        builder.name = schema.name();
+        builder.doc = schema.doc();
+        builder.optional = schema.isOptional();
+        if(null!=schema.parameters()) {
+            builder.parameters = new LinkedHashMap<>(schema.parameters());
+        }
+        builder.defaultValue = schema.defaultValue();
+        builder.version = schema.version();
+        if (Type.MAP == schema.type()) {
+            builder.keySchema = schema.keySchema();
+        }
+        if (Type.MAP == schema.type() || Type.ARRAY == schema.type()) {
+            builder.valueSchema = schema.valueSchema();
+        }
+        if (Type.STRUCT == schema.type()) {
+            for (Field field : schema.fields()) {
+                builder.field(field.name(), field.schema());
+            }
+        }
+        return builder;
+    }
 
     /**
      * Build the Schema using the current settings
@@ -420,7 +428,7 @@ public class SchemaBuilder implements Schema {
     public Schema build() {
         return new ConnectSchema(type, isOptional(), defaultValue, name, version, doc,
                 parameters == null ? null : Collections.unmodifiableMap(parameters),
-                fields == null ? null : Collections.unmodifiableList(new ArrayList<>(fields.values())), keySchema, valueSchema);
+                fields == null ? null : Collections.unmodifiableList(new ArrayList<Field>(fields.values())), keySchema, valueSchema);
     }
 
     /**

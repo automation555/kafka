@@ -36,7 +36,7 @@ case class CleanerConfig(numThreads: Int = 1,
                          maxMessageSize: Int = 32*1024*1024,
                          maxIoBytesPerSecond: Double = Double.MaxValue,
                          backOffMs: Long = 15 * 1000,
-                         strategy: String = Defaults.CompactionStrategy,
                          enableCleaner: Boolean = true,
-                         hashAlgorithm: String = "MD5") {
+                         hashAlgorithm: String = "MD5",
+                         brokerCompressionType: String = "uncompressed") {
 }

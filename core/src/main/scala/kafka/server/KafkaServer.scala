@@ -75,9 +75,9 @@ object KafkaServer {
     logProps.put(LogConfig.CompressionTypeProp, kafkaConfig.compressionType)
     logProps.put(LogConfig.UncleanLeaderElectionEnableProp, kafkaConfig.uncleanLeaderElectionEnable)
     logProps.put(LogConfig.PreAllocateEnableProp, kafkaConfig.logPreAllocateEnable)
-    logProps.put(LogConfig.MessageFormatVersionProp, kafkaConfig.logMessageFormatVersion.version)
-    logProps.put(LogConfig.MessageTimestampTypeProp, kafkaConfig.logMessageTimestampType.name)
-    logProps.put(LogConfig.MessageTimestampDifferenceMaxMsProp, kafkaConfig.logMessageTimestampDifferenceMaxMs)
+    logProps.put(LogConfig.MessageFormatVersionProp, kafkaConfig.messageFormatVersion.version)
+    logProps.put(LogConfig.MessageTimestampTypeProp, kafkaConfig.messageTimestampType.name)
+    logProps.put(LogConfig.MessageTimestampDifferenceMaxMsProp, kafkaConfig.messageTimestampDifferenceMaxMs)
     logProps
   }
 }
@@ -96,7 +96,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
   private var shutdownLatch = new CountDownLatch(1)
 
   private val jmxPrefix: String = "kafka.server"
-  private val reporters: java.util.List[MetricsReporter] = config.metricReporterClasses
+  private val reporters: java.util.List[MetricsReporter] =  config.metricReporterClasses
   reporters.add(new JmxReporter(jmxPrefix))
 
   // This exists because the Metrics package from clients has its own Time implementation.
@@ -239,8 +239,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
           else
             (protocol, endpoint)
         }
-        kafkaHealthcheck = new KafkaHealthcheck(config.brokerId, listeners, zkUtils, config.rack,
-          config.interBrokerProtocolVersion)
+        kafkaHealthcheck = new KafkaHealthcheck(config.brokerId, listeners, zkUtils)
         kafkaHealthcheck.startup()
 
         // Now that the broker id is successfully registered via KafkaHealthcheck, checkpoint it
@@ -321,16 +320,12 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
 
     val socketTimeoutMs = config.controllerSocketTimeoutMs
 
+    def socketTimeoutException: Throwable =
+      new SocketTimeoutException(s"Did not receive response within $socketTimeoutMs")
+
     def networkClientControlledShutdown(retries: Int): Boolean = {
       val metadataUpdater = new ManualMetadataUpdater()
       val networkClient = {
-        val channelBuilder = ChannelBuilders.create(
-          config.interBrokerSecurityProtocol,
-          Mode.CLIENT,
-          LoginType.SERVER,
-          config.values,
-          config.saslMechanismInterBrokerProtocol,
-          config.saslInterBrokerHandshakeRequestEnable)
         val selector = new Selector(
           NetworkReceive.UNLIMITED,
           config.connectionsMaxIdleMs,
@@ -339,7 +334,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
           "kafka-server-controlled-shutdown",
           Map.empty.asJava,
           false,
-          channelBuilder
+          ChannelBuilders.create(config.interBrokerSecurityProtocol, Mode.CLIENT, LoginType.SERVER, config.values)
         )
         new NetworkClient(
           selector,
@@ -393,14 +388,16 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
             try {
 
               if (!networkClient.blockingReady(node(prevController), socketTimeoutMs))
-                throw new SocketTimeoutException(s"Failed to connect within $socketTimeoutMs ms")
+                throw socketTimeoutException
 
               // send the controlled shutdown request
               val requestHeader = networkClient.nextRequestHeader(ApiKeys.CONTROLLED_SHUTDOWN_KEY)
               val send = new RequestSend(node(prevController).idString, requestHeader,
                 new ControlledShutdownRequest(config.brokerId).toStruct)
               val request = new ClientRequest(kafkaMetricsTime.milliseconds(), true, send, null)
-              val clientResponse = networkClient.blockingSendAndReceive(request)
+              val clientResponse = networkClient.blockingSendAndReceive(request, socketTimeoutMs).getOrElse {
+                throw socketTimeoutException
+              }
 
               val shutdownResponse = new ControlledShutdownResponse(clientResponse.responseBody)
               if (shutdownResponse.errorCode == Errors.NONE.code && shutdownResponse.partitionsRemaining.isEmpty) {
@@ -605,7 +602,8 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
                                       maxMessageSize = config.messageMaxBytes,
                                       maxIoBytesPerSecond = config.logCleanerIoMaxBytesPerSecond,
                                       backOffMs = config.logCleanerBackoffMs,
-                                      enableCleaner = config.logCleanerEnable)
+                                      enableCleaner = config.logCleanerEnable,
+                                      brokerCompressionType = config.compressionType)
     new LogManager(logDirs = config.logDirs.map(new File(_)).toArray,
                    topicConfigs = configs,
                    defaultConfig = defaultLogConfig,
@@ -614,7 +612,6 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
                    flushCheckMs = config.logFlushSchedulerIntervalMs,
                    flushCheckpointMs = config.logFlushOffsetCheckpointIntervalMs,
                    retentionCheckMs = config.logCleanupIntervalMs,
-                   retentionDiskUsagePercent = config.logRetentionDiskUsagePercent,
                    scheduler = kafkaScheduler,
                    brokerState = brokerState,
                    time = time)

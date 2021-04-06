@@ -22,7 +22,6 @@ fi
 base_dir=$(dirname $0)
 
 if [ "x$KAFKA_LOG4J_OPTS" = "x" ]; then
-    echo "DEPRECATED: using log4j 1.x configuration. To use log4j 2.x configuration, run with: 'export KAFKA_LOG4J_OPTS=\"-Dlog4j.configurationFile=file:$base_dir/../config/log4j2.properties\"'"
     export KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:$base_dir/../config/log4j.properties"
 fi
 
@@ -32,14 +31,28 @@ fi
 
 EXTRA_ARGS=${EXTRA_ARGS-'-name kafkaServer -loggc'}
 
+CONFDIR="${base_dir}/../config"
+
 COMMAND=$1
 case $COMMAND in
   -daemon)
     EXTRA_ARGS="-daemon "$EXTRA_ARGS
+    if [ -f $2 ];then
+        CONFPATH=$2
+    else
+        CONFPATH=$CONFDIR"/"$2
+    fi
+    shift
     shift
     ;;
   *)
+    if [ -f $1 ];then
+        CONFPATH=$1
+    else
+        CONFPATH=$CONFDIR"/"$1
+    fi
+    shift
     ;;
 esac
 
-exec $base_dir/kafka-run-class.sh $EXTRA_ARGS kafka.Kafka "$@"
+exec  $base_dir/kafka-run-class.sh $EXTRA_ARGS kafka.Kafka $CONFPATH  "$@"

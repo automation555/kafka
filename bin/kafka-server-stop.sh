@@ -14,28 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 SIGNAL=${SIGNAL:-TERM}
-
-if [[ $(uname -s) == "OS/390" ]]; then
-    if [ -z $JOBNAME ]; then
-        JOBNAME="KAFKSTRT"
-    fi
-    PIDS=$(ps -A -o pid,jobname,comm | grep -i $JOBNAME | grep java | grep -v grep | awk '{print $1}')
-else
-    PIDS=$(ps ax | grep -i 'kafka\.Kafka' | grep java | grep -v grep | awk '{print $1}')
-fi
+PIDS=$(ps ax | grep -i 'kafkaServer' | grep java | grep -v grep | awk '{print $1}')
 
 if [ -z "$PIDS" ]; then
   echo "No kafka server to stop"
   exit 1
 else
-  count=$(echo $PIDS |wc -w)
-  if [ $count -gt 1 ]; then
-    echo "find $count kafka instances (" $PIDS ") are you sure to kill them all?"
-    read -p "(yes/no) " choice
-    if [ "Xyes" != "X$choice" ]; then
-      echo "stop canceled"
-      exit 1
-    fi
-  fi
   kill -s $SIGNAL $PIDS
 fi

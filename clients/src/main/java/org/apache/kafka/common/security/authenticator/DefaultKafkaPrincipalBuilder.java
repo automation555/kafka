@@ -16,18 +16,11 @@
  */
 package org.apache.kafka.common.security.authenticator;
 
-import javax.security.auth.x500.X500Principal;
-
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.SaslConfigs;
-import org.apache.kafka.common.errors.SerializationException;
-import org.apache.kafka.common.message.DefaultPrincipalData;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
-import org.apache.kafka.common.protocol.MessageUtil;
 import org.apache.kafka.common.security.auth.AuthenticationContext;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.common.security.auth.KafkaPrincipalBuilder;
-import org.apache.kafka.common.security.auth.KafkaPrincipalSerde;
 import org.apache.kafka.common.security.auth.PlaintextAuthenticationContext;
 import org.apache.kafka.common.security.auth.SaslAuthenticationContext;
 import org.apache.kafka.common.security.auth.SslAuthenticationContext;
@@ -37,10 +30,8 @@ import org.apache.kafka.common.security.kerberos.KerberosShortNamer;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import javax.security.sasl.SaslServer;
-import org.apache.kafka.common.security.ssl.SslPrincipalMapper;
-
+import java.io.Closeable;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.security.Principal;
 
 /**
@@ -51,19 +42,16 @@ import java.security.Principal;
  *
  * NOTE: This is an internal class and can change without notice.
  */
-public class DefaultKafkaPrincipalBuilder implements KafkaPrincipalBuilder, KafkaPrincipalSerde {
+public class DefaultKafkaPrincipalBuilder implements KafkaPrincipalBuilder, Closeable {
     private final KerberosShortNamer kerberosShortNamer;
-    private final SslPrincipalMapper sslPrincipalMapper;
 
     /**
      * Construct a new instance.
      *
      * @param kerberosShortNamer Kerberos name rewrite rules or null if none have been configured
-     * @param sslPrincipalMapper SSL Principal mapper or null if none have been configured
      */
-    public DefaultKafkaPrincipalBuilder(KerberosShortNamer kerberosShortNamer, SslPrincipalMapper sslPrincipalMapper) {
+    public DefaultKafkaPrincipalBuilder(KerberosShortNamer kerberosShortNamer) {
         this.kerberosShortNamer = kerberosShortNamer;
-        this.sslPrincipalMapper = sslPrincipalMapper;
     }
 
     @Override
@@ -72,8 +60,9 @@ public class DefaultKafkaPrincipalBuilder implements KafkaPrincipalBuilder, Kafk
             return KafkaPrincipal.ANONYMOUS;
         } else if (context instanceof SslAuthenticationContext) {
             SSLSession sslSession = ((SslAuthenticationContext) context).session();
+
             try {
-                return applySslPrincipalMapper(sslSession.getPeerPrincipal());
+                return convertToKafkaPrincipal(sslSession.getPeerPrincipal());
             } catch (SSLPeerUnverifiedException se) {
                 return KafkaPrincipal.ANONYMOUS;
             }
@@ -99,37 +88,12 @@ public class DefaultKafkaPrincipalBuilder implements KafkaPrincipalBuilder, Kafk
         }
     }
 
-    private KafkaPrincipal applySslPrincipalMapper(Principal principal) {
-        try {
-            if (!(principal instanceof X500Principal) || principal == KafkaPrincipal.ANONYMOUS) {
-                return new KafkaPrincipal(KafkaPrincipal.USER_TYPE, principal.getName());
-            } else {
-                return new KafkaPrincipal(KafkaPrincipal.USER_TYPE, sslPrincipalMapper.getName(principal.getName()));
-            }
-        } catch (IOException e) {
-            throw new KafkaException("Failed to map name for '" + principal.getName() +
-                    "' based on SSL principal mapping rules.", e);
-        }
+    private KafkaPrincipal convertToKafkaPrincipal(Principal principal) {
+        return new KafkaPrincipal(KafkaPrincipal.USER_TYPE, principal.getName());
     }
 
     @Override
-    public byte[] serialize(KafkaPrincipal principal) {
-        DefaultPrincipalData data = new DefaultPrincipalData()
-                                        .setType(principal.getPrincipalType())
-                                        .setName(principal.getName())
-                                        .setTokenAuthenticated(principal.tokenAuthenticated());
-        return MessageUtil.toVersionPrefixedBytes(DefaultPrincipalData.HIGHEST_SUPPORTED_VERSION, data);
+    public void close() {
     }
 
-    @Override
-    public KafkaPrincipal deserialize(byte[] bytes) {
-        ByteBuffer buffer = ByteBuffer.wrap(bytes);
-        short version = buffer.getShort();
-        if (version < DefaultPrincipalData.LOWEST_SUPPORTED_VERSION || version > DefaultPrincipalData.HIGHEST_SUPPORTED_VERSION) {
-            throw new SerializationException("Invalid principal data version " + version);
-        }
-
-        DefaultPrincipalData data = new DefaultPrincipalData(new ByteBufferAccessor(buffer), version);
-        return new KafkaPrincipal(data.type(), data.name(), data.tokenAuthenticated());
-    }
 }

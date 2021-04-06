@@ -16,13 +16,14 @@
  */
 package org.apache.kafka.common;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
 /**
  * The <code>MetricName</code> class encapsulates a metric's name, logical group and its related attributes. It should be constructed using metrics.MetricName(...).
  * <p>
- * This class captures the following parameters:
+ * This class captures the following parameters
  * <pre>
  *  <b>name</b> The name of the metric
  *  <b>group</b> logical group name of the metrics to which this metric belongs.
@@ -31,7 +32,7 @@ import java.util.Objects;
  * </pre>
  * group, tags parameters can be used to create unique metric names while reporting in JMX or any custom reporting.
  * <p>
- * Ex: standard JMX MBean can be constructed like <b>domainName:type=group,key1=val1,key2=val2</b>
+ * Ex: standard JMX MBean can be constructed like  <b>domainName:type=group,key1=val1,key2=val2</b>
  * <p>
  *
  * Usage looks something like this:
@@ -65,7 +66,7 @@ public final class MetricName {
     private final String name;
     private final String group;
     private final String description;
-    private Map<String, String> tags;
+    private final Map<String, String> tags;
     private int hash = 0;
 
     /**
@@ -92,7 +93,7 @@ public final class MetricName {
     }
 
     public Map<String, String> tags() {
-        return this.tags;
+        return Collections.unmodifiableMap(tags);
     }
 
     public String description() {
@@ -101,15 +102,9 @@ public final class MetricName {
 
     @Override
     public int hashCode() {
-        if (hash != 0)
-            return hash;
-        final int prime = 31;
-        int result = 1;
-        result = prime * result + group.hashCode();
-        result = prime * result + name.hashCode();
-        result = prime * result + tags.hashCode();
-        this.hash = result;
-        return result;
+        if (hash == 0)
+            hash = Objects.hash(group, name, tags);
+        return hash;
     }
 
     @Override

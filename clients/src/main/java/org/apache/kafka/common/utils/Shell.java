@@ -78,7 +78,11 @@ abstract public class Shell {
 
     /** Run a command */
     private void runCommand() throws IOException {
+
         ProcessBuilder builder = new ProcessBuilder(execString());
+        // Ensure that all shell tests will pass on any machine, as the only way to
+        // check a success is by checking the result text.
+        builder.environment().put("LANGUAGE", "en_US");
         Timer timeoutTimer = null;
         completed = new AtomicBoolean(false);
 
@@ -251,7 +255,7 @@ abstract public class Shell {
      * @param cmd shell command to execute.
      * @return the output of the executed command.
      */
-    public static String execCommand(String... cmd) throws IOException {
+    public static String execCommand(String ... cmd) throws IOException {
         return execCommand(cmd, -1);
     }
 

@@ -27,14 +27,14 @@ import kafka.controller.{LeaderIsrAndControllerEpoch, ReassignedPartitionsContex
 import kafka.zk.{BrokerIdZNode, ReassignPartitionsZNode, ZkData}
 import org.I0Itec.zkclient.exception.{ZkBadVersionException, ZkMarshallingError, ZkNoNodeException, ZkNodeExistsException}
 import org.I0Itec.zkclient.serialize.ZkSerializer
-import org.I0Itec.zkclient._
-import org.apache.kafka.common.TopicPartition
+import org.I0Itec.zkclient.{IZkChildListener, IZkDataListener, IZkStateListener, ZkClient, ZkConnection}
 import org.apache.kafka.common.config.ConfigException
-import org.apache.zookeeper.ZooDefs
 import org.apache.zookeeper.data.{ACL, Stat}
+import org.apache.zookeeper.ZooDefs
 
-import scala.collection.JavaConverters._
 import scala.collection._
+import scala.collection.JavaConverters._
+import org.apache.kafka.common.TopicPartition
 
 @deprecated("This is an internal class that is no longer used by Kafka and will be removed in a future release. Please " +
   "use org.apache.kafka.clients.admin.AdminClient instead.", since = "2.0.0")
@@ -58,6 +58,7 @@ object ZkUtils {
   val ClusterIdPath = s"$ClusterPath/id"
   val BrokerIdsPath = s"$BrokersPath/ids"
   val BrokerTopicsPath = s"$BrokersPath/topics"
+  val ReassignCancelPath = s"$AdminPath/cancel_reassignment_in_progress"
   val ReassignPartitionsPath = s"$AdminPath/reassign_partitions"
   val DeleteTopicsPath = s"$AdminPath/delete_topics"
   val PreferredReplicaLeaderElectionPath = s"$AdminPath/preferred_replica_election"
@@ -137,7 +138,7 @@ object ZkUtils {
   def getDeleteTopicPath(topic: String): String =
     DeleteTopicsPath + "/" + topic
 
-  def parsePartitionReassignmentData(jsonData: String): Map[TopicAndPartition, Seq[Int]] = {
+  def parsePartitionReassignmentData(jsonData: String): Map[TopicAndPartition, Map[String, Seq[Int]]] = {
     val utf8Bytes = jsonData.getBytes(StandardCharsets.UTF_8)
     val assignments = ReassignPartitionsZNode.decode(utf8Bytes) match {
       case Left(e) => throw e
@@ -704,8 +705,8 @@ class ZkUtils(val zkClient: ZkClient,
     jsonPartitionMapOpt match {
       case Some(jsonPartitionMap) =>
         val reassignedPartitions = parsePartitionReassignmentData(jsonPartitionMap)
-        reassignedPartitions.map { case (tp, newReplicas) =>
-          tp -> new ReassignedPartitionsContext(newReplicas, null)
+        reassignedPartitions.map { case (tp, replica_type) =>
+          tp -> new ReassignedPartitionsContext(replica_type("replicas"), replica_type("original_replicas"), null)
         }
       case None => Map.empty[TopicAndPartition, ReassignedPartitionsContext]
     }

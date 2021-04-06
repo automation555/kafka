@@ -29,11 +29,11 @@ import kafka.security.auth.{Acl, Resource, ResourceType}
 import kafka.server.ConfigType
 import kafka.utils.Logging
 import kafka.zookeeper._
-import org.apache.kafka.common.errors.ControllerMovedException
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.resource.PatternType
+import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.security.token.delegation.{DelegationToken, TokenInformation}
 import org.apache.kafka.common.utils.{Time, Utils}
-import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.zookeeper.KeeperException.{Code, NodeExistsException}
 import org.apache.zookeeper.OpResult.{CreateResult, ErrorResult, SetDataResult}
 import org.apache.zookeeper.data.{ACL, Stat}
@@ -787,7 +787,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * Returns all reassignments.
    * @return the reassignments for each partition.
    */
-  def getPartitionReassignment: collection.Map[TopicPartition, Seq[Int]] = {
+  def getPartitionReassignment: collection.Map[TopicPartition, Map[String, Seq[Int]]] = {
     val getDataRequest = GetDataRequest(ReassignPartitionsZNode.path)
     val getDataResponse = retryRequestUntilConnected(getDataRequest)
     getDataResponse.resultCode match {
@@ -795,7 +795,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
         ReassignPartitionsZNode.decode(getDataResponse.data) match {
           case Left(e) =>
             logger.warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
-            Map.empty[TopicPartition, Seq[Int]]
+            Map.empty[TopicPartition, Map[String, Seq[Int]]]
           case Right(assignments) => assignments
         }
       case Code.NONODE => Map.empty
@@ -811,7 +811,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    * @throws KeeperException if there is an error while setting or creating the znode
    */
-  def setOrCreatePartitionReassignment(reassignment: collection.Map[TopicPartition, Seq[Int]], expectedControllerEpochZkVersion: Int): Unit = {
+  def setOrCreatePartitionReassignment(reassignment: collection.Map[TopicPartition, Map[String, Seq[Int]]], expectedControllerEpochZkVersion: Int): Unit = {
 
     def set(reassignmentData: Array[Byte]): SetDataResponse = {
       val setDataRequest = SetDataRequest(ReassignPartitionsZNode.path, reassignmentData, ZkVersion.MatchAnyVersion)
@@ -839,7 +839,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @param reassignment the reassignment to set on the reassignment znode.
    * @throws KeeperException if there is an error while creating the znode
    */
-  def createPartitionReassignment(reassignment: Map[TopicPartition, Seq[Int]])  = {
+  def createPartitionReassignment(reassignment: Map[TopicPartition, Map[String, Seq[Int]]])  = {
     createRecursive(ReassignPartitionsZNode.path, ReassignPartitionsZNode.encode(reassignment))
   }
 
@@ -857,6 +857,29 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    */
   def reassignPartitionsInProgress(): Boolean = {
     pathExists(ReassignPartitionsZNode.path)
+  }
+
+  /**
+    * Creates the partition reassignment cancel znode.
+    * @throws KeeperException if there is an error while creating the znode
+    */
+  def createReassignCancel()  = {
+    createRecursive(ReassignCancelZNode.path)
+  }
+
+  /**
+    * Deletes the partitio reassignment canel znode.
+    */
+  def deleteReassignCancel(expectedControllerEpochZkVersion: Int): Unit = {
+    deletePath(ReassignCancelZNode.path, expectedControllerEpochZkVersion)
+  }
+
+  /**
+    * Checks if reassign cancellation is in place
+    * @return true if /admin/reassign_cancel is in place , else false
+    */
+  def reassignCancelInPlace(): Boolean = {
+    pathExists(ReassignCancelZNode.path)
   }
 
   /**
@@ -1751,7 +1774,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
     private def reCreate(): Stat = {
       val codeAfterDelete = delete()
-      val codeAfterReCreate = codeAfterDelete
+      var codeAfterReCreate = codeAfterDelete
       debug(s"Result of znode ephemeral deletion at $path is: $codeAfterDelete")
       if (codeAfterDelete == Code.OK || codeAfterDelete == Code.NONODE) {
         create()
@@ -1880,7 +1903,6 @@ object KafkaZkClient {
                   case _ => null
                 }
                 SetDataResponse(resultCode, setDataOp.path, ctx, stat, responseMetadata)
-              case zkOp => throw new IllegalStateException(s"Unexpected zkOp: $zkOp")
             }
           case null => throw KeeperException.create(resultCode)
           case _ => throw new IllegalStateException(s"Cannot unwrap $response because the first zookeeper op is not check op in original MultiRequest")

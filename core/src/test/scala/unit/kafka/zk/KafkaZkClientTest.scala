@@ -16,29 +16,22 @@
 */
 package kafka.zk
 
+import java.util.{Collections, Properties, UUID}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import java.util.{Collections, Properties, UUID}
 
 import kafka.api.{ApiVersion, LeaderAndIsr}
 import kafka.cluster.{Broker, EndPoint}
-import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.log.LogConfig
 import kafka.security.auth._
 import kafka.server.ConfigType
 import kafka.utils.CoreUtils
-import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
-import kafka.zookeeper._
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.kafka.common.network.ListenerName
-import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
 import org.apache.kafka.common.security.token.delegation.TokenInformation
 import org.apache.kafka.common.utils.{SecurityUtils, Time}
 import org.apache.zookeeper.KeeperException.{Code, NoNodeException, NodeExistsException}
-import org.apache.zookeeper.ZooDefs
-import org.apache.zookeeper.data.Stat
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
 
@@ -46,6 +39,13 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{Seq, mutable}
 import scala.util.Random
+import kafka.controller.LeaderIsrAndControllerEpoch
+import kafka.zk.KafkaZkClient.UpdateLeaderAndIsrResult
+import kafka.zookeeper._
+import org.apache.kafka.common.errors.ControllerMovedException
+import org.apache.kafka.common.security.JaasUtils
+import org.apache.zookeeper.ZooDefs
+import org.apache.zookeeper.data.Stat
 
 class KafkaZkClientTest extends ZooKeeperTestHarness {
 
@@ -172,8 +172,8 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
     }
 
     assertEquals(assignment.size, zkClient.getTopicPartitionCount(topic1).get)
-    assertEquals(expectedAssignment, zkClient.getPartitionAssignmentForTopics(Set(topic1))(topic1))
-    assertEquals(Set(0, 1, 2), zkClient.getPartitionsForTopics(Set(topic1))(topic1).toSet)
+    assertEquals(expectedAssignment, zkClient.getPartitionAssignmentForTopics(Set(topic1)).get(topic1).get)
+    assertEquals(Set(0, 1, 2), zkClient.getPartitionsForTopics(Set(topic1)).get(topic1).get.toSet)
     assertEquals(Set(1, 2, 3), zkClient.getReplicasForPartition(new TopicPartition(topic1, 2)).toSet)
 
     val updatedAssignment = assignment - new TopicPartition(topic1, 2)
@@ -394,10 +394,10 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
     assertEquals(Map.empty, zkClient.getPartitionReassignment)
 
     val reassignment = Map(
-      new TopicPartition("topic_a", 0) -> Seq(0, 1, 3),
-      new TopicPartition("topic_a", 1) -> Seq(2, 1, 3),
-      new TopicPartition("topic_b", 0) -> Seq(4, 5),
-      new TopicPartition("topic_c", 0) -> Seq(5, 3)
+      new TopicPartition("topic_a", 0) -> Map("replicas" -> Seq(0, 1, 3), "original_replicas" -> Seq(0, 1, 2)),
+      new TopicPartition("topic_a", 1) -> Map("replicas" -> Seq(2, 1, 3), "original_replicas" -> Seq(0, 1, 2)),
+      new TopicPartition("topic_b", 0) -> Map("replicas" -> Seq(4, 5), "original_replicas" -> Seq(3, 4)),
+      new TopicPartition("topic_c", 0) -> Map("replicas" -> Seq(5, 3), "original_replicas" -> Seq(5, 4))
     )
 
     // Should throw ControllerMovedException if the controller epoch zkVersion does not match
@@ -951,6 +951,15 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
     assertFalse(zkClient.reassignPartitionsInProgress)
     zkClient.createRecursive(ReassignPartitionsZNode.path)
     assertTrue(zkClient.reassignPartitionsInProgress)
+  }
+
+  @Test
+  def testReassignCancelInPlace(): Unit = {
+    assertFalse(zkClient.reassignCancelInPlace)
+    zkClient.createReassignCancel()
+    assertTrue(zkClient.reassignCancelInPlace)
+    zkClient.deleteReassignCancel(controllerEpochZkVersion)
+    assertFalse(zkClient.reassignCancelInPlace)
   }
 
   @Test

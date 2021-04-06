@@ -17,27 +17,30 @@
 package kafka.admin
 
 import kafka.utils.Exit
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, Timeout}
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
+import org.scalatest.junit.JUnitSuite
 
-@Timeout(60)
-class ReassignPartitionsCommandArgsTest {
+class ReassignPartitionsCommandArgsTest extends JUnitSuite {
 
-  @BeforeEach
-  def setUp(): Unit = {
+  @Before
+  def setUp() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
   }
 
-  @AfterEach
-  def tearDown(): Unit = {
+  @After
+  def tearDown() {
     Exit.resetExitProcedure()
   }
 
-  ///// Test valid argument parsing
+  /**
+    * HAPPY PATH
+    */
+
   @Test
   def shouldCorrectlyParseValidMinimumGenerateOptions(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--generate",
       "--broker-list", "101,102",
       "--topics-to-move-json-file", "myfile.json")
@@ -46,15 +49,6 @@ class ReassignPartitionsCommandArgsTest {
 
   @Test
   def shouldCorrectlyParseValidMinimumExecuteOptions(): Unit = {
-    val args = Array(
-      "--bootstrap-server", "localhost:1234",
-      "--execute",
-      "--reassignment-json-file", "myfile.json")
-    ReassignPartitionsCommand.validateAndParseArgs(args)
-  }
-
-  @Test
-  def shouldCorrectlyParseValidMinimumLegacyExecuteOptions(): Unit = {
     val args = Array(
       "--zookeeper", "localhost:1234",
       "--execute",
@@ -65,15 +59,6 @@ class ReassignPartitionsCommandArgsTest {
   @Test
   def shouldCorrectlyParseValidMinimumVerifyOptions(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
-      "--verify",
-      "--reassignment-json-file", "myfile.json")
-    ReassignPartitionsCommand.validateAndParseArgs(args)
-  }
-
-  @Test
-  def shouldCorrectlyParseValidMinimumLegacyVerifyOptions(): Unit = {
-    val args = Array(
       "--zookeeper", "localhost:1234",
       "--verify",
       "--reassignment-json-file", "myfile.json")
@@ -81,9 +66,17 @@ class ReassignPartitionsCommandArgsTest {
   }
 
   @Test
+  def shouldCorrectlyParseValidMinimumCancelOptions(): Unit = {
+    val args = Array(
+      "--zookeeper", "localhost:1234",
+      "--cancel")
+    ReassignPartitionsCommand.validateAndParseArgs(args)
+  }
+
+  @Test
   def shouldAllowThrottleOptionOnExecute(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--execute",
       "--throttle", "100",
       "--reassignment-json-file", "myfile.json")
@@ -93,7 +86,7 @@ class ReassignPartitionsCommandArgsTest {
   @Test
   def shouldUseDefaultsIfEnabled(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--execute",
       "--reassignment-json-file", "myfile.json")
     val opts = ReassignPartitionsCommand.validateAndParseArgs(args)
@@ -101,25 +94,10 @@ class ReassignPartitionsCommandArgsTest {
     assertEquals(-1L, opts.options.valueOf(opts.interBrokerThrottleOpt))
   }
 
-  @Test
-  def testList(): Unit = {
-    val args = Array(
-      "--list",
-      "--bootstrap-server", "localhost:1234")
-    ReassignPartitionsCommand.validateAndParseArgs(args)
-  }
+  /**
+    * NO ARGS
+    */
 
-  @Test
-  def testCancelWithPreserveThrottlesOption(): Unit = {
-    val args = Array(
-      "--cancel",
-      "--bootstrap-server", "localhost:1234",
-      "--reassignment-json-file", "myfile.json",
-      "--preserve-throttles")
-    ReassignPartitionsCommand.validateAndParseArgs(args)
-  }
-
-  ///// Test handling missing or invalid actions
   @Test
   def shouldFailIfNoArgs(): Unit = {
     val args: Array[String]= Array()
@@ -129,186 +107,142 @@ class ReassignPartitionsCommandArgsTest {
   @Test
   def shouldFailIfBlankArg(): Unit = {
     val args = Array(" ")
-    shouldFailWith("Command must include exactly one action", args)
+    shouldFailWith("Command must include exactly one action: --generate, --execute, --verify or --cancel", args)
   }
 
-  @Test
-  def shouldFailIfMultipleActions(): Unit = {
-    val args = Array(
-      "--bootstrap-server", "localhost:1234",
-      "--execute",
-      "--verify",
-      "--reassignment-json-file", "myfile.json"
-    )
-    shouldFailWith("Command must include exactly one action", args)
-  }
+  /**
+    * UNHAPPY PATH: EXECUTE ACTION
+    */
 
-  ///// Test --execute
   @Test
   def shouldNotAllowExecuteWithTopicsOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--execute",
       "--reassignment-json-file", "myfile.json",
       "--topics-to-move-json-file", "myfile.json")
-    shouldFailWith("Option \"[topics-to-move-json-file]\" can't be used with action \"[execute]\"", args)
+    shouldFailWith("Option \"[execute]\" can't be used with option\"[topics-to-move-json-file]\"", args)
   }
 
   @Test
-  def shouldNotAllowExecuteWithBrokerList(): Unit = {
+  def shouldNotAllowExecuteWithBrokers(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--execute",
       "--reassignment-json-file", "myfile.json",
       "--broker-list", "101,102"
     )
-    shouldFailWith("Option \"[broker-list]\" can't be used with action \"[execute]\"", args)
+    shouldFailWith("Option \"[execute]\" can't be used with option\"[broker-list]\"", args)
   }
 
   @Test
   def shouldNotAllowExecuteWithoutReassignmentOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--execute")
-    shouldFailWith("Missing required argument \"[reassignment-json-file]\"", args)
+    shouldFailWith("If --execute option is used, command must include --reassignment-json-file that was output during the --generate option", args)
   }
 
-  @Test
-  def testMissingBootstrapServerArgumentForExecute(): Unit = {
-    val args = Array(
-      "--execute")
-    shouldFailWith("Please specify --bootstrap-server", args)
-  }
+  /**
+    * UNHAPPY PATH: GENERATE ACTION
+    */
 
-  ///// Test --generate
   @Test
   def shouldNotAllowGenerateWithoutBrokersAndTopicsOptions(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--generate")
-    shouldFailWith("Missing required argument \"[topics-to-move-json-file]\"", args)
+    shouldFailWith("If --generate option is used, command must include both --topics-to-move-json-file and --broker-list options", args)
   }
 
   @Test
   def shouldNotAllowGenerateWithoutBrokersOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--topics-to-move-json-file", "myfile.json",
       "--generate")
-    shouldFailWith("Missing required argument \"[broker-list]\"", args)
+    shouldFailWith("If --generate option is used, command must include both --topics-to-move-json-file and --broker-list options", args)
   }
 
   @Test
   def shouldNotAllowGenerateWithoutTopicsOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--broker-list", "101,102",
       "--generate")
-    shouldFailWith("Missing required argument \"[topics-to-move-json-file]\"", args)
+    shouldFailWith("If --generate option is used, command must include both --topics-to-move-json-file and --broker-list options", args)
   }
 
   @Test
   def shouldNotAllowGenerateWithThrottleOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--generate",
       "--broker-list", "101,102",
       "--throttle", "100",
       "--topics-to-move-json-file", "myfile.json")
-    shouldFailWith("Option \"[throttle]\" can't be used with action \"[generate]\"", args)
+    shouldFailWith("Option \"[generate]\" can't be used with option\"[throttle]\"", args)
   }
 
   @Test
   def shouldNotAllowGenerateWithReassignmentOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
-      "--generate",
-      "--broker-list", "101,102",
-      "--topics-to-move-json-file", "myfile.json",
-      "--reassignment-json-file", "myfile.json")
-    shouldFailWith("Option \"[reassignment-json-file]\" can't be used with action \"[generate]\"", args)
-  }
-
-  @Test
-  def testInvalidCommandConfigArgumentForLegacyGenerate(): Unit = {
-    val args = Array(
       "--zookeeper", "localhost:1234",
       "--generate",
       "--broker-list", "101,102",
       "--topics-to-move-json-file", "myfile.json",
-      "--command-config", "/tmp/command-config.properties"
-    )
-    shouldFailWith("You must specify --bootstrap-server when using \"[command-config]\"", args)
+      "--reassignment-json-file", "myfile.json")
+    shouldFailWith("Option \"[generate]\" can't be used with option\"[reassignment-json-file]\"", args)
   }
 
-  ///// Test --verify
+  /**
+    * UNHAPPY PATH: VERIFY ACTION
+    */
+
   @Test
   def shouldNotAllowVerifyWithoutReassignmentOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--verify")
-    shouldFailWith("Missing required argument \"[reassignment-json-file]\"", args)
+    shouldFailWith("If --verify option is used, command must include --reassignment-json-file that was used during the --execute option", args)
   }
 
   @Test
   def shouldNotAllowBrokersListWithVerifyOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--verify",
       "--broker-list", "100,101",
       "--reassignment-json-file", "myfile.json")
-    shouldFailWith("Option \"[broker-list]\" can't be used with action \"[verify]\"", args)
+    shouldFailWith("Option \"[verify]\" can't be used with option\"[broker-list]\"", args)
   }
 
   @Test
   def shouldNotAllowThrottleWithVerifyOption(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--verify",
       "--throttle", "100",
       "--reassignment-json-file", "myfile.json")
-    shouldFailWith("Option \"[throttle]\" can't be used with action \"[verify]\"", args)
+    shouldFailWith("Option \"[verify]\" can't be used with option\"[throttle]\"", args)
   }
 
   @Test
   def shouldNotAllowTopicsOptionWithVerify(): Unit = {
     val args = Array(
-      "--bootstrap-server", "localhost:1234",
+      "--zookeeper", "localhost:1234",
       "--verify",
       "--reassignment-json-file", "myfile.json",
       "--topics-to-move-json-file", "myfile.json")
-    shouldFailWith("Option \"[topics-to-move-json-file]\" can't be used with action \"[verify]\"", args)
+    shouldFailWith("Option \"[verify]\" can't be used with option\"[topics-to-move-json-file]\"", args)
   }
 
   def shouldFailWith(msg: String, args: Array[String]): Unit = {
-    val e = assertThrows(classOf[Exception], () => ReassignPartitionsCommand.validateAndParseArgs(args),
-      () => s"Should have failed with [$msg] but no failure occurred.")
-    assertTrue(e.getMessage.startsWith(msg), s"Expected exception with message:\n[$msg]\nbut was\n[${e.getMessage}]")
-  }
-
-  ///// Test --cancel
-  @Test
-  def shouldNotAllowCancelWithoutBootstrapServerOption(): Unit = {
-    val args = Array(
-      "--cancel")
-    shouldFailWith("Please specify --bootstrap-server", args)
-  }
-
-  @Test
-  def shouldNotAllowCancelWithoutReassignmentJsonFile(): Unit = {
-    val args = Array(
-      "--cancel",
-      "--bootstrap-server", "localhost:1234",
-      "--preserve-throttles")
-    shouldFailWith("Missing required argument \"[reassignment-json-file]\"", args)
-  }
-
-  ///// Test --list
-  @Test
-  def shouldNotAllowZooKeeperWithListOption(): Unit = {
-    val args = Array(
-      "--list",
-      "--zookeeper", "localhost:1234")
-    shouldFailWith("Option \"[zookeeper]\" can't be used with action \"[list]\"", args)
+    try {
+      ReassignPartitionsCommand.validateAndParseArgs(args)
+      fail(s"Should have failed with [$msg] but no failure occurred.")
+    } catch {
+      case e: Exception => assertTrue(s"Expected exception with message:\n[$msg]\nbut was\n[${e.getMessage}]", e.getMessage.startsWith(msg))
+    }
   }
 }

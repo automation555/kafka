@@ -12,25 +12,29 @@
   */
 package kafka.admin
 
-import java.io.File
-import java.util.{Collections, Properties}
+import java.util.Collections
+import java.util.Properties
 
 import kafka.admin.ReassignPartitionsCommand._
-import kafka.admin.ReplicationQuotaUtils._
 import kafka.common.AdminCommandFailedException
 import kafka.server.{KafkaConfig, KafkaServer}
 import kafka.utils.TestUtils._
 import kafka.utils.{Logging, TestUtils}
-import kafka.zk.{ReassignPartitionsZNode, ZkVersion, ZooKeeperTestHarness}
-import org.apache.kafka.clients.admin.{AdminClientConfig, AdminClient => JAdminClient}
-import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.{TopicPartition, TopicPartitionReplica}
+import kafka.zk.{ReassignPartitionsZNode, ZkVersion, ZooKeeperTestHarness, ReassignCancelZNode}
 import org.junit.Assert.{assertEquals, assertTrue}
 import org.junit.{After, Before, Test}
+import kafka.admin.ReplicationQuotaUtils._
+import org.apache.kafka.clients.admin.AdminClientConfig
+import org.apache.kafka.clients.admin.{AdminClient => JAdminClient}
+import org.apache.kafka.common.{TopicPartition, TopicPartitionReplica}
 
 import scala.collection.JavaConverters._
-import scala.collection.{Map, Seq}
+import scala.collection.Map
+import scala.collection.Seq
 import scala.util.Random
+import java.io.File
+
+import org.apache.kafka.clients.producer.ProducerRecord
 
 class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
   val partitionId = 0
@@ -47,12 +51,8 @@ class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
   }
 
   def startBrokers(brokerIds: Seq[Int]) {
-    servers = brokerIds.map { i =>
-      val props = createBrokerConfig(i, zkConnect, enableControlledShutdown = false, logDirCount = 3)
-      // shorter backoff to reduce test durations when no active partitions are eligible for fetching due to throttling
-      props.put(KafkaConfig.ReplicaFetchBackoffMsProp, "100")
-      props
-    }.map(c => createServer(KafkaConfig.fromProps(c)))
+    servers = brokerIds.map(i => createBrokerConfig(i, zkConnect, enableControlledShutdown = false, logDirCount = 3))
+      .map(c => createServer(KafkaConfig.fromProps(c)))
   }
 
   def createAdminClient(servers: Seq[KafkaServer]): JAdminClient = {
@@ -123,7 +123,7 @@ class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
     waitForReassignmentToComplete()
 
     //Then the replica should be on 101
-    assertEquals(Seq(101), zkClient.getPartitionAssignmentForTopics(Set(topicName))(topicName)(partition))
+    assertEquals(Seq(101), zkClient.getPartitionAssignmentForTopics(Set(topicName)).get(topicName).get(partition))
     // The replica should be in the expected log directory on broker 101
     val replica = new TopicPartitionReplica(topicName, 0, 101)
     assertEquals(expectedLogDir, adminClient.describeReplicaLogDirs(Collections.singleton(replica)).all().get.get(replica).getCurrentReplicaLogDir)
@@ -598,6 +598,51 @@ class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
   }
 
   /**
+    * The reassignments already completed (not in /admin/reassign_partitions) will not be able to be cancelled/rollbacked using --cancel
+    * They can be rollbacked by submitting the reassignments json file with their original assignments.
+    * For the pending reassignments, they should be able to be rollbacked.
+    */
+  @Test
+  def shouldCancelOnlyPendingReassignments(): Unit = {
+    startBrokers(Seq(0, 1, 2, 3))
+    createTopic(zkClient, "orders", Map(0 -> List(0, 1), 1 -> List(1, 2), 2 -> List(3, 0)), servers)
+    createTopic(zkClient, "payments", Map(0 -> List(0, 1, 3), 1 -> List(1, 2, 3), 2 -> List(2, 3, 0), 3 -> List(0, 1, 2)), servers)
+    // shutdown broker id 2, so the reassignments with broker_id=2 in new replicas submitted will be pending
+    servers(2).shutdown()
+
+    val firstMove = Map(
+      new TopicPartition("orders", 0) -> Seq(3, 1), // moves
+      new TopicPartition("orders", 1) -> Seq(1, 2), // stays
+      new TopicPartition("orders", 2) -> Seq(2, 0), // moves
+      new TopicPartition("payments", 0) -> Seq(1, 3, 0), // moves, leadership
+      new TopicPartition("payments", 1) -> Seq(3, 0, 1), // moves
+      new TopicPartition("payments", 2) -> Seq(2, 3, 0, 1), // moves, Expand
+      new TopicPartition("payments", 3) -> Seq(0, 1) // moves, Shrink
+    )
+
+    new ReassignPartitionsCommand(zkClient, None, firstMove, adminZkClient = adminZkClient).reassignPartitions(Throttle(1000000L))
+    // Sleep for partitions reassignment to complete.
+    Thread.sleep(2000)
+    // Cancel the pending reassignments.
+    new ReassignPartitionsCommand(zkClient, None, Map.empty, adminZkClient = adminZkClient).reassignCancel()
+
+    waitForReassignCancelToComplete()
+    assertEquals(Seq(3, 1), zkClient.getReplicasForPartition(new TopicPartition("orders", 0)))  // this reassignments should complete
+    assertEquals(Seq(1, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 1)))  // this should stay the same
+    assertEquals(Seq(3, 0), zkClient.getReplicasForPartition(new TopicPartition("orders", 2)))  // this  should the pending reassignments, and should be cancelled, rollbacked to the original
+    assertEquals(Seq(1, 3, 0), zkClient.getReplicasForPartition(new TopicPartition("payments", 0)))  // this reassignments should complete
+    assertEquals(Seq(3, 0, 1), zkClient.getReplicasForPartition(new TopicPartition("payments", 1)))  // this reassignments should complete, even broker_id 2 is down.
+    assertEquals(Seq(2, 3, 0), zkClient.getReplicasForPartition(new TopicPartition("payments", 2)))  // this pending reassignments  should be cancelled/rollbacked
+    assertEquals(Seq(0, 1), zkClient.getReplicasForPartition(new TopicPartition("payments", 3)))  // this pending reassignments  should be cancelled/rollbacked
+
+    assertTrue(!zkClient.reassignCancelInPlace)
+    assertTrue(!zkClient.reassignPartitionsInProgress)
+    // After cancel, the throttle for the pending reassignment topics (that is cancelled/rollbacked)  should be removed as well 
+    checkThrottleConfigRemovedFromZK(adminZkClient, "orders", servers)
+    checkThrottleConfigRemovedFromZK(adminZkClient, "payments", servers)
+  }
+
+  /**
    * Set the `reassign_partitions` znode while the brokers are down and verify that the reassignment is triggered by
    * the Controller during start-up.
    */
@@ -608,9 +653,9 @@ class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
     servers.foreach(_.shutdown())
 
     val firstMove = Map(
-      new TopicPartition("orders", 0) -> Seq(2, 1), // moves
-      new TopicPartition("orders", 1) -> Seq(1, 2), // stays
-      new TopicPartition("customers", 0) -> Seq(1, 2) // non-existent topic, triggers topic deleted path
+      new TopicPartition("orders", 0) -> scala.Predef.Map("replicas" -> Seq(2, 1), "original_replicas" -> Seq(0, 1)), // moves
+      new TopicPartition("orders", 1) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq(1, 2)), // stays
+      new TopicPartition("customers", 0) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq(1, 2)) // non-existent topic, triggers topic deleted path
     )
 
     // Set znode directly to avoid non-existent topic validation
@@ -622,6 +667,172 @@ class ReassignPartitionsClusterTest extends ZooKeeperTestHarness with Logging {
     assertEquals(Seq(2, 1), zkClient.getReplicasForPartition(new TopicPartition("orders", 0)))
     assertEquals(Seq(1, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 1)))
     assertEquals(Seq.empty, zkClient.getReplicasForPartition(new TopicPartition("customers", 0)))
+  }
+
+  /**
+    * Set the `reassign_partitions` & `cancel_reassignment_in_progress` znodes while the brokers are down
+    * and verify that the reassignments are cancelled & rollbacked by the Controller during start-up.
+    */
+  @Test
+  def shouldTriggerReassignCancelOnControllerStartup(): Unit = {
+    startBrokers(Seq(0, 1, 2))
+    createTopic(zkClient, "orders", Map(0 -> List(0, 1), 1 -> List(1, 2), 2 -> List(2, 0)), servers)
+    servers.foreach(_.shutdown())
+
+    val firstMove = Map(
+      new TopicPartition("orders", 0) -> scala.Predef.Map("replicas" -> Seq(2, 1), "original_replicas" -> Seq(0, 1)), // moves
+      new TopicPartition("orders", 1) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq(1, 2)), // stays
+      new TopicPartition("orders", 2) -> scala.Predef.Map("replicas" -> Seq(0, 2), "original_replicas" -> Seq(2, 0)), // moves
+      new TopicPartition("customers", 0) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq(1, 2)) // non-existent topic, triggers topic deleted path
+    )
+
+    // Set znode directly to avoid non-existent topic validation
+    zkClient.setOrCreatePartitionReassignment(firstMove, ZkVersion.MatchAnyVersion)
+    // Set znode to cancel pending reassignments
+    zkClient.createReassignCancel()
+
+    servers.foreach(_.startup())
+    waitForReassignCancelToComplete()
+
+    assertEquals(Seq(0, 1), zkClient.getReplicasForPartition(new TopicPartition("orders", 0)))
+    assertEquals(Seq(1, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 1)))
+    assertEquals(Seq(2, 0), zkClient.getReplicasForPartition(new TopicPartition("orders", 2)))
+    assertEquals(Seq.empty, zkClient.getReplicasForPartition(new TopicPartition("customers", 0)))
+    assertTrue(!zkClient.reassignCancelInPlace)
+    assertTrue(!zkClient.reassignPartitionsInProgress)
+  }
+
+
+  /**
+    * If the user directly modified the /admin/reassign_partitions without the original_replicas. The cancel not be able
+    * to rollback to the original state.  and throws IllegalStateException
+    *
+    */
+  @Test(expected = classOf[NoSuchElementException])
+  def shouldFailIfOriginalReplicasMissing() {
+    startBrokers(Seq(0, 1, 2))
+    createTopic(zkClient, "orders", Map(0 -> List(0, 1), 1 -> List(1, 2), 2 -> List(2, 0)), servers)
+    servers.foreach(_.shutdown())
+
+    val firstMove = Map(
+      new TopicPartition("orders", 0) -> scala.Predef.Map("replicas" -> Seq(2, 1), "orig_replicas" -> Seq()), // moves
+      new TopicPartition("orders", 1) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original" -> Seq(1, 2)), // stays
+      new TopicPartition("orders", 2) -> scala.Predef.Map("replicas" -> Seq(0, 2), "original_replica" -> Seq(2, 0)), // moves
+      new TopicPartition("customers", 0) -> scala.Predef.Map("replicas" -> Seq(1, 2), "old_replicas" -> Seq(1, 2)) // non-existent topic, triggers topic deleted path
+    )
+
+    // Set znode directly to avoid non-existent topic validation
+    zkClient.setOrCreatePartitionReassignment(firstMove, ZkVersion.MatchAnyVersion)
+    // Set znode to cancel pending reassignments
+    zkClient.createReassignCancel()
+
+    servers.foreach(_.startup())
+    waitForReassignCancelToComplete()
+  }
+
+  /**
+    * If the user directly modified the /admin/reassign_partitions with empty original_replicas. The cancel not be able
+    * to rollback to the original state.  and throws IllegalStateException in Controller.  The cancel will fail.
+    *
+    */
+  @Test
+  def shouldSkipIfOriginalReplicasEmpty() {
+    startBrokers(Seq(0, 1, 2))
+    createTopic(zkClient, "orders", Map(0 -> List(0, 1), 1 -> List(1, 2), 2 -> List(2, 0)), servers)
+    // Only start up 2 brokers. leaving 1 down for pending reassignments
+    servers.foreach( server => server.config.brokerId match {
+      case 2 => server.shutdown()
+      case _ =>
+    })
+
+    val firstMove = Map(
+      new TopicPartition("orders", 0) -> scala.Predef.Map("replicas" -> Seq(2, 1), "original_replicas" -> Seq()), // moves
+      new TopicPartition("orders", 1) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq.empty), // stays
+      new TopicPartition("orders", 2) -> scala.Predef.Map("replicas" -> Seq(0, 2), "original_replicas" -> Seq(2, 0)), // moves
+      new TopicPartition("customers", 0) -> scala.Predef.Map("replicas" -> Seq(1, 2), "original_replicas" -> Seq(1, 2)) // non-existent topic, triggers topic deleted path
+    )
+
+    // Set znode directly to avoid non-existent topic validation
+    zkClient.setOrCreatePartitionReassignment(firstMove, ZkVersion.MatchAnyVersion)
+    Thread.sleep(1000L)
+    assertEquals(Seq(0, 1, 2).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 0)).toSet)
+    assertEquals(Seq(1, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 1)))
+    assertEquals(Seq(0, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 2)))
+    // Set znode to cancel pending reassignments
+    zkClient.createReassignCancel()
+
+    waitForReassignCancelToComplete()
+
+    assertEquals(Seq(0, 1, 2).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 0)).toSet)
+    assertEquals(Seq(1, 2), zkClient.getReplicasForPartition(new TopicPartition("orders", 1)))
+    assertEquals(Seq(2, 0), zkClient.getReplicasForPartition(new TopicPartition("orders", 2)))
+    assertEquals(Seq.empty, zkClient.getReplicasForPartition(new TopicPartition("customers", 0)))
+    assertTrue(!zkClient.reassignCancelInPlace)
+    // There will be pending reassignments that can not be cancelled / rollback because of missing original_replicas in /admin/reassign_partitions,
+    // possibly becasue the user directly wrote to ZK (bypassing the admin client), or wrong admin client version.
+    assertTrue(zkClient.reassignPartitionsInProgress)
+  }
+
+  /**
+    * There might be scenarios that Reassignment Cancel can not be executed for a topic/partition
+    * e.g. All the brokers of the originalReplicas are not in ISR.  In this case,  unless all the brokers in newReplicas are offline,
+    * the pending reassignments cancellation/rollback should be skipped.
+    *
+    */
+  @Test
+  def shouldSkipReassignCancel() {
+    startBrokers(Seq(0, 1, 2, 3, 4, 5))
+    createTopic(zkClient, "orders", Map(0 -> List(0, 1), 1 -> List(1, 2), 2 -> List(2, 1)), servers)
+
+    val firstMove = Map(
+      new TopicPartition("orders", 0) -> scala.Predef.Map("replicas" -> Seq(2, 3), "original_replicas" -> Seq(0, 1)), // moves
+      new TopicPartition("orders", 1) -> scala.Predef.Map("replicas" -> Seq(4, 3), "original_replicas" -> Seq(1, 2)), // moves
+      new TopicPartition("orders", 2) -> scala.Predef.Map("replicas" -> Seq(4, 5), "original_replicas" -> Seq(2, 1))  // moves
+    )
+
+    // shutdonw 2, 4, 5,  Leave 0, 1, 3 brokers up, so the reassignments are pending.
+    servers.foreach( server => server.config.brokerId match {
+      case 2 | 4 | 5 => server.shutdown()
+      case _ =>
+    })
+
+    // Set znode directly to avoid non-existent topic validation
+    zkClient.setOrCreatePartitionReassignment(firstMove, ZkVersion.MatchAnyVersion)
+
+    // Sleep sometime for 3 to be in ISR for order-1 partition.
+    val tp = new TopicPartition("orders", 1)
+
+    waitUntilTrue(() => zkClient.getTopicPartitionStates(Seq(tp)).get(tp).exists { leaderIsrAndControllerEpoch =>
+      leaderIsrAndControllerEpoch.leaderAndIsr.isr.contains(3) },
+      s"topic/partition $tp does not have broker 3 in its ISR: %s".format(zkClient.getTopicPartitionStates(Seq(tp)).get(tp)), pause = 10000L)
+    // Shutdown broker 1 as well, so orders-1 original_replicas (1,2), both brokers are all offline.
+    servers.foreach( server => server.config.brokerId match {
+      case 1 => server.shutdown()
+      case _ =>
+    })
+    assertEquals(Seq(0, 1, 2, 3).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 0)).toSet)
+    assertEquals(Seq(1, 2, 3, 4).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 1)).toSet)
+    assertEquals(Seq(1, 2, 4, 5).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 2)).toSet)
+    // Set znode to cancel pending reassignments
+    zkClient.createReassignCancel()
+
+    waitForReassignCancelToComplete()
+
+    assertTrue(!zkClient.reassignCancelInPlace)
+    // There will be pending reassignments that can not be cancelled/rollback. e.g. tp:  orders-1
+    assertTrue(zkClient.reassignPartitionsInProgress)
+
+    // At least one original replica (0, 1)  is in ISR.  So it can be cancelled/rollback.
+    assertEquals(Seq(0, 1), zkClient.getReplicasForPartition(new TopicPartition("orders", 0)))
+    // all original replicas (1,2) brokers are offline, and at least one new replicas (1,3) broker is online,  so skip cancel pending reassignment
+    assertEquals(Seq(1, 2, 3, 4).toSet, zkClient.getReplicasForPartition(new TopicPartition("orders", 1)).toSet)
+    // Since all new replicas (4,5) is offline,  even original replicas (2,1) is offline,  the pending assignments will be cancelled/rollback to (2,1)
+    assertEquals(Seq(2, 1), zkClient.getReplicasForPartition(new TopicPartition("orders", 2)))
+  }
+
+  def waitForReassignCancelToComplete(pause: Long = 100L) {
+    waitUntilTrue(() => !zkClient.reassignCancelInPlace,
+      s"Znode ${ReassignCancelZNode.path} wasn't deleted", pause = pause)
   }
 
   def waitForReassignmentToComplete(pause: Long = 100L) {

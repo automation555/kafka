@@ -67,8 +67,6 @@ import static org.apache.kafka.common.requests.FetchMetadata.INVALID_SESSION_ID;
  * - {@link Errors#KAFKA_STORAGE_ERROR} If the log directory for one of the requested partitions is offline
  * - {@link Errors#UNSUPPORTED_COMPRESSION_TYPE} If a fetched topic is using a compression type which is
  *     not supported by the fetch request version
- * - {@link Errors#CORRUPT_MESSAGE} If corrupt message encountered, e.g. when the broker scans the log to find
- *     the fetch offset after the index lookup
  * - {@link Errors#UNKNOWN_SERVER_ERROR} For any unexpected errors
  */
 public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
@@ -317,7 +315,7 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
             if (o == null || getClass() != o.getClass())
                 return false;
 
-            PartitionData<?> that = (PartitionData<?>) o;
+            PartitionData that = (PartitionData) o;
 
             return error == that.error &&
                     highWatermark == that.highWatermark &&
@@ -422,6 +420,7 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
         return toStruct(version, throttleTimeMs, error, responseData.entrySet().iterator(), sessionId);
     }
 
+    // TODO: remove this
     @Override
     protected Send toSend(String dest, ResponseHeader responseHeader, short apiVersion) {
         Struct responseHeaderStruct = responseHeader.toStruct();
@@ -459,9 +458,8 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
     @Override
     public Map<Errors, Integer> errorCounts() {
         Map<Errors, Integer> errorCounts = new HashMap<>();
-        responseData.values().forEach(response ->
-            updateErrorCounts(errorCounts, response.error)
-        );
+        for (PartitionData response : responseData.values())
+            updateErrorCounts(errorCounts, response.error);
         return errorCounts;
     }
 
@@ -524,7 +522,7 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
         sends.add(new ByteBufferSend(dest, buffer));
 
         // finally the send for the record set itself
-        RecordsSend<?> recordsSend = records.toSend(dest);
+        RecordsSend recordsSend = records.toSend(dest);
         if (recordsSend.size() > 0)
             sends.add(recordsSend);
     }

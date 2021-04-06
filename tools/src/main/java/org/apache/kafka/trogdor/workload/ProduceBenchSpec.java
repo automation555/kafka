@@ -19,7 +19,6 @@ package org.apache.kafka.trogdor.workload;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.apache.kafka.trogdor.common.WorkerUtils;
 import org.apache.kafka.trogdor.task.TaskController;
 import org.apache.kafka.trogdor.task.TaskSpec;
 import org.apache.kafka.trogdor.task.TaskWorker;
@@ -34,6 +33,10 @@ import java.util.Optional;
  * To configure a transactional producer, a #{@link TransactionGenerator} must be passed in.
  * Said generator works in lockstep with the producer by instructing it what action to take next in regards to a transaction.
  *
+ * You can also have the test refresh the partition list of the active topics at an interval by setting the
+ * `partitionRefreshRateMs` parameter to a positive number.  This way the producer will produce to all partitions following
+ * a refresh, even if you are adding partitions to the topics.
+ *
  * An example JSON representation which will result in a producer that creates three topics (foo1, foo2, foo3)
  * with three partitions each and produces to them:
  * #{@code
@@ -44,8 +47,6 @@ import java.util.Optional;
  *      "bootstrapServers": "localhost:9092",
  *      "targetMessagesPerSec": 10,
  *      "maxMessages": 100,
- *      "topicVerificationRetries": 3,
- *      "ignoreProduceErrors": false,
  *      "activeTopics": {
  *        "foo[1-3]": {
  *          "numPartitions": 3,
@@ -66,6 +67,7 @@ public class ProduceBenchSpec extends TaskSpec {
     private final String bootstrapServers;
     private final int targetMessagesPerSec;
     private final long maxMessages;
+    private final long partitionRefreshRateMs;
     private final PayloadGenerator keyGenerator;
     private final PayloadGenerator valueGenerator;
     private final Optional<TransactionGenerator> transactionGenerator;
@@ -75,8 +77,6 @@ public class ProduceBenchSpec extends TaskSpec {
     private final TopicsSpec activeTopics;
     private final TopicsSpec inactiveTopics;
     private final boolean useConfiguredPartitioner;
-    private final boolean ignoreProduceErrors;
-    private final int topicVerificationRetries;
     private final boolean skipFlush;
 
     @JsonCreator
@@ -94,10 +94,9 @@ public class ProduceBenchSpec extends TaskSpec {
                          @JsonProperty("adminClientConf") Map<String, String> adminClientConf,
                          @JsonProperty("activeTopics") TopicsSpec activeTopics,
                          @JsonProperty("inactiveTopics") TopicsSpec inactiveTopics,
-                         @JsonProperty("useConfiguredPartitioner") boolean useConfiguredPartitioner,
+                         @JsonProperty("useConfiguredPartitioner") boolean useConfiguredPartitioner, 
                          @JsonProperty("skipFlush") boolean skipFlush,
-                         @JsonProperty("ignoreProduceErrors") boolean ignoreProduceErrors,
-                         @JsonProperty("topicVerificationRetries") int topicVerificationRetries) {
+                         @JsonProperty("partitionRefreshRateMs") long partitionRefreshRateMs) {
         super(startMs, durationMs);
         this.producerNode = (producerNode == null) ? "" : producerNode;
         this.bootstrapServers = (bootstrapServers == null) ? "" : bootstrapServers;
@@ -116,10 +115,8 @@ public class ProduceBenchSpec extends TaskSpec {
         this.inactiveTopics = (inactiveTopics == null) ?
             TopicsSpec.EMPTY : inactiveTopics.immutableCopy();
         this.useConfiguredPartitioner = useConfiguredPartitioner;
-        this.ignoreProduceErrors = ignoreProduceErrors;
-        this.topicVerificationRetries = (topicVerificationRetries == 0) ?
-            WorkerUtils.DEFAULT_TOPIC_VERIFY_RETRIES : topicVerificationRetries;
         this.skipFlush = skipFlush;
+        this.partitionRefreshRateMs = partitionRefreshRateMs;
     }
 
     @JsonProperty
@@ -188,18 +185,13 @@ public class ProduceBenchSpec extends TaskSpec {
     }
 
     @JsonProperty
-    public boolean ignoreProduceErrors() {
-        return ignoreProduceErrors;
-    }
-
-    @JsonProperty
     public boolean skipFlush() {
         return skipFlush;
     }
 
     @JsonProperty
-    public int topicVerificationRetries() {
-        return topicVerificationRetries;
+    public long partitionRefreshRateMs() {
+        return partitionRefreshRateMs;
     }
 
     @Override

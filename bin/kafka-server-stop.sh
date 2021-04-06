@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -13,23 +13,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+PIDFILE="${PIDFILE:-"/var/run/kafka.pid"}"
 SIGNAL=${SIGNAL:-TERM}
 
-OSNAME=$(uname -s)
-if [[ "$OSNAME" == "OS/390" ]]; then
-    if [ -z $JOBNAME ]; then
-        JOBNAME="KAFKSTRT"
-    fi
-    PIDS=$(ps -A -o pid,jobname,comm | grep -i $JOBNAME | grep java | grep -v grep | awk '{print $1}')
-elif [[ "$OSNAME" == "OS400" ]]; then
-    PIDS=$(ps -Af | grep -i 'kafka\.Kafka' | grep java | grep -v grep | awk '{print $2}')
-else
-    PIDS=$(ps ax | grep ' kafka\.Kafka ' | grep java | grep -v grep | awk '{print $1}')
+if [ ! -e "${PIDFILE}" ]; then
+  echo "pidfile does not exist. kafka may not be running"
+  exit 1
 fi
 
-if [ -z "$PIDS" ]; then
-  echo "No kafka server to stop"
-  exit 1
-else
-  kill -s $SIGNAL $PIDS
-fi
+PID=$(cat "${PIDFILE}")
+
+kill -s "$SIGNAL" "$PID"
+
+# Check if process behind pid is still running and wait until its stopped
+# See `man 2 kill` for explanation of `kill -0`
+while kill -0 "${PID}" > /dev/null; do
+  echo "waiting until server (pid ${PID}) is stopped"
+  sleep 1
+done
+
+echo "server stopped"
+
+rm -f "${PIDFILE}"
+

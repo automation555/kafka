@@ -1,4 +1,7 @@
 /*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2017-2018 Alexis Seigneurin.
+ *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -18,13 +21,9 @@ package org.apache.kafka.streams.scala
 
 import java.util
 
-import org.apache.kafka.common.serialization.{Deserializer, Serde, Serdes => JSerdes, Serializer}
+import org.apache.kafka.common.serialization.{Deserializer, Serde, Serializer, Serdes => JSerdes}
 import org.apache.kafka.streams.kstream.WindowedSerdes
 
-@deprecated(
-  "Use org.apache.kafka.streams.scala.serialization.Serdes. For WindowedSerdes.TimeWindowedSerde, use explicit constructors.",
-  "2.7.0"
-)
 object Serdes {
   implicit def String: Serde[String] = JSerdes.String()
   implicit def Long: Serde[Long] = JSerdes.Long().asInstanceOf[Serde[Long]]
@@ -38,11 +37,9 @@ object Serdes {
   implicit def Integer: Serde[Int] = JSerdes.Integer().asInstanceOf[Serde[Int]]
   implicit def JavaInteger: Serde[java.lang.Integer] = JSerdes.Integer()
 
-  implicit def timeWindowedSerde[T](implicit tSerde: Serde[T]): WindowedSerdes.TimeWindowedSerde[T] =
-    new WindowedSerdes.TimeWindowedSerde[T](tSerde)
-
-  implicit def sessionWindowedSerde[T](implicit tSerde: Serde[T]): WindowedSerdes.SessionWindowedSerde[T] =
-    new WindowedSerdes.SessionWindowedSerde[T](tSerde)
+  implicit def timeWindowedSerde[T]: WindowedSerdes.TimeWindowedSerde[T] = new WindowedSerdes.TimeWindowedSerde[T]()
+  implicit def sessionWindowedSerde[T]: WindowedSerdes.SessionWindowedSerde[T] =
+    new WindowedSerdes.SessionWindowedSerde[T]()
 
   def fromFn[T >: Null](serializer: T => Array[Byte], deserializer: Array[Byte] => Option[T]): Serde[T] =
     JSerdes.serdeFrom(
@@ -63,13 +60,30 @@ object Serdes {
     JSerdes.serdeFrom(
       new Serializer[T] {
         override def serialize(topic: String, data: T): Array[Byte] = serializer(topic, data)
+
         override def configure(configs: util.Map[String, _], isKey: Boolean): Unit = ()
+
         override def close(): Unit = ()
       },
       new Deserializer[T] {
         override def deserialize(topic: String, data: Array[Byte]): T = deserializer(topic, data).orNull
+
         override def configure(configs: util.Map[String, _], isKey: Boolean): Unit = ()
+
         override def close(): Unit = ()
       }
     )
+
+  object KeyValueAgnostic {
+    implicit def keySerdeFromSerde[T](implicit inner: Serde[T]): KeySerde[T] = KeySerde[T](inner)
+
+    implicit def valueSerdeFromSerde[T](implicit inner: Serde[T]): ValueSerde[T] = ValueSerde[T](inner)
+  }
+
+  implicit class SerdeExtensions[T](serde: Serde[T]) {
+    def asKeySerde: KeySerde[T] = KeySerde(serde)
+
+    def asValueSerde: ValueSerde[T] = ValueSerde(serde)
+  }
+
 }

@@ -25,6 +25,7 @@ import kafka.log.LogConfig
 import kafka.log.LogConfig._
 import kafka.server.{ConfigType, DynamicConfig}
 import kafka.utils._
+import kafka.utils.json.JsonValue
 import kafka.zk.{AdminZkClient, KafkaZkClient}
 import org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult.ReplicaLogDirInfo
 import org.apache.kafka.clients.admin.{AdminClientConfig, AlterReplicaLogDirsOptions, AdminClient => JAdminClient}
@@ -44,6 +45,8 @@ object ReassignPartitionsCommand extends Logging {
 
   private[admin] val NoThrottle = Throttle(-1, -1)
   private[admin] val AnyLogDir = "any"
+
+  private[admin] val EarliestVersion = 1
 
   def main(args: Array[String]): Unit = {
     val opts = validateAndParseArgs(args)
@@ -162,13 +165,17 @@ object ReassignPartitionsCommand extends Logging {
       throw new AdminCommandFailedException("Broker list contains duplicate entries: %s".format(duplicateReassignments.mkString(",")))
     val topicsToMoveJsonString = Utils.readFileAsString(topicsToMoveJsonFile)
     val disableRackAware = opts.options.has(opts.disableRackAware)
-    val (proposedAssignments, currentAssignments) = generateAssignment(zkClient, brokerListToReassign, topicsToMoveJsonString, disableRackAware)
+    val (proposedAssignments, currentAssignments, balanceCheckReport) = generateAssignment(zkClient, brokerListToReassign, topicsToMoveJsonString, disableRackAware)
     println("Current partition replica assignment\n%s\n".format(formatAsReassignmentJson(currentAssignments, Map.empty)))
     println("Proposed partition reassignment configuration\n%s".format(formatAsReassignmentJson(proposedAssignments, Map.empty)))
+    if (balanceCheckReport.nonEmpty)
+      println(balanceCheckReport.get)
   }
 
-  def generateAssignment(zkClient: KafkaZkClient, brokerListToReassign: Seq[Int], topicsToMoveJsonString: String, disableRackAware: Boolean): (Map[TopicPartition, Seq[Int]], Map[TopicPartition, Seq[Int]]) = {
-    val topicsToReassign = ZkUtils.parseTopicsData(topicsToMoveJsonString)
+//  def generateAssignment(zkClient: KafkaZkClient, brokerListToReassign: Seq[Int], topicsToMoveJsonString: String, disableRackAware: Boolean): (Map[TopicPartition, Seq[Int]], Map[TopicPartition, Seq[Int]]) = {
+//    val topicsToReassign = parseTopicsData(topicsToMoveJsonString)
+  def generateAssignment(zkClient: KafkaZkClient, brokerListToReassign: Seq[Int], topicsToMoveJsonString: String, disableRackAware: Boolean): (Map[TopicPartition, Seq[Int]], Map[TopicPartition, Seq[Int]], Option[String]) = {
+    val topicsToReassign = parseTopicsData(topicsToMoveJsonString)
     val duplicateTopicsToReassign = CoreUtils.duplicates(topicsToReassign)
     if (duplicateTopicsToReassign.nonEmpty)
       throw new AdminCommandFailedException("List of topics to reassign contains duplicate entries: %s".format(duplicateTopicsToReassign.mkString(",")))
@@ -187,7 +194,9 @@ object ReassignPartitionsCommand extends Logging {
         new TopicPartition(topic, partition) -> replicas
       }
     }
-    (partitionsToBeReassigned, currentAssignment)
+    (partitionsToBeReassigned,
+        currentAssignment,
+        if (disableRackAware) None else new BrokerBalanceCheck(brokerMetadatas, partitionsToBeReassigned).report())
   }
 
   def executeAssignment(zkClient: KafkaZkClient, adminClientOpt: Option[JAdminClient], opts: ReassignPartitionsCommandOptions) {
@@ -241,32 +250,70 @@ object ReassignPartitionsCommand extends Logging {
     ).asJava)
   }
 
-  // Parses without deduplicating keys so the data can be checked before allowing reassignment to proceed
-  def parsePartitionReassignmentData(jsonData: String): (Seq[(TopicPartition, Seq[Int])], Map[TopicPartitionReplica, String]) = {
-    val partitionAssignment = mutable.ListBuffer.empty[(TopicPartition, Seq[Int])]
-    val replicaAssignment = mutable.Map.empty[TopicPartitionReplica, String]
-    for {
-      js <- Json.parseFull(jsonData).toSeq
-      partitionsSeq <- js.asJsonObject.get("partitions").toSeq
-      p <- partitionsSeq.asJsonArray.iterator
-    } {
-      val partitionFields = p.asJsonObject
-      val topic = partitionFields("topic").to[String]
-      val partition = partitionFields("partition").to[Int]
-      val newReplicas = partitionFields("replicas").to[Seq[Int]]
-      val newLogDirs = partitionFields.get("log_dirs") match {
-        case Some(jsonValue) => jsonValue.to[Seq[String]]
-        case None => newReplicas.map(r => AnyLogDir)
-      }
-      if (newReplicas.size != newLogDirs.size)
-        throw new AdminCommandFailedException(s"Size of replicas list $newReplicas is different from " +
-          s"size of log dirs list $newLogDirs for partition ${new TopicPartition(topic, partition)}")
-      partitionAssignment += (new TopicPartition(topic, partition) -> newReplicas)
-      replicaAssignment ++= newReplicas.zip(newLogDirs).map { case (replica, logDir) =>
-        new TopicPartitionReplica(topic, partition, replica) -> logDir
-      }.filter(_._2 != AnyLogDir)
+  def parseTopicsData(jsonData: String): Seq[String] = {
+    Json.parseFull(jsonData) match {
+      case Some(js) =>
+        val version = js.asJsonObject.get("version") match {
+          case Some(jsonValue) => jsonValue.to[Int]
+          case None => EarliestVersion
+        }
+        parseTopicsData(version, js)
+      case None => throw new AdminOperationException("The input string is not a valid JSON")
     }
-    (partitionAssignment, replicaAssignment)
+  }
+
+  def parseTopicsData(version: Int, js: JsonValue): Seq[String] = {
+    version match {
+      case 1 =>
+        for {
+          partitionsSeq <- js.asJsonObject.get("topics").toSeq
+          p <- partitionsSeq.asJsonArray.iterator
+        } yield p.asJsonObject("topic").to[String]
+      case _ => throw new AdminOperationException(s"Not supported version field value $version")
+    }
+  }
+
+  def parsePartitionReassignmentData(jsonData: String): (Seq[(TopicPartition, Seq[Int])], Map[TopicPartitionReplica, String]) = {
+    Json.parseFull(jsonData) match {
+      case Some(js) =>
+        val version = js.asJsonObject.get("version") match {
+          case Some(jsonValue) => jsonValue.to[Int]
+          case None => EarliestVersion
+        }
+        parsePartitionReassignmentData(version, js)
+      case None => throw new AdminOperationException("The input string is not a valid JSON")
+    }
+  }
+
+  // Parses without deduplicating keys so the data can be checked before allowing reassignment to proceed
+  def parsePartitionReassignmentData(version:Int, jsonData: JsonValue): (Seq[(TopicPartition, Seq[Int])], Map[TopicPartitionReplica, String]) = {
+    version match {
+      case 1 =>
+        val partitionAssignment = mutable.ListBuffer.empty[(TopicPartition, Seq[Int])]
+        val replicaAssignment = mutable.Map.empty[TopicPartitionReplica, String]
+        for {
+          partitionsSeq <- jsonData.asJsonObject.get("partitions").toSeq
+          p <- partitionsSeq.asJsonArray.iterator
+        } {
+          val partitionFields = p.asJsonObject
+          val topic = partitionFields("topic").to[String]
+          val partition = partitionFields("partition").to[Int]
+          val newReplicas = partitionFields("replicas").to[Seq[Int]]
+          val newLogDirs = partitionFields.get("log_dirs") match {
+            case Some(jsonValue) => jsonValue.to[Seq[String]]
+            case None => newReplicas.map(_ => AnyLogDir)
+          }
+          if (newReplicas.size != newLogDirs.size)
+            throw new AdminCommandFailedException(s"Size of replicas list $newReplicas is different from " +
+              s"size of log dirs list $newLogDirs for partition ${new TopicPartition(topic, partition)}")
+          partitionAssignment += (new TopicPartition(topic, partition) -> newReplicas)
+          replicaAssignment ++= newReplicas.zip(newLogDirs).map { case (replica, logDir) =>
+            new TopicPartitionReplica(topic, partition, replica) -> logDir
+          }.filter(_._2 != AnyLogDir)
+        }
+        (partitionAssignment, replicaAssignment)
+      case _ => throw new AdminOperationException(s"Not supported version field value $version")
+    }
   }
 
   def parseAndValidate(zkClient: KafkaZkClient, reassignmentJsonString: String): (Seq[(TopicPartition, Seq[Int])], Map[TopicPartitionReplica, String]) = {
@@ -379,24 +426,29 @@ object ReassignPartitionsCommand extends Logging {
   def validateAndParseArgs(args: Array[String]): ReassignPartitionsCommandOptions = {
     val opts = new ReassignPartitionsCommandOptions(args)
 
+    if(args.length == 0)
+      CommandLineUtils.printUsageAndDie(opts.parser, "This command moves topic partitions between replicas.")
+
     // Should have exactly one action
     val actions = Seq(opts.generateOpt, opts.executeOpt, opts.verifyOpt).count(opts.options.has _)
-    if (actions != 1)
+    if(actions != 1)
       CommandLineUtils.printUsageAndDie(opts.parser, "Command must include exactly one action: --generate, --execute or --verify")
 
+    CommandLineUtils.checkRequiredArgs(opts.parser, opts.options, opts.zkConnectOpt)
+
     //Validate arguments for each action
-    if (opts.options.has(opts.verifyOpt)) {
-      if (!opts.options.has(opts.reassignmentJsonFileOpt))
+    if(opts.options.has(opts.verifyOpt)) {
+      if(!opts.options.has(opts.reassignmentJsonFileOpt))
         CommandLineUtils.printUsageAndDie(opts.parser, "If --verify option is used, command must include --reassignment-json-file that was used during the --execute option")
       CommandLineUtils.checkInvalidArgs(opts.parser, opts.options, opts.verifyOpt, Set(opts.interBrokerThrottleOpt, opts.replicaAlterLogDirsThrottleOpt, opts.topicsToMoveJsonFileOpt, opts.disableRackAware, opts.brokerListOpt))
     }
     else if(opts.options.has(opts.generateOpt)) {
-      if (!(opts.options.has(opts.topicsToMoveJsonFileOpt) && opts.options.has(opts.brokerListOpt)))
+      if(!(opts.options.has(opts.topicsToMoveJsonFileOpt) && opts.options.has(opts.brokerListOpt)))
         CommandLineUtils.printUsageAndDie(opts.parser, "If --generate option is used, command must include both --topics-to-move-json-file and --broker-list options")
       CommandLineUtils.checkInvalidArgs(opts.parser, opts.options, opts.generateOpt, Set(opts.interBrokerThrottleOpt, opts.replicaAlterLogDirsThrottleOpt, opts.reassignmentJsonFileOpt))
     }
     else if (opts.options.has(opts.executeOpt)){
-      if (!opts.options.has(opts.reassignmentJsonFileOpt))
+      if(!opts.options.has(opts.reassignmentJsonFileOpt))
         CommandLineUtils.printUsageAndDie(opts.parser, "If --execute option is used, command must include --reassignment-json-file that was output " + "during the --generate option")
       CommandLineUtils.checkInvalidArgs(opts.parser, opts.options, opts.executeOpt, Set(opts.topicsToMoveJsonFileOpt, opts.disableRackAware, opts.brokerListOpt))
     }
@@ -405,22 +457,21 @@ object ReassignPartitionsCommand extends Logging {
 
   class ReassignPartitionsCommandOptions(args: Array[String]) {
     val parser = new OptionParser(false)
-    val bootstrapServerOpt = parser.accepts("bootstrap-server", "The server(s) to use for bootstrapping. This is required if " +
-                      "an absolution path of the log directory is specified for any replica in the reassignment json file.")
+    val bootstrapServerOpt = parser.accepts("bootstrap-server", "the server(s) to use for bootstrapping. REQUIRED if " +
+                      "an absolution path of the log directory is specified for any replica in the reassignment json file")
                       .withRequiredArg
-                      .describedAs("server(s) to use for bootstrapping")
+                      .describedAs("Server(s) to use for bootstrapping")
                       .ofType(classOf[String])
-    val zkConnectOpt = parser.accepts("zookeeper", "The connection string for the zookeeper connection in the " +
+    val zkConnectOpt = parser.accepts("zookeeper", "REQUIRED: The connection string for the zookeeper connection in the " +
                       "form host:port. Multiple URLS can be given to allow fail-over.")
                       .withRequiredArg
-                      .describedAs("url(s) for the zookeeper connection")
+                      .describedAs("urls")
                       .ofType(classOf[String])
-                      .required
     val generateOpt = parser.accepts("generate", "Generate a candidate partition reassignment configuration." +
                       " Note that this only generates a candidate assignment, it does not execute it.")
     val executeOpt = parser.accepts("execute", "Kick off the reassignment as specified by the --reassignment-json-file option.")
-    val verifyOpt = parser.accepts("verify", "Verify if the reassignment completed as specified by the --reassignment-json-file option. If there is a throttle engaged for the replicas specified, and the rebalance has completed, the throttle will be removed. ")
-    val reassignmentJsonFileOpt = parser.accepts("reassignment-json-file", "The JSON file with the partition reassignment configuration. " +
+    val verifyOpt = parser.accepts("verify", "Verify if the reassignment completed as specified by the --reassignment-json-file option. If there is a throttle engaged for the replicas specified, and the rebalance has completed, the throttle will be removed")
+    val reassignmentJsonFileOpt = parser.accepts("reassignment-json-file", "The JSON file with the partition reassignment configuration" +
                       "The format to use is - \n" +
                       "{\"partitions\":\n\t[{\"topic\": \"foo\",\n\t  \"partition\": 1,\n\t  \"replicas\": [1,2,3],\n\t  \"log_dirs\": [\"dir1\",\"dir2\",\"dir3\"] }],\n\"version\":1\n}\n" +
                       "Note that \"log_dirs\" is optional. When it is specified, its length must equal the length of the replicas list. The value in this list " +
@@ -438,35 +489,26 @@ object ReassignPartitionsCommand extends Logging {
     val brokerListOpt = parser.accepts("broker-list", "The list of brokers to which the partitions need to be reassigned" +
                       " in the form \"0,1,2\". This is required if --topics-to-move-json-file is used to generate reassignment configuration")
                       .withRequiredArg
-                      .describedAs("list of brokers")
+                      .describedAs("brokerlist")
                       .ofType(classOf[String])
-    val disableRackAware = parser.accepts("disable-rack-aware", "Disable rack aware replica assignment.")
+    val disableRackAware = parser.accepts("disable-rack-aware", "Disable rack aware replica assignment")
     val interBrokerThrottleOpt = parser.accepts("throttle", "The movement of partitions between brokers will be throttled to this value (bytes/sec). Rerunning with this option, whilst a rebalance is in progress, will alter the throttle value. The throttle rate should be at least 1 KB/s.")
                       .withRequiredArg()
-                      .describedAs("throttle size(bytes/sec)")
+                      .describedAs("throttle")
                       .ofType(classOf[Long])
                       .defaultsTo(-1)
     val replicaAlterLogDirsThrottleOpt = parser.accepts("replica-alter-log-dirs-throttle", "The movement of replicas between log directories on the same broker will be throttled to this value (bytes/sec). Rerunning with this option, whilst a rebalance is in progress, will alter the throttle value. The throttle rate should be at least 1 KB/s.")
                       .withRequiredArg()
-                      .describedAs("throttle size(bytes/sec)")
+                      .describedAs("replicaAlterLogDirsThrottle")
                       .ofType(classOf[Long])
                       .defaultsTo(-1)
-    val timeoutOpt = parser.accepts("timeout", "The maximum time in milliseconds allowed to wait for partition reassignment execution to be successfully initiated.")
+    val timeoutOpt = parser.accepts("timeout", "The maximum time in ms allowed to wait for partition reassignment execution to be successfully initiated")
                       .withRequiredArg()
                       .describedAs("timeout")
                       .ofType(classOf[Long])
                       .defaultsTo(10000)
-    val helpOpt = parser.accepts("help", "Print usage information.").forHelp
-
-    var commandDef: String = "This command moves topic partitions between replicas."
-    if (args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
-
-    val options = CommandLineUtils.tryParse(parser, args)
-    
-    if (options.has("help"))
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
-   }
+    val options = parser.parse(args : _*)
+  }
 }
 
 class ReassignPartitionsCommand(zkClient: KafkaZkClient,
@@ -574,7 +616,7 @@ class ReassignPartitionsCommand(zkClient: KafkaZkClient,
       } catch {
         case t: ExecutionException =>
           t.getCause match {
-            case e: ReplicaNotAvailableException => None // It is OK if the replica is not available at this moment
+            case _: ReplicaNotAvailableException => None // It is OK if the replica is not available at this moment
             case e: Throwable => throw new AdminCommandFailedException(s"Failed to alter dir for $replica", e)
           }
       }

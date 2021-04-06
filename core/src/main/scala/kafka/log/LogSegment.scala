@@ -34,7 +34,6 @@ import java.io.{IOException, File}
  *
  * A segment with a base offset of [base_offset] would be stored in two files, a [base_offset].index and a [base_offset].log file.
  *
- * @param logConfig configuration values 
  * @param log The message set containing log entries
  * @param index The offset index
  * @param baseOffset A lower bound on the offsets in this segment
@@ -42,8 +41,7 @@ import java.io.{IOException, File}
  * @param time The time instance
  */
 @nonthreadsafe
-class LogSegment(val logConfig: LogConfig,
-                 val log: FileMessageSet,
+class LogSegment(val log: FileMessageSet,
                  val index: OffsetIndex,
                  val baseOffset: Long,
                  val indexIntervalBytes: Int,
@@ -55,9 +53,9 @@ class LogSegment(val logConfig: LogConfig,
   /* the number of bytes since we last added an entry in the offset index */
   private var bytesSinceLastIndexEntry = 0
 
-  def this(logConfig: LogConfig, dir: File, startOffset: Long, indexIntervalBytes: Int, maxIndexSize: Int, rollJitterMs: Long, time: Time, fileAlreadyExists: Boolean = false, initFileSize: Int = 0, preallocate: Boolean = false) =
-    this(logConfig, new FileMessageSet(file = Log.logFilename(dir, startOffset), fileAlreadyExists = fileAlreadyExists, initFileSize = initFileSize, preallocate = preallocate),
-         new OffsetIndex(logConfig, Log.indexFilename(dir, startOffset), baseOffset = startOffset, maxIndexSize = maxIndexSize),
+  def this(dir: File, startOffset: Long, indexIntervalBytes: Int, maxIndexSize: Int, rollJitterMs: Long, time: Time, fileAlreadyExists: Boolean = false, initFileSize: Int = 0, preallocate: Boolean = false) =
+    this(new FileMessageSet(file = Log.logFilename(dir, startOffset), fileAlreadyExists = fileAlreadyExists, initFileSize = initFileSize, preallocate = preallocate),
+         new OffsetIndex(file = Log.indexFilename(dir, startOffset), baseOffset = startOffset, maxIndexSize = maxIndexSize),
          startOffset,
          indexIntervalBytes,
          rollJitterMs,
@@ -115,7 +113,7 @@ class LogSegment(val logConfig: LogConfig,
    * @param startOffset A lower bound on the first offset to include in the message set we read
    * @param maxSize The maximum number of bytes to include in the message set we read
    * @param maxOffset An optional maximum offset for the message set we read
-   * @param maxPosition The maximum position in the log segment that should be exposed for read
+   * @param maxPosition An optional maximum position in the log segment that should be exposed for read.
    *
    * @return The fetched data and the offset metadata of the first message whose offset is >= startOffset,
    *         or null if the startOffset is larger than the largest offset in this log
@@ -139,26 +137,24 @@ class LogSegment(val logConfig: LogConfig,
       return FetchDataInfo(offsetMetadata, MessageSet.Empty)
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
-    val length = maxOffset match {
-      case None =>
-        // no max offset, just read until the max position
-        min((maxPosition - startPosition.position).toInt, maxSize)
-      case Some(offset) =>
-        // there is a max offset, translate it to a file position and use that to calculate the max read size;
-        // when the leader of a partition changes, it's possible for the new leader's high watermark to be less than the
-        // true high watermark in the previous leader for a short window. In this window, if a consumer fetches on an
-        // offset between new leader's high watermark and the log end offset, we want to return an empty response.
-        if(offset < startOffset)
-          return FetchDataInfo(offsetMetadata, MessageSet.Empty)
-        val mapping = translateOffset(offset, startPosition.position)
-        val endPosition =
-          if(mapping == null)
-            logSize // the max offset is off the end of the log, use the end of the file
-          else
-            mapping.position
-        min(min(maxPosition, endPosition) - startPosition.position, maxSize).toInt
-    }
-
+    val length =
+      maxOffset match {
+        case None =>
+          // no max offset, just read until the max position
+          min((maxPosition - startPosition.position).toInt, maxSize)
+        case Some(offset) => {
+          // there is a max offset, translate it to a file position and use that to calculate the max read size
+          if(offset < startOffset)
+            throw new IllegalArgumentException("Attempt to read with a maximum offset (%d) less than the start offset (%d).".format(offset, startOffset))
+          val mapping = translateOffset(offset, startPosition.position)
+          val endPosition =
+            if(mapping == null)
+              logSize // the max offset is off the end of the log, use the end of the file
+            else
+              mapping.position
+          min(min(maxPosition, endPosition) - startPosition.position, maxSize).toInt
+        }
+      }
     FetchDataInfo(offsetMetadata, log.read(startPosition.position, length))
   }
 
@@ -205,7 +201,7 @@ class LogSegment(val logConfig: LogConfig,
     truncated
   }
 
-  override def toString = "LogSegment(baseOffset=" + baseOffset + ", size=" + size + ")"
+  override def toString() = "LogSegment(baseOffset=" + baseOffset + ", size=" + size + ")"
 
   /**
    * Truncate off all index and log entries with offsets >= the given offset.
@@ -260,13 +256,10 @@ class LogSegment(val logConfig: LogConfig,
    * Change the suffix for the index and log file for this log segment
    */
   def changeFileSuffixes(oldSuffix: String, newSuffix: String) {
-    if(!logConfig.MemoryMappedFileUpdatesEnabled) {
-      close();
-    }
-    
+
     def kafkaStorageException(fileType: String, e: IOException) =
       new KafkaStorageException(s"Failed to change the $fileType file suffix from $oldSuffix to $newSuffix for log segment $baseOffset", e)
-
+    close()
     try log.renameTo(new File(CoreUtils.replaceSuffix(log.file.getPath, oldSuffix, newSuffix)))
     catch {
       case e: IOException => throw kafkaStorageException("log", e)
@@ -295,7 +288,7 @@ class LogSegment(val logConfig: LogConfig,
     if(!deletedLog && log.file.exists)
       throw new KafkaStorageException("Delete of log " + log.file.getName + " failed.")
     if(!deletedIndex && index.file.exists)
-      throw new KafkaStorageException("Delete of index " + index.file.getAbsolutePath + " failed.")
+      throw new KafkaStorageException("Delete of index " + index.file.getName + " failed.")
   }
 
   /**

@@ -24,11 +24,10 @@ import java.io._
 import java.nio._
 import java.nio.channels._
 import java.util.concurrent.locks._
-
+import java.util.concurrent.atomic._
 import kafka.utils._
 import kafka.utils.CoreUtils.inLock
 import kafka.common.InvalidOffsetException
-import sun.nio.ch.DirectBuffer
 
 /**
  * An index that maps offsets to physical file locations for a particular log segment. This index may be sparse:
@@ -55,71 +54,62 @@ import sun.nio.ch.DirectBuffer
  * All external APIs translate from relative offsets to full offsets, so users of this class do not interact with the internal 
  * storage format.
  */
-class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: File, val baseOffset: Long, val maxIndexSize: Int = -1) extends Logging {
+class OffsetIndex(@volatile var file: File, val baseOffset: Long, val maxIndexSize: Int = -1) extends Logging {
   
   private val lock = new ReentrantLock
-  private val memoryMappedFileUpdatesEnabled = logConfig.MemoryMappedFileUpdatesEnabled
   
   /* initialize the memory mapping for this index */
-  @volatile
-  private[this] var mmap: MappedByteBuffer = {
-    val newlyCreated = _file.createNewFile()
-    val raf = new RandomAccessFile(_file, "rw")
-    try {
-      /* pre-allocate the file if necessary */
-      if (newlyCreated) {
-        if (maxIndexSize < 8)
-          throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
-        raf.setLength(roundToExactMultiple(maxIndexSize, 8))
+  private var mmap: MappedByteBuffer = 
+    {
+      val newlyCreated = file.createNewFile()
+      val raf = new RandomAccessFile(file, "rw")
+      try {
+        /* pre-allocate the file if necessary */
+        if(newlyCreated) {
+          if(maxIndexSize < 8)
+            throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
+          raf.setLength(roundToExactMultiple(maxIndexSize, 8))
+        }
+          
+        /* memory-map the file */
+        val len = raf.length()
+        val idx = raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, len)
+          
+        /* set the position in the index for the next entry */
+        if(newlyCreated)
+          idx.position(0)
+        else
+          // if this is a pre-existing index, assume it is all valid and set position to last entry
+          idx.position(roundToExactMultiple(idx.limit, 8))
+        idx
+      } finally {
+        CoreUtils.swallow(raf.close())
       }
-
-      /* memory-map the file */
-      val len = raf.length()
-      val idx = raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, len)
-
-      /* set the position in the index for the next entry */
-      if (newlyCreated)
-        idx.position(0)
-      else
-        // if this is a pre-existing index, assume it is all valid and set position to last entry
-        idx.position(roundToExactMultiple(idx.limit, 8))
-      idx
-    } finally {
-      CoreUtils.swallow(raf.close())
     }
-  }
-
+  
   /* the number of eight-byte entries currently in the index */
+  private var size = new AtomicInteger(mmap.position / 8)
+  
+  /**
+   * The maximum number of eight-byte entries this index can hold
+   */
   @volatile
-  private[this] var _entries = mmap.position / 8
-
-  /* The maximum number of eight-byte entries this index can hold */
-  @volatile
-  private[this] var _maxEntries = mmap.limit / 8
-
-  @volatile
-  private[this] var _lastOffset = readLastEntry.offset
+  var maxEntries = mmap.limit / 8
+  
+  /* the last offset in the index */
+  var lastOffset = readLastEntry.offset
   
   debug("Loaded index file %s with maxEntries = %d, maxIndexSize = %d, entries = %d, lastOffset = %d, file position = %d"
-    .format(_file.getAbsolutePath, _maxEntries, maxIndexSize, _entries, _lastOffset, mmap.position))
-
-  /** The maximum number of entries this index can hold */
-  def maxEntries: Int = _maxEntries
-
-  /** The last offset in the index */
-  def lastOffset: Long = _lastOffset
-
-  /** The index file */
-  def file: File = _file
+    .format(file.getAbsolutePath, maxEntries, maxIndexSize, entries(), lastOffset, mmap.position))
 
   /**
    * The last entry in the index
    */
   def readLastEntry(): OffsetPosition = {
     inLock(lock) {
-      _entries match {
+      size.get match {
         case 0 => OffsetPosition(baseOffset, 0)
-        case s => OffsetPosition(baseOffset + relativeOffset(mmap, s - 1), physical(mmap, s - 1))
+        case s => OffsetPosition(baseOffset + relativeOffset(this.mmap, s-1), physical(this.mmap, s-1))
       }
     }
   }
@@ -159,22 +149,22 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
     val relOffset = targetOffset - baseOffset
     
     // check if the index is empty
-    if (_entries == 0)
+    if(entries == 0)
       return -1
     
     // check if the target offset is smaller than the least offset
-    if (relativeOffset(idx, 0) > relOffset)
+    if(relativeOffset(idx, 0) > relOffset)
       return -1
       
     // binary search for the entry
     var lo = 0
-    var hi = _entries - 1
-    while (lo < hi) {
+    var hi = entries-1
+    while(lo < hi) {
       val mid = ceil(hi/2.0 + lo/2.0).toInt
       val found = relativeOffset(idx, mid)
-      if (found == relOffset)
+      if(found == relOffset)
         return mid
-      else if (found < relOffset)
+      else if(found < relOffset)
         lo = mid
       else
         hi = mid - 1
@@ -195,8 +185,8 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   def entry(n: Int): OffsetPosition = {
     maybeLock(lock) {
-      if(n >= _entries)
-        throw new IllegalArgumentException("Attempt to fetch the %dth entry from an index of size %d.".format(n, _entries))
+      if(n >= entries)
+        throw new IllegalArgumentException("Attempt to fetch the %dth entry from an index of size %d.".format(n, entries))
       val idx = mmap.duplicate
       OffsetPosition(relativeOffset(idx, n), physical(idx, n))
     }
@@ -207,17 +197,17 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   def append(offset: Long, position: Int) {
     inLock(lock) {
-      require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
-      if (_entries == 0 || offset > _lastOffset) {
-        debug("Adding index entry %d => %d to %s.".format(offset, position, _file.getName))
-        mmap.putInt((offset - baseOffset).toInt)
-        mmap.putInt(position)
-        _entries += 1
-        _lastOffset = offset
-        require(_entries * 8 == mmap.position, _entries + " entries but file position in index is " + mmap.position + ".")
+      require(!isFull, "Attempt to append to a full index (size = " + size + ").")
+      if (size.get == 0 || offset > lastOffset) {
+        debug("Adding index entry %d => %d to %s.".format(offset, position, file.getName))
+        this.mmap.putInt((offset - baseOffset).toInt)
+        this.mmap.putInt(position)
+        this.size.incrementAndGet()
+        this.lastOffset = offset
+        require(entries * 8 == mmap.position, entries + " entries but file position in index is " + mmap.position + ".")
       } else {
         throw new InvalidOffsetException("Attempt to append an offset (%d) to position %d no larger than the last offset appended (%d) to %s."
-          .format(offset, _entries, _lastOffset, _file.getAbsolutePath))
+          .format(offset, entries, lastOffset, file.getAbsolutePath))
       }
     }
   }
@@ -225,7 +215,7 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
   /**
    * True iff there are no more slots available in this index
    */
-  def isFull: Boolean = _entries >= _maxEntries
+  def isFull: Boolean = entries >= this.maxEntries
   
   /**
    * Truncate the entire index, deleting all entries
@@ -262,9 +252,9 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   private def truncateToEntries(entries: Int) {
     inLock(lock) {
-      _entries = entries
-      mmap.position(_entries * 8)
-      _lastOffset = readLastEntry.offset
+      this.size.set(entries)
+      mmap.position(this.size.get * 8)
+      this.lastOffset = readLastEntry.offset
     }
   }
   
@@ -274,7 +264,7 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   def trimToValidSize() {
     inLock(lock) {
-      resize(_entries * 8)
+      resize(entries * 8)
     }
   }
 
@@ -286,20 +276,18 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   def resize(newSize: Int) {
     inLock(lock) {
-      val raf = new RandomAccessFile(_file, "rw")
+      val raf = new RandomAccessFile(file, "rw")
       val roundedNewSize = roundToExactMultiple(newSize, 8)
-      val position = mmap.position
+      val position = this.mmap.position
       
       /* Windows won't let us modify the file length while the file is mmapped :-( */
-      if (!memoryMappedFileUpdatesEnabled) {
-        forceUnmap(mmap)
-      }
-      
+      if(Os.isWindows)
+        forceUnmap(this.mmap)
       try {
         raf.setLength(roundedNewSize)
-        mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
-        _maxEntries = mmap.limit / 8
-        mmap.position(position)
+        this.mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
+        this.maxEntries = this.mmap.limit / 8
+        this.mmap.position(position)
       } finally {
         CoreUtils.swallow(raf.close())
       }
@@ -311,14 +299,10 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    */
   private def forceUnmap(m: MappedByteBuffer) {
     try {
-      m match {
-        case buffer: DirectBuffer => {
-          var cleaner = buffer.cleaner()        
-          if ( cleaner != null) {
-            cleaner.clean()
-          }
-        }
-        case _ =>
+      if(m.isInstanceOf[sun.nio.ch.DirectBuffer]) {
+        var c1 = (m.asInstanceOf[sun.nio.ch.DirectBuffer]).cleaner()
+        if(c1 != null)
+          c1.clean()
       }
     } catch {
       case t: Throwable => warn("Error when freeing index buffer", t)
@@ -338,23 +322,24 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    * Delete this index file
    */
   def delete(): Boolean = {
-    info("Deleting index " + _file.getAbsolutePath)
-    if (!memoryMappedFileUpdatesEnabled)
-      CoreUtils.swallow(forceUnmap(mmap))
-    _file.delete()
+    info("Deleting index " + this.file.getAbsolutePath)
+    if(Os.isWindows)
+      CoreUtils.swallow(forceUnmap(this.mmap))
+    this.file.delete()
   }
   
   /** The number of entries in this index */
-  def entries = _entries
+  def entries() = size.get
   
   /**
    * The number of bytes actually used by this index
    */
-  def sizeInBytes() = 8 * _entries
+  def sizeInBytes() = 8 * entries
   
   /** Close the index */
   def close() {
     trimToValidSize()
+    forceUnmap(this.mmap)
   }
   
   /**
@@ -362,8 +347,8 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    * @throws IOException if rename fails
    */
   def renameTo(f: File) {
-    try Utils.atomicMoveWithFallback(_file.toPath, f.toPath)
-    finally _file = f
+    try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
+    finally this.file = f
   }
   
   /**
@@ -371,13 +356,13 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    * @throws IllegalArgumentException if any problems are found
    */
   def sanityCheck() {
-    require(_entries == 0 || lastOffset > baseOffset,
+    require(entries == 0 || lastOffset > baseOffset,
             "Corrupt index found, index file (%s) has non-zero size but the last offset is %d and the base offset is %d"
-            .format(_file.getAbsolutePath, lastOffset, baseOffset))
-    val len = _file.length()
-    require(len % 8 == 0,
-            "Index file " + _file.getName + " is corrupt, found " + len +
-            " bytes which is not positive or not a multiple of 8.")
+            .format(file.getAbsolutePath, lastOffset, baseOffset))
+      val len = file.length()
+      require(len % 8 == 0, 
+              "Index file " + file.getName + " is corrupt, found " + len + 
+              " bytes which is not positive or not a multiple of 8.")
   }
   
   /**
@@ -392,12 +377,12 @@ class OffsetIndex(val logConfig: LogConfig, @volatile private[this] var _file: F
    * and this requires synchronizing reads.
    */
   private def maybeLock[T](lock: Lock)(fun: => T): T = {
-    if(!memoryMappedFileUpdatesEnabled)
+    if(Os.isWindows)
       lock.lock()
     try {
       fun
     } finally {
-      if(!memoryMappedFileUpdatesEnabled)
+      if(Os.isWindows)
         lock.unlock()
     }
   }

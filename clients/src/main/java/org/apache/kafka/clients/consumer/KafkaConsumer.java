@@ -58,6 +58,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -241,7 +242,6 @@ import java.util.regex.Pattern;
  *     props.put(&quot;bootstrap.servers&quot;, &quot;localhost:9092&quot;);
  *     props.put(&quot;group.id&quot;, &quot;test&quot;);
  *     props.put(&quot;enable.auto.commit&quot;, &quot;false&quot;);
- *     props.put(&quot;auto.commit.interval.ms&quot;, &quot;1000&quot;);
  *     props.put(&quot;session.timeout.ms&quot;, &quot;30000&quot;);
  *     props.put(&quot;key.deserializer&quot;, &quot;org.apache.kafka.common.serialization.StringDeserializer&quot;);
  *     props.put(&quot;value.deserializer&quot;, &quot;org.apache.kafka.common.serialization.StringDeserializer&quot;);
@@ -499,8 +499,9 @@ import java.util.regex.Pattern;
 public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaConsumer.class);
-    private static final Thread NO_CURRENT_THREAD = null;
+    private static final long NO_CURRENT_THREAD = -1L;
     private static final AtomicInteger CONSUMER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
+    private static final Map<String, AtomicInteger> METRIC_ID_SEQUENCE_PER_CLIENT_ID = new HashMap<String, AtomicInteger>();
     private static final String JMX_PREFIX = "kafka.consumer";
 
     private final String clientId;
@@ -519,9 +520,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private final long requestTimeoutMs;
     private boolean closed = false;
 
-    // currentThread holds the current thread accessing KafkaConsumer
+    // currentThread holds the threadId of the current thread accessing KafkaConsumer
     // and is used to prevent multi-threaded access
-    private final AtomicReference<Thread> currentThread = new AtomicReference<Thread>(NO_CURRENT_THREAD);
+    private final AtomicLong currentThread = new AtomicLong(NO_CURRENT_THREAD);
     // refcount is used to allow reentrant access by the thread who has acquired currentThread
     private final AtomicInteger refcount = new AtomicInteger(0);
 
@@ -559,10 +560,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     }
 
     /**
-     * A consumer is instantiated by providing a {@link java.util.Properties} object as configuration. Valid
-     * configuration strings are documented at {@link ConsumerConfig} A consumer is instantiated by providing a
-     * {@link java.util.Properties} object as configuration. Valid configuration strings are documented at
-     * {@link ConsumerConfig}
+     * A consumer is instantiated by providing a {@link java.util.Properties} object as configuration.
+     * <p>
+     * Valid configuration strings are documented at {@link ConsumerConfig}
+     * 
+     * @param properties The consumer configuration properties
      */
     public KafkaConsumer(Properties properties) {
         this(properties, null, null);
@@ -605,8 +607,17 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             if (clientId.length() <= 0)
                 clientId = "consumer-" + CONSUMER_CLIENT_ID_SEQUENCE.getAndIncrement();
             this.clientId = clientId;
+            synchronized (KafkaConsumer.class) {
+                if (!METRIC_ID_SEQUENCE_PER_CLIENT_ID.containsKey(clientId))
+                    METRIC_ID_SEQUENCE_PER_CLIENT_ID.put(clientId, new AtomicInteger(1));
+            }
+            String metricId = config.getString(ConsumerConfig.METRIC_ID_CONFIG);
+            if (metricId.isEmpty()) {
+                metricId = "" + METRIC_ID_SEQUENCE_PER_CLIENT_ID.get(clientId).getAndIncrement();
+            }
             Map<String, String> metricsTags = new LinkedHashMap<>();
             metricsTags.put("client-id", clientId);
+            metricsTags.put("metric-id", metricId);
             MetricConfig metricConfig = new MetricConfig().samples(config.getInt(ConsumerConfig.METRICS_NUM_SAMPLES_CONFIG))
                     .timeWindow(config.getLong(ConsumerConfig.METRICS_SAMPLE_WINDOW_MS_CONFIG), TimeUnit.MILLISECONDS)
                     .tags(metricsTags);
@@ -789,15 +800,22 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @param topics The list of topics to subscribe to
      * @param listener Non-null listener instance to get notifications on partition assignment/revocation for the
      *                 subscribed topics
+     * @throws IllegalArgumentException If topics is null or contains null or empty elements
      */
     @Override
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
         acquire();
         try {
-            if (topics.isEmpty()) {
+            if (topics == null) {
+                throw new IllegalArgumentException("Topic collection to subscribe to cannot be null");
+            } else if (topics.isEmpty()) {
                 // treat subscribing to empty topic list as the same as unsubscribing
                 this.unsubscribe();
             } else {
+                for (String topic : topics) {
+                    if (topic == null || topic.trim().isEmpty())
+                        throw new IllegalArgumentException("Topic collection to subscribe to cannot contain null or empty topic");
+                }
                 log.debug("Subscribed to topic(s): {}", Utils.join(topics, ", "));
                 this.subscriptions.subscribe(topics, listener);
                 metadata.setTopics(subscriptions.groupSubscription());
@@ -823,6 +841,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * management since the listener gives you an opportunity to commit offsets before a rebalance finishes.
      *
      * @param topics The list of topics to subscribe to
+     * @throws IllegalArgumentException If topics is null or contains null or empty elements
      */
     @Override
     public void subscribe(Collection<String> topics) {
@@ -832,6 +851,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     /**
      * Subscribe to all topics matching specified pattern to get dynamically assigned partitions. The pattern matching will be done periodically against topics
      * existing at the time of check.
+     *
      * <p>
      * As part of group management, the consumer will keep track of the list of consumers that
      * belong to a particular group and will trigger a rebalance operation if one of the
@@ -844,14 +864,18 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * </ul>
      *
      * @param pattern Pattern to subscribe to
+     * @throws IllegalArgumentException If pattern is null
      */
     @Override
     public void subscribe(Pattern pattern, ConsumerRebalanceListener listener) {
         acquire();
         try {
+            if (pattern == null)
+                throw new IllegalArgumentException("Topic pattern to subscribe to cannot be null");
             log.debug("Subscribed to pattern: {}", pattern);
             this.subscriptions.subscribe(pattern, listener);
             this.metadata.needMetadataForAllTopics(true);
+            this.metadata.requestUpdate();
         } finally {
             release();
         }
@@ -876,6 +900,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     /**
      * Manually assign a list of partition to this consumer. This interface does not allow for incremental assignment
      * and will replace the previous assignment (if there is one).
+     *
+     * If the given list of topic partition is empty, it is treated the same as {@link #unsubscribe()}.
+     *
      * <p>
      * Manual topic assignment through this method does not use the consumer's group management
      * functionality. As such, there will be no rebalance operation triggered when group membership or cluster and topic
@@ -883,17 +910,29 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * and group assignment with {@link #subscribe(Collection, ConsumerRebalanceListener)}.
      *
      * @param partitions The list of partitions to assign this consumer
+     * @throws IllegalArgumentException If partitions is null or contains null or empty topics
      */
     @Override
     public void assign(Collection<TopicPartition> partitions) {
         acquire();
         try {
-            log.debug("Subscribed to partition(s): {}", Utils.join(partitions, ", "));
-            this.subscriptions.assignFromUser(partitions);
-            Set<String> topics = new HashSet<>();
-            for (TopicPartition tp : partitions)
-                topics.add(tp.topic());
-            metadata.setTopics(topics);
+            if (partitions == null) {
+                throw new IllegalArgumentException("Topic partition collection to assign to cannot be null");
+            } else if (partitions.isEmpty()) {
+                this.unsubscribe();
+            } else {
+                Set<String> topics = new HashSet<>();
+                for (TopicPartition tp : partitions) {
+                    String topic = (tp != null) ? tp.topic() : null;
+                    if (topic == null || topic.trim().isEmpty())
+                        throw new IllegalArgumentException("Topic partitions to assign to cannot have null or empty topic");
+                    topics.add(topic);
+                }
+
+                log.debug("Subscribed to partition(s): {}", Utils.join(partitions, ", "));
+                this.subscriptions.assignFromUser(partitions);
+                metadata.setTopics(topics);
+            }
         } finally {
             release();
         }
@@ -968,9 +1007,6 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @return The fetched records (may be empty)
      */
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollOnce(long timeout) {
-        // TODO: Sub-requests should take into account the poll timeout (KAFKA-1894)
-        coordinator.ensureCoordinatorReady();
-
         // ensure we have partitions assigned if we expect to
         if (subscriptions.partitionsAutoAssigned())
             coordinator.ensurePartitionAssignment();
@@ -1400,11 +1436,22 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      *             defined
      */
     private void updateFetchPositions(Set<TopicPartition> partitions) {
-        // refresh commits for all assigned partitions
-        coordinator.refreshCommittedOffsetsIfNeeded();
+        // lookup any positions for partitions which are awaiting reset (which may be the
+        // case if the user called seekToBeginning or seekToEnd. We do this check first to
+        // avoid an unnecessary lookup of committed offsets (which typically occurs when
+        // the user is manually assigning partitions and managing their own offsets).
+        fetcher.resetOffsetsIfNeeded(partitions);
 
-        // then do any offset lookups in case some positions are not known
-        fetcher.updateFetchPositions(partitions);
+        if (!subscriptions.hasAllFetchPositions()) {
+            // if we still don't have offsets for all partitions, then we should either seek
+            // to the last committed position or reset using the auto reset policy
+
+            // first refresh commits for all assigned partitions
+            coordinator.refreshCommittedOffsetsIfNeeded();
+
+            // then do any offset lookups in case some positions are not known
+            fetcher.updateFetchPositions(partitions);
+        }
     }
 
     /*
@@ -1425,9 +1472,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private void acquire() {
         ensureNotClosed();
         long threadId = Thread.currentThread().getId();
-
-        if (!currentThread.compareAndSet(NO_CURRENT_THREAD, Thread.currentThread()) && currentThread.get().getId() != Thread.currentThread().getId())
-            throw new ConcurrentModificationException("KafkaConsumer is not safe for multi-threaded access. Request accessing thread is " + Thread.currentThread().getName() + " and it is already being accessed by " + currentThread.get().getName());
+        if (threadId != currentThread.get() && !currentThread.compareAndSet(NO_CURRENT_THREAD, threadId))
+            throw new ConcurrentModificationException("KafkaConsumer is not safe for multi-threaded access");
         refcount.incrementAndGet();
     }
 

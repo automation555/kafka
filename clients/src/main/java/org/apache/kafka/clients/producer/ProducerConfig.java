@@ -51,9 +51,8 @@ public class ProducerConfig extends AbstractConfig {
      */
     @Deprecated
     public static final String METADATA_FETCH_TIMEOUT_CONFIG = "metadata.fetch.timeout.ms";
-    private static final String METADATA_FETCH_TIMEOUT_DOC = "The first time data is sent to a topic we must fetch metadata about that topic to know which servers "
-                                                             + "host the topic's partitions. This config specifies the maximum time, in milliseconds, for this fetch "
-                                                             + "to succeed before throwing an exception back to the client.";
+    private static final String METADATA_FETCH_TIMEOUT_DOC = "The first time data is sent to a topic we must fetch metadata about that topic to know which servers host the topic's partitions. This "
+                                                             + "fetch to succeed before throwing an exception back to the client.";
 
     /** <code>metadata.max.age.ms</code> */
     public static final String METADATA_MAX_AGE_CONFIG = CommonClientConfigs.METADATA_MAX_AGE_CONFIG;
@@ -170,6 +169,9 @@ public class ProducerConfig extends AbstractConfig {
                                                        + " values are <code>none</code>, <code>gzip</code>, <code>snappy</code>, or <code>lz4</code>. "
                                                        + "Compression is of full batches of data, so the efficacy of batching will also impact the compression ratio (more batching means better compression).";
 
+    /** <code>metric.id</code> */
+    public static final String METRIC_ID_CONFIG = CommonClientConfigs.METRIC_ID_CONFIG;
+
     /** <code>metrics.sample.window.ms</code> */
     public static final String METRICS_SAMPLE_WINDOW_MS_CONFIG = CommonClientConfigs.METRICS_SAMPLE_WINDOW_MS_CONFIG;
 
@@ -264,6 +266,11 @@ public class ProducerConfig extends AbstractConfig {
                                         Importance.MEDIUM,
                                         REQUEST_TIMEOUT_MS_DOC)
                                 .define(METADATA_MAX_AGE_CONFIG, Type.LONG, 5 * 60 * 1000, atLeast(0), Importance.LOW, METADATA_MAX_AGE_DOC)
+                                .define(METRIC_ID_CONFIG,
+                                        Type.STRING,
+                                        "",
+                                        Importance.LOW,
+                                        CommonClientConfigs.METRIC_ID_DOC)
                                 .define(METRICS_SAMPLE_WINDOW_MS_CONFIG,
                                         Type.LONG,
                                         30000,
@@ -307,11 +314,6 @@ public class ProducerConfig extends AbstractConfig {
                                         CommonClientConfigs.DEFAULT_SECURITY_PROTOCOL,
                                         Importance.MEDIUM,
                                         CommonClientConfigs.SECURITY_PROTOCOL_DOC)
-                                .define(CommonClientConfigs.EXECUTABLE_PASSWORD_ENABLE_CONFIG,
-                                        Type.BOOLEAN,
-                                        CommonClientConfigs.DEFAULT_EXECUTABLE_PASSWORD_ENABLE,
-                                        Importance.LOW,
-                                        CommonClientConfigs.EXECUTABLE_PASSWORD_ENABLE_DOC)
                                 .withClientSslSupport()
                                 .withClientSaslSupport();
 

@@ -13,7 +13,6 @@
 
 package org.apache.kafka.clients;
 
-import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.protocol.SecurityProtocol;
 import org.apache.kafka.common.utils.Utils;
 
@@ -58,6 +57,9 @@ public class CommonClientConfigs {
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
     public static final String RETRY_BACKOFF_MS_DOC = "The amount of time to wait before attempting to retry a failed request to a given topic partition. This avoids repeatedly sending requests in a tight loop under some failure scenarios.";
 
+    public static final String METRIC_ID_CONFIG = "metric.id";
+    public static final String METRIC_ID_DOC = "An id string to uniquely identify metrics among client instances under the same client id on the same jvm.";
+
     public static final String METRICS_SAMPLE_WINDOW_MS_CONFIG = "metrics.sample.window.ms";
     public static final String METRICS_SAMPLE_WINDOW_MS_DOC = "The window of time a metrics sample is computed over.";
 
@@ -79,10 +81,6 @@ public class CommonClientConfigs {
                                                          + "for the response of a request. If the response is not received before the timeout "
                                                          + "elapses the client will resend the request if necessary or fail the request if "
                                                          + "retries are exhausted.";
-
-    public static final String EXECUTABLE_PASSWORD_ENABLE_CONFIG = ConfigDef.EXECUTABLE_PASSWORD_ENABLE_CONFIG;
-    public static final String EXECUTABLE_PASSWORD_ENABLE_DOC = "Pass executables as password, instead of plaintext.";
-    public static final Boolean DEFAULT_EXECUTABLE_PASSWORD_ENABLE = false;
 
     private static List<String> nonTestingSecurityProtocolNames() {
         List<String> names = new ArrayList<>();

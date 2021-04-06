@@ -20,8 +20,6 @@ import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 
-import java.util.Objects;
-
 /**
  * A key/value pair to be sent to Kafka. This consists of a topic name to which the record is being sent, an optional
  * partition number, and an optional key and value.
@@ -109,7 +107,19 @@ public class ProducerRecord<K, V> {
     public ProducerRecord(String topic, Integer partition, K key, V value, Iterable<Header> headers) {
         this(topic, partition, null, key, value, headers);
     }
-    
+
+    /**
+     * Creates a record to be sent to a specified topic and partition
+     *
+     * @param topic The topic the record will be appended to
+     * @param key The key that will be included in the record
+     * @param value The record contents
+     * @param headers The headers that will be included in the record
+     */
+    public ProducerRecord(String topic, K key, V value, Iterable<Header> headers) {
+        this(topic, null, null, key, value, headers);
+    }
+
     /**
      * Creates a record to be sent to a specified topic and partition
      *
@@ -204,12 +214,20 @@ public class ProducerRecord<K, V> {
 
         ProducerRecord<?, ?> that = (ProducerRecord<?, ?>) o;
 
-        return Objects.equals(key, that.key) &&
-            Objects.equals(partition, that.partition) &&
-            Objects.equals(topic, that.topic) &&
-            Objects.equals(headers, that.headers) &&
-            Objects.equals(value, that.value) &&
-            Objects.equals(timestamp, that.timestamp);
+        if (key != null ? !key.equals(that.key) : that.key != null) 
+            return false;
+        else if (partition != null ? !partition.equals(that.partition) : that.partition != null) 
+            return false;
+        else if (topic != null ? !topic.equals(that.topic) : that.topic != null) 
+            return false;
+        else if (headers != null ? !headers.equals(that.headers) : that.headers != null)
+            return false;
+        else if (value != null ? !value.equals(that.value) : that.value != null) 
+            return false;
+        else if (timestamp != null ? !timestamp.equals(that.timestamp) : that.timestamp != null)
+            return false;
+
+        return true;
     }
 
     @Override

@@ -530,7 +530,7 @@ public class SslTransportLayer implements TransportLayer {
                     readFromNetwork = true;
             }
 
-            while (netReadBuffer.position() > 0) {
+            if (netReadBuffer.position() > 0) {
                 netReadBuffer.flip();
                 SSLEngineResult unwrapResult = sslEngine.unwrap(netReadBuffer, appReadBuffer);
                 netReadBuffer.compact();
@@ -546,20 +546,19 @@ public class SslTransportLayer implements TransportLayer {
                     read += readFromAppBuffer(dst);
                 } else if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
                     int currentApplicationBufferSize = applicationBufferSize();
-                    appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize + appReadBuffer.position());
+                    appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize);
+                    if (appReadBuffer.position() >= currentApplicationBufferSize) {
+                        throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
+                                                        ") >= application buffer size (" + currentApplicationBufferSize + ")");
+                    }
 
-//                    if (appReadBuffer.position() >= currentApplicationBufferSize) {
-//                        throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
-//                                                        ") >= application buffer size (" + currentApplicationBufferSize + ")");
-//                    }
-//
-//                    // appReadBuffer will extended upto currentApplicationBufferSize
-//                    // we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
-//                    // we can break here.
-//                    if (dst.hasRemaining())
-//                        read += readFromAppBuffer(dst);
-//                    else
-//                        break;
+                    // appReadBuffer will extended upto currentApplicationBufferSize
+                    // we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
+                    // we can break here.
+                    if (dst.hasRemaining())
+                        read += readFromAppBuffer(dst);
+                    else
+                        break;
                 } else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
                     int currentNetReadBufferSize = netReadBufferSize();
                     netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);

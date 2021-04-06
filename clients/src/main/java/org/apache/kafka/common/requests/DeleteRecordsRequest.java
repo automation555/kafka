@@ -18,8 +18,8 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.types.ArrayOf;
 import org.apache.kafka.common.protocol.types.Field;
 import org.apache.kafka.common.protocol.types.Schema;
@@ -34,8 +34,7 @@ import java.util.Map;
 
 import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
 import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
-import static org.apache.kafka.common.protocol.types.Type.BOOLEAN;
-import static org.apache.kafka.common.protocol.types.Type.INT32;
+import static org.apache.kafka.common.protocol.CommonFields.TIMEOUT;
 import static org.apache.kafka.common.protocol.types.Type.INT64;
 
 public class DeleteRecordsRequest extends AbstractRequest {
@@ -44,8 +43,6 @@ public class DeleteRecordsRequest extends AbstractRequest {
 
     // request level key names
     private static final String TOPICS_KEY_NAME = "topics";
-    private static final String TIMEOUT_KEY_NAME = "timeout";
-    private static final String VALIDATE_ONLY_KEY_NAME = "validate_only";
 
     // topic level key names
     private static final String PARTITIONS_KEY_NAME = "partitions";
@@ -56,7 +53,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
 
     private static final Schema DELETE_RECORDS_REQUEST_PARTITION_V0 = new Schema(
             PARTITION_ID,
-            new Field(OFFSET_KEY_NAME, INT64, "The offset before which the messages will be deleted. -1 means high-watermark for the partition."));
+            new Field(OFFSET_KEY_NAME, INT64, "The offset before which the messages will be deleted."));
 
     private static final Schema DELETE_RECORDS_REQUEST_TOPIC_V0 = new Schema(
             TOPIC_NAME,
@@ -64,43 +61,28 @@ public class DeleteRecordsRequest extends AbstractRequest {
 
     private static final Schema DELETE_RECORDS_REQUEST_V0 = new Schema(
             new Field(TOPICS_KEY_NAME, new ArrayOf(DELETE_RECORDS_REQUEST_TOPIC_V0)),
-            new Field(TIMEOUT_KEY_NAME, INT32, "The maximum time to await a response in ms."));
-
-    private static final Schema DELETE_RECORDS_REQUEST_V1 = new Schema(
-            new Field(TOPICS_KEY_NAME, new ArrayOf(DELETE_RECORDS_REQUEST_TOPIC_V0)),
-            new Field(TIMEOUT_KEY_NAME, INT32, "The maximum time to await a response in ms."),
-            new Field(VALIDATE_ONLY_KEY_NAME, BOOLEAN, "If true then validate the request, but don't actually delete the records."));
+            TIMEOUT);
 
     public static Schema[] schemaVersions() {
-        return new Schema[]{DELETE_RECORDS_REQUEST_V0, DELETE_RECORDS_REQUEST_V1};
+        return new Schema[]{DELETE_RECORDS_REQUEST_V0};
     }
 
     private final int timeout;
     private final Map<TopicPartition, Long> partitionOffsets;
-    private final boolean validateOnly;
 
     public static class Builder extends AbstractRequest.Builder<DeleteRecordsRequest> {
         private final int timeout;
         private final Map<TopicPartition, Long> partitionOffsets;
-        private final boolean validateOnly;
 
         public Builder(int timeout, Map<TopicPartition, Long> partitionOffsets) {
-            this(timeout, partitionOffsets, false);
-        }
-
-        public Builder(int timeout, Map<TopicPartition, Long> partitionOffsets, boolean validateOnly) {
             super(ApiKeys.DELETE_RECORDS);
             this.timeout = timeout;
             this.partitionOffsets = partitionOffsets;
-            this.validateOnly = validateOnly;
         }
 
         @Override
         public DeleteRecordsRequest build(short version) {
-            if (validateOnly && version == 0)
-                throw new UnsupportedVersionException("validateOnly is not supported in version 0 of " +
-                        "DeleteRecordsRequest");
-            return new DeleteRecordsRequest(timeout, partitionOffsets, validateOnly, version);
+            return new DeleteRecordsRequest(timeout, partitionOffsets, version);
         }
 
         @Override
@@ -109,7 +91,6 @@ public class DeleteRecordsRequest extends AbstractRequest {
             builder.append("(type=DeleteRecordsRequest")
                    .append(", timeout=").append(timeout)
                    .append(", partitionOffsets=(").append(partitionOffsets)
-                   .append(", validateOnly=").append(validateOnly)
                    .append("))");
             return builder.toString();
         }
@@ -129,21 +110,19 @@ public class DeleteRecordsRequest extends AbstractRequest {
                 partitionOffsets.put(new TopicPartition(topic, partition), offset);
             }
         }
-        timeout = struct.getInt(TIMEOUT_KEY_NAME);
-        validateOnly = struct.hasField(VALIDATE_ONLY_KEY_NAME) ? struct.getBoolean(VALIDATE_ONLY_KEY_NAME) : false;
+        timeout = struct.get(TIMEOUT);
     }
 
-    public DeleteRecordsRequest(int timeout, Map<TopicPartition, Long> partitionOffsets, boolean validateOnly, short version) {
+    public DeleteRecordsRequest(int timeout, Map<TopicPartition, Long> partitionOffsets, short version) {
         super(version);
         this.timeout = timeout;
         this.partitionOffsets = partitionOffsets;
-        this.validateOnly = validateOnly;
     }
     @Override
     protected Struct toStruct() {
         Struct struct = new Struct(ApiKeys.DELETE_RECORDS.requestSchema(version()));
         Map<String, Map<Integer, Long>> offsetsByTopic = CollectionUtils.groupDataByTopic(partitionOffsets);
-        struct.set(TIMEOUT_KEY_NAME, timeout);
+        struct.set(TIMEOUT, timeout);
         List<Struct> topicStructArray = new ArrayList<>();
         for (Map.Entry<String, Map<Integer, Long>> offsetsByTopicEntry : offsetsByTopic.entrySet()) {
             Struct topicStruct = struct.instance(TOPICS_KEY_NAME);
@@ -159,9 +138,6 @@ public class DeleteRecordsRequest extends AbstractRequest {
             topicStructArray.add(topicStruct);
         }
         struct.set(TOPICS_KEY_NAME, topicStructArray.toArray());
-        if (version() >= 1) {
-            struct.set(VALIDATE_ONLY_KEY_NAME, validateOnly);
-        }
         return struct;
     }
 
@@ -170,13 +146,12 @@ public class DeleteRecordsRequest extends AbstractRequest {
         Map<TopicPartition, DeleteRecordsResponse.PartitionResponse> responseMap = new HashMap<>();
 
         for (Map.Entry<TopicPartition, Long> entry : partitionOffsets.entrySet()) {
-            responseMap.put(entry.getKey(), new DeleteRecordsResponse.PartitionResponse(DeleteRecordsResponse.INVALID_LOW_WATERMARK, ApiError.fromThrowable(e)));
+            responseMap.put(entry.getKey(), new DeleteRecordsResponse.PartitionResponse(DeleteRecordsResponse.INVALID_LOW_WATERMARK, Errors.forException(e)));
         }
 
         short versionId = version();
         switch (versionId) {
             case 0:
-            case 1:
                 return new DeleteRecordsResponse(throttleTimeMs, responseMap);
             default:
                 throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
@@ -190,10 +165,6 @@ public class DeleteRecordsRequest extends AbstractRequest {
 
     public Map<TopicPartition, Long> partitionOffsets() {
         return partitionOffsets;
-    }
-
-    public boolean validateOnly() {
-        return validateOnly;
     }
 
     public static DeleteRecordsRequest parse(ByteBuffer buffer, short version) {

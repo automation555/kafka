@@ -29,7 +29,7 @@ import org.apache.kafka.common.record.{CompressionType, MemoryRecords, SimpleRec
 import org.apache.kafka.common.utils.Utils
 import java.util.{Collection, Properties}
 
-import kafka.server.{BrokerTopicStats, LogDirFailureChannel}
+import kafka.server.BrokerTopicStats
 
 import scala.collection.JavaConverters._
 
@@ -42,7 +42,7 @@ class BrokerCompressionTest(messageCompression: String, brokerCompression: Strin
   val logConfig = LogConfig()
 
   @After
-  def tearDown(): Unit = {
+  def tearDown() {
     Utils.delete(tmpDir)
   }
 
@@ -50,15 +50,13 @@ class BrokerCompressionTest(messageCompression: String, brokerCompression: Strin
    * Test broker-side compression configuration
    */
   @Test
-  def testBrokerSideCompression(): Unit = {
+  def testBrokerSideCompression() {
     val messageCompressionCode = CompressionCodec.getCompressionCodec(messageCompression)
     val logProps = new Properties()
     logProps.put(LogConfig.CompressionTypeProp, brokerCompression)
     /*configure broker-side compression  */
     val log = Log(logDir, LogConfig(logProps), logStartOffset = 0L, recoveryPoint = 0L, scheduler = time.scheduler,
-      time = time, brokerTopicStats = new BrokerTopicStats, maxProducerIdExpirationMs = 60 * 60 * 1000,
-      producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
-      logDirFailureChannel = new LogDirFailureChannel(10))
+      time = time, brokerTopicStats = new BrokerTopicStats)
 
     /* append two messages */
     log.appendAsLeader(MemoryRecords.withRecords(CompressionType.forId(messageCompressionCode.codec), 0,
@@ -72,8 +70,9 @@ class BrokerCompressionTest(messageCompression: String, brokerCompression: Strin
     }
     else
       assertEquals("Compression at offset 0 should produce " + messageCompressionCode.name, messageCompressionCode.codec, readBatch(0).compressionType.id)
-  }
 
+    log.close()
+  }
 }
 
 object BrokerCompressionTest {

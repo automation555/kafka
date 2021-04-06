@@ -19,20 +19,18 @@ package org.apache.kafka.common.record;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.network.TransportLayer;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
-import org.apache.kafka.common.utils.AbstractIterator;
-import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 
 import java.io.Closeable;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.GatheringByteChannel;
-import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -133,14 +131,16 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public FileRecords read(int position, int size) throws IOException {
         if (position < 0)
-            throw new IllegalArgumentException("Invalid position: " + position + " in read from " + file);
+            throw new IllegalArgumentException("Invalid position: " + position);
         if (size < 0)
-            throw new IllegalArgumentException("Invalid size: " + size + " in read from " + file);
+            throw new IllegalArgumentException("Invalid size: " + size);
 
-        int end = this.start + position + size;
-        // handle integer overflow or if end is beyond the end of the file
-        if (end < 0 || end >= start + sizeInBytes())
-            end = start + sizeInBytes();
+        final int end;
+        // handle integer overflow
+        if (this.start + position + size < 0)
+            end = sizeInBytes();
+        else
+            end = Math.min(this.start + position + size, sizeInBytes());
         return new FileRecords(file, channel, this.start + position, end, true);
     }
 
@@ -172,21 +172,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     /**
-     * Close file handlers used by the FileChannel but don't write to disk. This is used when the disk may have failed
-     */
-    public void closeHandlers() throws IOException {
-        channel.close();
-    }
-
-    /**
      * Delete this message set from the filesystem
-     * @throws IOException if deletion fails due to an I/O error
-     * @return  {@code true} if the file was deleted by this method; {@code false} if the file could not be deleted
-     *          because it did not exist
+     * @return True iff this message set was deleted.
      */
-    public boolean deleteIfExists() throws IOException {
+    public boolean delete() {
         Utils.closeQuietly(channel, "FileChannel");
-        return Files.deleteIfExists(file.toPath());
+        return file.delete();
     }
 
     /**
@@ -210,7 +201,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public void renameTo(File f) throws IOException {
         try {
-            channel.close();
             Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
         } finally {
             this.file = f;
@@ -230,7 +220,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public int truncateTo(int targetSize) throws IOException {
         int originalSize = sizeInBytes();
         if (targetSize > originalSize || targetSize < 0)
-            throw new KafkaException("Attempt to truncate log segment " + file + " to " + targetSize + " bytes failed, " +
+            throw new KafkaException("Attempt to truncate log segment to " + targetSize + " bytes failed, " +
                     " size of this log segment is " + originalSize + " bytes.");
         if (targetSize < (int) channel.size()) {
             channel.truncate(targetSize);
@@ -240,19 +230,19 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     @Override
-    public ConvertedRecords<? extends Records> downConvert(byte toMagic, long firstOffset, Time time) {
-        ConvertedRecords<MemoryRecords> convertedRecords = RecordsUtil.downConvert(batches, toMagic, firstOffset, time);
-        if (convertedRecords.recordConversionStats().numRecordsConverted() == 0) {
+    public Records downConvert(byte toMagic, long firstOffset) {
+        List<? extends RecordBatch> batches = Utils.toList(batches().iterator());
+        if (batches.isEmpty()) {
             // This indicates that the message is too large, which means that the buffer is not large
-            // enough to hold a full record batch. We just return all the bytes in this instance.
-            // Even though the record batch does not have the right format version, we expect old clients
-            // to raise an error to the user after reading the record batch size and seeing that there
-            // are not enough available bytes in the response to read it fully. Note that this is
+            // enough to hold a full record batch. We just return all the bytes in the file message set.
+            // Even though the message set does not have the right format version, we expect old clients
+            // to raise an error to the user after reading the message size and seeing that there
+            // are not enough available bytes in the response to read the full message. Note that this is
             // only possible prior to KIP-74, after which the broker was changed to always return at least
-            // one full record batch, even if it requires exceeding the max fetch size requested by the client.
-            return new ConvertedRecords<>(this, RecordConversionStats.EMPTY);
+            // one full message, even if it requires exceeding the max fetch size requested by the client.
+            return this;
         } else {
-            return convertedRecords;
+            return downConvert(batches, toMagic, firstOffset);
         }
     }
 
@@ -349,14 +339,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
         return batches;
     }
 
-    @Override
-    public String toString() {
-        return "FileRecords(file= " + file +
-                ", start=" + start +
-                ", end=" + end +
-                ")";
-    }
-
     private Iterable<FileChannelRecordBatch> batchesFrom(final int start) {
         return new Iterable<FileChannelRecordBatch>() {
             @Override
@@ -366,18 +348,13 @@ public class FileRecords extends AbstractRecords implements Closeable {
         };
     }
 
-    @Override
-    public AbstractIterator<FileChannelRecordBatch> batchIterator() {
-        return batchIterator(start);
-    }
-
-    private AbstractIterator<FileChannelRecordBatch> batchIterator(int start) {
+    private Iterator<FileChannelRecordBatch> batchIterator(int start) {
         final int end;
         if (isSlice)
             end = this.end;
         else
             end = this.sizeInBytes();
-        FileLogInputStream inputStream = new FileLogInputStream(this, start, end);
+        FileLogInputStream inputStream = new FileLogInputStream(channel, start, end);
         return new RecordBatchIterator<>(inputStream);
     }
 
@@ -423,18 +400,19 @@ public class FileRecords extends AbstractRecords implements Closeable {
                                            boolean preallocate) throws IOException {
         if (mutable) {
             if (fileAlreadyExists) {
-                return new RandomAccessFile(file, "rw").getChannel();
+                return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ);
             } else {
                 if (preallocate) {
-                    RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
-                    randomAccessFile.setLength(initFileSize);
-                    return randomAccessFile.getChannel();
+                    try (RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw")) {
+                        randomAccessFile.setLength(initFileSize);
+                    }
+                    return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ);
                 } else {
-                    return new RandomAccessFile(file, "rw").getChannel();
+                    return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ, StandardOpenOption.CREATE);
                 }
             }
         } else {
-            return new FileInputStream(file).getChannel();
+            return FileChannel.open(file.toPath(), StandardOpenOption.READ);
         }
     }
 
@@ -517,4 +495,5 @@ public class FileRecords extends AbstractRecords implements Closeable {
                     ')';
         }
     }
+
 }

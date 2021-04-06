@@ -19,36 +19,29 @@ package kafka.zk
 
 import org.apache.zookeeper.server.ZooKeeperServer
 import org.apache.zookeeper.server.NIOServerCnxnFactory
-import kafka.utils.{CoreUtils, Logging, TestUtils}
+import kafka.utils.TestUtils
 import java.net.InetSocketAddress
 
+import kafka.utils.CoreUtils
 import org.apache.kafka.common.utils.Utils
+import org.apache.zookeeper.server.ZooKeeperServer.BasicDataTreeBuilder
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog
 
-/**
- * ZooKeeperServer wrapper that starts the server with temporary directories during construction and deletes
- * the directories when `shutdown()` is called.
- *
- * This is an internal class and it's subject to change. We recommend that you implement your own simple wrapper
- * if you need similar functionality.
- */
-// This should be named EmbeddedZooKeeper for consistency with other classes, but since this is widely used by other
-// projects (even though it's internal), we keep the name as it is until we have a publicly supported test library for
-// others to use.
-class EmbeddedZookeeper() extends Logging {
-
+class EmbeddedZookeeper() {
   val snapshotDir = TestUtils.tempDir()
   val logDir = TestUtils.tempDir()
   val tickTime = 500
-  val zookeeper = new ZooKeeperServer(snapshotDir, logDir, tickTime)
+  val txnLog = new FileTxnSnapLog(snapshotDir, logDir)
+  val zookeeper = new ZooKeeperServer(txnLog, tickTime, new BasicDataTreeBuilder())
   val factory = new NIOServerCnxnFactory()
   private val addr = new InetSocketAddress("127.0.0.1", TestUtils.RandomPort)
   factory.configure(addr, 0)
   factory.startup(zookeeper)
-  val port = zookeeper.getClientPort
+  val port = zookeeper.getClientPort()
 
-  def shutdown(): Unit = {
-    CoreUtils.swallow(zookeeper.shutdown(), this)
-    CoreUtils.swallow(factory.shutdown(), this)
+  def shutdown() {
+    CoreUtils.swallow(zookeeper.shutdown())
+    CoreUtils.swallow(factory.shutdown())
 
     def isDown(): Boolean = {
       try {
@@ -59,6 +52,7 @@ class EmbeddedZookeeper() extends Logging {
 
     Iterator.continually(isDown()).exists(identity)
 
+    txnLog.close()
     Utils.delete(logDir)
     Utils.delete(snapshotDir)
   }

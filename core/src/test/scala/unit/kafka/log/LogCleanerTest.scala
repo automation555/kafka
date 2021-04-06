@@ -5,7 +5,7 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- *
+ * 
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -19,11 +19,11 @@ package kafka.log
 
 import java.io.File
 import java.nio._
-import java.nio.file.Paths
-import java.util.Properties
+import java.nio.file.{Files, Paths}
+import java.util.{Properties, UUID}
 
 import kafka.common._
-import kafka.server.{BrokerTopicStats, LogDirFailureChannel}
+import kafka.server.BrokerTopicStats
 import kafka.utils._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.record._
@@ -86,31 +86,9 @@ class LogCleanerTest extends JUnitSuite {
     val shouldRemain = keysInLog(log).filter(!keys.contains(_))
     assertEquals(shouldRemain, keysInLog(log))
     assertEquals(expectedBytesRead, stats.bytesRead)
-  }
 
-  @Test
-  def testSizeTrimmedForPreallocatedAndCompactedTopic(): Unit = {
-    val originalMaxFileSize = 1024;
-    val cleaner = makeCleaner(2)
-    val logProps = new Properties()
-    logProps.put(LogConfig.SegmentBytesProp, originalMaxFileSize: java.lang.Integer)
-    logProps.put(LogConfig.CleanupPolicyProp, "compact": java.lang.String)
-    logProps.put(LogConfig.PreAllocateEnableProp, "true": java.lang.String)
-    val log = makeLog(config = LogConfig.fromProps(logConfig.originals, logProps))
-
-    log.appendAsLeader(record(0,0), leaderEpoch = 0) // offset 0
-    log.appendAsLeader(record(1,1), leaderEpoch = 0) // offset 1
-    log.appendAsLeader(record(0,0), leaderEpoch = 0) // offset 2
-    log.appendAsLeader(record(1,1), leaderEpoch = 0) // offset 3
-    log.appendAsLeader(record(0,0), leaderEpoch = 0) // offset 4
-    // roll the segment, so we can clean the messages already appended
-    log.roll()
-
-    // clean the log with only one message removed
-    cleaner.clean(LogToClean(new TopicPartition("test", 0), log, 2, log.activeSegment.baseOffset))
-
-    assertTrue("Cleaned segment file should be trimmed to its real size.",
-      log.logSegments.iterator.next.log.channel().size() < originalMaxFileSize)
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -139,6 +117,7 @@ class LogCleanerTest extends JUnitSuite {
 
     // we have to reload the log to validate that the cleaner maintained sequence numbers correctly
     def reloadLog(): Unit = {
+      time.sleep(log.config.fileDeleteDelayMs + 1)
       log.close()
       log = makeLog(config = LogConfig.fromProps(logConfig.originals, logProps), recoveryPoint = 0L)
     }
@@ -147,17 +126,17 @@ class LogCleanerTest extends JUnitSuite {
 
     // check duplicate append from producer 1
     var logAppendInfo = appendIdempotentAsLeader(log, pid1, producerEpoch)(Seq(1, 2, 3))
-    assertEquals(0L, logAppendInfo.firstOffset.get)
+    assertEquals(0L, logAppendInfo.firstOffset)
     assertEquals(2L, logAppendInfo.lastOffset)
 
     // check duplicate append from producer 3
     logAppendInfo = appendIdempotentAsLeader(log, pid3, producerEpoch)(Seq(1, 4))
-    assertEquals(6L, logAppendInfo.firstOffset.get)
+    assertEquals(6L, logAppendInfo.firstOffset)
     assertEquals(7L, logAppendInfo.lastOffset)
 
     // check duplicate append from producer 2
     logAppendInfo = appendIdempotentAsLeader(log, pid2, producerEpoch)(Seq(3, 1, 4))
-    assertEquals(3L, logAppendInfo.firstOffset.get)
+    assertEquals(3L, logAppendInfo.firstOffset)
     assertEquals(5L, logAppendInfo.lastOffset)
 
     // do one more append and a round of cleaning to force another deletion from producer 1's batch
@@ -173,8 +152,11 @@ class LogCleanerTest extends JUnitSuite {
 
     // duplicate append from producer1 should still be fine
     logAppendInfo = appendIdempotentAsLeader(log, pid1, producerEpoch)(Seq(1, 2, 3))
-    assertEquals(0L, logAppendInfo.firstOffset.get)
+    assertEquals(0L, logAppendInfo.firstOffset)
     assertEquals(2L, logAppendInfo.lastOffset)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -208,6 +190,9 @@ class LogCleanerTest extends JUnitSuite {
 
     // ensure the transaction index is still correct
     assertEquals(abortedTransactions, log.collectAbortedTransactions(log.logStartOffset, log.logEndOffset))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -254,6 +239,9 @@ class LogCleanerTest extends JUnitSuite {
     // finally only the keys from pid3 should remain
     cleaner.clean(LogToClean(new TopicPartition("test", 0), log, dirtyOffset, log.activeSegment.baseOffset))
     assertEquals(List(2, 3, 6, 7, 8, 9, 11, 12), keysInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -298,6 +286,9 @@ class LogCleanerTest extends JUnitSuite {
     dirtyOffset = cleaner.doClean(LogToClean(tp, log, dirtyOffset, 100L), deleteHorizonMs = Long.MaxValue)._1
     assertEquals(List(2, 1, 3), keysInLog(log))
     assertEquals(List(4, 5, 6, 7, 8), offsetsInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -345,6 +336,9 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals(List(2, 3, 1), keysInLog(log))
     assertEquals(List(3, 4, 5), offsetsInLog(log)) // commit marker is gone
     assertEquals(List(3, 4, 5), lastOffsetsPerBatchInLog(log)) // empty batch is gone
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -375,6 +369,9 @@ class LogCleanerTest extends JUnitSuite {
     cleaner.doClean(LogToClean(tp, log, dirtyOffset, 100L), deleteHorizonMs = Long.MaxValue)
     assertEquals(List(3), keysInLog(log))
     assertEquals(List(4, 5), offsetsInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -434,13 +431,16 @@ class LogCleanerTest extends JUnitSuite {
 
     // we do not bother retaining the aborted transaction in the index
     assertEquals(0, log.collectAbortedTransactions(0L, 100L).size)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
    * Test log cleaning with logs containing messages larger than default message size
    */
   @Test
-  def testLargeMessage(): Unit = {
+  def testLargeMessage() {
     val largeMessageSize = 1024 * 1024
     // Create cleaner with very small default max message size
     val cleaner = makeCleaner(Int.MaxValue, maxMessageSize=1024)
@@ -465,6 +465,9 @@ class LogCleanerTest extends JUnitSuite {
     cleaner.cleanSegments(log, Seq(log.logSegments.head), map, 0L, stats)
     val shouldRemain = keysInLog(log).filter(!keys.contains(_))
     assertEquals(shouldRemain, keysInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -492,6 +495,9 @@ class LogCleanerTest extends JUnitSuite {
     val keys = keysInLog(log).toSet
     assertTrue("None of the keys we deleted should still exist.",
                (0 until leo.toInt by 2).forall(!keys.contains(_)))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   def testLogCleanerStats(): Unit = {
@@ -543,6 +549,9 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals(Map(1L -> 0, 2L -> 1, 3L -> 0), lastSequencesInLog(log))
     assertEquals(List(0, 1), keysInLog(log))
     assertEquals(List(3, 4), offsetsInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -576,6 +585,9 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals(Map(producerId -> 4), lastSequencesInLog(log))
     assertEquals(List(1, 5), keysInLog(log))
     assertEquals(List(3, 4, 5), offsetsInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -608,6 +620,9 @@ class LogCleanerTest extends JUnitSuite {
     cleaner.clean(LogToClean(new TopicPartition("test", 0), log, 4, log.activeSegment.baseOffset))
     assertEquals(List(1,0), keysInLog(log))
     assertEquals(List(3,4), offsetsInLog(log))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -650,6 +665,9 @@ class LogCleanerTest extends JUnitSuite {
       disctinctValuesBySegmentBeforeClean.zip(distinctValuesBySegmentAfterClean).take(numCleanableSegments).forall { case (before, after) => after < before })
     assertTrue("The uncleanable segments should have the same number of values after cleaning", disctinctValuesBySegmentBeforeClean.zip(distinctValuesBySegmentAfterClean)
       .slice(numCleanableSegments, numTotalSegments).forall { x => x._1 == x._2 })
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -668,6 +686,9 @@ class LogCleanerTest extends JUnitSuite {
 
     assertEquals("Total bytes of LogToClean should equal size of all segments excluding the active segment",
       logToClean.totalBytes, log.size - log.activeSegment.size)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -697,6 +718,9 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals("Total bytes should be the sum of the clean and cleanable segments", logToClean.totalBytes, expectedCleanSize + expectedCleanableSize)
     assertEquals("Total cleanable ratio should be the ratio of cleanable size to clean plus cleanable", logToClean.cleanableRatio,
       expectedCleanableSize / (expectedCleanSize + expectedCleanableSize).toDouble, 1.0e-6d)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   @Test
@@ -727,6 +751,9 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals("Log should only contain keyed messages after cleaning.", 0, unkeyedMessageCountInLog(log))
     assertEquals("Log should only contain keyed messages after cleaning.", expectedSizeAfterCleaning, log.size)
     assertEquals("Cleaner should have seen %d invalid messages.", numInvalidMessages, stats.invalidMessagesRead)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /* extract all the keys from a log */
@@ -780,6 +807,9 @@ class LogCleanerTest extends JUnitSuite {
     intercept[LogCleaningAbortedException] {
       cleaner.cleanSegments(log, log.logSegments.take(3).toSeq, map, 0L, new CleanerStats())
     }
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
@@ -826,10 +856,13 @@ class LogCleanerTest extends JUnitSuite {
     assertTrue("All but the last group should be the target size.", groups.dropRight(1).forall(_.size == groupSize))
 
     // check grouping by index size
-    val indexSize = log.logSegments.take(groupSize).map(_.offsetIndex.sizeInBytes).sum + 1
+    val indexSize = log.logSegments.take(groupSize).map(_.index.sizeInBytes).sum + 1
     groups = cleaner.groupSegmentsBySize(log.logSegments, maxSize = Int.MaxValue, maxIndexSize = indexSize, log.logEndOffset)
     checkSegmentOrder(groups)
     assertTrue("All but the last group should be the target size.", groups.dropRight(1).forall(_.size == groupSize))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
@@ -856,7 +889,7 @@ class LogCleanerTest extends JUnitSuite {
     val records = messageWithOffset("hello".getBytes, "hello".getBytes, Int.MaxValue - 1)
     log.appendAsFollower(records)
     log.appendAsLeader(TestUtils.singletonRecords(value = "hello".getBytes, key = "hello".getBytes), leaderEpoch = 0)
-    assertEquals(Int.MaxValue, log.activeSegment.offsetIndex.lastOffset)
+    assertEquals(Int.MaxValue, log.activeSegment.index.lastOffset)
 
     // grouping should result in a single group with maximum relative offset of Int.MaxValue
     var groups = cleaner.groupSegmentsBySize(log.logSegments, maxSize = Int.MaxValue, maxIndexSize = Int.MaxValue, log.logEndOffset)
@@ -877,11 +910,14 @@ class LogCleanerTest extends JUnitSuite {
     groups = cleaner.groupSegmentsBySize(log.logSegments, maxSize = Int.MaxValue, maxIndexSize = Int.MaxValue, log.logEndOffset)
     assertEquals(log.numberOfSegments - 1, groups.size)
     for (group <- groups)
-      assertTrue("Relative offset greater than Int.MaxValue", group.last.offsetIndex.lastOffset - group.head.offsetIndex.baseOffset <= Int.MaxValue)
+      assertTrue("Relative offset greater than Int.MaxValue", group.last.index.lastOffset - group.head.index.baseOffset <= Int.MaxValue)
     checkSegmentOrder(groups)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
-  /**
+  /** 
    * Following the loading of a log segment where the index file is zero sized,
    * the index returned would be the base offset.  Sometimes the log file would
    * contain data with offsets in excess of the baseOffset which would cause
@@ -912,15 +948,17 @@ class LogCleanerTest extends JUnitSuite {
     log.appendAsFollower(record4)
 
     assertTrue("Actual offset range should be > Int.MaxValue", log.logEndOffset - 1 - log.logStartOffset > Int.MaxValue)
-    assertTrue("index.lastOffset is reporting the wrong last offset", log.logSegments.last.offsetIndex.lastOffset - log.logStartOffset <= Int.MaxValue)
+    assertTrue("index.lastOffset is reporting the wrong last offset", log.logSegments.last.index.lastOffset - log.logStartOffset <= Int.MaxValue)
 
     // grouping should result in two groups because the second segment takes the offset range > MaxInt
     val groups = cleaner.groupSegmentsBySize(log.logSegments, maxSize = Int.MaxValue, maxIndexSize = Int.MaxValue, log.logEndOffset)
     assertEquals(2, groups.size)
 
     for (group <- groups)
-      assertTrue("Relative offset greater than Int.MaxValue", group.last.readNextOffset - 1 - group.head.baseOffset <= Int.MaxValue)
+      assertTrue("Relative offset greater than Int.MaxValue", group.last.nextOffset() - 1 - group.head.baseOffset <= Int.MaxValue)
     checkSegmentOrder(groups)
+
+    log.close()
   }
 
   private def checkSegmentOrder(groups: Seq[Seq[LogSegment]]): Unit = {
@@ -940,7 +978,7 @@ class LogCleanerTest extends JUnitSuite {
     val end = 500
     writeToLog(log, (start until end) zip (start until end))
 
-    def checkRange(map: FakeOffsetMap, start: Int, end: Int): Unit = {
+    def checkRange(map: FakeOffsetMap, start: Int, end: Int) {
       val stats = new CleanerStats()
       cleaner.buildOffsetMap(log, start, end, map, stats)
       val endOffset = map.latestOffset + 1
@@ -957,6 +995,9 @@ class LogCleanerTest extends JUnitSuite {
     checkRange(map, 0, segments(1).baseOffset.toInt)
     checkRange(map, segments(1).baseOffset.toInt, segments(3).baseOffset.toInt)
     checkRange(map, segments(3).baseOffset.toInt, log.logEndOffset.toInt)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
@@ -970,6 +1011,18 @@ class LogCleanerTest extends JUnitSuite {
    */
   @Test
   def testRecoveryAfterCrash(): Unit = {
+    def replaceDeletedFileSuffix(s: String, newSuffix: String): String = {
+      val deletedIndex = s.lastIndexOf(Log.DeletedFileSuffix)
+      if (-1 == deletedIndex)
+        throw new IllegalArgumentException("Expected string to end with '%s' but string is '%s'".format(Log.DeletedFileSuffix, s))
+
+      val uniquifierIndex = s.lastIndexOf('.', deletedIndex - 1)
+      if (-1 == uniquifierIndex)
+        throw new IllegalArgumentException("Expected string to contain a uniqueifier but string is '%s'".format(s))
+
+      s.substring(0, uniquifierIndex) + newSuffix
+    }
+
     val cleaner = makeCleaner(Int.MaxValue)
     val logProps = new Properties()
     logProps.put(LogConfig.SegmentBytesProp, 300: java.lang.Integer)
@@ -978,7 +1031,7 @@ class LogCleanerTest extends JUnitSuite {
 
     val config = LogConfig.fromProps(logConfig.originals, logProps)
 
-    def recoverAndCheck(config: LogConfig, expectedKeys: Iterable[Int]): Log = {
+    def recoverAndCheck(config: LogConfig, expectedKeys : Iterable[Int]) : Log = {
       // Recover log file and check that after recovery, keys are as expected
       // and all temporary files have been deleted
       val recoveredLog = makeLog(config = config)
@@ -995,7 +1048,7 @@ class LogCleanerTest extends JUnitSuite {
     // create a log and append some messages
     var log = makeLog(config = config)
     var messageCount = 0
-    while (log.numberOfSegments < 10) {
+    while(log.numberOfSegments < 10) {
       log.appendAsLeader(record(log.logEndOffset.toInt, log.logEndOffset.toInt), leaderEpoch = 0)
       messageCount += 1
     }
@@ -1008,68 +1061,84 @@ class LogCleanerTest extends JUnitSuite {
 
     // clean the log
     cleaner.cleanSegments(log, log.logSegments.take(9).toSeq, offsetMap, 0L, new CleanerStats())
-    // clear scheduler so that async deletes don't run
-    time.scheduler.clear()
     var cleanedKeys = keysInLog(log)
-    log.close()
 
     // 1) Simulate recovery just after .cleaned file is created, before rename to .swap
     //    On recovery, clean operation is aborted. All messages should be present in the log
     log.logSegments.head.changeFileSuffixes("", Log.CleanedFileSuffix)
+    log.close()
     for (file <- dir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix)) {
-      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")))
+      Files.copy(file.toPath, Paths.get(replaceDeletedFileSuffix(file.getPath, "")))
     }
+    time.sleep(log.config.fileDeleteDelayMs + 1)
     log = recoverAndCheck(config, allKeys)
 
     // clean again
     cleaner.cleanSegments(log, log.logSegments.take(9).toSeq, offsetMap, 0L, new CleanerStats())
-    // clear scheduler so that async deletes don't run
-    time.scheduler.clear()
     cleanedKeys = keysInLog(log)
-    log.close()
 
     // 2) Simulate recovery just after swap file is created, before old segment files are
     //    renamed to .deleted. Clean operation is resumed during recovery.
     log.logSegments.head.changeFileSuffixes("", Log.SwapFileSuffix)
+    log.close()
     for (file <- dir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix)) {
-      Utils.atomicMoveWithFallback(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, Log.DeletedFileSuffix, "")))
+      Files.copy(file.toPath, Paths.get(replaceDeletedFileSuffix(file.getPath, "")))
     }
+    time.sleep(log.config.fileDeleteDelayMs + 1)
     log = recoverAndCheck(config, cleanedKeys)
 
     // add some more messages and clean the log again
-    while (log.numberOfSegments < 10) {
+    while(log.numberOfSegments < 10) {
       log.appendAsLeader(record(log.logEndOffset.toInt, log.logEndOffset.toInt), leaderEpoch = 0)
       messageCount += 1
     }
     for (k <- 1 until messageCount by 2)
       offsetMap.put(key(k), Long.MaxValue)
     cleaner.cleanSegments(log, log.logSegments.take(9).toSeq, offsetMap, 0L, new CleanerStats())
-    // clear scheduler so that async deletes don't run
-    time.scheduler.clear()
     cleanedKeys = keysInLog(log)
 
     // 3) Simulate recovery after swap file is created and old segments files are renamed
     //    to .deleted. Clean operation is resumed during recovery.
     log.logSegments.head.changeFileSuffixes("", Log.SwapFileSuffix)
+    log.close()
+    // Copy .deleted files to a .bak suffix, run the delete timer to close them out and delete them,
+    // then rename them back to .deleted.  This is needed on Windows to avoid errors attempting to
+    // rename the memory mapped index files while they are open.
+    for (file <- dir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix)) {
+      Files.copy(file.toPath, Paths.get(replaceDeletedFileSuffix(file.getPath, ".bak")))
+    }
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    for (file <- dir.listFiles if file.getName.endsWith(".bak")) {
+      val deletedFileSuffix = UUID.randomUUID().toString + Log.DeletedFileSuffix
+      Files.move(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, ".bak", deletedFileSuffix)))
+    }
     log = recoverAndCheck(config, cleanedKeys)
 
     // add some more messages and clean the log again
-    while (log.numberOfSegments < 10) {
+    while(log.numberOfSegments < 10) {
       log.appendAsLeader(record(log.logEndOffset.toInt, log.logEndOffset.toInt), leaderEpoch = 0)
       messageCount += 1
     }
     for (k <- 1 until messageCount by 2)
       offsetMap.put(key(k), Long.MaxValue)
     cleaner.cleanSegments(log, log.logSegments.take(9).toSeq, offsetMap, 0L, new CleanerStats())
-    // clear scheduler so that async deletes don't run
-    time.scheduler.clear()
     cleanedKeys = keysInLog(log)
-    log.close()
 
     // 4) Simulate recovery after swap is complete, but async deletion
     //    is not yet complete. Clean operation is resumed during recovery.
+    log.close()
+    for (file <- dir.listFiles if file.getName.endsWith(Log.DeletedFileSuffix)) {
+      Files.copy(file.toPath, Paths.get(replaceDeletedFileSuffix(file.getPath, ".bak")))
+    }
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    for (file <- dir.listFiles if file.getName.endsWith(".bak")) {
+      val deletedFileSuffix = UUID.randomUUID().toString + Log.DeletedFileSuffix
+      Files.move(file.toPath, Paths.get(CoreUtils.replaceSuffix(file.getPath, ".bak", deletedFileSuffix)))
+    }
+
     log = recoverAndCheck(config, cleanedKeys)
     log.close()
+    time.sleep(log.config.fileDeleteDelayMs + 1)
   }
 
   @Test
@@ -1082,17 +1151,19 @@ class LogCleanerTest extends JUnitSuite {
     val logConfig = LogConfig(logProps)
     val log = makeLog(config = logConfig)
     val cleaner = makeCleaner(Int.MaxValue)
-    val keyStart = 0
-    val keyEnd = 2
-    val offsetStart = 0L
-    val offsetEnd = 7206178L
-    val offsetSeq = Seq(offsetStart, offsetEnd)
-    writeToLog(log, (keyStart until keyEnd) zip (keyStart until keyEnd), offsetSeq)
-    cleaner.buildOffsetMap(log, keyStart, offsetEnd + 1L, map, new CleanerStats())
-    assertEquals("Last offset should be the end offset.", offsetEnd, map.latestOffset)
-    assertEquals("Should have the expected number of messages in the map.", keyEnd - keyStart, map.size)
+    val start = 0
+    val end = 2
+    val offsetSeq = Seq(0L, 7206178L)
+    writeToLog(log, (start until end) zip (start until end), offsetSeq)
+    cleaner.buildOffsetMap(log, start, end, map, new CleanerStats())
+    val endOffset = map.latestOffset
+    assertEquals("Last offset should be the end offset.", 7206178L, endOffset)
+    assertEquals("Should have the expected number of messages in the map.", end - start, map.size)
     assertEquals("Map should contain first value", 0L, map.get(key(0)))
-    assertEquals("Map should contain second value", offsetEnd, map.get(key(1)))
+    assertEquals("Map should contain second value", 7206178L, map.get(key(1)))
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
@@ -1120,13 +1191,16 @@ class LogCleanerTest extends JUnitSuite {
     assertEquals(3, map.get(key(3)))
     assertEquals(-1, map.get(key(4)))
     assertEquals(4, stats.mapMessagesRead)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
    * This test verifies that messages corrupted by KAFKA-4298 are fixed by the cleaner
    */
   @Test
-  def testCleanCorruptMessageSet(): Unit = {
+  def testCleanCorruptMessageSet() {
     val codec = CompressionType.GZIP
 
     val logProps = new Properties()
@@ -1161,6 +1235,9 @@ class LogCleanerTest extends JUnitSuite {
       val value = TestUtils.readString(record.value).toLong
       assertEquals(record.offset, value)
     }
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   /**
@@ -1212,6 +1289,9 @@ class LogCleanerTest extends JUnitSuite {
     log.roll()
     cleaner.clean(LogToClean(new TopicPartition("test", 0), log, 2, log.activeSegment.baseOffset))
     assertEquals("The tombstone should be retained.", 1, log.logSegments.head.log.batches.iterator.next().lastOffset)
+
+    time.sleep(log.config.fileDeleteDelayMs + 1)
+    log.close()
   }
 
   private def writeToLog(log: Log, keysAndValues: Iterable[(Int, Int)], offsetSeq: Iterable[Long]): Iterable[Long] = {
@@ -1251,11 +1331,11 @@ class LogCleanerTest extends JUnitSuite {
 
   private def makeLog(dir: File = dir, config: LogConfig = logConfig, recoveryPoint: Long = 0L) =
     Log(dir = dir, config = config, logStartOffset = 0L, recoveryPoint = recoveryPoint, scheduler = time.scheduler,
-      time = time, brokerTopicStats = new BrokerTopicStats, maxProducerIdExpirationMs = 60 * 60 * 1000,
-      producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
-      logDirFailureChannel = new LogDirFailureChannel(10))
+      time = time, brokerTopicStats = new BrokerTopicStats)
 
-  private def makeCleaner(capacity: Int, checkDone: TopicPartition => Unit = _ => (), maxMessageSize: Int = 64*1024) =
+  private def noOpCheckDone(topicPartition: TopicPartition) { /* do nothing */  }
+
+  private def makeCleaner(capacity: Int, checkDone: TopicPartition => Unit = noOpCheckDone, maxMessageSize: Int = 64*1024) =
     new Cleaner(id = 0,
                 offsetMap = new FakeOffsetMap(capacity),
                 ioBufferSize = maxMessageSize,
@@ -1266,7 +1346,8 @@ class LogCleanerTest extends JUnitSuite {
                 checkDone = checkDone)
 
   private def writeToLog(log: Log, seq: Iterable[(Int, Int)]): Iterable[Long] = {
-    for ((key, value) <- seq) yield log.appendAsLeader(record(key, value), leaderEpoch = 0).firstOffset.get
+    for((key, value) <- seq)
+      yield log.appendAsLeader(record(key, value), leaderEpoch = 0).firstOffset
   }
 
   private def key(id: Int) = ByteBuffer.wrap(id.toString.getBytes)
@@ -1280,12 +1361,12 @@ class LogCleanerTest extends JUnitSuite {
       partitionLeaderEpoch, new SimpleRecord(key.toString.getBytes, value.toString.getBytes))
   }
 
-  private def appendTransactionalAsLeader(log: Log, producerId: Long, producerEpoch: Short): Seq[Int] => LogAppendInfo = {
+  private def appendTransactionalAsLeader(log: Log, producerId: Long, producerEpoch: Short = 0): Seq[Int] => LogAppendInfo = {
     appendIdempotentAsLeader(log, producerId, producerEpoch, isTransactional = true)
   }
 
   private def appendIdempotentAsLeader(log: Log, producerId: Long,
-                                       producerEpoch: Short,
+                                       producerEpoch: Short = 0,
                                        isTransactional: Boolean = false): Seq[Int] => LogAppendInfo = {
     var sequence = 0
     keys: Seq[Int] => {
@@ -1336,7 +1417,7 @@ class FakeOffsetMap(val slots: Int) extends OffsetMap {
     lastOffset = offset
     map.put(keyFor(key), offset)
   }
-
+  
   override def get(key: ByteBuffer): Long = {
     val k = keyFor(key)
     if(map.containsKey(k))
@@ -1344,9 +1425,9 @@ class FakeOffsetMap(val slots: Int) extends OffsetMap {
     else
       -1L
   }
-
+  
   override def clear(): Unit = map.clear()
-
+  
   override def size: Int = map.size
 
   override def latestOffset: Long = lastOffset

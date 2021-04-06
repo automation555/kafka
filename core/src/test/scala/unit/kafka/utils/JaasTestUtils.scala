@@ -16,10 +16,11 @@
  */
 package kafka.utils
 
-import java.io.{File, BufferedWriter, FileWriter}
+import java.io.{BufferedWriter, File, FileWriter}
 import java.util.Properties
+
 import kafka.server.KafkaConfig
-import org.apache.kafka.common.utils.Java
+import org.apache.kafka.common.utils.{Java, OperatingSystem}
 
 object JaasTestUtils {
 
@@ -31,13 +32,13 @@ object JaasTestUtils {
                              serviceName: Option[String]) extends JaasModule {
 
     def name =
-      if (Java.isIbmJdk)
+      if (Java.isIBMJdk)
         "com.ibm.security.auth.module.Krb5LoginModule"
       else
         "com.sun.security.auth.module.Krb5LoginModule"
 
     def entries: Map[String, String] =
-      if (Java.isIbmJdk)
+      if (Java.isIBMJdk)
         Map(
           "principal" -> principal,
           "credsType" -> "both"
@@ -72,15 +73,14 @@ object JaasTestUtils {
 
   case class ScramLoginModule(username: String,
                               password: String,
-                              debug: Boolean = false,
-                              tokenProps: Map[String, String] = Map.empty) extends JaasModule {
+                              debug: Boolean = false) extends JaasModule {
 
     def name = "org.apache.kafka.common.security.scram.ScramLoginModule"
 
     def entries: Map[String, String] = Map(
       "username" -> username,
       "password" -> password
-    ) ++ tokenProps.map { case (name, value) => name -> value }
+    )
   }
 
   sealed trait JaasModule {
@@ -114,7 +114,7 @@ object JaasTestUtils {
   val KafkaServerContextName = "KafkaServer"
   val KafkaServerPrincipalUnqualifiedName = "kafka"
   private val KafkaServerPrincipal = KafkaServerPrincipalUnqualifiedName + "/localhost@EXAMPLE.COM"
-  val KafkaClientContextName = "KafkaClient"
+  private val KafkaClientContextName = "KafkaClient"
   val KafkaClientPrincipalUnqualifiedName = "client"
   private val KafkaClientPrincipal = KafkaClientPrincipalUnqualifiedName + "@EXAMPLE.COM"
   val KafkaClientPrincipalUnqualifiedName2 = "client2"
@@ -143,7 +143,7 @@ object JaasTestUtils {
     }
     // IBM Kerberos module doesn't support the serviceName JAAS property, hence it needs to be
     // passed as a Kafka property
-    if (Java.isIbmJdk && !result.contains(KafkaConfig.SaslKerberosServiceNameProp))
+    if (Java.isIBMJdk && !result.contains(KafkaConfig.SaslKerberosServiceNameProp))
       result.put(KafkaConfig.SaslKerberosServiceNameProp, serviceName)
     result
   }
@@ -158,20 +158,10 @@ object JaasTestUtils {
   def clientLoginModule(mechanism: String, keytabLocation: Option[File]): String =
     kafkaClientModule(mechanism, keytabLocation, KafkaClientPrincipal, KafkaPlainUser, KafkaPlainPassword, KafkaScramUser, KafkaScramPassword).toString
 
-  def tokenClientLoginModule(tokenId: String, password: String): String = {
-    ScramLoginModule(
-      tokenId,
-      password,
-      debug = false,
-      Map(
-        "tokenauth" -> "true"
-      )).toString
-  }
-
   def zkSections: Seq[JaasSection] = Seq(
-    JaasSection(ZkServerContextName, Seq(ZkDigestModule(debug = false,
+    new JaasSection(ZkServerContextName, Seq(ZkDigestModule(debug = false,
       Map("user_super" -> ZkUserSuperPasswd, s"user_$ZkUser" -> ZkUserPassword)))),
-    JaasSection(ZkClientContextName, Seq(ZkDigestModule(debug = false,
+    new JaasSection(ZkClientContextName, Seq(ZkDigestModule(debug = false,
       Map("username" -> ZkUser, "password" -> ZkUserPassword))))
   )
 
@@ -181,7 +171,7 @@ object JaasTestUtils {
         Krb5LoginModule(
           useKeyTab = true,
           storeKey = true,
-          keyTab = keytabLocation.getOrElse(throw new IllegalArgumentException("Keytab location not specified for GSSAPI")).getAbsolutePath,
+          keyTab = keytabFileToString(keytabLocation.getOrElse(throw new IllegalArgumentException("Keytab location not specified for GSSAPI"))),
           principal = KafkaServerPrincipal,
           debug = true,
           serviceName = Some(serviceName))
@@ -202,7 +192,11 @@ object JaasTestUtils {
           debug = false)
       case mechanism => throw new IllegalArgumentException("Unsupported server mechanism " + mechanism)
     }
-    JaasSection(contextName, modules)
+    new JaasSection(contextName, modules)
+  }
+
+  private def keytabFileToString(f: File): String = {
+    if (OperatingSystem.IS_WINDOWS) f.getAbsolutePath.replace('\\', '/') else f.getAbsolutePath
   }
 
   // consider refactoring if more mechanisms are added
@@ -215,7 +209,7 @@ object JaasTestUtils {
         Krb5LoginModule(
           useKeyTab = true,
           storeKey = true,
-          keyTab = keytabLocation.getOrElse(throw new IllegalArgumentException("Keytab location not specified for GSSAPI")).getAbsolutePath,
+          keyTab = keytabFileToString(keytabLocation.getOrElse(throw new IllegalArgumentException("Keytab location not specified for GSSAPI"))),
           principal = clientPrincipal,
           debug = true,
           serviceName = Some(serviceName)
@@ -238,14 +232,14 @@ object JaasTestUtils {
    * Used for the static JAAS configuration and it uses the credentials for client#2
    */
   def kafkaClientSection(mechanism: Option[String], keytabLocation: Option[File]): JaasSection = {
-    JaasSection(KafkaClientContextName, mechanism.map(m =>
+    new JaasSection(KafkaClientContextName, mechanism.map(m =>
       kafkaClientModule(m, keytabLocation, KafkaClientPrincipal2, KafkaPlainUser2, KafkaPlainPassword2, KafkaScramUser2, KafkaScramPassword2)).toSeq)
   }
 
   private def jaasSectionsToString(jaasSections: Seq[JaasSection]): String =
     jaasSections.mkString
 
-  private def writeToFile(file: File, jaasSections: Seq[JaasSection]): Unit = {
+  private def writeToFile(file: File, jaasSections: Seq[JaasSection]) {
     val writer = new BufferedWriter(new FileWriter(file))
     try writer.write(jaasSectionsToString(jaasSections))
     finally writer.close()

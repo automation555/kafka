@@ -21,25 +21,24 @@ import java.nio.ByteBuffer
 import java.util.Optional
 import java.util.concurrent.atomic.AtomicInteger
 
+import com.yammer.metrics.Metrics
 import kafka.cluster.BrokerEndPoint
 import kafka.log.LogAppendInfo
 import kafka.message.NoCompressionCodec
-import kafka.metrics.KafkaYammerMetrics
 import kafka.server.AbstractFetcherThread.ReplicaFetch
 import kafka.server.AbstractFetcherThread.ResultWithPartitions
-import kafka.utils.MockTime
 import kafka.utils.TestUtils
 import org.apache.kafka.common.KafkaException
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{FencedLeaderEpochException, UnknownLeaderEpochException}
-import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.record._
 import org.apache.kafka.common.requests.{EpochEndOffset, FetchRequest}
 import org.apache.kafka.common.utils.Time
 import org.junit.Assert._
 import org.junit.{Before, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.{mutable, Map, Set}
 import scala.util.Random
 import org.scalatest.Assertions.assertThrows
@@ -57,7 +56,7 @@ class AbstractFetcherThreadTest {
     TestUtils.clearYammerMetrics()
   }
 
-  private def allMetricsNames: Set[String] = KafkaYammerMetrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName)
+  private def allMetricsNames: Set[String] = Metrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName)
 
   private def mkBatch(baseOffset: Long, leaderEpoch: Int, records: SimpleRecord*): RecordBatch = {
     MemoryRecords.withRecords(baseOffset, CompressionType.NONE, leaderEpoch, records: _*)
@@ -90,7 +89,7 @@ class AbstractFetcherThreadTest {
     fetcher.shutdown()
 
     // verify that all the fetcher metrics are removed and only brokerTopicStats left
-    val metricNames = KafkaYammerMetrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName).toSet
+    val metricNames = Metrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName).toSet
     assertTrue(metricNames.intersect(fetcherMetrics).isEmpty)
     assertEquals(brokerTopicStatsMetrics, metricNames.intersect(brokerTopicStatsMetrics))
   }
@@ -721,7 +720,7 @@ class AbstractFetcherThreadTest {
     val fetcher = new MockFetcherThread {
       override def fetchEpochEndOffsets(partitions: Map[TopicPartition, EpochData]): Map[TopicPartition, EpochEndOffset] = {
         val unrequestedTp = new TopicPartition("topic2", 0)
-        super.fetchEpochEndOffsets(partitions).toMap + (unrequestedTp -> new EpochEndOffset(0, 0))
+        super.fetchEpochEndOffsets(partitions) + (unrequestedTp -> new EpochEndOffset(0, 0))
       }
     }
 
@@ -820,7 +819,6 @@ class AbstractFetcherThreadTest {
     extends AbstractFetcherThread("mock-fetcher",
       clientId = "mock-fetcher",
       sourceBroker = new BrokerEndPoint(leaderId, host = "localhost", port = Random.nextInt()),
-      time = new MockTime(),
       failedPartitions,
       brokerTopicStats = new BrokerTopicStats) {
 
@@ -918,7 +916,7 @@ class AbstractFetcherThreadTest {
             1024 * 1024, Optional.of[Integer](state.currentLeaderEpoch)))
         }
       }
-      val fetchRequest = FetchRequest.Builder.forReplica(ApiKeys.FETCH.latestVersion, replicaId, 0, 1, fetchData.asJava)
+      val fetchRequest = FetchRequest.Builder.forReplica(replicaId, 0, 1, fetchData.asJava)
       ResultWithPartitions(Some(ReplicaFetch(fetchData.asJava, fetchRequest)), Set.empty)
     }
 

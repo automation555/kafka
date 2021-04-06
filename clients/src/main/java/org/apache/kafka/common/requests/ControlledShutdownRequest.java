@@ -19,8 +19,8 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.ControlledShutdownRequestData;
 import org.apache.kafka.common.message.ControlledShutdownResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
 
@@ -30,13 +30,14 @@ public class ControlledShutdownRequest extends AbstractRequest {
 
         private final ControlledShutdownRequestData data;
 
-        public Builder(ControlledShutdownRequestData data, short desiredVersion) {
-            super(ApiKeys.CONTROLLED_SHUTDOWN, desiredVersion);
+        public Builder(ControlledShutdownRequestData data) {
+            super(ApiKeys.CONTROLLED_SHUTDOWN);
             this.data = data;
         }
 
         @Override
         public ControlledShutdownRequest build(short version) {
+            ensureSupportedVersion(version);
             return new ControlledShutdownRequest(data, version);
         }
 
@@ -47,10 +48,18 @@ public class ControlledShutdownRequest extends AbstractRequest {
     }
 
     private final ControlledShutdownRequestData data;
+    private final short version;
 
     private ControlledShutdownRequest(ControlledShutdownRequestData data, short version) {
         super(ApiKeys.CONTROLLED_SHUTDOWN, version);
         this.data = data;
+        this.version = version;
+    }
+
+    public ControlledShutdownRequest(Struct struct, short version) {
+        super(ApiKeys.CONTROLLED_SHUTDOWN, version);
+        this.data = new ControlledShutdownRequestData(struct, version);
+        this.version = version;
     }
 
     @Override
@@ -61,11 +70,15 @@ public class ControlledShutdownRequest extends AbstractRequest {
     }
 
     public static ControlledShutdownRequest parse(ByteBuffer buffer, short version) {
-        return new ControlledShutdownRequest(new ControlledShutdownRequestData(new ByteBufferAccessor(buffer), version),
-            version);
+        return new ControlledShutdownRequest(
+                ApiKeys.CONTROLLED_SHUTDOWN.parseRequest(version, buffer), version);
     }
 
     @Override
+    protected Struct toStruct() {
+        return data.toStruct(version);
+    }
+
     public ControlledShutdownRequestData data() {
         return data;
     }

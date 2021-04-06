@@ -24,19 +24,17 @@ import kafka.utils.TestUtils._
 import kafka.utils.{Logging, TestUtils}
 import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors._
 import org.apache.kafka.common.requests.EpochEndOffset._
+import org.apache.kafka.common.requests.{EpochEndOffset, OffsetsForLeaderEpochRequest, OffsetsForLeaderEpochResponse}
 import org.apache.kafka.common.serialization.StringSerializer
-import org.apache.kafka.common.utils.LogContext
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.protocol.ApiKeys
+import org.apache.kafka.common.utils.{LogContext, SystemTime}
 import org.junit.Assert._
 import org.junit.{After, Test}
-import org.apache.kafka.common.requests.{EpochEndOffset, OffsetsForLeaderEpochRequest, OffsetsForLeaderEpochResponse}
-import org.apache.kafka.common.utils.Time
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.Map
 import scala.collection.mutable.ListBuffer
 
@@ -227,7 +225,7 @@ class LeaderEpochIntegrationTest extends ZooKeeperTestHarness with Logging {
 
   private def sender(from: KafkaServer, to: KafkaServer): BlockingSend = {
     val endPoint = from.metadataCache.getAliveBrokers.find(_.id == to.config.brokerId).get.brokerEndPoint(from.config.interBrokerListenerName)
-    new ReplicaFetcherBlockingSend(endPoint, from.config, new Metrics(), Time.SYSTEM, 42, "TestFetcher", new LogContext())
+    new ReplicaFetcherBlockingSend(endPoint, from.config, new Metrics(), new SystemTime(), 42, "TestFetcher", new LogContext())
   }
 
   private def waitForEpochChangeTo(topic: String, partition: Int, epoch: Int): Unit = {
@@ -275,12 +273,10 @@ class LeaderEpochIntegrationTest extends ZooKeeperTestHarness with Logging {
   private[epoch] class TestFetcherThread(sender: BlockingSend) extends Logging {
 
     def leaderOffsetsFor(partitions: Map[TopicPartition, Int]): Map[TopicPartition, EpochEndOffset] = {
-      val partitionData = partitions.map { case (k, v) =>
-        k -> new OffsetsForLeaderEpochRequest.PartitionData(Optional.empty(), v)
-      }
+      val partitionData = partitions.mapValues(
+        new OffsetsForLeaderEpochRequest.PartitionData(Optional.empty(), _)).toMap
 
-      val request = OffsetsForLeaderEpochRequest.Builder.forFollower(
-        ApiKeys.OFFSET_FOR_LEADER_EPOCH.latestVersion, partitionData.asJava, 1)
+      val request = OffsetsForLeaderEpochRequest.Builder.forReplica(partitionData.asJava, 1)
       val response = sender.sendRequest(request)
       response.responseBody.asInstanceOf[OffsetsForLeaderEpochResponse].responses.asScala
     }

@@ -24,7 +24,7 @@ import java.util.concurrent._
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import com.yammer.metrics.core.Gauge
-import kafka.api.{KAFKA_0_9_0, KAFKA_2_2_IV0, KAFKA_2_4_IV1}
+import kafka.api.{ApiVersion, KAFKA_0_9_0}
 import kafka.cluster.Broker
 import kafka.common.{GenerateBrokerIdException, InconsistentBrokerIdException, InconsistentBrokerMetadataException, InconsistentClusterIdException}
 import kafka.controller.KafkaController
@@ -38,7 +38,6 @@ import kafka.utils._
 import kafka.zk.{BrokerInfo, KafkaZkClient}
 import org.apache.kafka.clients.{ApiVersions, ClientDnsLookup, ManualMetadataUpdater, NetworkClient, NetworkClientUtils}
 import org.apache.kafka.common.internals.ClusterResourceListeners
-import org.apache.kafka.common.memory.{BounceBufferPool, DirectBounceBufferFactory}
 import org.apache.kafka.common.message.ControlledShutdownRequestData
 import org.apache.kafka.common.metrics.{JmxReporter, Metrics, _}
 import org.apache.kafka.common.network._
@@ -119,8 +118,6 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
   var dataPlaneRequestProcessor: KafkaApis = null
   var controlPlaneRequestProcessor: KafkaApis = null
 
-  var fetchBufferPool: BounceBufferPool = null
-
   var authorizer: Option[Authorizer] = None
   var socketServer: SocketServer = null
   var dataPlaneRequestHandlerPool: KafkaRequestHandlerPool = null
@@ -157,6 +154,14 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
   private var _clusterId: String = null
   private var _brokerTopicStats: BrokerTopicStats = null
 
+  val controlledShutdownApiVersion: Option[Short] = {
+    if (config.interBrokerProtocolVersion >= ApiVersion.minVersionForApiDiscovery)
+      None
+    if (config.interBrokerProtocolVersion >= KAFKA_0_9_0)
+      Some(1)
+    else
+      Some(0)
+  }
 
   def clusterId: String = _clusterId
 
@@ -309,14 +314,10 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
           new FetchSessionCache(config.maxIncrementalFetchSessionCacheSlots,
             KafkaServer.MIN_INCREMENTAL_FETCH_SESSION_EVICTION_MS))
 
-        // TODO: use max.fetch.request size here, once that patch is merged
-        // TODO: add max buffers configuration and use that here
-        fetchBufferPool = new BounceBufferPool(logger.underlying, new DirectBounceBufferFactory(), 55 * 1024 * 1024, 20)
-
         /* start processing requests */
         dataPlaneRequestProcessor = new KafkaApis(socketServer.dataPlaneRequestChannel, replicaManager, adminManager, groupCoordinator, transactionCoordinator,
           kafkaController, zkClient, config.brokerId, config, metadataCache, metrics, authorizer, quotaManagers,
-          fetchManager, brokerTopicStats, clusterId, time, tokenManager, fetchBufferPool)
+          fetchManager, brokerTopicStats, clusterId, time, tokenManager)
 
         dataPlaneRequestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.dataPlaneRequestChannel, dataPlaneRequestProcessor, time,
           config.numIoThreads, s"${SocketServer.DataPlaneMetricPrefix}RequestHandlerAvgIdlePercent", SocketServer.DataPlaneThreadPrefix)
@@ -324,7 +325,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
         socketServer.controlPlaneRequestChannelOpt.foreach { controlPlaneRequestChannel =>
           controlPlaneRequestProcessor = new KafkaApis(controlPlaneRequestChannel, replicaManager, adminManager, groupCoordinator, transactionCoordinator,
             kafkaController, zkClient, config.brokerId, config, metadataCache, metrics, authorizer, quotaManagers,
-            fetchManager, brokerTopicStats, clusterId, time, tokenManager, fetchBufferPool)
+            fetchManager, brokerTopicStats, clusterId, time, tokenManager)
 
           controlPlaneRequestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.controlPlaneRequestChannelOpt.get, controlPlaneRequestProcessor, time,
             1, s"${SocketServer.ControlPlaneMetricPrefix}RequestHandlerAvgIdlePercent", SocketServer.ControlPlaneThreadPrefix)
@@ -480,7 +481,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
           config.requestTimeoutMs,
           ClientDnsLookup.DEFAULT,
           time,
-          false,
+          config.interBrokerProtocolVersion >= ApiVersion.minVersionForApiDiscovery,
           new ApiVersions,
           logContext)
       }
@@ -531,18 +532,13 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
               if (!NetworkClientUtils.awaitReady(networkClient, node(prevController), time, socketTimeoutMs))
                 throw new SocketTimeoutException(s"Failed to connect within $socketTimeoutMs ms")
 
-              // send the controlled shutdown request
-              val controlledShutdownApiVersion: Short =
-                if (config.interBrokerProtocolVersion < KAFKA_0_9_0) 0
-                else if (config.interBrokerProtocolVersion < KAFKA_2_2_IV0) 1
-                else if (config.interBrokerProtocolVersion < KAFKA_2_4_IV1) 2
-                else 3
-
               val controlledShutdownRequest = new ControlledShutdownRequest.Builder(
-                  new ControlledShutdownRequestData()
-                    .setBrokerId(config.brokerId)
-                    .setBrokerEpoch(kafkaController.brokerEpoch),
-                    controlledShutdownApiVersion)
+                new ControlledShutdownRequestData()
+                  .setBrokerId(config.brokerId)
+                  .setBrokerEpoch(kafkaController.brokerEpoch))
+
+              controlledShutdownApiVersion.foreach(controlledShutdownRequest.requireVersion)
+
               val request = networkClient.newClientRequest(node(prevController).idString, controlledShutdownRequest,
                 time.milliseconds(), true)
               val clientResponse = NetworkClientUtils.sendAndReceive(networkClient, request, time)
@@ -628,8 +624,6 @@ class KafkaServer(val config: KafkaConfig, time: Time = Time.SYSTEM, threadNameP
           CoreUtils.swallow(dataPlaneRequestProcessor.close(), this)
         if (controlPlaneRequestProcessor != null)
           CoreUtils.swallow(controlPlaneRequestProcessor.close(), this)
-        if (fetchBufferPool != null)
-          CoreUtils.swallow(fetchBufferPool.close(), this)
         CoreUtils.swallow(authorizer.foreach(_.close()), this)
         if (adminManager != null)
           CoreUtils.swallow(adminManager.shutdown(), this)

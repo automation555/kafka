@@ -26,12 +26,12 @@ import org.apache.kafka.common.protocol.types.Struct;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
-public abstract class AbstractRequest extends AbstractRequestResponse {
+public abstract class AbstractRequest implements AbstractRequestResponse {
 
     public static abstract class Builder<T extends AbstractRequest> {
         private final ApiKeys apiKey;
-        private final short oldestAllowedVersion;
-        private final short latestAllowedVersion;
+        private short oldestAllowedVersion;
+        private short latestAllowedVersion;
 
         /**
          * Construct a new builder which allows any supported version
@@ -56,6 +56,11 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
             this.latestAllowedVersion = latestAllowedVersion;
         }
 
+        public void requireVersion(short version) {
+            this.oldestAllowedVersion = version;
+            this.latestAllowedVersion = version;
+        }
+
         public ApiKeys apiKey() {
             return apiKey;
         }
@@ -68,6 +73,12 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
             return latestAllowedVersion;
         }
 
+        protected void ensureSupportedVersion(short version) {
+            if (version < oldestAllowedVersion || version > latestAllowedVersion)
+                throw new UnsupportedVersionException("Version " + version + " is not in the supported " +
+                        "version range [" + oldestAllowedVersion + ", " + latestAllowedVersion + "]");
+        }
+
         public T build() {
             return build(latestAllowedVersion());
         }
@@ -76,11 +87,13 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
     }
 
     private final short version;
+    public final ApiKeys api;
 
     public AbstractRequest(ApiKeys api, short version) {
         if (!api.isVersionSupported(version))
             throw new UnsupportedVersionException("The " + api + " protocol does not support version " + version);
         this.version = version;
+        this.api = api;
     }
 
     /**
@@ -98,7 +111,7 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
      * Use with care, typically {@link #toSend(String, RequestHeader)} should be used instead.
      */
     public ByteBuffer serialize(RequestHeader header) {
-        return serialize(header.toStruct(), toStruct());
+        return RequestUtils.serialize(header.toStruct(), toStruct());
     }
 
     protected abstract Struct toStruct();
@@ -227,12 +240,16 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
                 return new DescribeDelegationTokenRequest(struct, apiVersion);
             case DELETE_GROUPS:
                 return new DeleteGroupsRequest(struct, apiVersion);
-            case ELECT_PREFERRED_LEADERS:
-                return new ElectPreferredLeadersRequest(struct, apiVersion);
-            case CONSUMER_RDMA_REGISTER:
-                return new RDMAConsumeAddressRequest(struct, apiVersion);
-            case PRODUCER_RDMA_REGISTER:
-                return new RDMAProduceAddressRequest(struct, apiVersion);
+            case ELECT_LEADERS:
+                return new ElectLeadersRequest(struct, apiVersion);
+            case INCREMENTAL_ALTER_CONFIGS:
+                return new IncrementalAlterConfigsRequest(struct, apiVersion);
+            case ALTER_PARTITION_REASSIGNMENTS:
+                return new AlterPartitionReassignmentsRequest(struct, apiVersion);
+            case LIST_PARTITION_REASSIGNMENTS:
+                return new ListPartitionReassignmentsRequest(struct, apiVersion);
+            case OFFSET_DELETE:
+                return new OffsetDeleteRequest(struct, apiVersion);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseRequest`, the " +
                         "code should be updated to do so.", apiKey));

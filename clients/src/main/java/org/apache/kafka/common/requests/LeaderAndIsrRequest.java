@@ -19,8 +19,8 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrLiveLeader;
-import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrTopicState;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrPartitionState;
+import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrTopicState;
 import org.apache.kafka.common.message.LeaderAndIsrResponseData;
 import org.apache.kafka.common.message.LeaderAndIsrResponseData.LeaderAndIsrPartitionError;
 import org.apache.kafka.common.protocol.ApiKeys;
@@ -44,19 +44,21 @@ public class LeaderAndIsrRequest extends AbstractControlRequest {
 
         private final List<LeaderAndIsrPartitionState> partitionStates;
         private final Collection<Node> liveLeaders;
-        private final boolean containsAllReplicas;
 
-        public Builder(short version, int controllerId, int controllerEpoch, long brokerEpoch,
-                       List<LeaderAndIsrPartitionState> partitionStates, Collection<Node> liveLeaders,
-                       boolean containsAllReplicas) {
-            super(ApiKeys.LEADER_AND_ISR, version, controllerId, controllerEpoch, brokerEpoch);
+        public Builder(int controllerId,
+                       int controllerEpoch,
+                       long brokerEpoch,
+                       List<LeaderAndIsrPartitionState> partitionStates,
+                       Collection<Node> liveLeaders) {
+            super(ApiKeys.LEADER_AND_ISR, controllerId, controllerEpoch, brokerEpoch);
             this.partitionStates = partitionStates;
             this.liveLeaders = liveLeaders;
-            this.containsAllReplicas = containsAllReplicas;
         }
 
         @Override
         public LeaderAndIsrRequest build(short version) {
+            ensureSupportedVersion(version);
+
             List<LeaderAndIsrLiveLeader> leaders = liveLeaders.stream().map(n -> new LeaderAndIsrLiveLeader()
                 .setBrokerId(n.id())
                 .setHostName(n.host())
@@ -67,8 +69,7 @@ public class LeaderAndIsrRequest extends AbstractControlRequest {
                 .setControllerId(controllerId)
                 .setControllerEpoch(controllerEpoch)
                 .setBrokerEpoch(brokerEpoch)
-                .setLiveLeaders(leaders)
-                .setContainsAllReplicas(containsAllReplicas);
+                .setLiveLeaders(leaders);
 
             if (version >= 2) {
                 Map<String, LeaderAndIsrTopicState> topicStatesMap = groupByTopic(partitionStates);
@@ -99,7 +100,6 @@ public class LeaderAndIsrRequest extends AbstractControlRequest {
                 .append(", controllerId=").append(controllerId)
                 .append(", controllerEpoch=").append(controllerEpoch)
                 .append(", brokerEpoch=").append(brokerEpoch)
-                .append(", containsAllReplicas=").append(containsAllReplicas)
                 .append(", partitionStates=").append(partitionStates)
                 .append(", liveLeaders=(").append(Utils.join(liveLeaders, ", ")).append(")")
                 .append(")");
@@ -167,10 +167,6 @@ public class LeaderAndIsrRequest extends AbstractControlRequest {
     @Override
     public long brokerEpoch() {
         return data.brokerEpoch();
-    }
-
-    public boolean containsAllReplicas() {
-        return data.containsAllReplicas();
     }
 
     public Iterable<LeaderAndIsrPartitionState> partitionStates() {

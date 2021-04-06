@@ -18,7 +18,7 @@
 package org.apache.kafka.clients;
 
 import org.apache.kafka.common.Node;
-import org.apache.kafka.common.errors.DisconnectException;
+import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.utils.Time;
 
 import java.io.IOException;
@@ -55,7 +55,8 @@ public final class NetworkClientUtils {
      * This method is useful for implementing blocking behaviour on top of the non-blocking `NetworkClient`, use it with
      * care.
      */
-    public static boolean awaitReady(KafkaClient client, Node node, Time time, long timeoutMs) throws IOException {
+    public static boolean awaitReady(KafkaClient client, Node node, Time time, long timeoutMs)
+        throws IOException, InterruptException {
         if (timeoutMs < 0) {
             throw new IllegalArgumentException("Timeout needs to be greater than 0");
         }
@@ -74,6 +75,7 @@ public final class NetworkClientUtils {
             client.poll(pollTimeout, attemptStartTime);
             if (client.authenticationException(node) != null)
                 throw client.authenticationException(node);
+            maybeThrowInterruptException();
             attemptStartTime = time.milliseconds();
         }
         return client.isReady(node, attemptStartTime);
@@ -84,35 +86,33 @@ public final class NetworkClientUtils {
      * disconnection happens (which can happen for a number of reasons including a request timeout).
      *
      * In case of a disconnection, an `IOException` is thrown.
-     * If shutdown is initiated on the client during this method, an IOException is thrown.
      *
      * This method is useful for implementing blocking behaviour on top of the non-blocking `NetworkClient`, use it with
      * care.
      */
-    public static ClientResponse sendAndReceive(KafkaClient client, ClientRequest request, Time time) throws IOException {
-        try {
-            client.send(request, time.milliseconds());
-            while (client.active()) {
-                List<ClientResponse> responses = client.poll(Long.MAX_VALUE, time.milliseconds());
-                for (ClientResponse response : responses) {
-                    if (response.requestHeader().correlationId() == request.correlationId()) {
-                        if (response.wasDisconnected()) {
-                            throw new IOException("Connection to " + response.destination() + " was disconnected before the response was read");
-                        }
-                        if (response.versionMismatch() != null) {
-                            throw response.versionMismatch();
-                        }
-                        return response;
+    public static ClientResponse sendAndReceive(KafkaClient client, ClientRequest request, Time time)
+        throws IOException, InterruptException {
+        client.send(request, time.milliseconds());
+        while (true) {
+            List<ClientResponse> responses = client.poll(Long.MAX_VALUE, time.milliseconds());
+            maybeThrowInterruptException();
+            for (ClientResponse response : responses) {
+                if (response.requestHeader().correlationId() == request.correlationId()) {
+                    if (response.wasDisconnected()) {
+                        throw new IOException("Connection to " + response.destination() + " was disconnected before the response was read");
                     }
+                    if (response.versionMismatch() != null) {
+                        throw response.versionMismatch();
+                    }
+                    return response;
                 }
             }
-            throw new IOException("Client was shutdown before response was read");
-        } catch (DisconnectException e) {
-            if (client.active())
-                throw e;
-            else
-                throw new IOException("Client was shutdown before response was read");
+        }
+    }
 
+    private static void maybeThrowInterruptException() {
+        if (Thread.interrupted()) {
+            throw new InterruptException(new InterruptedException());
         }
     }
 }

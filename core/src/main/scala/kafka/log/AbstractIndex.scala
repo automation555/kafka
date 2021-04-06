@@ -170,30 +170,28 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @return a boolean indicating whether the size of the memory map and the underneath file is changed or not.
    */
   def resize(newSize: Int): Boolean = {
+    val roundedNewSize = roundDownToExactMultiple(newSize, entrySize)
+    var origin: MappedByteBuffer = null
+
     inLock(lock) {
-      val roundedNewSize = roundDownToExactMultiple(newSize, entrySize)
-
       if (_length == roundedNewSize) {
-        false
-      } else {
-        val raf = new RandomAccessFile(file, "rw")
-        try {
-          val position = mmap.position()
-
-          /* Windows won't let us modify the file length while the file is mmapped :-( */
-          if (OperatingSystem.IS_WINDOWS)
-            safeForceUnmap()
-          raf.setLength(roundedNewSize)
-          _length = roundedNewSize
-          mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
-          _maxEntries = mmap.limit() / entrySize
-          mmap.position(position)
-          true
-        } finally {
-          CoreUtils.swallow(raf.close(), this)
-        }
+        return false
+      }
+      origin = mmap
+      val raf = new RandomAccessFile(file, "rw")
+      try {
+        val position = mmap.position()
+        raf.setLength(roundedNewSize)
+        _length = roundedNewSize
+        mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
+        _maxEntries = mmap.limit() / entrySize
+        mmap.position(position)
+      } finally {
+        CoreUtils.swallow(raf.close(), this)
       }
     }
+    CoreUtils.swallow(MappedByteBuffers.unmap(file.getAbsolutePath, origin), this)
+    true
   }
 
   /**
@@ -223,7 +221,13 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    *         not exist
    */
   def deleteIfExists(): Boolean = {
-    closeHandler()
+    inLock(lock) {
+      // On JVM, a memory mapping is typically unmapped by garbage collector.
+      // However, in some cases it can pause application threads(STW) for a long moment reading metadata from a physical disk.
+      // To prevent this, we forcefully cleanup memory mapping within proper execution which never affects API responsiveness.
+      // See https://issues.apache.org/jira/browse/KAFKA-4614 for the details.
+      safeForceUnmap()
+    }
     Files.deleteIfExists(file.toPath)
   }
 
@@ -245,14 +249,9 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   /** Close the index */
   def close() {
     trimToValidSize()
-    closeHandler()
   }
 
   def closeHandler(): Unit = {
-    // On JVM, a memory mapping is typically unmapped by garbage collector.
-    // However, in some cases it can pause application threads(STW) for a long moment reading metadata from a physical disk.
-    // To prevent this, we forcefully cleanup memory mapping within proper execution which never affects API responsiveness.
-    // See https://issues.apache.org/jira/browse/KAFKA-4614 for the details.
     inLock(lock) {
       safeForceUnmap()
     }
@@ -305,10 +304,8 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
   }
 
   protected def safeForceUnmap(): Unit = {
-    try {
-      if (mmap != null)
-        forceUnmap()
-    } catch {
+    try forceUnmap()
+    catch {
       case t: Throwable => error(s"Error unmapping index $file", t)
     }
   }

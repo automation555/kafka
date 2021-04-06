@@ -70,7 +70,7 @@ TEMP_BRANCH_PREFIX = "PR_TOOL"
 
 DEV_BRANCH_NAME = "trunk"
 
-DEFAULT_FIX_VERSION = os.environ.get("DEFAULT_FIX_VERSION", "3.0.0")
+DEFAULT_FIX_VERSION = os.environ.get("DEFAULT_FIX_VERSION", "2.1.0")
 
 def get_json(url):
     try:
@@ -157,7 +157,7 @@ def merge_pr(pr_num, target_ref, title, body, pr_repo_desc):
     merge_message_flags = []
 
     merge_message_flags += ["-m", title]
-    
+
     if body is not None:
         # Remove "Committer Checklist" section
         checklist_index = body.find("### Committer Checklist")
@@ -288,7 +288,7 @@ def resolve_jira_issue(merge_branches, comment, default_jira_id=""):
 
     version_names = map(lambda x: x.name, versions)
     default_fix_versions = map(lambda x: fix_version_from_branch(x, version_names), merge_branches)
-    default_fix_versions = filter(lambda x: x != None, default_fix_versions)
+    default_fix_versions = filter(lambda x: x is not None, default_fix_versions)
     default_fix_versions = ",".join(default_fix_versions)
 
     fix_versions = raw_input("Enter comma-separated fix version(s) [%s]: " % default_fix_versions)

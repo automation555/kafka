@@ -17,9 +17,10 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.network.TransferableChannel;
+import org.apache.kafka.common.network.TransportLayer;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.AbstractIterator;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 
@@ -29,10 +30,12 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.GatheringByteChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -134,43 +137,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @return A sliced wrapper on this message set limited based on the given position and size
      */
     public FileRecords slice(int position, int size) throws IOException {
-        int availableBytes = availableBytes(position, size);
-        int startPosition = this.start + position;
-        return new FileRecords(file, channel, startPosition, startPosition + availableBytes, true);
-    }
-
-    /**
-     * Return a slice of records from this instance, the difference with {@link FileRecords#slice(int, int)} is
-     * that the position is not necessarily on an offset boundary.
-     *
-     * This method is reserved for cases where offset alignment is not necessary, such as in the replication of raft
-     * snapshots.
-     *
-     * @param position The start position to begin the read from
-     * @param size The number of bytes after the start position to include
-     * @return A unaligned slice of records on this message set limited based on the given position and size
-     */
-    public UnalignedFileRecords sliceUnaligned(int position, int size) {
-        int availableBytes = availableBytes(position, size);
-        return new UnalignedFileRecords(channel, this.start + position, availableBytes);
-    }
-
-    private int availableBytes(int position, int size) {
-        // Cache current size in case concurrent write changes it
-        int currentSizeInBytes = sizeInBytes();
-
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
-        if (position > currentSizeInBytes - start)
+        if (position > sizeInBytes() - start)
             throw new IllegalArgumentException("Slice from position " + position + " exceeds end position of " + this);
         if (size < 0)
             throw new IllegalArgumentException("Invalid size: " + size + " in read from " + this);
 
         int end = this.start + position + size;
-        // Handle integer overflow or if end is beyond the end of the file
-        if (end < 0 || end > start + currentSizeInBytes)
-            end = this.start + currentSizeInBytes;
-        return end - (this.start + position);
+        // handle integer overflow or if end is beyond the end of the file
+        if (end < 0 || end >= start + sizeInBytes())
+            end = start + sizeInBytes();
+        return new FileRecords(file, channel, this.start + position, end, true);
     }
 
     /**
@@ -195,13 +173,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public void flush() throws IOException {
         channel.force(true);
-    }
-
-    /**
-     * Flush the parent directory of a file to the physical disk, which makes sure the file is accessible after crashing.
-     */
-    public void flushParentDir() throws IOException {
-        Utils.flushParentDir(file.toPath());
     }
 
     /**
@@ -239,11 +210,11 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     /**
-     * Update the parent directory (to be used with caution since this does not reopen the file channel)
-     * @param parentDir The new parent directory
+     * Update the file reference (to be used with caution since this does not reopen the file channel)
+     * @param file The new file to use
      */
-    public void updateParentDir(File parentDir) {
-        this.file = new File(parentDir, file.getName());
+    public void setFile(File file) {
+        this.file = file;
     }
 
     /**
@@ -251,10 +222,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @throws IOException if rename fails.
      */
     public void renameTo(File f) throws IOException {
-        try {
-            Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
-        } finally {
-            this.file = f;
+        if (OperatingSystem.IS_WINDOWS){
+            // Try acquiring the lock without blocking. This method returns
+            // null or throws an exception if the file is already locked.
+            FileLock lock = channel.lock();
+            Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
+            lock.release();
+        } else {
+            try {
+                Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
+            } finally {
+                this.file = f;
+            }
         }
     }
 
@@ -298,7 +277,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     @Override
-    public long writeTo(TransferableChannel destChannel, long offset, int length) throws IOException {
+    public long writeTo(GatheringByteChannel destChannel, long offset, int length) throws IOException {
         long newSize = Math.min(channel.size(), end) - start;
         int oldSize = sizeInBytes();
         if (newSize < oldSize)
@@ -307,8 +286,15 @@ public class FileRecords extends AbstractRecords implements Closeable {
                     file.getAbsolutePath(), oldSize, newSize));
 
         long position = start + offset;
-        long count = Math.min(length, oldSize - offset);
-        return destChannel.transferFrom(channel, position, count);
+        int count = Math.min(length, oldSize);
+        final long bytesTransferred;
+        if (destChannel instanceof TransportLayer) {
+            TransportLayer tl = (TransportLayer) destChannel;
+            bytesTransferred = tl.transferFrom(channel, position, count);
+        } else {
+            bytesTransferred = channel.transferTo(position, count, destChannel);
+        }
+        return bytesTransferred;
     }
 
     /**
@@ -346,8 +332,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
                 for (Record record : batch) {
                     long timestamp = record.timestamp();
                     if (timestamp >= targetTimestamp && record.offset() >= startingOffset)
-                        return new TimestampAndOffset(timestamp, record.offset(),
-                                maybeLeaderEpoch(batch.partitionLeaderEpoch()));
+                        return new TimestampAndOffset(timestamp, record.offset());
                 }
             }
         }
@@ -362,23 +347,15 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public TimestampAndOffset largestTimestampAfter(int startingPosition) {
         long maxTimestamp = RecordBatch.NO_TIMESTAMP;
         long offsetOfMaxTimestamp = -1L;
-        int leaderEpochOfMaxTimestamp = RecordBatch.NO_PARTITION_LEADER_EPOCH;
 
         for (RecordBatch batch : batchesFrom(startingPosition)) {
             long timestamp = batch.maxTimestamp();
             if (timestamp > maxTimestamp) {
                 maxTimestamp = timestamp;
                 offsetOfMaxTimestamp = batch.lastOffset();
-                leaderEpochOfMaxTimestamp = batch.partitionLeaderEpoch();
             }
         }
-        return new TimestampAndOffset(maxTimestamp, offsetOfMaxTimestamp,
-                maybeLeaderEpoch(leaderEpochOfMaxTimestamp));
-    }
-
-    private Optional<Integer> maybeLeaderEpoch(int leaderEpoch) {
-        return leaderEpoch == RecordBatch.NO_PARTITION_LEADER_EPOCH ?
-                Optional.empty() : Optional.of(leaderEpoch);
+        return new TimestampAndOffset(maxTimestamp, offsetOfMaxTimestamp);
     }
 
     /**
@@ -394,8 +371,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     @Override
     public String toString() {
-        return "FileRecords(size=" + sizeInBytes() +
-                ", file=" + file +
+        return "FileRecords(file= " + file +
                 ", start=" + start +
                 ", end=" + end +
                 ")";
@@ -409,7 +385,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @return An iterator over batches starting from {@code start}
      */
     public Iterable<FileChannelRecordBatch> batchesFrom(final int start) {
-        return () -> batchIterator(start);
+        return new Iterable<FileChannelRecordBatch>() {
+            @Override
+            public Iterator<FileChannelRecordBatch> iterator() {
+                return batchIterator(start);
+            }
+        };
     }
 
     @Override
@@ -468,16 +449,20 @@ public class FileRecords extends AbstractRecords implements Closeable {
                                            int initFileSize,
                                            boolean preallocate) throws IOException {
         if (mutable) {
-            if (fileAlreadyExists || !preallocate) {
-                return FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
-                        StandardOpenOption.WRITE);
+            if (fileAlreadyExists) {
+                return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ);
             } else {
-                RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
-                randomAccessFile.setLength(initFileSize);
-                return randomAccessFile.getChannel();
+                if (preallocate) {
+                    try (RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw")) {
+                        randomAccessFile.setLength(initFileSize);
+                    }
+                    return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ);
+                } else {
+                    return FileChannel.open(file.toPath(), StandardOpenOption.WRITE, StandardOpenOption.READ, StandardOpenOption.CREATE);
+                }
             }
         } else {
-            return FileChannel.open(file.toPath());
+            return FileChannel.open(file.toPath(), StandardOpenOption.READ);
         }
     }
 
@@ -509,7 +494,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
         @Override
         public int hashCode() {
-            int result = Long.hashCode(offset);
+            int result = (int) (offset ^ (offset >>> 32));
             result = 31 * result + position;
             result = 31 * result + size;
             return result;
@@ -528,27 +513,28 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public static class TimestampAndOffset {
         public final long timestamp;
         public final long offset;
-        public final Optional<Integer> leaderEpoch;
 
-        public TimestampAndOffset(long timestamp, long offset, Optional<Integer> leaderEpoch) {
+        public TimestampAndOffset(long timestamp, long offset) {
             this.timestamp = timestamp;
             this.offset = offset;
-            this.leaderEpoch = leaderEpoch;
         }
 
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
+
             TimestampAndOffset that = (TimestampAndOffset) o;
-            return timestamp == that.timestamp &&
-                    offset == that.offset &&
-                    Objects.equals(leaderEpoch, that.leaderEpoch);
+
+            if (timestamp != that.timestamp) return false;
+            return offset == that.offset;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(timestamp, offset, leaderEpoch);
+            int result = (int) (timestamp ^ (timestamp >>> 32));
+            result = 31 * result + (int) (offset ^ (offset >>> 32));
+            return result;
         }
 
         @Override
@@ -556,7 +542,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
             return "TimestampAndOffset(" +
                     "timestamp=" + timestamp +
                     ", offset=" + offset +
-                    ", leaderEpoch=" + leaderEpoch +
                     ')';
         }
     }

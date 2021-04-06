@@ -20,10 +20,11 @@ package kafka.tools
 import java.text.SimpleDateFormat
 import java.time.Duration
 import java.util
-import java.util.concurrent.atomic.AtomicLong
 import java.util.{Properties, Random}
+import java.util.concurrent.atomic.AtomicLong
 
 import com.typesafe.scalalogging.LazyLogging
+import joptsimple.util.RegexMatcher._
 import kafka.utils.{CommandLineUtils, ToolsUtils}
 import org.apache.kafka.clients.consumer.{ConsumerRebalanceListener, KafkaConsumer}
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
@@ -107,15 +108,34 @@ object ConsumerPerformance extends LazyLogging {
     var lastMessagesRead = 0L
     var joinStart = 0L
     var joinTimeMsInSingleRound = 0L
+    val assignedPartitions = mutable.LinkedHashSet[TopicPartition]()
+    var pausedPartitions = List[TopicPartition]()
+    var pausedPartitionIter: Iterator[TopicPartition] = null // circular array
 
     consumer.subscribe(topics.asJava, new ConsumerRebalanceListener {
       def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
         joinTime.addAndGet(System.currentTimeMillis - joinStart)
         joinTimeMsInSingleRound += System.currentTimeMillis - joinStart
+        assignedPartitions ++= partitions.asScala
+        pausedPartitionIter = Iterator.continually(assignedPartitions).flatten
+
       }
       def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
         joinStart = System.currentTimeMillis
+        assignedPartitions --= partitions.asScala.toSet
+        pausedPartitionIter = Iterator.continually(assignedPartitions).flatten
       }})
+
+    def pausePartitions(): Unit = if (assignedPartitions.nonEmpty) {
+      val assignmentSize = assignedPartitions.size
+      val numPartitionsToPause = Math.ceil(assignmentSize * config.pausedPartitionsPercent).toInt
+      if (assignmentSize == numPartitionsToPause)
+        println(s"WARNING: Pausing all $assignmentSize partitions. No data will be consumed this poll.")
+      pausedPartitions = pausedPartitionIter.take(numPartitionsToPause).toList
+      if (pausedPartitions.nonEmpty) consumer.pause(pausedPartitions.asJava)
+    }
+
+    def resumePartitions(): Unit = if (pausedPartitions.nonEmpty) consumer.resume(pausedPartitions.asJava)
 
     // Now start the benchmark
     var currentTimeMillis = System.currentTimeMillis
@@ -123,8 +143,10 @@ object ConsumerPerformance extends LazyLogging {
     var lastConsumedTime = currentTimeMillis
 
     while (messagesRead < count && currentTimeMillis - lastConsumedTime <= timeout) {
+      if (config.pausedPartitionsPercent > 0) pausePartitions()
       val records = consumer.poll(Duration.ofMillis(100)).asScala
       currentTimeMillis = System.currentTimeMillis
+      if (config.pausedPartitionsPercent > 0) resumePartitions()
       if (records.nonEmpty)
         lastConsumedTime = currentTimeMillis
       for (record <- records) {
@@ -202,14 +224,9 @@ object ConsumerPerformance extends LazyLogging {
   }
 
   class ConsumerPerfConfig(args: Array[String]) extends PerfConfig(args) {
-    val brokerListOpt = parser.accepts("broker-list", "DEPRECATED, use --bootstrap-server instead; ignored if --bootstrap-server is specified. The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
-      .withRequiredArg
-      .describedAs("broker-list")
-      .ofType(classOf[String])
-    val bootstrapServerOpt = parser.accepts("bootstrap-server", "REQUIRED. The server(s) to connect to.")
-      .requiredUnless("broker-list")
-      .withRequiredArg
-      .describedAs("server to connect to")
+    val bootstrapServersOpt = parser.accepts("broker-list", "REQUIRED: The server(s) to connect to.")
+      .withRequiredArg()
+      .describedAs("host")
       .ofType(classOf[String])
     val topicOpt = parser.accepts("topic", "REQUIRED: The topic to consume from.")
       .withRequiredArg
@@ -254,11 +271,19 @@ object ConsumerPerformance extends LazyLogging {
       .describedAs("milliseconds")
       .ofType(classOf[Long])
       .defaultsTo(10000)
+    val pausedPartitionsOpt = parser.accepts("paused-partitions-percent", "The percentage [0-1] of subscribed " +
+      "partitions to pause each poll.")
+        .withOptionalArg()
+        .describedAs("percent")
+        .withValuesConvertedBy(regex("^0(\\.\\d+)?|1\\.0$")) // matches [0-1] with decimals
+        .ofType(classOf[Float])
+        .defaultsTo(0F)
 
     options = parser.parse(args: _*)
+
     CommandLineUtils.printHelpAndExitIfNeeded(this, "This tool helps in performance test for the full zookeeper consumer")
 
-    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, numMessagesOpt)
+    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, numMessagesOpt, bootstrapServersOpt)
 
     val printMetrics = options.has(printMetricsOpt)
 
@@ -268,9 +293,7 @@ object ConsumerPerformance extends LazyLogging {
       new Properties
 
     import org.apache.kafka.clients.consumer.ConsumerConfig
-
-    val brokerHostsAndPorts = options.valueOf(if (options.has(bootstrapServerOpt)) bootstrapServerOpt else brokerListOpt)
-    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerHostsAndPorts)
+    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, options.valueOf(bootstrapServersOpt))
     props.put(ConsumerConfig.GROUP_ID_CONFIG, options.valueOf(groupIdOpt))
     props.put(ConsumerConfig.RECEIVE_BUFFER_CONFIG, options.valueOf(socketBufferSizeOpt).toString)
     props.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, options.valueOf(fetchSizeOpt).toString)
@@ -289,6 +312,6 @@ object ConsumerPerformance extends LazyLogging {
     val dateFormat = new SimpleDateFormat(options.valueOf(dateFormatOpt))
     val hideHeader = options.has(hideHeaderOpt)
     val recordFetchTimeoutMs = options.valueOf(recordFetchTimeoutOpt).longValue()
+    val pausedPartitionsPercent = options.valueOf(pausedPartitionsOpt).floatValue()
   }
-
 }

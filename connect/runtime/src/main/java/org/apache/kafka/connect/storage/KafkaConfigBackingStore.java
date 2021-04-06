@@ -21,7 +21,6 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.config.ConfigException;
-import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -34,26 +33,20 @@ import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
-import org.apache.kafka.connect.runtime.SessionKey;
 import org.apache.kafka.connect.runtime.TargetState;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.WorkerConfigTransformer;
 import org.apache.kafka.connect.runtime.distributed.ClusterConfigState;
 import org.apache.kafka.connect.runtime.distributed.DistributedConfig;
 import org.apache.kafka.connect.util.Callback;
-import org.apache.kafka.connect.util.ConnectUtils;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.apache.kafka.connect.util.KafkaBasedLog;
-import org.apache.kafka.connect.util.SharedTopicAdmin;
 import org.apache.kafka.connect.util.TopicAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.crypto.spec.SecretKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -63,7 +56,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -184,8 +177,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
         return COMMIT_TASKS_PREFIX + connectorName;
     }
 
-    public static final String SESSION_KEY_KEY = "session-key";
-
     // Note that while using real serialization for values as we have here, but ad hoc string serialization for keys,
     // isn't ideal, we use this approach because it avoids any potential problems with schema evolution or
     // converter/serializer changes causing keys to change. We need to absolutely ensure that the keys remain precisely
@@ -199,13 +190,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
             .build();
     public static final Schema TARGET_STATE_V0 = SchemaBuilder.struct()
             .field("state", Schema.STRING_SCHEMA)
-            .build();
-    // The key is logically a byte array, but we can't use the JSON converter to (de-)serialize that without a schema.
-    // So instead, we base 64-encode it before serializing and decode it after deserializing.
-    public static final Schema SESSION_KEY_V0 = SchemaBuilder.struct()
-            .field("key", Schema.STRING_SCHEMA)
-            .field("algorithm", Schema.STRING_SCHEMA)
-            .field("creation-timestamp", Schema.INT64_SCHEMA)
             .build();
 
     private static final long READ_TO_END_TIMEOUT_MS = 30000;
@@ -226,8 +210,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     // Connector and task configs: name or id -> config map
     private final Map<String, Map<String, String>> connectorConfigs = new HashMap<>();
     private final Map<ConnectorTaskId, Map<String, String>> taskConfigs = new HashMap<>();
-    private final Supplier<TopicAdmin> topicAdminSupplier;
-    private SharedTopicAdmin ownTopicAdmin;
 
     // Set of connectors where we saw a task commit with an incomplete set of task config updates, indicating the data
     // is in an inconsistent state and we cannot safely use them until they have been refreshed.
@@ -235,8 +217,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     // The most recently read offset. This does not take into account deferred task updates/commits, so we may have
     // outstanding data to be applied.
     private volatile long offset;
-    // The most recently read session key, to use for validating internal REST requests.
-    private volatile SessionKey sessionKey;
 
     // Connector -> Map[ConnectorTaskId -> Configs]
     private final Map<String, Map<ConnectorTaskId, Map<String, String>>> deferredTaskUpdates = new HashMap<>();
@@ -245,17 +225,11 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
 
     private final WorkerConfigTransformer configTransformer;
 
-    @Deprecated
     public KafkaConfigBackingStore(Converter converter, WorkerConfig config, WorkerConfigTransformer configTransformer) {
-        this(converter, config, configTransformer, null);
-    }
-
-    public KafkaConfigBackingStore(Converter converter, WorkerConfig config, WorkerConfigTransformer configTransformer, Supplier<TopicAdmin> adminSupplier) {
         this.lock = new Object();
         this.started = false;
         this.converter = converter;
         this.offset = -1;
-        this.topicAdminSupplier = adminSupplier;
 
         this.topic = config.getString(DistributedConfig.CONFIG_TOPIC_CONFIG);
         if (this.topic == null || this.topic.trim().length() == 0)
@@ -276,16 +250,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
         // Before startup, callbacks are *not* invoked. You can grab a snapshot after starting -- just take care that
         // updates can continue to occur in the background
         configLog.start();
-
-        int partitionCount = configLog.partitionCount();
-        if (partitionCount > 1) {
-            String msg = String.format("Topic '%s' supplied via the '%s' property is required "
-                    + "to have a single partition in order to guarantee consistency of "
-                    + "connector configurations, but found %d partitions.",
-                    topic, DistributedConfig.CONFIG_TOPIC_CONFIG, partitionCount);
-            throw new ConfigException(msg);
-        }
-
         started = true;
         log.info("Started KafkaConfigBackingStore");
     }
@@ -293,13 +257,7 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     @Override
     public void stop() {
         log.info("Closing KafkaConfigBackingStore");
-        try {
-            configLog.stop();
-        } finally {
-            if (ownTopicAdmin != null) {
-                ownTopicAdmin.close();
-            }
-        }
+        configLog.stop();
         log.info("Closed KafkaConfigBackingStore");
     }
 
@@ -309,11 +267,10 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
     @Override
     public ClusterConfigState snapshot() {
         synchronized (lock) {
-            // Only a shallow copy is performed here; in order to avoid accidentally corrupting the worker's view
-            // of the config topic, any nested structures should be copied before making modifications
+            // Doing a shallow copy of the data is safe here because the complex nested data that is copied should all be
+            // immutable configs
             return new ClusterConfigState(
                     offset,
-                    sessionKey,
                     new HashMap<>(connectorTaskCounts),
                     new HashMap<>(connectorConfigs),
                     new HashMap<>(connectorTargetStates),
@@ -453,77 +410,41 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
         configLog.send(TARGET_STATE_KEY(connector), serializedTargetState);
     }
 
-    @Override
-    public void putSessionKey(SessionKey sessionKey) {
-        log.debug("Distributing new session key");
-        Struct sessionKeyStruct = new Struct(SESSION_KEY_V0);
-        sessionKeyStruct.put("key", Base64.getEncoder().encodeToString(sessionKey.key().getEncoded()));
-        sessionKeyStruct.put("algorithm", sessionKey.key().getAlgorithm());
-        sessionKeyStruct.put("creation-timestamp", sessionKey.creationTimestamp());
-        byte[] serializedSessionKey = converter.fromConnectData(topic, SESSION_KEY_V0, sessionKeyStruct);
-        try {
-            configLog.send(SESSION_KEY_KEY, serializedSessionKey);
-            configLog.readToEnd().get(READ_TO_END_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException | ExecutionException | TimeoutException e) {
-            log.error("Failed to write session key to Kafka: ", e);
-            throw new ConnectException("Error writing session key to Kafka", e);
-        }
-    }
-
     // package private for testing
     KafkaBasedLog<String, byte[]> setupAndCreateKafkaBasedLog(String topic, final WorkerConfig config) {
-        String clusterId = ConnectUtils.lookupKafkaClusterId(config);
         Map<String, Object> originals = config.originals();
         Map<String, Object> producerProps = new HashMap<>(originals);
         producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         producerProps.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, Integer.MAX_VALUE);
-        ConnectUtils.addMetricsContextProperties(producerProps, config, clusterId);
-
         Map<String, Object> consumerProps = new HashMap<>(originals);
         consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        ConnectUtils.addMetricsContextProperties(consumerProps, config, clusterId);
 
         Map<String, Object> adminProps = new HashMap<>(originals);
-        ConnectUtils.addMetricsContextProperties(adminProps, config, clusterId);
-        Supplier<TopicAdmin> adminSupplier;
-        if (topicAdminSupplier != null) {
-            adminSupplier = topicAdminSupplier;
-        } else {
-            // Create our own topic admin supplier that we'll close when we're stopped
-            ownTopicAdmin = new SharedTopicAdmin(adminProps);
-            adminSupplier = ownTopicAdmin;
-        }
-        Map<String, Object> topicSettings = config instanceof DistributedConfig
-                                            ? ((DistributedConfig) config).configStorageTopicSettings()
-                                            : Collections.emptyMap();
-        NewTopic topicDescription = TopicAdmin.defineTopic(topic)
-                .config(topicSettings) // first so that we override user-supplied settings as needed
-                .compacted()
-                .partitions(1)
-                .replicationFactor(config.getShort(DistributedConfig.CONFIG_STORAGE_REPLICATION_FACTOR_CONFIG))
-                .build();
+        NewTopic topicDescription = TopicAdmin.defineTopic(topic).
+                compacted().
+                partitions(1).
+                replicationFactor(config.getShort(DistributedConfig.CONFIG_STORAGE_REPLICATION_FACTOR_CONFIG)).
+                build();
 
-        return createKafkaBasedLog(topic, producerProps, consumerProps, new ConsumeCallback(), topicDescription, adminSupplier);
+        return createKafkaBasedLog(topic, producerProps, consumerProps, new ConsumeCallback(), topicDescription, adminProps);
     }
 
     private KafkaBasedLog<String, byte[]> createKafkaBasedLog(String topic, Map<String, Object> producerProps,
                                                               Map<String, Object> consumerProps,
                                                               Callback<ConsumerRecord<String, byte[]>> consumedCallback,
-                                                              final NewTopic topicDescription, Supplier<TopicAdmin> adminSupplier) {
-        java.util.function.Consumer<TopicAdmin> createTopics = admin -> {
-            log.debug("Creating admin client to manage Connect internal config topic");
-            // Create the topic if it doesn't exist
-            Set<String> newTopics = admin.createTopics(topicDescription);
-            if (!newTopics.contains(topic)) {
-                // It already existed, so check that the topic cleanup policy is compact only and not delete
-                log.debug("Using admin client to check cleanup policy of '{}' topic is '{}'", topic, TopicConfig.CLEANUP_POLICY_COMPACT);
-                admin.verifyTopicCleanupPolicyOnlyCompact(topic,
-                        DistributedConfig.CONFIG_TOPIC_CONFIG, "connector configurations");
+                                                              final NewTopic topicDescription, final Map<String, Object> adminProps) {
+        Runnable createTopics = new Runnable() {
+            @Override
+            public void run() {
+                log.debug("Creating admin client to manage Connect internal config topic");
+                try (TopicAdmin admin = new TopicAdmin(adminProps)) {
+                    admin.createTopics(topicDescription);
+                }
             }
         };
-        return new KafkaBasedLog<>(topic, producerProps, consumerProps, adminSupplier, consumedCallback, Time.SYSTEM, createTopics);
+        return new KafkaBasedLog<>(topic, producerProps, consumerProps, consumedCallback, Time.SYSTEM, createTopics);
     }
 
     @SuppressWarnings("unchecked")
@@ -596,8 +517,6 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
                         // Connector deletion will be written as a null value
                         log.info("Successfully processed removal of connector '{}'", connectorName);
                         connectorConfigs.remove(connectorName);
-                        connectorTaskCounts.remove(connectorName);
-                        taskConfigs.keySet().removeIf(taskId -> taskId.connector().equals(connectorName));
                         removed = true;
                     } else {
                         // Connector configs can be applied and callbacks invoked immediately
@@ -715,45 +634,11 @@ public class KafkaConfigBackingStore implements ConfigBackingStore {
                     connectorTaskCounts.put(connectorName, newTaskCount);
                 }
 
-                if (started)
+                if (started) {
+                    // just restart current reconfigurated connectorTask, not all cached updateTasks
+                    updatedTasks = updatedTasks.stream().filter(tasksId -> tasksId.connector().equals(connectorName)).collect(Collectors.toList());
                     updateListener.onTaskConfigUpdate(updatedTasks);
-            } else if (record.key().equals(SESSION_KEY_KEY)) {
-                if (value.value() == null) {
-                    log.error("Ignoring session key because it is unexpectedly null");
-                    return;
-                }
-                if (!(value.value() instanceof Map)) {
-                    log.error("Ignoring session key because the value is not a Map but is {}", value.value().getClass());
-                    return;
-                }
-
-                Map<String, Object> valueAsMap = (Map<String, Object>) value.value();
-
-                Object sessionKey = valueAsMap.get("key");
-                if (!(sessionKey instanceof String)) {
-                    log.error("Invalid data for session key 'key' field should be a String but is {}", sessionKey.getClass());
-                    return;
-                }
-                byte[] key = Base64.getDecoder().decode((String) sessionKey);
-
-                Object keyAlgorithm = valueAsMap.get("algorithm");
-                if (!(keyAlgorithm instanceof String)) {
-                    log.error("Invalid data for session key 'algorithm' field should be a String but it is {}", keyAlgorithm.getClass());
-                    return;
-                }
-
-                Object creationTimestamp = valueAsMap.get("creation-timestamp");
-                if (!(creationTimestamp instanceof Long)) {
-                    log.error("Invalid data for session key 'creation-timestamp' field should be a long but it is {}", creationTimestamp.getClass());
-                    return;
-                }
-                KafkaConfigBackingStore.this.sessionKey = new SessionKey(
-                        new SecretKeySpec(key, (String) keyAlgorithm),
-                        (long) creationTimestamp
-                );
-
-                if (started)
-                    updateListener.onSessionKeyUpdate(KafkaConfigBackingStore.this.sessionKey);
+                } 
             } else {
                 log.error("Discarding config update record with invalid key: {}", record.key());
             }

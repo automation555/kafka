@@ -23,6 +23,7 @@ import kafka.common._
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.{BrokerTopicStats, FetchDataInfo, LogOffsetMetadata}
 import java.io.{File, IOException}
+import java.util
 import java.util.concurrent.{ConcurrentNavigableMap, ConcurrentSkipListMap}
 import java.util.concurrent.atomic._
 import java.text.NumberFormat
@@ -31,11 +32,12 @@ import org.apache.kafka.common.errors.{CorruptRecordException, OffsetOutOfRangeE
 import org.apache.kafka.common.record.TimestampType
 
 import scala.collection.JavaConversions
+import scala.collection.JavaConverters._
 import com.yammer.metrics.core.Gauge
 import org.apache.kafka.common.utils.Utils
 
 object LogAppendInfo {
-  val UnknownLogAppendInfo = LogAppendInfo(-1, -1, Message.NoTimestamp, NoCompressionCodec, NoCompressionCodec, -1, -1, offsetsMonotonic = false)
+  val UnknownLogAppendInfo = LogAppendInfo(-1, -1, Message.NoTimestamp, NoCompressionCodec, NoCompressionCodec, -1, -1, false)
 }
 
 /**
@@ -133,6 +135,24 @@ class Log(val dir: File,
     },
     tags)
 
+  newGauge("LogSegments",
+    new Gauge[util.List[String]] {
+      def value = {
+        val list = logSegments.toSeq.map { seg =>
+          s"baseOffset=${seg.baseOffset}, created=${seg.created}, logSize=${seg.size}, indexSize=${seg.index.sizeInBytes()}"
+        }
+        // Explicitly returning Java list to support JMX clients that don't have Scala runtime in the classpath
+        new util.ArrayList[String](list.asJava)
+      }
+    },
+    tags)
+
+  newGauge("Directory",
+    new Gauge[String] {
+      def value = dir.getAbsolutePath
+    },
+    tags)
+
   /** The name of this log */
   def name  = dir.getName()
 
@@ -181,8 +201,7 @@ class Log(val dir: File,
         // if its a log file, load the corresponding log segment
         val start = filename.substring(0, filename.length - LogFileSuffix.length).toLong
         val indexFile = Log.indexFilename(dir, start)
-        val segment = new LogSegment(config,
-                                     dir = dir,
+        val segment = new LogSegment(dir = dir,
                                      startOffset = start,
                                      indexIntervalBytes = config.indexInterval,
                                      maxIndexSize = config.maxIndexSize,
@@ -195,7 +214,7 @@ class Log(val dir: File,
               segment.index.sanityCheck()
           } catch {
             case e: java.lang.IllegalArgumentException =>
-              warn("Found a corrupted index file, %s, deleting and rebuilding index. Error Message: %s".format(indexFile.getAbsolutePath, e.getMessage))
+              warn("Found a corrupted index file, %s, deleting and rebuilding index...".format(indexFile.getAbsolutePath))
               indexFile.delete()
               segment.recover(config.maxMessageSize)
           }
@@ -216,9 +235,8 @@ class Log(val dir: File,
       val fileName = logFile.getName
       val startOffset = fileName.substring(0, fileName.length - LogFileSuffix.length).toLong
       val indexFile = new File(CoreUtils.replaceSuffix(logFile.getPath, LogFileSuffix, IndexFileSuffix) + SwapFileSuffix)
-      val index =  new OffsetIndex(config, indexFile, baseOffset = startOffset, maxIndexSize = config.maxIndexSize)
-      val swapSegment = new LogSegment(config,
-                                       new FileMessageSet(file = swapFile),
+      val index =  new OffsetIndex(indexFile, baseOffset = startOffset, maxIndexSize = config.maxIndexSize)
+      val swapSegment = new LogSegment(new FileMessageSet(file = swapFile),
                                        index = index,
                                        baseOffset = startOffset,
                                        indexIntervalBytes = config.indexInterval,
@@ -230,10 +248,9 @@ class Log(val dir: File,
       replaceSegments(swapSegment, oldSegments.toSeq, isRecoveredSwapFile = true)
     }
 
-    if(logSegments.isEmpty) {
+    if(logSegments.size == 0) {
       // no existing segments, create a new mutable segment beginning at offset 0
-      segments.put(0L, new LogSegment(logConfig = config,
-                                     dir = dir,
+      segments.put(0L, new LogSegment(dir = dir,
                                      startOffset = 0,
                                      indexIntervalBytes = config.indexInterval,
                                      maxIndexSize = config.maxIndexSize,
@@ -486,14 +503,14 @@ class Log(val dir: File,
   }
 
   /**
-   * Read messages from the log.
+   * Read messages from the log
    *
    * @param startOffset The offset to begin reading at
    * @param maxLength The maximum number of bytes to read
-   * @param maxOffset The offset to read up to, exclusive. (i.e. this offset NOT included in the resulting message set)
+   * @param maxOffset -The offset to read up to, exclusive. (i.e. the first offset NOT included in the resulting message set).
    *
    * @throws OffsetOutOfRangeException If startOffset is beyond the log end offset or before the base offset of the first segment.
-   * @return The fetch data information including fetch starting offset metadata and messages read.
+   * @return The fetch data information including fetch starting offset metadata and messages read
    */
   def read(startOffset: Long, maxLength: Int, maxOffset: Option[Long] = None): FetchDataInfo = {
     trace("Reading %d bytes from offset %d in log %s of length %d bytes".format(maxLength, startOffset, name, size))
@@ -566,23 +583,21 @@ class Log(val dir: File,
    * @return The number of segments deleted
    */
   def deleteOldSegments(predicate: LogSegment => Boolean): Int = {
-    lock synchronized {
-      //find any segments that match the user-supplied predicate UNLESS it is the final segment
-      //and it is empty (since we would just end up re-creating it)
-      val lastEntry = segments.lastEntry
-      val deletable =
-        if (lastEntry == null) Seq.empty
-        else logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastEntry.getValue.baseOffset || s.size > 0))
-      val numToDelete = deletable.size
-      if (numToDelete > 0) {
+    // find any segments that match the user-supplied predicate UNLESS it is the final segment
+    // and it is empty (since we would just end up re-creating it
+    val lastSegment = activeSegment
+    val deletable = logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastSegment.baseOffset || s.size > 0))
+    val numToDelete = deletable.size
+    if(numToDelete > 0) {
+      lock synchronized {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
-        if (segments.size == numToDelete)
+        if(segments.size == numToDelete)
           roll()
         // remove the segments for lookups
         deletable.foreach(deleteSegment(_))
       }
-      numToDelete
     }
+    numToDelete
   }
 
   /**
@@ -659,8 +674,7 @@ class Log(val dir: File,
           entry.getValue.log.trim()
         }
       }
-      val segment = new LogSegment(logConfig = config,
-                                   dir,
+      val segment = new LogSegment(dir,
                                    startOffset = newOffset,
                                    indexIntervalBytes = config.indexInterval,
                                    maxIndexSize = config.maxIndexSize,
@@ -759,8 +773,7 @@ class Log(val dir: File,
     lock synchronized {
       val segmentsToDelete = logSegments.toList
       segmentsToDelete.foreach(deleteSegment(_))
-      addSegment(new LogSegment(logConfig = config,
-                                dir,
+      addSegment(new LogSegment(dir,
                                 newOffset,
                                 indexIntervalBytes = config.indexInterval,
                                 maxIndexSize = config.maxIndexSize,
@@ -807,7 +820,7 @@ class Log(val dir: File,
     }
   }
 
-  override def toString = "Log(" + dir + ")"
+  override def toString() = "Log(" + dir + ")"
 
   /**
    * This method performs an asynchronous log segment delete by doing the following:
@@ -895,6 +908,8 @@ class Log(val dir: File,
     removeMetric("LogStartOffset", tags)
     removeMetric("LogEndOffset", tags)
     removeMetric("Size", tags)
+    removeMetric("LogSegments", tags)
+    removeMetric("Directory", tags)
   }
   /**
    * Add the given segment to the segments in this log. If this segment replaces an existing segment, delete it.

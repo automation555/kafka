@@ -17,7 +17,6 @@
 package org.apache.kafka.connect.source;
 
 import org.apache.kafka.connect.connector.Task;
-import org.apache.kafka.clients.producer.RecordMetadata;
 
 import java.util.List;
 import java.util.Map;
@@ -26,6 +25,25 @@ import java.util.Map;
  * SourceTask is a Task that pulls records from another system for storage in Kafka.
  */
 public abstract class SourceTask implements Task {
+
+    public static class SourcePartitionAndOffset {
+
+        private final Map<String, ?> sourcePartition;
+        private final Map<String, ?> sourceOffset;
+
+        public SourcePartitionAndOffset(Map<String, ?> sourcePartition, Map<String, ?> sourceOffset) {
+            this.sourcePartition = sourcePartition;
+            this.sourceOffset = sourceOffset;
+        }
+
+        public Map<String, ?> getSourcePartition() {
+            return sourcePartition;
+        }
+
+        public Map<String, ?> getSourceOffset() {
+            return sourceOffset;
+        }
+    }
 
     protected SourceTaskContext context;
 
@@ -59,6 +77,10 @@ public abstract class SourceTask implements Task {
      */
     public abstract List<SourceRecord> poll() throws InterruptedException;
 
+    public SourcePartitionAndOffset getSourcePartitionAndOffset() {
+        return null;
+    }
+
     /**
      * <p>
      * Commit the offsets, up to the offsets that have been returned by {@link #poll()}. This
@@ -89,13 +111,7 @@ public abstract class SourceTask implements Task {
 
     /**
      * <p>
-     * Commit an individual {@link SourceRecord} when the callback from the producer client is received. This method is
-     * also called when a record is filtered by a transformation, and thus will never be ACK'd by a broker.
-     * </p>
-     * <p>
-     * This is an alias for {@link #commitRecord(SourceRecord, RecordMetadata)} for backwards compatibility. The default
-     * implementation of {@link #commitRecord(SourceRecord, RecordMetadata)} just calls this method. It is not necessary
-     * to override both methods.
+     * Commit an individual {@link SourceRecord} when the callback from the producer client is received, or if a record is filtered by a transformation.
      * </p>
      * <p>
      * SourceTasks are not required to implement this functionality; Kafka Connect will record offsets
@@ -103,38 +119,10 @@ public abstract class SourceTask implements Task {
      * in their own system.
      * </p>
      *
-     * @param record {@link SourceRecord} that was successfully sent via the producer or filtered by a transformation
+     * @param record {@link SourceRecord} that was successfully sent via the producer.
      * @throws InterruptedException
-     * @deprecated Use {@link #commitRecord(SourceRecord, RecordMetadata)} instead.
      */
-    @Deprecated
     public void commitRecord(SourceRecord record) throws InterruptedException {
         // This space intentionally left blank.
-    }
-
-    /**
-     * <p>
-     * Commit an individual {@link SourceRecord} when the callback from the producer client is received. This method is
-     * also called when a record is filtered by a transformation, and thus will never be ACK'd by a broker. In this case
-     * {@code metadata} will be null.
-     * </p>
-     * <p>
-     * SourceTasks are not required to implement this functionality; Kafka Connect will record offsets
-     * automatically. This hook is provided for systems that also need to store offsets internally
-     * in their own system.
-     * </p>
-     * <p>
-     * The default implementation just calls {@link #commitRecord(SourceRecord)}, which is a nop by default. It is
-     * not necessary to implement both methods.
-     * </p>
-     *
-     * @param record {@link SourceRecord} that was successfully sent via the producer or filtered by a transformation
-     * @param metadata {@link RecordMetadata} record metadata returned from the broker, or null if the record was filtered
-     * @throws InterruptedException
-     */
-    public void commitRecord(SourceRecord record, RecordMetadata metadata)
-            throws InterruptedException {
-        // by default, just call other method for backwards compatibility
-        commitRecord(record);
     }
 }

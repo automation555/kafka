@@ -19,21 +19,80 @@ package kafka.log
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
+import kafka.api.{ApiVersion, KAFKA_2_0_IV1, KAFKA_2_3_IV1}
 import kafka.common.LongRef
-import kafka.message.{CompressionCodec, DefaultCompressionCodec, GZIPCompressionCodec, NoCompressionCodec, SnappyCompressionCodec}
-import org.apache.kafka.common.errors.{InvalidTimestampException, UnsupportedForMessageFormatException}
+import org.apache.kafka.common.errors.{InvalidTimestampException, UnsupportedCompressionTypeException, UnsupportedForMessageFormatException}
 import org.apache.kafka.common.record._
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.test.TestUtils
 import org.junit.Assert._
 import org.junit.Test
-import org.scalatest.Assertions.intercept
+import org.scalatest.Assertions.{assertThrows, intercept}
 
 import scala.collection.JavaConverters._
 
 class LogValidatorTest {
 
   val time = Time.SYSTEM
+
+  @Test
+  def testOnlyOneBatch(): Unit = {
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V0, CompressionType.GZIP, CompressionType.GZIP)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V1, CompressionType.GZIP, CompressionType.GZIP)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V2, CompressionType.GZIP, CompressionType.GZIP)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V0, CompressionType.GZIP, CompressionType.NONE)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V1, CompressionType.GZIP, CompressionType.NONE)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V2, CompressionType.GZIP, CompressionType.NONE)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V2, CompressionType.NONE, CompressionType.NONE)
+    checkOnlyOneBatch(RecordBatch.MAGIC_VALUE_V2, CompressionType.NONE, CompressionType.GZIP)
+  }
+
+  @Test
+  def testAllowMultiBatch(): Unit = {
+    checkAllowMultiBatch(RecordBatch.MAGIC_VALUE_V0, CompressionType.NONE, CompressionType.NONE)
+    checkAllowMultiBatch(RecordBatch.MAGIC_VALUE_V1, CompressionType.NONE, CompressionType.NONE)
+    checkAllowMultiBatch(RecordBatch.MAGIC_VALUE_V0, CompressionType.NONE, CompressionType.GZIP)
+    checkAllowMultiBatch(RecordBatch.MAGIC_VALUE_V1, CompressionType.NONE, CompressionType.GZIP)
+  }
+
+  @Test
+  def testMisMatchMagic(): Unit = {
+    checkMismatchMagic(RecordBatch.MAGIC_VALUE_V0, RecordBatch.MAGIC_VALUE_V1, CompressionType.GZIP)
+    checkMismatchMagic(RecordBatch.MAGIC_VALUE_V1, RecordBatch.MAGIC_VALUE_V0, CompressionType.GZIP)
+  }
+
+  private def checkOnlyOneBatch(magic: Byte, sourceCompressionType: CompressionType, targetCompressionType: CompressionType) {
+    assertThrows[InvalidRecordException] {
+      validateMessages(createTwoBatchedRecords(magic, 0L, sourceCompressionType), magic, sourceCompressionType, targetCompressionType)
+    }
+  }
+
+  private def checkAllowMultiBatch(magic: Byte, sourceCompressionType: CompressionType, targetCompressionType: CompressionType) {
+    validateMessages(createTwoBatchedRecords(magic, 0L, sourceCompressionType), magic, sourceCompressionType, targetCompressionType)
+  }
+
+  private def checkMismatchMagic(batchMagic: Byte, recordMagic: Byte, compressionType: CompressionType): Unit = {
+    assertThrows[InvalidRecordException] {
+      validateMessages(recordsWithInvalidInnerMagic(batchMagic, recordMagic, compressionType), batchMagic, compressionType, compressionType)
+    }
+  }
+
+  private def validateMessages(records: MemoryRecords, magic: Byte, sourceCompressionType: CompressionType, targetCompressionType: CompressionType): Unit = {
+    LogValidator.validateMessagesAndAssignOffsets(records,
+      new LongRef(0L),
+      time,
+      now = 0L,
+      sourceCompressionType,
+      CompressionConfig.of(targetCompressionType),
+      compactedTopic = false,
+      magic,
+      TimestampType.CREATE_TIME,
+      1000L,
+      RecordBatch.NO_PRODUCER_EPOCH,
+      isFromClient = true,
+      KAFKA_2_3_IV1
+    )
+  }
 
   @Test
   def testLogAppendTimeNonCompressedV1() {
@@ -48,14 +107,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time= time,
       now = now,
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = magic,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
     assertEquals("message set size should not change", records.records.asScala.size, validatedRecords.records.asScala.size)
     validatedRecords.batches.asScala.foreach(batch => validateLogAppendTime(now, 1234L, batch))
@@ -85,14 +145,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = now,
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = targetMagic,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
 
     assertEquals("message set size should not change", records.records.asScala.size, validatedRecords.records.asScala.size)
@@ -126,14 +187,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = now,
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = magic,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
 
     assertEquals("message set size should not change", records.records.asScala.size,
@@ -182,15 +244,16 @@ class LogValidatorTest {
       records,
       offsetCounter = new LongRef(0),
       time = time,
-      now = time.absoluteMilliseconds(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      now = time.milliseconds(),
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test
@@ -224,14 +287,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = magic,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = partitionLeaderEpoch,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatingResults.validatedRecords
 
     var i = 0
@@ -290,14 +354,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = GZIPCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = magic,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = partitionLeaderEpoch,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatingResults.validatedRecords
 
     var i = 0
@@ -340,14 +405,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       magic = toMagic,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
 
     for (batch <- validatedRecords.batches.asScala) {
@@ -381,14 +447,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = timestamp,
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       magic = RecordBatch.MAGIC_VALUE_V2,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
 
     for (batch <- validatedRecords.batches.asScala) {
@@ -435,14 +502,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       magic = magic,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = partitionLeaderEpoch,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val validatedRecords = validatedResults.validatedRecords
 
     var i = 0
@@ -485,14 +553,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test(expected = classOf[InvalidTimestampException])
@@ -505,14 +574,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test(expected = classOf[InvalidTimestampException])
@@ -525,14 +595,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       magic = RecordBatch.MAGIC_VALUE_V1,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test(expected = classOf[InvalidTimestampException])
@@ -545,14 +616,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(0),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       magic = RecordBatch.MAGIC_VALUE_V1,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test
@@ -564,14 +636,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       magic = RecordBatch.MAGIC_VALUE_V0,
       compactedTopic = false,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -583,14 +656,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V0,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -603,14 +677,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords
     checkOffsets(messageWithOffset, offset)
   }
 
@@ -624,14 +699,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords
     checkOffsets(messageWithOffset, offset)
   }
 
@@ -646,14 +722,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords
     checkOffsets(compressedMessagesWithOffset, offset)
   }
 
@@ -668,14 +745,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords
     checkOffsets(compressedMessagesWithOffset, offset)
   }
 
@@ -688,14 +766,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     checkOffsets(validatedResults.validatedRecords, offset)
     verifyRecordConversionStats(validatedResults.recordConversionStats, numConvertedRecords = 3, records,
       compressed = false)
@@ -710,14 +789,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     checkOffsets(validatedResults.validatedRecords, offset)
     verifyRecordConversionStats(validatedResults.recordConversionStats, numConvertedRecords = 3, records,
       compressed = false)
@@ -732,14 +812,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     checkOffsets(validatedResults.validatedRecords, offset)
     verifyRecordConversionStats(validatedResults.recordConversionStats, numConvertedRecords = 3, records,
       compressed = true)
@@ -754,14 +835,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     checkOffsets(validatedResults.validatedRecords, offset)
     verifyRecordConversionStats(validatedResults.recordConversionStats, numConvertedRecords = 3, records,
       compressed = true)
@@ -776,14 +858,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.CURRENT_MAGIC_VALUE,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   @Test
@@ -795,14 +878,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = SnappyCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.of(CompressionType.SNAPPY),
       compactedTopic = false,
       magic = RecordBatch.CURRENT_MAGIC_VALUE,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = false)
+      isFromClient = false,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
     val batches = TestUtils.toList(result.validatedRecords.batches)
     assertEquals(1, batches.size)
     val batch = batches.get(0)
@@ -819,14 +903,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V0,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -839,14 +924,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V0,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -858,14 +944,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -877,14 +964,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V2,
       timestampType = TimestampType.LOG_APPEND_TIME,
       timestampDiffMaxMs = 1000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -897,14 +985,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -917,14 +1006,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test(expected = classOf[UnsupportedForMessageFormatException])
@@ -939,14 +1029,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test(expected = classOf[UnsupportedForMessageFormatException])
@@ -961,14 +1052,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V1,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -981,14 +1073,15 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = NoCompressionCodec,
-      targetCodec = NoCompressionCodec,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.none(),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V0,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test
@@ -1001,50 +1094,53 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = DefaultCompressionCodec,
-      targetCodec = DefaultCompressionCodec,
+      sourceType = CompressionType.GZIP,
+      targetConfig = CompressionConfig.of(CompressionType.GZIP),
       compactedTopic = false,
       magic = RecordBatch.MAGIC_VALUE_V0,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true).validatedRecords, offset)
-  }
-
-  @Test(expected = classOf[InvalidRecordException])
-  def testInvalidInnerMagicVersion(): Unit = {
-    val offset = 1234567
-    val records = recordsWithInvalidInnerMagic(offset)
-    LogValidator.validateMessagesAndAssignOffsets(records,
-      offsetCounter = new LongRef(offset),
-      time = time,
-      now = System.currentTimeMillis(),
-      sourceCodec = SnappyCompressionCodec,
-      targetCodec = SnappyCompressionCodec,
-      compactedTopic = false,
-      magic = RecordBatch.MAGIC_VALUE_V1,
-      timestampType = TimestampType.CREATE_TIME,
-      timestampDiffMaxMs = 5000L,
-      partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion).validatedRecords, offset)
   }
 
   @Test(expected = classOf[InvalidRecordException])
   def testCompressedBatchWithoutRecordsNotAllowed(): Unit = {
-    testBatchWithoutRecordsNotAllowed(DefaultCompressionCodec, DefaultCompressionCodec)
+    testBatchWithoutRecordsNotAllowed(CompressionType.GZIP, CompressionType.GZIP)
+  }
+
+  @Test(expected = classOf[UnsupportedCompressionTypeException])
+  def testZStdCompressedWithUnavailableIBPVersion(): Unit = {
+    val now = System.currentTimeMillis()
+    // The timestamps should be overwritten
+    val records = createRecords(magicValue = RecordBatch.MAGIC_VALUE_V2, timestamp = 1234L, codec = CompressionType.NONE)
+    LogValidator.validateMessagesAndAssignOffsets(records,
+      offsetCounter = new LongRef(0),
+      time= time,
+      now = now,
+      sourceType = CompressionType.NONE,
+      targetConfig = CompressionConfig.of(CompressionType.ZSTD),
+      compactedTopic = false,
+      magic = RecordBatch.MAGIC_VALUE_V2,
+      timestampType = TimestampType.LOG_APPEND_TIME,
+      timestampDiffMaxMs = 1000L,
+      partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
+      isFromClient = true,
+      interBrokerProtocolVersion = KAFKA_2_0_IV1)
   }
 
   @Test(expected = classOf[InvalidRecordException])
   def testUncompressedBatchWithoutRecordsNotAllowed(): Unit = {
-    testBatchWithoutRecordsNotAllowed(NoCompressionCodec, NoCompressionCodec)
+    testBatchWithoutRecordsNotAllowed(CompressionType.NONE, CompressionType.NONE)
   }
 
   @Test(expected = classOf[InvalidRecordException])
   def testRecompressedBatchWithoutRecordsNotAllowed(): Unit = {
-    testBatchWithoutRecordsNotAllowed(NoCompressionCodec, DefaultCompressionCodec)
+    testBatchWithoutRecordsNotAllowed(CompressionType.NONE, CompressionType.GZIP)
   }
 
-  private def testBatchWithoutRecordsNotAllowed(sourceCodec: CompressionCodec, targetCodec: CompressionCodec): Unit = {
+  private def testBatchWithoutRecordsNotAllowed(sourceType: CompressionType, targetType: CompressionType): Unit = {
     val offset = 1234567
     val (producerId, producerEpoch, baseSequence, isTransactional, partitionLeaderEpoch) =
       (1324L, 10.toShort, 984, true, 40)
@@ -1058,24 +1154,51 @@ class LogValidatorTest {
       offsetCounter = new LongRef(offset),
       time = time,
       now = System.currentTimeMillis(),
-      sourceCodec = sourceCodec,
-      targetCodec = targetCodec,
+      sourceType = sourceType,
+      targetConfig = CompressionConfig.of(targetType),
       compactedTopic = false,
       magic = RecordBatch.CURRENT_MAGIC_VALUE,
       timestampType = TimestampType.CREATE_TIME,
       timestampDiffMaxMs = 5000L,
       partitionLeaderEpoch = RecordBatch.NO_PARTITION_LEADER_EPOCH,
-      isFromClient = true)
+      isFromClient = true,
+      interBrokerProtocolVersion = ApiVersion.latestVersion)
   }
 
   private def createRecords(magicValue: Byte,
                             timestamp: Long = RecordBatch.NO_TIMESTAMP,
                             codec: CompressionType): MemoryRecords = {
     val buf = ByteBuffer.allocate(512)
-    val builder = MemoryRecords.builder(buf, magicValue, codec, TimestampType.CREATE_TIME, 0L)
+    val builder = MemoryRecords.builder(buf).magic(magicValue).compressionType(codec).build();
     builder.appendWithOffset(0, timestamp, null, "hello".getBytes)
     builder.appendWithOffset(1, timestamp, null, "there".getBytes)
     builder.appendWithOffset(2, timestamp, null, "beautiful".getBytes)
+    builder.build()
+  }
+
+  private def createTwoBatchedRecords(magicValue: Byte,
+                                      timestamp: Long = RecordBatch.NO_TIMESTAMP,
+                                      codec: CompressionType): MemoryRecords = {
+    val buf = ByteBuffer.allocate(2048)
+    var builder = MemoryRecords.builder(buf).magic(magicValue).compressionType(codec).build();
+    builder.append(10L, "1".getBytes(), "a".getBytes())
+    builder.close()
+    builder = MemoryRecords.builder(buf).magic(magicValue).compressionType(codec).baseOffset(1L).build();
+    builder.append(11L, "2".getBytes(), "b".getBytes())
+    builder.append(12L, "3".getBytes(), "c".getBytes())
+    builder.close()
+
+    buf.flip()
+    MemoryRecords.readableRecords(buf.slice())
+  }
+
+  private def createDiscontinuousOffsetRecords(magicValue: Byte,
+                                               codec: CompressionType): MemoryRecords = {
+    val buf = ByteBuffer.allocate(512)
+    val builder = MemoryRecords.builder(buf).magic(magicValue).compressionType(codec).build()
+    builder.appendWithOffset(0, RecordBatch.NO_TIMESTAMP, null, "hello".getBytes)
+    builder.appendWithOffset(2, RecordBatch.NO_TIMESTAMP, null, "there".getBytes)
+    builder.appendWithOffset(3, RecordBatch.NO_TIMESTAMP, null, "beautiful".getBytes)
     builder.build()
   }
 
@@ -1089,18 +1212,19 @@ class LogValidatorTest {
     }
   }
 
-  private def recordsWithInvalidInnerMagic(initialOffset: Long): MemoryRecords = {
+  private def recordsWithInvalidInnerMagic(batchMagicValue: Byte,
+                                           recordMagicValue: Byte,
+                                           codec: CompressionType): MemoryRecords = {
     val records = (0 until 20).map(id =>
-      LegacyRecord.create(RecordBatch.MAGIC_VALUE_V0,
+      LegacyRecord.create(recordMagicValue,
         RecordBatch.NO_TIMESTAMP,
         id.toString.getBytes,
         id.toString.getBytes))
 
     val buffer = ByteBuffer.allocate(math.min(math.max(records.map(_.sizeInBytes()).sum / 2, 1024), 1 << 16))
-    val builder = MemoryRecords.builder(buffer, RecordBatch.MAGIC_VALUE_V1, CompressionType.GZIP,
-      TimestampType.CREATE_TIME, 0L)
+    val builder = MemoryRecords.builder(buffer).magic(batchMagicValue).compressionType(codec).build()
 
-    var offset = initialOffset
+    var offset = 1234567
     records.foreach { record =>
       builder.appendUncheckedWithOffset(offset, record)
       offset += 1

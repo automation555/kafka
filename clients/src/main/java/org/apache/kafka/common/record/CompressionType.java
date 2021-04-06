@@ -17,11 +17,6 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.compress.KafkaLZ4BlockInputStream;
-import org.apache.kafka.common.compress.KafkaLZ4BlockOutputStream;
-import org.apache.kafka.common.compress.SnappyFactory;
-import org.apache.kafka.common.compress.ZstdFactory;
-import org.apache.kafka.common.utils.BufferSupplier;
 import org.apache.kafka.common.utils.ByteBufferInputStream;
 import org.apache.kafka.common.utils.ByteBufferOutputStream;
 
@@ -29,9 +24,11 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
 
 /**
  * The compression type to use
@@ -39,7 +36,7 @@ import java.util.zip.GZIPOutputStream;
 public enum CompressionType {
     NONE(0, "none", 1.0f) {
         @Override
-        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion) {
+        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion, Integer level, Integer blockSize) {
             return buffer;
         }
 
@@ -49,15 +46,14 @@ public enum CompressionType {
         }
     },
 
-    // Shipped with the JDK
     GZIP(1, "gzip", 1.0f) {
         @Override
-        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion) {
+        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion, Integer level, Integer blockSize) {
             try {
                 // Set input buffer (uncompressed) to 16 KB (none by default) and output buffer (compressed) to
                 // 8 KB (0.5 KB by default) to ensure reasonable performance in cases where the caller passes a small
                 // number of bytes to write (potentially a single byte)
-                return new BufferedOutputStream(new GZIPOutputStream(buffer, 8 * 1024), 16 * 1024);
+                return new BufferedOutputStream(GZipOutputStream.of(buffer, level, blockSize), 16 * 1024);
             } catch (Exception e) {
                 throw new KafkaException(e);
             }
@@ -77,29 +73,36 @@ public enum CompressionType {
         }
     },
 
-    // We should only load classes from a given compression library when we actually use said compression library. This
-    // is because compression libraries include native code for a set of platforms and we want to avoid errors
-    // in case the platform is not supported and the compression library is not actually used.
-    // To ensure this, we only reference compression library code from classes that are only invoked when actual usage
-    // happens.
-
     SNAPPY(2, "snappy", 1.0f) {
         @Override
-        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion) {
-            return SnappyFactory.wrapForOutput(buffer);
+        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion, Integer level, Integer blockSize) {
+            try {
+                // Snappy does not support compression level; so given parameter is ignored.
+                if (blockSize == null) {
+                    return (OutputStream) SnappyConstructors.OUTPUT_WITHOUT_BLOCK_SIZE.invoke(buffer);
+                } else {
+                    return (OutputStream) SnappyConstructors.OUTPUT_WITH_BLOCK_SIZE.invoke(buffer, blockSize);
+                }
+            } catch (Throwable e) {
+                throw new KafkaException(e);
+            }
         }
 
         @Override
         public InputStream wrapForInput(ByteBuffer buffer, byte messageVersion, BufferSupplier decompressionBufferSupplier) {
-            return SnappyFactory.wrapForInput(buffer);
+            try {
+                return (InputStream) SnappyConstructors.INPUT.invoke(new ByteBufferInputStream(buffer));
+            } catch (Throwable e) {
+                throw new KafkaException(e);
+            }
         }
     },
 
     LZ4(3, "lz4", 1.0f) {
         @Override
-        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion) {
+        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion, Integer level, Integer blockSize) {
             try {
-                return new KafkaLZ4BlockOutputStream(buffer, messageVersion == RecordBatch.MAGIC_VALUE_V0);
+                return KafkaLZ4BlockOutputStream.of(buffer, messageVersion, level, blockSize);
             } catch (Throwable e) {
                 throw new KafkaException(e);
             }
@@ -109,7 +112,7 @@ public enum CompressionType {
         public InputStream wrapForInput(ByteBuffer inputBuffer, byte messageVersion, BufferSupplier decompressionBufferSupplier) {
             try {
                 return new KafkaLZ4BlockInputStream(inputBuffer, decompressionBufferSupplier,
-                                                    messageVersion == RecordBatch.MAGIC_VALUE_V0);
+                        messageVersion == RecordBatch.MAGIC_VALUE_V0);
             } catch (Throwable e) {
                 throw new KafkaException(e);
             }
@@ -118,13 +121,26 @@ public enum CompressionType {
 
     ZSTD(4, "zstd", 1.0f) {
         @Override
-        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion) {
-            return ZstdFactory.wrapForOutput(buffer);
+        public OutputStream wrapForOutput(ByteBufferOutputStream buffer, byte messageVersion, Integer level, Integer blockSize) {
+            try {
+                // Zstd does not support block size configuration; so given parameter is ignored.
+                if (level == null) {
+                    return (OutputStream) ZstdConstructors.OUTPUT_WITHOUT_LEVEL.invoke(buffer);
+                } else {
+                    return (OutputStream) ZstdConstructors.OUTPUT_WITH_LEVEL.invoke(buffer, level);
+                }
+            } catch (Throwable e) {
+                throw new KafkaException(e);
+            }
         }
 
         @Override
         public InputStream wrapForInput(ByteBuffer buffer, byte messageVersion, BufferSupplier decompressionBufferSupplier) {
-            return ZstdFactory.wrapForInput(buffer, messageVersion, decompressionBufferSupplier);
+            try {
+                return (InputStream) ZstdConstructors.INPUT.invoke(new ByteBufferInputStream(buffer));
+            } catch (Throwable e) {
+                throw new KafkaException(e);
+            }
         }
     };
 
@@ -139,14 +155,17 @@ public enum CompressionType {
     }
 
     /**
-     * Wrap bufferStream with an OutputStream that will compress data with this CompressionType.
-     *
+     * Wrap bufferStream with an OutputStream that will compress data with this CompressionType with given buffer size and compression level.
+     * <p>
      * Note: Unlike {@link #wrapForInput}, {@link #wrapForOutput} cannot take {@link ByteBuffer}s directly.
      * Currently, {@link MemoryRecordsBuilder#writeDefaultBatchHeader()} and {@link MemoryRecordsBuilder#writeLegacyCompressedWrapperHeader()}
      * write to the underlying buffer in the given {@link ByteBufferOutputStream} after the compressed data has been written.
      * In the event that the buffer needs to be expanded while writing the data, access to the underlying buffer needs to be preserved.
+     *
+     * @param level     The compression level to use. If null, it falls back to the default level.
+     * @param blockSize The buffer size to use during compression. If null, it falls back to the default block size.
      */
-    public abstract OutputStream wrapForOutput(ByteBufferOutputStream bufferStream, byte messageVersion);
+    public abstract OutputStream wrapForOutput(ByteBufferOutputStream bufferStream, byte messageVersion, Integer level, Integer blockSize);
 
     /**
      * Wrap buffer with an InputStream that will decompress data with this CompressionType.
@@ -190,4 +209,40 @@ public enum CompressionType {
         else
             throw new IllegalArgumentException("Unknown compression name: " + name);
     }
+
+    // We should only have a runtime dependency on compression algorithms in case the native libraries don't support
+    // some platforms.
+    //
+    // For Snappy and Zstd, we dynamically load the classes and rely on the initialization-on-demand holder idiom to ensure
+    // they're only loaded if used.
+    //
+    // For LZ4 we are using org.apache.kafka classes, which should always be in the classpath, and would not trigger
+    // an error until KafkaLZ4BlockInputStream is initialized, which only happens if LZ4 is actually used.
+
+    private static class SnappyConstructors {
+        static final MethodHandle INPUT = findConstructor("org.xerial.snappy.SnappyInputStream",
+                MethodType.methodType(void.class, InputStream.class));
+        static final MethodHandle OUTPUT_WITHOUT_BLOCK_SIZE = findConstructor("org.xerial.snappy.SnappyOutputStream",
+                MethodType.methodType(void.class, OutputStream.class));
+        static final MethodHandle OUTPUT_WITH_BLOCK_SIZE = findConstructor("org.xerial.snappy.SnappyOutputStream",
+                MethodType.methodType(void.class, OutputStream.class, int.class));
+    }
+
+    private static class ZstdConstructors {
+        static final MethodHandle INPUT = findConstructor("com.github.luben.zstd.ZstdInputStream",
+                MethodType.methodType(void.class, InputStream.class));
+        static final MethodHandle OUTPUT_WITHOUT_LEVEL = findConstructor("com.github.luben.zstd.ZstdOutputStream",
+                MethodType.methodType(void.class, OutputStream.class));
+        static final MethodHandle OUTPUT_WITH_LEVEL = findConstructor("com.github.luben.zstd.ZstdOutputStream",
+                MethodType.methodType(void.class, OutputStream.class, int.class));
+    }
+
+    private static MethodHandle findConstructor(String className, MethodType methodType) {
+        try {
+            return MethodHandles.publicLookup().findConstructor(Class.forName(className), methodType);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
 }

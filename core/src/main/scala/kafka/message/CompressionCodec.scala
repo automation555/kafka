@@ -20,6 +20,7 @@ package kafka.message
 import java.util.Locale
 
 import kafka.common.UnknownCodecException
+import org.apache.kafka.common.record.CompressionType
 
 object CompressionCodec {
   def getCompressionCodec(codec: Int): CompressionCodec = {
@@ -47,7 +48,7 @@ object CompressionCodec {
 object BrokerCompressionCodec {
 
   val brokerCompressionCodecs = List(UncompressedCodec, ZStdCompressionCodec, LZ4CompressionCodec, SnappyCompressionCodec, GZIPCompressionCodec, ProducerCompressionCodec)
-  val brokerCompressionOptions: List[String] = brokerCompressionCodecs.map(codec => codec.name)
+  val brokerCompressionOptions = brokerCompressionCodecs.map(codec => codec.name)
 
   def isValid(compressionType: String): Boolean = brokerCompressionOptions.contains(compressionType.toLowerCase(Locale.ROOT))
 
@@ -58,11 +59,14 @@ object BrokerCompressionCodec {
     }
   }
 
-  def getTargetCompressionCodec(compressionType: String, producerCompression: CompressionCodec): CompressionCodec = {
+  def getTargetCompressionType(compressionType: String, producerCompression: CompressionType): CompressionType = {
     if (ProducerCompressionCodec.name.equals(compressionType))
       producerCompression
     else
-      getCompressionCodec(compressionType)
+      if (UncompressedCodec.name.equals(compressionType))
+        CompressionType.NONE
+      else
+        CompressionType.forName(compressionType)
   }
 }
 
@@ -70,8 +74,8 @@ sealed trait CompressionCodec { def codec: Int; def name: String }
 sealed trait BrokerCompressionCodec { def name: String }
 
 case object DefaultCompressionCodec extends CompressionCodec with BrokerCompressionCodec {
-  val codec: Int = GZIPCompressionCodec.codec
-  val name: String = GZIPCompressionCodec.name
+  val codec = GZIPCompressionCodec.codec
+  val name = GZIPCompressionCodec.name
 }
 
 case object GZIPCompressionCodec extends CompressionCodec with BrokerCompressionCodec {

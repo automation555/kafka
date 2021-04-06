@@ -28,6 +28,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.record.CompressionConfig;
 import org.apache.kafka.common.record.CompressionRatioEstimator;
 import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.DefaultRecord;
@@ -36,7 +37,6 @@ import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.MutableRecordBatch;
 import org.apache.kafka.common.record.Record;
-import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
@@ -53,7 +53,6 @@ import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalLong;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -104,7 +103,7 @@ public class RecordAccumulatorTest {
         int batchSize = 1025;
 
         RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10L * batchSize, CompressionType.NONE, 10L);
+                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10L * batchSize, CompressionType.NONE, 10);
         int appends = expectedNumAppends(batchSize);
         for (int i = 0; i < appends; i++) {
             // append to the first batch
@@ -153,7 +152,7 @@ public class RecordAccumulatorTest {
         int batchSize = 512;
         byte[] value = new byte[2 * batchSize];
         RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, compressionType, 0L);
+                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, compressionType, 0);
         accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, null, maxBlockTimeMs);
         assertEquals("Our partition's leader should be ready", Collections.singleton(node1), accum.ready(cluster, time.milliseconds()).readyNodes);
 
@@ -189,10 +188,10 @@ public class RecordAccumulatorTest {
 
         ApiVersions apiVersions = new ApiVersions();
         apiVersions.update(node1.idString(), NodeApiVersions.create(Collections.singleton(
-                new ApiVersionsResponse.ApiVersion(ApiKeys.PRODUCE.id, (short) 0, (short) 2))));
+                new ApiVersionsResponse.ApiVersion(ApiKeys.PRODUCE, (short) 0, (short) 2))));
 
         RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, compressionType, 0L);
+                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, compressionType, 0);
         accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, null, maxBlockTimeMs);
         assertEquals("Our partition's leader should be ready", Collections.singleton(node1), accum.ready(cluster, time.milliseconds()).readyNodes);
 
@@ -214,7 +213,7 @@ public class RecordAccumulatorTest {
 
     @Test
     public void testLinger() throws Exception {
-        long lingerMs = 10L;
+        int lingerMs = 10;
         RecordAccumulator accum = createTestRecordAccumulator(
                 1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, lingerMs);
         accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, null, maxBlockTimeMs);
@@ -235,7 +234,7 @@ public class RecordAccumulatorTest {
     @Test
     public void testPartialDrain() throws Exception {
         RecordAccumulator accum = createTestRecordAccumulator(
-                1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 10L);
+                1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 10);
         int appends = 1024 / msgSize + 1;
         List<TopicPartition> partitions = asList(tp1, tp2);
         for (TopicPartition tp : partitions) {
@@ -255,7 +254,7 @@ public class RecordAccumulatorTest {
         final int msgs = 10000;
         final int numParts = 2;
         final RecordAccumulator accum = createTestRecordAccumulator(
-            1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 0L);
+            1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 0);
         List<Thread> threads = new ArrayList<>();
         for (int i = 0; i < numThreads; i++) {
             threads.add(new Thread() {
@@ -294,7 +293,7 @@ public class RecordAccumulatorTest {
     @Test
     public void testNextReadyCheckDelay() throws Exception {
         // Next check time will use lingerMs since this test won't trigger any retries/backoff
-        long lingerMs = 10L;
+        int lingerMs = 10;
 
         // test case assumes that the records do not fill the batch completely
         int batchSize = 1025;
@@ -332,16 +331,15 @@ public class RecordAccumulatorTest {
 
     @Test
     public void testRetryBackoff() throws Exception {
-        long lingerMs = Integer.MAX_VALUE / 16;
+        int lingerMs = Integer.MAX_VALUE / 16;
         long retryBackoffMs = Integer.MAX_VALUE / 8;
-        int requestTimeoutMs = Integer.MAX_VALUE / 4;
-        long deliveryTimeoutMs = Integer.MAX_VALUE;
+        int deliveryTimeoutMs = Integer.MAX_VALUE;
         long totalSize = 10 * 1024;
         int batchSize = 1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD;
         String metricGrpName = "producer-metrics";
 
         final RecordAccumulator accum = new RecordAccumulator(logContext, batchSize,
-            CompressionType.NONE, lingerMs, retryBackoffMs, deliveryTimeoutMs, metrics, metricGrpName, time, new ApiVersions(), null,
+            CompressionConfig.none(), lingerMs, retryBackoffMs, deliveryTimeoutMs, metrics, metricGrpName, time, new ApiVersions(), null,
             new BufferPool(totalSize, batchSize, metrics, time, metricGrpName));
 
         long now = time.milliseconds();
@@ -378,7 +376,7 @@ public class RecordAccumulatorTest {
 
     @Test
     public void testFlush() throws Exception {
-        long lingerMs = Integer.MAX_VALUE;
+        int lingerMs = Integer.MAX_VALUE;
         final RecordAccumulator accum = createTestRecordAccumulator(
                 4 * 1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 64 * 1024, CompressionType.NONE, lingerMs);
 
@@ -420,7 +418,7 @@ public class RecordAccumulatorTest {
     @Test
     public void testAwaitFlushComplete() throws Exception {
         RecordAccumulator accum = createTestRecordAccumulator(
-            4 * 1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 64 * 1024, CompressionType.NONE, Long.MAX_VALUE);
+            4 * 1024 + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 64 * 1024, CompressionType.NONE, Integer.MAX_VALUE);
         accum.append(new TopicPartition(topic, 0), 0L, key, value, Record.EMPTY_HEADERS, null, maxBlockTimeMs);
 
         accum.beginFlush();
@@ -516,8 +514,8 @@ public class RecordAccumulatorTest {
         assertTrue(accum.hasIncomplete());
     }
 
-    private void doExpireBatchSingle(long deliveryTimeoutMs) throws InterruptedException {
-        long lingerMs = 300L;
+    private void doExpireBatchSingle(int deliveryTimeoutMs) throws InterruptedException {
+        int lingerMs = 300;
         List<Boolean> muteStates = Arrays.asList(false, true);
         Set<Node> readyNodes = null;
         List<ProducerBatch> expiredBatches = new ArrayList<>();
@@ -555,20 +553,20 @@ public class RecordAccumulatorTest {
 
     @Test
     public void testExpiredBatchSingle() throws InterruptedException {
-        doExpireBatchSingle(3200L);
+        doExpireBatchSingle(3200);
     }
 
     @Test
     public void testExpiredBatchSingleMaxValue() throws InterruptedException {
-        doExpireBatchSingle(Long.MAX_VALUE);
+        doExpireBatchSingle(Integer.MAX_VALUE);
     }
 
     @Test
     public void testExpiredBatches() throws InterruptedException {
         long retryBackoffMs = 100L;
-        long lingerMs = 30L;
+        int lingerMs = 30;
         int requestTimeout = 60;
-        long deliveryTimeoutMs = 3200L;
+        int deliveryTimeoutMs = 3200;
 
         // test case assumes that the records do not fill the batch completely
         int batchSize = 1025;
@@ -701,17 +699,16 @@ public class RecordAccumulatorTest {
         // Simulate talking to an older broker, ie. one which supports a lower magic.
         ApiVersions apiVersions = new ApiVersions();
         int batchSize = 1025;
-        int requestTimeoutMs = 1600;
-        long deliveryTimeoutMs = 3200L;
-        long lingerMs = 10L;
+        int deliveryTimeoutMs = 3200;
+        int lingerMs = 10;
         long retryBackoffMs = 100L;
         long totalSize = 10 * batchSize;
         String metricGrpName = "producer-metrics";
 
-        apiVersions.update("foobar", NodeApiVersions.create(Arrays.asList(new ApiVersionsResponse.ApiVersion(ApiKeys.PRODUCE.id,
+        apiVersions.update("foobar", NodeApiVersions.create(Arrays.asList(new ApiVersionsResponse.ApiVersion(ApiKeys.PRODUCE,
                 (short) 0, (short) 2))));
         RecordAccumulator accum = new RecordAccumulator(logContext, batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD,
-            CompressionType.NONE, lingerMs, retryBackoffMs, deliveryTimeoutMs, metrics, metricGrpName, time, apiVersions, new TransactionManager(),
+            CompressionConfig.none(), lingerMs, retryBackoffMs, deliveryTimeoutMs, metrics, metricGrpName, time, apiVersions, new TransactionManager(),
             new BufferPool(totalSize, batchSize, metrics, time, metricGrpName));
         accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, null, 0);
     }
@@ -723,8 +720,8 @@ public class RecordAccumulatorTest {
 
         // Create a big batch
         ByteBuffer buffer = ByteBuffer.allocate(4096);
-        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer, CompressionType.NONE, TimestampType.CREATE_TIME, 0L);
-        ProducerBatch batch = new ProducerBatch(tp1, builder, now, false, true);
+        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer).build();
+        ProducerBatch batch = new ProducerBatch(tp1, builder, now, true);
 
         byte[] value = new byte[1024];
         final AtomicInteger acked = new AtomicInteger(0);
@@ -778,7 +775,7 @@ public class RecordAccumulatorTest {
 
         // First set the compression ratio estimation to be good.
         CompressionRatioEstimator.setEstimation(tp1.topic(), CompressionType.GZIP, 0.1f);
-        RecordAccumulator accum = createTestRecordAccumulator(batchSize, bufferCapacity, CompressionType.GZIP, 0L);
+        RecordAccumulator accum = createTestRecordAccumulator(batchSize, bufferCapacity, CompressionType.GZIP, 0);
         int numSplitBatches = prepareSplitBatches(accum, seed, 100, 20);
         assertTrue("There should be some split batches", numSplitBatches > 0);
         // Drain all the split batches.
@@ -793,40 +790,6 @@ public class RecordAccumulatorTest {
                 accum.ready(cluster, time.milliseconds()).readyNodes.isEmpty());
         assertEquals("The split batches should be allocated off the accumulator",
                 bufferCapacity, accum.bufferPoolAvailableMemory());
-    }
-
-    @Test
-    public void testSplitBatchOffAccumulatorWithOffsets() throws InterruptedException {
-        RecordAccumulator accum = createTestRecordAccumulator(1024, 3 * 1024, CompressionType.NONE, 0L);
-
-        byte[] value = new byte[1025];
-        accum.append(tp1, 0L, null, value, Record.EMPTY_HEADERS, OptionalLong.of(1001), null, 0);
-        accum.append(tp1, 0L, null, value, Record.EMPTY_HEADERS, OptionalLong.of(1101), null, 0);
-
-        RecordAccumulator.ReadyCheckResult result1 = accum.ready(cluster, time.milliseconds());
-        assertFalse(result1.readyNodes.isEmpty());
-        Map<Integer, List<ProducerBatch>> batches = accum.drain(cluster, result1.readyNodes, Integer.MAX_VALUE, time.milliseconds());
-        assertEquals(1, batches.size());
-        assertEquals(1, batches.values().iterator().next().size());
-        ProducerBatch batch = batches.values().iterator().next().get(0);
-        assertEquals(1001, batch.records().batchIterator().peek().baseOffset());
-
-        accum.splitAndReenqueue(batch);
-        accum.deallocate(batch);
-
-        RecordAccumulator.ReadyCheckResult result = accum.ready(cluster, time.milliseconds());
-        Map<Integer, List<ProducerBatch>> drained1 =
-                accum.drain(cluster, result.readyNodes, Integer.MAX_VALUE, time.milliseconds());
-        List<ProducerBatch> batches1 = drained1.values().iterator().next();
-        Map<Integer, List<ProducerBatch>> drained2 =
-                accum.drain(cluster, result.readyNodes, Integer.MAX_VALUE, time.milliseconds());
-        List<ProducerBatch> batches2 = drained2.values().iterator().next();
-
-        assertEquals(1, batches1.size());
-        assertEquals(1, batches2.size());
-
-        assertEquals(1001, batches1.get(0).records().batchIterator().peek().baseOffset());
-        assertEquals(1101, batches2.get(0).records().batchIterator().peek().baseOffset());
     }
 
     @Test
@@ -864,7 +827,7 @@ public class RecordAccumulatorTest {
 
     @Test
     public void testSoonToExpireBatchesArePickedUpForExpiry() throws InterruptedException {
-        long lingerMs = 500L;
+        int lingerMs = 500;
         int batchSize = 1025;
 
         RecordAccumulator accum = createTestRecordAccumulator(
@@ -930,64 +893,6 @@ public class RecordAccumulatorTest {
             expiredBatches = accum.expiredBatches(time.milliseconds());
             assertEquals("RecordAccumulator has expired batches if the partition is not muted", mute  ? 1 : 0, expiredBatches.size());
         }
-    }
-
-    @Test
-    public void testAppendWithOffsets() throws Exception {
-        int batchSize = 512;
-        byte[] value = new byte[10];
-        RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 0L);
-        accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.of(1000L), null, maxBlockTimeMs);
-        accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.of(1001L), null, maxBlockTimeMs);
-        accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.of(1100L), null, maxBlockTimeMs);
-
-        Deque<ProducerBatch> batches = accum.batches().get(tp1);
-        assertEquals(2, batches.size());
-        ProducerBatch producerBatch1 = batches.removeFirst();
-        List<MutableRecordBatch> recordBatches1 = TestUtils.toList(producerBatch1.records().batches());
-        assertEquals(1, recordBatches1.size());
-        MutableRecordBatch recordBatch1 = recordBatches1.get(0);
-        assertEquals(1000L, recordBatch1.baseOffset());
-        List<Record> records1 = TestUtils.toList(recordBatch1);
-        assertEquals(2, records1.size());
-        assertEquals(1000L, records1.get(0).offset());
-        assertEquals(1001L, records1.get(1).offset());
-
-        ProducerBatch producerBatch2 = batches.removeFirst();
-        List<MutableRecordBatch> recordBatches2 = TestUtils.toList(producerBatch2.records().batches());
-        assertEquals(1, recordBatches2.size());
-        MutableRecordBatch recordBatch2 = recordBatches2.get(0);
-        assertEquals(1100L, recordBatch2.baseOffset());
-        List<Record> records2 = TestUtils.toList(recordBatch2);
-        assertEquals(1, records2.size());
-        assertEquals(1100L, records2.get(0).offset());
-    }
-
-    @Test
-    public void testAppendWithOffsetsCannotMix1() throws Exception {
-        int batchSize = 512;
-        byte[] value = new byte[10];
-        RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 0L);
-        accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.empty(), null, maxBlockTimeMs);
-        try {
-            accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.of(1100L), null, maxBlockTimeMs);
-            fail("IllegalArgumentException Expected");
-        } catch (IllegalArgumentException expected) { }
-    }
-
-    @Test
-    public void testAppendWithOffsetsCannotMix2() throws Exception {
-        int batchSize = 512;
-        byte[] value = new byte[10];
-        RecordAccumulator accum = createTestRecordAccumulator(
-                batchSize + DefaultRecordBatch.RECORD_BATCH_OVERHEAD, 10 * 1024, CompressionType.NONE, 0L);
-        accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.of(1100L), null, maxBlockTimeMs);
-        try {
-            accum.append(tp1, 0L, key, value, Record.EMPTY_HEADERS, OptionalLong.empty(), null, maxBlockTimeMs);
-            fail("IllegalArgumentException Expected");
-        } catch (IllegalArgumentException expected) { }
     }
 
     private int prepareSplitBatches(RecordAccumulator accum, long seed, int recordSize, int numRecords)
@@ -1086,23 +991,22 @@ public class RecordAccumulatorTest {
     }
 
 
-    private RecordAccumulator createTestRecordAccumulator(int batchSize, long totalSize, CompressionType type, long lingerMs) {
-        long deliveryTimeoutMs = 3200L;
+    private RecordAccumulator createTestRecordAccumulator(int batchSize, long totalSize, CompressionType type, int lingerMs) {
+        int deliveryTimeoutMs = 3200;
         return createTestRecordAccumulator(deliveryTimeoutMs, batchSize, totalSize, type, lingerMs);
     }
 
     /**
      * Return a test RecordAccumulator instance
      */
-    private RecordAccumulator createTestRecordAccumulator(long deliveryTimeoutMs, int batchSize, long totalSize, CompressionType type, long lingerMs) {
+    private RecordAccumulator createTestRecordAccumulator(int deliveryTimeoutMs, int batchSize, long totalSize, CompressionType type, int lingerMs) {
         long retryBackoffMs = 100L;
-        int requestTimeoutMs = 1600;
         String metricGrpName = "producer-metrics";
 
         return new RecordAccumulator(
             logContext,
             batchSize,
-            type,
+            CompressionConfig.of(type),
             lingerMs,
             retryBackoffMs,
             deliveryTimeoutMs,

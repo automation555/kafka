@@ -18,6 +18,7 @@ package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.errors.UnsupportedCompressionTypeException;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.Utils;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -43,7 +44,7 @@ public class RecordsUtil {
         // maintain the batch along with the decompressed records to avoid the need to decompress again
         List<RecordBatchAndRecords> recordBatchAndRecordsList = new ArrayList<>();
         int totalSizeEstimate = 0;
-        long startNanos = time.relativeNanoseconds();
+        long startNanos = time.nanoseconds();
 
         for (RecordBatch batch : batches) {
             if (toMagic < RecordBatch.MAGIC_VALUE_V2) {
@@ -80,9 +81,11 @@ public class RecordsUtil {
         ByteBuffer buffer = ByteBuffer.allocate(totalSizeEstimate);
         long temporaryMemoryBytes = 0;
         int numRecordsConverted = 0;
+
         for (RecordBatchAndRecords recordBatchAndRecords : recordBatchAndRecordsList) {
             temporaryMemoryBytes += recordBatchAndRecords.batch.sizeInBytes();
             if (recordBatchAndRecords.batch.magic() <= toMagic) {
+                buffer = Utils.ensureCapacity(buffer, buffer.position() + recordBatchAndRecords.batch.sizeInBytes());
                 recordBatchAndRecords.batch.writeTo(buffer);
             } else {
                 MemoryRecordsBuilder builder = convertRecordBatch(toMagic, buffer, recordBatchAndRecords);
@@ -94,7 +97,7 @@ public class RecordsUtil {
 
         buffer.flip();
         RecordConversionStats stats = new RecordConversionStats(temporaryMemoryBytes, numRecordsConverted,
-                time.relativeNanoseconds() - startNanos);
+                time.nanoseconds() - startNanos);
         return new ConvertedRecords<>(MemoryRecords.readableRecords(buffer), stats);
     }
 
@@ -107,8 +110,13 @@ public class RecordsUtil {
         final TimestampType timestampType = batch.timestampType();
         long logAppendTime = timestampType == TimestampType.LOG_APPEND_TIME ? batch.maxTimestamp() : RecordBatch.NO_TIMESTAMP;
 
-        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer, magic, batch.compressionType(),
-                timestampType, recordBatchAndRecords.baseOffset, logAppendTime);
+        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer)
+                .magic(magic)
+                .compressionType(batch.compressionType())
+                .timestampType(timestampType)
+                .baseOffset(recordBatchAndRecords.baseOffset)
+                .logAppendTime(logAppendTime)
+                .build();
         for (Record record : recordBatchAndRecords.records) {
             // Down-convert this record. Ignore headers when down-converting to V0 and V1 since they are not supported
             if (magic > RecordBatch.MAGIC_VALUE_V1)

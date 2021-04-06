@@ -25,11 +25,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
+
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.common.Cluster;
@@ -46,13 +45,12 @@ import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Meter;
 import org.apache.kafka.common.record.AbstractRecords;
+import org.apache.kafka.common.record.CompressionConfig;
 import org.apache.kafka.common.record.CompressionRatioEstimator;
-import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
-import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.utils.CopyOnWriteMap;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
@@ -73,10 +71,10 @@ public final class RecordAccumulator {
     private final AtomicInteger flushesInProgress;
     private final AtomicInteger appendsInProgress;
     private final int batchSize;
-    private final CompressionType compression;
-    private final long lingerMs;
+    private final CompressionConfig compressionConfig;
+    private final int lingerMs;
     private final long retryBackoffMs;
-    private final long deliveryTimeoutMs;
+    private final int deliveryTimeoutMs;
     private final BufferPool free;
     private final Time time;
     private final ApiVersions apiVersions;
@@ -87,14 +85,13 @@ public final class RecordAccumulator {
     private int drainIndex;
     private final TransactionManager transactionManager;
     private long nextBatchExpiryTimeMs = Long.MAX_VALUE; // the earliest time (absolute) a batch will expire.
-    private final AtomicReference<Boolean> useOffsets = new AtomicReference<>(null);
 
     /**
      * Create a new record accumulator
      *
      * @param logContext The log context used for logging
      * @param batchSize The size to use when allocating {@link MemoryRecords} instances
-     * @param compression The compression codec for the records
+     * @param compressionConfig The compression type/level/buffer size for the records
      * @param lingerMs An artificial delay time to add before declaring a records instance that isn't full ready for
      *        sending. This allows time for more records to arrive. Setting a non-zero lingerMs will trade off some
      *        latency for potentially better throughput due to more batching (and hence fewer, larger requests).
@@ -108,10 +105,10 @@ public final class RecordAccumulator {
      */
     public RecordAccumulator(LogContext logContext,
                              int batchSize,
-                             CompressionType compression,
-                             long lingerMs,
+                             CompressionConfig compressionConfig,
+                             int lingerMs,
                              long retryBackoffMs,
-                             long deliveryTimeoutMs,
+                             int deliveryTimeoutMs,
                              Metrics metrics,
                              String metricGrpName,
                              Time time,
@@ -124,7 +121,7 @@ public final class RecordAccumulator {
         this.flushesInProgress = new AtomicInteger(0);
         this.appendsInProgress = new AtomicInteger(0);
         this.batchSize = batchSize;
-        this.compression = compression;
+        this.compressionConfig = compressionConfig;
         this.lingerMs = lingerMs;
         this.retryBackoffMs = retryBackoffMs;
         this.deliveryTimeoutMs = deliveryTimeoutMs;
@@ -169,17 +166,6 @@ public final class RecordAccumulator {
         bufferExhaustedRecordSensor.add(new Meter(rateMetricName, totalMetricName));
     }
 
-    //EDO @Deprecated
-    public RecordAppendResult append(TopicPartition tp,
-            long timestamp,
-            byte[] key,
-            byte[] value,
-            Header[] headers,
-            Callback callback,
-            long maxTimeToBlock) throws InterruptedException {
-        return append(tp, timestamp, key, value, headers, OptionalLong.empty(), callback, maxTimeToBlock);
-    }
-
     /**
      * Add a record to the accumulator, return the append result
      * <p>
@@ -199,13 +185,8 @@ public final class RecordAccumulator {
                                      byte[] key,
                                      byte[] value,
                                      Header[] headers,
-                                     OptionalLong offset,
                                      Callback callback,
                                      long maxTimeToBlock) throws InterruptedException {
-
-        useOffsets.compareAndSet(null, offset.isPresent());
-        validateUseOffset(offset);
-
         // We keep track of the number of appending thread to make sure we do not miss batches in
         // abortIncompleteBatches().
         appendsInProgress.incrementAndGet();
@@ -217,14 +198,14 @@ public final class RecordAccumulator {
             synchronized (dq) {
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, offset, callback, dq);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
                 if (appendResult != null)
                     return appendResult;
             }
 
             // we don't have an in-progress record batch try to allocate a new batch
             byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
-            int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
+            int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compressionConfig.getType(), key, value, headers));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
             buffer = free.allocate(size, maxTimeToBlock);
             synchronized (dq) {
@@ -232,15 +213,15 @@ public final class RecordAccumulator {
                 if (closed)
                     throw new KafkaException("Producer closed while send in progress");
 
-                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, offset, callback, dq);
+                RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
                 if (appendResult != null) {
                     // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
                     return appendResult;
                 }
 
-                MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic, offset);
-                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, time.milliseconds(), offset.isPresent());
-                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, headers, offset, callback, time.milliseconds()));
+                MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, maxUsableMagic);
+                ProducerBatch batch = new ProducerBatch(tp, recordsBuilder, time.milliseconds());
+                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, headers, callback, time.milliseconds()));
 
                 dq.addLast(batch);
                 incomplete.add(batch);
@@ -256,21 +237,15 @@ public final class RecordAccumulator {
         }
     }
 
-    private void validateUseOffset(OptionalLong offset) {
-        if (!useOffsets.get().equals(offset.isPresent())) {
-            throw new IllegalArgumentException("Cannot mix sending records with and without offsets");
-        }
-        if (useOffsets.get() && transactionManager != null && transactionManager.isTransactional()) {
-            throw new IllegalArgumentException("Transactional producer does not support sending records with offsets");
-        }
-    }
-
-    private MemoryRecordsBuilder recordsBuilder(ByteBuffer buffer, byte maxUsableMagic, OptionalLong offset) {
+    private MemoryRecordsBuilder recordsBuilder(ByteBuffer buffer, byte maxUsableMagic) {
         if (transactionManager != null && maxUsableMagic < RecordBatch.MAGIC_VALUE_V2) {
             throw new UnsupportedVersionException("Attempting to use idempotence with a broker which does not " +
                 "support the required message format (v2). The broker must be version 0.11 or later.");
         }
-        return MemoryRecords.builder(buffer, maxUsableMagic, compression, TimestampType.CREATE_TIME, offset.orElse(0L));
+        return MemoryRecords.builder(buffer)
+                .magic(maxUsableMagic)
+                .compressionConfig(compressionConfig)
+                .build();
     }
 
     /**
@@ -281,11 +256,11 @@ public final class RecordAccumulator {
      *  and memory records built) in one of the following cases (whichever comes first): right before send,
      *  if it is expired, or when the producer is closed.
      */
-    private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, OptionalLong offset,
+    private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
                                          Callback callback, Deque<ProducerBatch> deque) {
         ProducerBatch last = deque.peekLast();
         if (last != null) {
-            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, offset, callback, time.milliseconds());
+            FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, time.milliseconds());
             if (future == null)
                 last.closeForRecordAppends();
             else
@@ -368,7 +343,7 @@ public final class RecordAccumulator {
         // Reset the estimated compression ratio to the initial value or the big batch compression ratio, whichever
         // is bigger. There are several different ways to do the reset. We chose the most conservative one to ensure
         // the split doesn't happen too often.
-        CompressionRatioEstimator.setEstimation(bigBatch.topicPartition.topic(), compression,
+        CompressionRatioEstimator.setEstimation(bigBatch.topicPartition.topic(), compressionConfig.getType(),
                                                 Math.max(1.0f, (float) bigBatch.compressionRatio()));
         Deque<ProducerBatch> dq = bigBatch.split(this.batchSize);
         int numSplitBatches = dq.size();
@@ -586,7 +561,7 @@ public final class RecordAccumulator {
                     if (shouldStopDrainBatchesForPartition(first, tp))
                         break;
 
-                    boolean isTransactional = transactionManager != null ? transactionManager.isTransactional() : false;
+                    boolean isTransactional = transactionManager != null && transactionManager.isTransactional();
                     ProducerIdAndEpoch producerIdAndEpoch =
                         transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
                     ProducerBatch batch = deque.pollFirst();
@@ -836,10 +811,5 @@ public final class RecordAccumulator {
             this.nextReadyCheckDelayMs = nextReadyCheckDelayMs;
             this.unknownLeaderTopics = unknownLeaderTopics;
         }
-    }
-
-    boolean useOffsets() {
-        Boolean useOffsets = this.useOffsets.get();
-        return useOffsets != null ? useOffsets : false;
     }
 }

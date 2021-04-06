@@ -22,21 +22,22 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.regex.Pattern
-import java.util.{Collections, Locale, Properties, Random}
+import java.util.{Collections, Locale, Map, Properties, Random}
 
 import com.typesafe.scalalogging.LazyLogging
 import joptsimple._
-import kafka.common.MessageFormatter
 import kafka.utils.Implicits._
-import kafka.utils._
+import kafka.utils.{Exit, _}
 import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, ConsumerRecord, KafkaConsumer}
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{MessageFormatter, TopicPartition}
 import org.apache.kafka.common.errors.{AuthenticationException, TimeoutException, WakeupException}
 import org.apache.kafka.common.record.TimestampType
+import org.apache.kafka.common.requests.ListOffsetRequest
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, Deserializer}
 import org.apache.kafka.common.utils.Utils
 
-import scala.collection.JavaConverters._
+import scala.annotation.nowarn
+import scala.jdk.CollectionConverters._
 
 /**
  * Consumer that dumps messages to standard out.
@@ -46,8 +47,6 @@ object ConsoleConsumer extends Logging {
   var messageCount = 0
 
   private val shutdownLatch = new CountDownLatch(1)
-  private val OFFSET_ARG_VAL_EARLIEST = "earliest"
-  private val OFFSET_ARG_VAL_LATEST = "latest"
 
   def main(args: Array[String]): Unit = {
     val conf = new ConsumerConfig(args)
@@ -69,7 +68,7 @@ object ConsoleConsumer extends Logging {
 
     val consumerWrapper =
       if (conf.partitionArg.isDefined)
-        new ConsumerWrapper(Option(conf.topicArg), conf.partitionArg, Some(conf.offsetArg), None, consumer, timeoutMs)
+        new ConsumerWrapper(Option(conf.topicArg), conf.partitionArg, Option(conf.offsetArg), None, consumer, timeoutMs)
       else
         new ConsumerWrapper(Option(conf.topicArg), None, None, Option(conf.whitelistArg), consumer, timeoutMs)
 
@@ -86,8 +85,7 @@ object ConsoleConsumer extends Logging {
   }
 
   def addShutdownHook(consumer: ConsumerWrapper, conf: ConsumerConfig): Unit = {
-    Runtime.getRuntime.addShutdownHook(new Thread() {
-      override def run(): Unit = {
+    Exit.addShutdownHook("consumer-shutdown-hook", {
         consumer.wakeup()
 
         shutdownLatch.await()
@@ -95,7 +93,6 @@ object ConsoleConsumer extends Logging {
         if (conf.enableSystestEventsLogging) {
           System.out.println("shutdown_complete")
         }
-      }
     })
   }
 
@@ -170,10 +167,12 @@ object ConsoleConsumer extends Logging {
     * are conflicting.
     */
   def setAutoOffsetResetValue(config: ConsumerConfig, props: Properties): Unit = {
+    val (earliestConfigValue, latestConfigValue) = ("earliest", "latest")
+
     if (props.containsKey(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG)) {
       // auto.offset.reset parameter was specified on the command line
       val autoResetOption = props.getProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG)
-      if (config.options.has(config.resetBeginningOpt) && OFFSET_ARG_VAL_EARLIEST != autoResetOption) {
+      if (config.options.has(config.resetBeginningOpt) && earliestConfigValue != autoResetOption) {
         // conflicting options - latest und earliest, throw an error
         System.err.println(s"Can't simultaneously specify --from-beginning and 'auto.offset.reset=$autoResetOption', " +
           "please remove one option")
@@ -184,7 +183,7 @@ object ConsoleConsumer extends Logging {
     } else {
       // no explicit value for auto.offset.reset was specified
       // if --from-beginning was specified use earliest, otherwise default to latest
-      val autoResetOption = if (config.options.has(config.resetBeginningOpt)) OFFSET_ARG_VAL_EARLIEST else OFFSET_ARG_VAL_LATEST
+      val autoResetOption = if (config.options.has(config.resetBeginningOpt)) earliestConfigValue else latestConfigValue
       props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, autoResetOption)
     }
   }
@@ -203,12 +202,11 @@ object ConsoleConsumer extends Logging {
       .withRequiredArg
       .describedAs("partition")
       .ofType(classOf[java.lang.Integer])
-    val offsetOpt = parser.accepts("offset", "The offset id to consume from, " +
-      "or 'earliest' which means from beginning, or 'latest' which means from end. A negative value -N means starting from offset 'log end offset - N'")
+    val offsetOpt = parser.accepts("offset", "The offset id to consume from (a non-negative number), or 'earliest' which means from beginning, or 'latest' which means from end")
       .withRequiredArg
       .describedAs("consume offset")
       .ofType(classOf[String])
-      .defaultsTo(OFFSET_ARG_VAL_LATEST)
+      .defaultsTo("latest")
     val consumerPropertyOpt = parser.accepts("consumer-property", "A mechanism to pass user-defined properties in the form key=value to the consumer.")
       .withRequiredArg
       .describedAs("consumer_prop")
@@ -264,7 +262,7 @@ object ConsoleConsumer extends Logging {
       "Log lifecycle events of the consumer in addition to logging consumed " +
         "messages. (This is specific for system tests.)")
     val isolationLevelOpt = parser.accepts("isolation-level",
-      "Set to read_committed in order to filter out transactional messages which are not committed. Set to read_uncommitted" +
+      "Set to read_committed in order to filter out transactional messages which are not committed. Set to read_uncommitted " +
         "to read all messages.")
       .withRequiredArg()
       .ofType(classOf[String])
@@ -310,7 +308,7 @@ object ConsoleConsumer extends Logging {
       formatterArgs.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer)
     }
 
-    formatter.init(formatterArgs)
+    formatter.configure(formatterArgs.asScala.asJava)
 
     val topicOrFilterOpt = List(topicIdOpt, whitelistOpt).filter(options.has)
     if (topicOrFilterOpt.size != 1)
@@ -328,22 +326,26 @@ object ConsoleConsumer extends Logging {
 
     def invalidOffset(offset: String): Nothing =
       CommandLineUtils.printUsageAndDie(parser, s"The provided offset value '$offset' is incorrect. Valid values are " +
-        "'earliest', 'latest', or a long.")
+        "'earliest', 'latest', or a non-negative long.")
 
-    val offsetArg: String =
+    val offsetArg =
       if (options.has(offsetOpt)) {
         options.valueOf(offsetOpt).toLowerCase(Locale.ROOT) match {
-          case offsetString if !offsetString.equalsIgnoreCase(OFFSET_ARG_VAL_EARLIEST) && !offsetString.equalsIgnoreCase(OFFSET_ARG_VAL_LATEST) =>
+          case "earliest" => ListOffsetRequest.EARLIEST_TIMESTAMP
+          case "latest" => ListOffsetRequest.LATEST_TIMESTAMP
+          case offsetString =>
             try {
-              offsetString.toLong
+              val offset = offsetString.toLong
+              if (offset < 0)
+                invalidOffset(offsetString)
+              offset
             } catch {
               case _: NumberFormatException => invalidOffset(offsetString)
             }
-            offsetString
-          case offsetString => offsetString.toLowerCase
         }
-      } else if (fromBeginning) OFFSET_ARG_VAL_EARLIEST
-      else OFFSET_ARG_VAL_LATEST
+      }
+      else if (fromBeginning) ListOffsetRequest.EARLIEST_TIMESTAMP
+      else ListOffsetRequest.LATEST_TIMESTAMP
 
     CommandLineUtils.checkRequiredArgs(parser, options, bootstrapServerOpt)
 
@@ -385,18 +387,18 @@ object ConsoleConsumer extends Logging {
     }
   }
 
-  private[tools] class ConsumerWrapper(topic: Option[String], partitionId: Option[Int], offsetOpt: Option[String], whitelist: Option[String],
+  private[tools] class ConsumerWrapper(topic: Option[String], partitionId: Option[Int], offset: Option[Long], whitelist: Option[String],
                                        consumer: Consumer[Array[Byte], Array[Byte]], val timeoutMs: Long = Long.MaxValue) {
     consumerInit()
-    var recordIter = Collections.emptyList[ConsumerRecord[Array[Byte], Array[Byte]]]().iterator()
+    var recordIter = consumer.poll(Duration.ofMillis(0L), false).iterator
 
     def consumerInit(): Unit = {
-      (topic, partitionId, offsetOpt, whitelist) match {
+      (topic, partitionId, offset, whitelist) match {
         case (Some(topic), Some(partitionId), Some(offset), None) =>
           seek(topic, partitionId, offset)
         case (Some(topic), Some(partitionId), None, None) =>
           // default to latest if no offset is provided
-          seek(topic, partitionId, OFFSET_ARG_VAL_LATEST)
+          seek(topic, partitionId, ListOffsetRequest.LATEST_TIMESTAMP)
         case (Some(topic), None, None, None) =>
           consumer.subscribe(Collections.singletonList(topic))
         case (None, None, None, Some(whitelist)) =>
@@ -409,20 +411,13 @@ object ConsoleConsumer extends Logging {
       }
     }
 
-    def seek(topic: String, partitionId: Int, offset: String): Unit = {
+    def seek(topic: String, partitionId: Int, offset: Long): Unit = {
       val topicPartition = new TopicPartition(topic, partitionId)
       consumer.assign(Collections.singletonList(topicPartition))
       offset match {
-        case OFFSET_ARG_VAL_EARLIEST => consumer.seekToBeginning(Collections.singletonList(topicPartition))
-        case OFFSET_ARG_VAL_LATEST => consumer.seekToEnd(Collections.singletonList(topicPartition))
-        case _ =>
-          // No need to check if `offset` can convert to a long. We have already done that during the config initialization.
-          val targetOffset = if (offset.toLong < 0)
-            consumer.endOffsets(Collections.singleton(topicPartition)).get(topicPartition) + offset.toLong else offset.toLong
-          if (targetOffset < 0L)
-            consumer.seekToBeginning(Collections.singletonList(topicPartition))
-          else
-            consumer.seek(topicPartition, targetOffset)
+        case ListOffsetRequest.EARLIEST_TIMESTAMP => consumer.seekToBeginning(Collections.singletonList(topicPartition))
+        case ListOffsetRequest.LATEST_TIMESTAMP => consumer.seekToEnd(Collections.singletonList(topicPartition))
+        case _ => consumer.seek(topicPartition, offset)
       }
     }
 
@@ -460,22 +455,27 @@ object ConsoleConsumer extends Logging {
 }
 
 class DefaultMessageFormatter extends MessageFormatter {
+  var printTimestamp = false
   var printKey = false
   var printValue = true
-  var printTimestamp = false
+  var printPartition = false
   var keySeparator = "\t".getBytes(StandardCharsets.UTF_8)
   var lineSeparator = "\n".getBytes(StandardCharsets.UTF_8)
 
   var keyDeserializer: Option[Deserializer[_]] = None
   var valueDeserializer: Option[Deserializer[_]] = None
 
-  override def init(props: Properties): Unit = {
+  override def configure(configs: Map[String, _]): Unit = {
+    val props = new java.util.Properties()
+    configs.asScala.foreach { case (key, value) => props.put(key, value.toString) }
     if (props.containsKey("print.timestamp"))
       printTimestamp = props.getProperty("print.timestamp").trim.equalsIgnoreCase("true")
     if (props.containsKey("print.key"))
       printKey = props.getProperty("print.key").trim.equalsIgnoreCase("true")
     if (props.containsKey("print.value"))
       printValue = props.getProperty("print.value").trim.equalsIgnoreCase("true")
+    if (props.containsKey("print.partition"))
+      printPartition = props.getProperty("print.partition").trim.equalsIgnoreCase("true")
     if (props.containsKey("key.separator"))
       keySeparator = props.getProperty("key.separator").getBytes(StandardCharsets.UTF_8)
     if (props.containsKey("line.separator"))
@@ -514,7 +514,7 @@ class DefaultMessageFormatter extends MessageFormatter {
 
     def write(deserializer: Option[Deserializer[_]], sourceBytes: Array[Byte], topic: String): Unit = {
       val nonNullBytes = Option(sourceBytes).getOrElse("null".getBytes(StandardCharsets.UTF_8))
-      val convertedBytes = deserializer.map(_.deserialize(topic, nonNullBytes).toString.
+      val convertedBytes = deserializer.map(_.deserialize(topic, consumerRecord.headers, nonNullBytes).toString.
         getBytes(StandardCharsets.UTF_8)).getOrElse(nonNullBytes)
       output.write(convertedBytes)
     }
@@ -536,6 +536,11 @@ class DefaultMessageFormatter extends MessageFormatter {
 
     if (printValue) {
       write(valueDeserializer, value, topic)
+      writeSeparator(printPartition)
+    }
+
+    if (printPartition) {
+      output.write(s"$partition".getBytes(StandardCharsets.UTF_8))
       output.write(lineSeparator)
     }
   }
@@ -544,7 +549,7 @@ class DefaultMessageFormatter extends MessageFormatter {
 class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
   private val defaultWriter: DefaultMessageFormatter = new DefaultMessageFormatter
 
-  override def init(props: Properties): Unit = defaultWriter.init(props)
+  override def configure(configs: Map[String, _]): Unit = defaultWriter.configure(configs)
 
   def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
     import consumerRecord._
@@ -556,7 +561,6 @@ class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
 }
 
 class NoOpMessageFormatter extends MessageFormatter {
-  override def init(props: Properties): Unit = {}
 
   def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {}
 }
@@ -564,14 +568,14 @@ class NoOpMessageFormatter extends MessageFormatter {
 class ChecksumMessageFormatter extends MessageFormatter {
   private var topicStr: String = _
 
-  override def init(props: Properties): Unit = {
-    topicStr = props.getProperty("topic")
-    if (topicStr != null)
-      topicStr = topicStr + ":"
+  override def configure(configs: Map[String, _]): Unit = {
+    topicStr = if (configs.containsKey("topic"))
+      configs.get("topic").toString + ":"
     else
-      topicStr = ""
+      ""
   }
 
+  @nowarn("cat=deprecation")
   def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
     output.println(topicStr + "checksum:" + consumerRecord.checksum)
   }

@@ -1,4 +1,3 @@
-_build/
 dist
 *classes
 target/
@@ -24,8 +23,8 @@ TAGS
 *.iml
 .project
 .settings
-*.ipr
-*.iws
+kafka.ipr
+kafka.iws
 .vagrant
 Vagrantfile.local
 /logs
@@ -46,6 +45,6 @@ tests/venv
 .cache
 
 docs/generated/
-docs-venv/
 
 .release-settings.json
+gradle/wrapper/

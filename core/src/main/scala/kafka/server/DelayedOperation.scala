@@ -19,7 +19,7 @@ package kafka.server
 
 import java.util.concurrent._
 import java.util.concurrent.atomic._
-import java.util.concurrent.locks.{Lock, ReentrantLock, ReentrantReadWriteLock}
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 import com.yammer.metrics.core.Gauge
 import kafka.metrics.KafkaMetricsGroup
@@ -43,13 +43,9 @@ import scala.collection.mutable.ListBuffer
  *
  * A subclass of DelayedOperation needs to provide an implementation of both onComplete() and tryComplete().
  */
-abstract class DelayedOperation(override val delayMs: Long,
-    lockOpt: Option[Lock] = None) extends TimerTask with Logging {
+abstract class DelayedOperation(override val delayMs: Long) extends TimerTask with Logging {
 
   private val completed = new AtomicBoolean(false)
-  private val tryCompletePending = new AtomicBoolean(false)
-  // Visible for testing
-  private[server] val lock: Lock = lockOpt.getOrElse(new ReentrantLock)
 
   /*
    * Force completing the delayed operation, if not already completed.
@@ -71,6 +67,12 @@ abstract class DelayedOperation(override val delayMs: Long,
       true
     } else {
       false
+    }
+  }
+
+  def safeForceComplete(): Boolean = {
+    synchronized {
+      forceComplete()
     }
   }
 
@@ -100,40 +102,13 @@ abstract class DelayedOperation(override val delayMs: Long,
   def tryComplete(): Boolean
 
   /**
-   * Thread-safe variant of tryComplete() that attempts completion only if the lock can be acquired
-   * without blocking.
-   *
-   * If threadA acquires the lock and performs the check for completion before completion criteria is met
-   * and threadB satisfies the completion criteria, but fails to acquire the lock because threadA has not
-   * yet released the lock, we need to ensure that completion is attempted again without blocking threadA
-   * or threadB. `tryCompletePending` is set by threadB when it fails to acquire the lock and at least one
-   * of threadA or threadB will attempt completion of the operation if this flag is set. This ensures that
-   * every invocation of `maybeTryComplete` is followed by at least one invocation of `tryComplete` until
-   * the operation is actually completed.
+   * Thread-safe variant of tryComplete(). This can be overridden if the operation provides its
+   * own synchronization.
    */
-  private[server] def maybeTryComplete(): Boolean = {
-    var retry = false
-    var done = false
-    do {
-      if (lock.tryLock()) {
-        try {
-          tryCompletePending.set(false)
-          done = tryComplete()
-        } finally {
-          lock.unlock()
-        }
-        // While we were holding the lock, another thread may have invoked `maybeTryComplete` and set
-        // `tryCompletePending`. In this case we should retry.
-        retry = tryCompletePending.get()
-      } else {
-        // Another thread is holding the lock. If `tryCompletePending` is already set and this thread failed to
-        // acquire the lock, then the thread that is holding the lock is guaranteed to see the flag and retry.
-        // Otherwise, we should set the flag and retry on this thread since the thread holding the lock may have
-        // released the lock and returned by the time the flag is set.
-        retry = !tryCompletePending.getAndSet(true)
-      }
-    } while (!isCompleted && retry)
-    done
+  def safeTryComplete(): Boolean = {
+    synchronized {
+      tryComplete()
+    }
   }
 
   /*
@@ -227,9 +202,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     // operation is unnecessarily added for watch. However, this is a less severe issue since the
     // expire reaper will clean it up periodically.
 
-    // At this point the only thread that can attempt this operation is this current thread
-    // Hence it is safe to tryComplete() without a lock
-    var isCompletedByMe = operation.tryComplete()
+    var isCompletedByMe = operation.safeTryComplete()
     if (isCompletedByMe)
       return true
 
@@ -246,7 +219,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
       }
     }
 
-    isCompletedByMe = operation.maybeTryComplete()
+    isCompletedByMe = operation.safeTryComplete()
     if (isCompletedByMe)
       return true
 
@@ -261,6 +234,20 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     }
 
     false
+  }
+
+  /**
+   * Check if some some delayed operations can be completed with the given watch key,
+   * and if yes complete them.（force）
+   *
+   * @return the number of completed operations during this process
+   */
+  def checkAndForceComplete(key: Any): Int = {
+    val watchers = inReadLock(removeWatchersLock) { watchersForKey.get(key) }
+    if(watchers == null)
+      0
+    else
+      watchers.forceCompleteWatched()
   }
 
   /**
@@ -311,7 +298,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    * Return the watch list of the given key, note that we need to
    * grab the removeWatchersLock to avoid the operation being added to a removed watcher list
    */
-  private def watchForOperation(key: Any, operation: T): Unit = {
+  private def watchForOperation(key: Any, operation: T) {
     inReadLock(removeWatchersLock) {
       val watcher = watchersForKey.getAndMaybePut(key)
       watcher.watch(operation)
@@ -321,7 +308,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   /*
    * Remove the key from watcher lists if its list is empty
    */
-  private def removeKeyIfEmpty(key: Any, watchers: Watchers): Unit = {
+  private def removeKeyIfEmpty(key: Any, watchers: Watchers) {
     inWriteLock(removeWatchersLock) {
       // if the current key is no longer correlated to the watchers to remove, skip
       if (watchersForKey.get(key) != watchers)
@@ -336,7 +323,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   /**
    * Shutdown the expire reaper thread
    */
-  def shutdown(): Unit = {
+  def shutdown() {
     if (reaperEnabled)
       expirationReaper.shutdown()
     timeoutTimer.shutdown()
@@ -354,8 +341,30 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     def isEmpty: Boolean = operations.isEmpty
 
     // add the element to watch
-    def watch(t: T): Unit = {
+    def watch(t: T) {
       operations.add(t)
+    }
+
+    // traverse the list and force complete some watched elements
+    def forceCompleteWatched(): Int = {
+      var completed = 0
+
+      val iter = operations.iterator()
+      while (iter.hasNext) {
+        val curr = iter.next()
+        if (curr.isCompleted) {
+          // another thread has completed this operation, just remove it
+          iter.remove()
+        } else if (curr.safeForceComplete()) {
+          iter.remove()
+          completed += 1
+        }
+      }
+
+      if (operations.isEmpty)
+        removeKeyIfEmpty(key, this)
+
+      completed
     }
 
     // traverse the list and try to complete some watched elements
@@ -368,7 +377,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
         if (curr.isCompleted) {
           // another thread has completed this operation, just remove it
           iter.remove()
-        } else if (curr.maybeTryComplete()) {
+        } else if (curr.safeTryComplete()) {
           iter.remove()
           completed += 1
         }
@@ -382,7 +391,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
 
     def cancel(): List[T] = {
       val iter = operations.iterator()
-      val cancelled = new ListBuffer[T]()
+      var cancelled = new ListBuffer[T]()
       while (iter.hasNext) {
         val curr = iter.next()
         curr.cancel()
@@ -412,7 +421,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     }
   }
 
-  def advanceClock(timeoutMs: Long): Unit = {
+  def advanceClock(timeoutMs: Long) {
     timeoutTimer.advanceClock(timeoutMs)
 
     // Trigger a purge if the number of completed but still being watched operations is larger than
@@ -436,7 +445,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     "ExpirationReaper-%d-%s".format(brokerId, purgatoryName),
     false) {
 
-    override def doWork(): Unit = {
+    override def doWork() {
       advanceClock(200L)
     }
   }

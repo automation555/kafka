@@ -22,11 +22,9 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.io.Closeable;
-import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
@@ -40,244 +38,161 @@ public interface Consumer<K, V> extends Closeable {
     /**
      * @see KafkaConsumer#assignment()
      */
-    Set<TopicPartition> assignment();
+    public Set<TopicPartition> assignment();
 
     /**
      * @see KafkaConsumer#subscription()
      */
-    Set<String> subscription();
+    public Set<String> subscription();
 
     /**
      * @see KafkaConsumer#subscribe(Collection)
      */
-    void subscribe(Collection<String> topics);
+    public void subscribe(Collection<String> topics);
 
     /**
      * @see KafkaConsumer#subscribe(Collection, ConsumerRebalanceListener)
      */
-    void subscribe(Collection<String> topics, ConsumerRebalanceListener callback);
+    public void subscribe(Collection<String> topics, ConsumerRebalanceListener callback);
+
+    /**
+     * @see KafkaConsumer#subscribe(String, ConsumerRebalanceListener)
+     */
+    public void subscribe(String topic, ConsumerRebalanceListener listener);
+
+    /**
+     * @see KafkaConsumer#subscribe(String)
+     */
+    public void subscribe(String topic);
 
     /**
      * @see KafkaConsumer#assign(Collection)
      */
-    void assign(Collection<TopicPartition> partitions);
+    public void assign(Collection<TopicPartition> partitions);
 
     /**
     * @see KafkaConsumer#subscribe(Pattern, ConsumerRebalanceListener)
     */
-    void subscribe(Pattern pattern, ConsumerRebalanceListener callback);
-
-    /**
-    * @see KafkaConsumer#subscribe(Pattern)
-    */
-    void subscribe(Pattern pattern);
+    public void subscribe(Pattern pattern, ConsumerRebalanceListener callback);
 
     /**
      * @see KafkaConsumer#unsubscribe()
      */
-    void unsubscribe();
+    public void unsubscribe();
 
     /**
      * @see KafkaConsumer#poll(long)
      */
-    @Deprecated
-    ConsumerRecords<K, V> poll(long timeout);
-
-    /**
-     * @see KafkaConsumer#poll(Duration)
-     */
-    ConsumerRecords<K, V> poll(Duration timeout);
+    public ConsumerRecords<K, V> poll(long timeout);
 
     /**
      * @see KafkaConsumer#commitSync()
      */
-    void commitSync();
-
-    /**
-     * @see KafkaConsumer#commitSync(Duration)
-     */
-    void commitSync(Duration timeout);
+    public void commitSync();
 
     /**
      * @see KafkaConsumer#commitSync(Map)
      */
-    void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets);
+    public void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets);
 
-    /**
-     * @see KafkaConsumer#commitSync(Map, Duration)
-     */
-    void commitSync(final Map<TopicPartition, OffsetAndMetadata> offsets, final Duration timeout);
     /**
      * @see KafkaConsumer#commitAsync()
      */
-    void commitAsync();
+    public void commitAsync();
 
     /**
      * @see KafkaConsumer#commitAsync(OffsetCommitCallback)
      */
-    void commitAsync(OffsetCommitCallback callback);
+    public void commitAsync(OffsetCommitCallback callback);
 
     /**
      * @see KafkaConsumer#commitAsync(Map, OffsetCommitCallback)
      */
-    void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback);
+    public void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback);
 
     /**
      * @see KafkaConsumer#seek(TopicPartition, long)
      */
-    void seek(TopicPartition partition, long offset);
-
-    /**
-     * @see KafkaConsumer#seek(TopicPartition, OffsetAndMetadata)
-     */
-    void seek(TopicPartition partition, OffsetAndMetadata offsetAndMetadata);
+    public void seek(TopicPartition partition, long offset);
 
     /**
      * @see KafkaConsumer#seekToBeginning(Collection)
      */
-    void seekToBeginning(Collection<TopicPartition> partitions);
+    public void seekToBeginning(Collection<TopicPartition> partitions);
 
     /**
      * @see KafkaConsumer#seekToEnd(Collection)
      */
-    void seekToEnd(Collection<TopicPartition> partitions);
+    public void seekToEnd(Collection<TopicPartition> partitions);
 
     /**
      * @see KafkaConsumer#position(TopicPartition)
      */
-    long position(TopicPartition partition);
-    
-    /**
-     * @see KafkaConsumer#position(TopicPartition, Duration)
-     */
-    long position(TopicPartition partition, final Duration timeout);
+    public long position(TopicPartition partition);
 
     /**
      * @see KafkaConsumer#committed(TopicPartition)
      */
-    @Deprecated
-    OffsetAndMetadata committed(TopicPartition partition);
-
-    /**
-     * @see KafkaConsumer#committed(TopicPartition, Duration)
-     */
-    @Deprecated
-    OffsetAndMetadata committed(TopicPartition partition, final Duration timeout);
-
-    /**
-     * @see KafkaConsumer#committed(Set)
-     */
-    Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions);
-
-    /**
-     * @see KafkaConsumer#committed(Set, Duration)
-     */
-    Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions, final Duration timeout);
+    public OffsetAndMetadata committed(TopicPartition partition);
 
     /**
      * @see KafkaConsumer#metrics()
      */
-    Map<MetricName, ? extends Metric> metrics();
+    public Map<MetricName, ? extends Metric> metrics();
 
     /**
      * @see KafkaConsumer#partitionsFor(String)
      */
-    List<PartitionInfo> partitionsFor(String topic);
-
-    /**
-     * @see KafkaConsumer#partitionsFor(String, Duration)
-     */
-    List<PartitionInfo> partitionsFor(String topic, Duration timeout);
+    public List<PartitionInfo> partitionsFor(String topic);
 
     /**
      * @see KafkaConsumer#listTopics()
      */
-    Map<String, List<PartitionInfo>> listTopics();
-
-    /**
-     * @see KafkaConsumer#listTopics(Duration)
-     */
-    Map<String, List<PartitionInfo>> listTopics(Duration timeout);
+    public Map<String, List<PartitionInfo>> listTopics();
 
     /**
      * @see KafkaConsumer#paused()
      */
-    Set<TopicPartition> paused();
+    public Set<TopicPartition> paused();
 
     /**
      * @see KafkaConsumer#pause(Collection)
      */
-    void pause(Collection<TopicPartition> partitions);
+    public void pause(Collection<TopicPartition> partitions);
 
     /**
      * @see KafkaConsumer#resume(Collection)
      */
-    void resume(Collection<TopicPartition> partitions);
+    public void resume(Collection<TopicPartition> partitions);
 
     /**
-     * @see KafkaConsumer#offsetsForTimes(Map)
+     * @see KafkaConsumer#offsetsForTimes(java.util.Map)
      */
-    Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch);
+    public Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch);
 
     /**
-     * @see KafkaConsumer#offsetsForTimes(Map, Duration)
+     * @see KafkaConsumer#beginningOffsets(java.util.Collection)
      */
-    Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch, Duration timeout);
+    public Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions);
 
     /**
-     * @see KafkaConsumer#beginningOffsets(Collection)
+     * @see KafkaConsumer#endOffsets(java.util.Collection)
      */
-    Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions);
-
-    /**
-     * @see KafkaConsumer#beginningOffsets(Collection, Duration)
-     */
-    Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions, Duration timeout);
-
-    /**
-     * @see KafkaConsumer#endOffsets(Collection)
-     */
-    Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions);
-
-    /**
-     * @see KafkaConsumer#endOffsets(Collection, Duration)
-     */
-    Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions, Duration timeout);
-
-    /**
-     * @see KafkaConsumer#currentLag(TopicPartition)
-     */
-    OptionalLong currentLag(TopicPartition topicPartition);
-
-    /**
-     * @see KafkaConsumer#groupMetadata()
-     */
-    ConsumerGroupMetadata groupMetadata();
-
-    /**
-     * @see KafkaConsumer#enforceRebalance()
-     */
-    void enforceRebalance();
+    public Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions);
 
     /**
      * @see KafkaConsumer#close()
      */
-    void close();
+    public void close();
 
     /**
      * @see KafkaConsumer#close(long, TimeUnit)
      */
-    @Deprecated
-    void close(long timeout, TimeUnit unit);
-
-    /**
-     * @see KafkaConsumer#close(Duration)
-     */
-    void close(Duration timeout);
+    public void close(long timeout, TimeUnit unit);
 
     /**
      * @see KafkaConsumer#wakeup()
      */
-    void wakeup();
+    public void wakeup();
 
 }

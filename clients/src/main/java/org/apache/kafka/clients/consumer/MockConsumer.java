@@ -25,7 +25,6 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -44,23 +43,23 @@ import java.util.regex.Pattern;
 /**
  * A mock of the {@link Consumer} interface you can use for testing code that uses Kafka. This class is <i> not
  * threadsafe </i>. However, you can use the {@link #schedulePollTask(Runnable)} method to write multithreaded tests
- * where a driver thread waits for {@link #poll(Duration)} to be called by a background thread and then can safely perform
+ * where a driver thread waits for {@link #poll(long)} to be called by a background thread and then can safely perform
  * operations during a callback.
  */
 public class MockConsumer<K, V> implements Consumer<K, V> {
 
     private final Map<String, List<PartitionInfo>> partitions;
     private final SubscriptionState subscriptions;
-    private final Map<TopicPartition, Long> beginningOffsets;
-    private final Map<TopicPartition, List<Long>> endOffsets;
-    private final Map<TopicPartition, OffsetAndMetadata> committed;
-    private final Queue<Runnable> pollTasks;
-    private final Set<TopicPartition> paused;
-
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> records;
-    private KafkaException exception;
-    private AtomicBoolean wakeup;
+    private Set<TopicPartition> paused;
     private boolean closed;
+    private final Map<TopicPartition, Long> beginningOffsets;
+    private final Map<TopicPartition, Long> endOffsets;
+
+    private Queue<Runnable> pollTasks;
+    private KafkaException exception;
+
+    private AtomicBoolean wakeup;
 
     public MockConsumer(OffsetResetStrategy offsetResetStrategy) {
         this.subscriptions = new SubscriptionState(offsetResetStrategy);
@@ -73,35 +72,33 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         this.pollTasks = new LinkedList<>();
         this.exception = null;
         this.wakeup = new AtomicBoolean(false);
-        this.committed = new HashMap<>();
     }
 
     @Override
-    public synchronized Set<TopicPartition> assignment() {
+    public Set<TopicPartition> assignment() {
         return this.subscriptions.assignedPartitions();
     }
 
     /** Simulate a rebalance event. */
-    public synchronized void rebalance(Collection<TopicPartition> newAssignment) {
+    public void rebalance(Collection<TopicPartition> newAssignment) {
         // TODO: Rebalance callbacks
         this.records.clear();
         this.subscriptions.assignFromSubscribed(newAssignment);
     }
 
     @Override
-    public synchronized Set<String> subscription() {
+    public Set<String> subscription() {
         return this.subscriptions.subscription();
     }
 
     @Override
-    public synchronized void subscribe(Collection<String> topics) {
+    public void subscribe(Collection<String> topics) {
         subscribe(topics, new NoOpConsumerRebalanceListener());
     }
 
     @Override
-    public synchronized void subscribe(Pattern pattern, final ConsumerRebalanceListener listener) {
+    public void subscribe(Pattern pattern, final ConsumerRebalanceListener listener) {
         ensureNotClosed();
-        committed.clear();
         this.subscriptions.subscribe(pattern, listener);
         Set<String> topicsToSubscribe = new HashSet<>();
         for (String topic: partitions.keySet()) {
@@ -111,50 +108,38 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         }
         ensureNotClosed();
         this.subscriptions.subscribeFromPattern(topicsToSubscribe);
-        final Set<TopicPartition> assignedPartitions = new HashSet<>();
-        for (final String topic : topicsToSubscribe) {
-            for (final PartitionInfo info : this.partitions.get(topic)) {
-                assignedPartitions.add(new TopicPartition(topic, info.partition()));
-            }
-
-        }
-        subscriptions.assignFromSubscribed(assignedPartitions);
     }
 
     @Override
-    public synchronized void subscribe(Pattern pattern) {
-        subscribe(pattern, new NoOpConsumerRebalanceListener());
-    }
-
-    @Override
-    public synchronized void subscribe(Collection<String> topics, final ConsumerRebalanceListener listener) {
+    public void subscribe(Collection<String> topics, final ConsumerRebalanceListener listener) {
         ensureNotClosed();
-        committed.clear();
         this.subscriptions.subscribe(new HashSet<>(topics), listener);
     }
 
     @Override
-    public synchronized void assign(Collection<TopicPartition> partitions) {
+    public void subscribe(String topic, ConsumerRebalanceListener listener) {
+        subscribe(Collections.singleton(topic), listener);
+    }
+
+    @Override
+    public void subscribe(String topic) {
+        subscribe(topic, new NoOpConsumerRebalanceListener());
+    }
+
+    @Override
+    public void assign(Collection<TopicPartition> partitions) {
         ensureNotClosed();
-        committed.clear();
         this.subscriptions.assignFromUser(new HashSet<>(partitions));
     }
 
     @Override
-    public synchronized void unsubscribe() {
+    public void unsubscribe() {
         ensureNotClosed();
-        committed.clear();
         subscriptions.unsubscribe();
     }
 
-    @Deprecated
     @Override
-    public synchronized ConsumerRecords<K, V> poll(long timeout) {
-        return poll(Duration.ZERO);
-    }
-
-    @Override
-    public synchronized ConsumerRecords<K, V> poll(final Duration timeout) {
+    public ConsumerRecords<K, V> poll(long timeout) {
         ensureNotClosed();
 
         // Synchronize around the entire execution so new tasks to be triggered on subsequent poll calls can be added in
@@ -177,9 +162,8 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         }
 
         // Handle seeks that need to wait for a poll() call to be processed
-        for (TopicPartition tp : subscriptions.assignedPartitions())
-            if (!subscriptions.hasValidPosition(tp))
-                updateFetchPosition(tp);
+        for (TopicPartition tp : subscriptions.missingFetchPositions())
+            updateFetchPosition(tp);
 
         // update the consumed offset
         final Map<TopicPartition, List<ConsumerRecord<K, V>>> results = new HashMap<>();
@@ -202,7 +186,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         return new ConsumerRecords<>(results);
     }
 
-    public synchronized void addRecord(ConsumerRecord<K, V> record) {
+    public void addRecord(ConsumerRecord<K, V> record) {
         ensureNotClosed();
         TopicPartition tp = new TopicPartition(record.topic(), record.partition());
         Set<TopicPartition> currentAssigned = new HashSet<>(this.subscriptions.assignedPartitions());
@@ -210,79 +194,64 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
             throw new IllegalStateException("Cannot add records for a partition that is not assigned to the consumer");
         List<ConsumerRecord<K, V>> recs = this.records.get(tp);
         if (recs == null) {
-            recs = new ArrayList<>();
+            recs = new ArrayList<ConsumerRecord<K, V>>();
             this.records.put(tp, recs);
         }
         recs.add(record);
     }
 
-    public synchronized void setException(KafkaException exception) {
+    public void setException(KafkaException exception) {
         this.exception = exception;
     }
 
     @Override
-    public synchronized void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback) {
+    public void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback) {
         ensureNotClosed();
         for (Map.Entry<TopicPartition, OffsetAndMetadata> entry : offsets.entrySet())
-            committed.put(entry.getKey(), entry.getValue());
+            subscriptions.committed(entry.getKey(), entry.getValue());
         if (callback != null) {
             callback.onComplete(offsets, null);
         }
     }
 
     @Override
-    public synchronized void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
+    public void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets) {
         commitAsync(offsets, null);
     }
 
     @Override
-    public synchronized void commitAsync() {
+    public void commitAsync() {
         commitAsync(null);
     }
 
     @Override
-    public synchronized void commitAsync(OffsetCommitCallback callback) {
+    public void commitAsync(OffsetCommitCallback callback) {
         ensureNotClosed();
         commitAsync(this.subscriptions.allConsumed(), callback);
     }
 
     @Override
-    public synchronized void commitSync() {
+    public void commitSync() {
         commitSync(this.subscriptions.allConsumed());
     }
 
     @Override
-    public synchronized void commitSync(Duration timeout) {
-        commitSync(this.subscriptions.allConsumed());
-    }
-
-    @Override
-    public void commitSync(Map<TopicPartition, OffsetAndMetadata> offsets, final Duration timeout) {
-        commitSync(offsets);
-    }
-
-    @Override
-    public synchronized void seek(TopicPartition partition, long offset) {
+    public void seek(TopicPartition partition, long offset) {
         ensureNotClosed();
         subscriptions.seek(partition, offset);
     }
 
     @Override
-    public synchronized OffsetAndMetadata committed(TopicPartition partition) {
+    public OffsetAndMetadata committed(TopicPartition partition) {
         ensureNotClosed();
         if (subscriptions.isAssigned(partition)) {
-            return committed.get(partition);
+            return subscriptions.committed(partition);
         }
         return new OffsetAndMetadata(0);
     }
 
     @Override
-    public OffsetAndMetadata committed(TopicPartition partition, final Duration timeout) {
-        return committed(partition);
-    }
-
-    @Override
-    public synchronized long position(TopicPartition partition) {
+    public long position(TopicPartition partition) {
         ensureNotClosed();
         if (!this.subscriptions.isAssigned(partition))
             throw new IllegalArgumentException("You can only check the position for partitions assigned to this consumer.");
@@ -295,75 +264,52 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public synchronized long position(TopicPartition partition, final Duration timeout) {
-        return position(partition);
-    }
-
-    @Override
-    public synchronized void seekToBeginning(Collection<TopicPartition> partitions) {
+    public void seekToBeginning(Collection<TopicPartition> partitions) {
         ensureNotClosed();
         for (TopicPartition tp : partitions)
-            subscriptions.requestOffsetReset(tp, OffsetResetStrategy.EARLIEST);
+            subscriptions.needOffsetReset(tp, OffsetResetStrategy.EARLIEST);
     }
 
-    public synchronized void updateBeginningOffsets(Map<TopicPartition, Long> newOffsets) {
+    public void updateBeginningOffsets(Map<TopicPartition, Long> newOffsets) {
         beginningOffsets.putAll(newOffsets);
     }
 
     @Override
-    public synchronized void seekToEnd(Collection<TopicPartition> partitions) {
+    public void seekToEnd(Collection<TopicPartition> partitions) {
         ensureNotClosed();
         for (TopicPartition tp : partitions)
-            subscriptions.requestOffsetReset(tp, OffsetResetStrategy.LATEST);
+            subscriptions.needOffsetReset(tp, OffsetResetStrategy.LATEST);
     }
 
-    // needed for cases where you make a second call to endOffsets
-    public synchronized void addEndOffsets(final Map<TopicPartition, Long> newOffsets) {
-        innerUpdateEndOffsets(newOffsets, false);
-    }
-
-    public synchronized void updateEndOffsets(final Map<TopicPartition, Long> newOffsets) {
-        innerUpdateEndOffsets(newOffsets, true);
-    }
-
-    private void innerUpdateEndOffsets(final Map<TopicPartition, Long> newOffsets,
-                                       final boolean replace) {
-
-        for (final Map.Entry<TopicPartition, Long> entry : newOffsets.entrySet()) {
-            List<Long> offsets = endOffsets.get(entry.getKey());
-            if (replace || offsets == null) {
-                offsets = new ArrayList<>();
-            }
-            offsets.add(entry.getValue());
-            endOffsets.put(entry.getKey(), offsets);
-        }
+    public void updateEndOffsets(Map<TopicPartition, Long> newOffsets) {
+        endOffsets.putAll(newOffsets);
     }
 
     @Override
-    public synchronized Map<MetricName, ? extends Metric> metrics() {
+    public Map<MetricName, ? extends Metric> metrics() {
         ensureNotClosed();
         return Collections.emptyMap();
     }
 
     @Override
-    public synchronized List<PartitionInfo> partitionsFor(String topic) {
+    public List<PartitionInfo> partitionsFor(String topic) {
         ensureNotClosed();
         return this.partitions.get(topic);
     }
 
     @Override
-    public synchronized Map<String, List<PartitionInfo>> listTopics() {
+    public Map<String, List<PartitionInfo>> listTopics() {
         ensureNotClosed();
         return partitions;
     }
 
-    public synchronized void updatePartitions(String topic, List<PartitionInfo> partitions) {
+    public void updatePartitions(String topic, List<PartitionInfo> partitions) {
         ensureNotClosed();
         this.partitions.put(topic, partitions);
     }
 
     @Override
-    public synchronized void pause(Collection<TopicPartition> partitions) {
+    public void pause(Collection<TopicPartition> partitions) {
         for (TopicPartition partition : partitions) {
             subscriptions.pause(partition);
             paused.add(partition);
@@ -371,7 +317,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public synchronized void resume(Collection<TopicPartition> partitions) {
+    public void resume(Collection<TopicPartition> partitions) {
         for (TopicPartition partition : partitions) {
             subscriptions.resume(partition);
             paused.remove(partition);
@@ -379,28 +325,12 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public synchronized Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch) {
-        Map<TopicPartition, OffsetAndTimestamp> result = new HashMap<>();
-        for (TopicPartition tp : timestampsToSearch.keySet()) {
-            Long timestamp = timestampsToSearch.get(tp);
-            List<ConsumerRecord<K, V>> topicRecords = records.get(tp);
-            if (topicRecords == null) {
-                continue;
-            }
-            OffsetAndTimestamp ot = null;
-            for (ConsumerRecord record : topicRecords) {
-                if (record.timestamp() >= timestamp) {
-                    ot = new OffsetAndTimestamp(record.offset(), record.timestamp());
-                    break;
-                }
-            }
-            result.put(tp, ot);
-        }
-        return result;
+    public Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch) {
+        throw new UnsupportedOperationException("Not implemented yet.");
     }
 
     @Override
-    public synchronized Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions) {
+    public Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions) {
         Map<TopicPartition, Long> result = new HashMap<>();
         for (TopicPartition tp : partitions) {
             Long beginningOffset = beginningOffsets.get(tp);
@@ -412,10 +342,10 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public synchronized Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions) {
+    public Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions) {
         Map<TopicPartition, Long> result = new HashMap<>();
         for (TopicPartition tp : partitions) {
-            Long endOffset = getEndOffset(endOffsets.get(tp));
+            Long endOffset = endOffsets.get(tp);
             if (endOffset == null)
                 throw new IllegalStateException("The partition " + tp + " does not have an end offset.");
             result.put(tp, endOffset);
@@ -424,37 +354,37 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
         close(KafkaConsumer.DEFAULT_CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     @Override
-    public synchronized void close(long timeout, TimeUnit unit) {
+    public void close(long timeout, TimeUnit unit) {
         ensureNotClosed();
         this.closed = true;
     }
 
-    public synchronized boolean closed() {
+    public boolean closed() {
         return this.closed;
     }
 
     @Override
-    public synchronized void wakeup() {
+    public void wakeup() {
         wakeup.set(true);
     }
 
     /**
-     * Schedule a task to be executed during a poll(). One enqueued task will be executed per {@link #poll(Duration)}
+     * Schedule a task to be executed during a poll(). One enqueued task will be executed per {@link #poll(long)}
      * invocation. You can use this repeatedly to mock out multiple responses to poll invocations.
      * @param task the task to be executed
      */
-    public synchronized void schedulePollTask(Runnable task) {
+    public void schedulePollTask(Runnable task) {
         synchronized (pollTasks) {
             pollTasks.add(task);
         }
     }
 
-    public synchronized void scheduleNopPollTask() {
+    public void scheduleNopPollTask() {
         schedulePollTask(new Runnable() {
             @Override
             public void run() {
@@ -463,7 +393,7 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
         });
     }
 
-    public synchronized Set<TopicPartition> paused() {
+    public Set<TopicPartition> paused() {
         return Collections.unmodifiableSet(new HashSet<>(paused));
     }
 
@@ -475,11 +405,11 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
     private void updateFetchPosition(TopicPartition tp) {
         if (subscriptions.isOffsetResetNeeded(tp)) {
             resetOffsetPosition(tp);
-        } else if (!committed.containsKey(tp)) {
-            subscriptions.requestOffsetReset(tp);
+        } else if (subscriptions.committed(tp) == null) {
+            subscriptions.needOffsetReset(tp);
             resetOffsetPosition(tp);
         } else {
-            subscriptions.seek(tp, committed.get(tp).offset());
+            subscriptions.seek(tp, subscriptions.committed(tp).offset());
         }
     }
 
@@ -491,50 +421,12 @@ public class MockConsumer<K, V> implements Consumer<K, V> {
             if (offset == null)
                 throw new IllegalStateException("MockConsumer didn't have beginning offset specified, but tried to seek to beginning");
         } else if (strategy == OffsetResetStrategy.LATEST) {
-            offset = getEndOffset(endOffsets.get(tp));
+            offset = endOffsets.get(tp);
             if (offset == null)
                 throw new IllegalStateException("MockConsumer didn't have end offset specified, but tried to seek to end");
         } else {
             throw new NoOffsetForPartitionException(tp);
         }
         seek(tp, offset);
-    }
-
-    private Long getEndOffset(List<Long> offsets) {
-        if (offsets == null || offsets.isEmpty()) {
-            return null;
-        }
-        return offsets.size() > 1 ? offsets.remove(0) : offsets.get(0);
-    }
-
-    @Override
-    public List<PartitionInfo> partitionsFor(String topic, Duration timeout) {
-        return partitionsFor(topic);
-    }
-
-    @Override
-    public Map<String, List<PartitionInfo>> listTopics(Duration timeout) {
-        return listTopics();
-    }
-
-    @Override
-    public Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestampsToSearch,
-            Duration timeout) {
-        return offsetsForTimes(timestampsToSearch);
-    }
-
-    @Override
-    public Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions, Duration timeout) {
-        return beginningOffsets(partitions);
-    }
-
-    @Override
-    public Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions, Duration timeout) {
-        return endOffsets(partitions);
-    }
-
-    @Override
-    public void close(Duration timeout) {
-        close();
     }
 }

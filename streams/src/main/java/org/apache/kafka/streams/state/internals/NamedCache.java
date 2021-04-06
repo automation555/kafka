@@ -16,38 +16,40 @@
  */
 package org.apache.kafka.streams.state.internals;
 
-import java.util.NavigableMap;
-import java.util.TreeMap;
-import java.util.TreeSet;
-
 import org.apache.kafka.common.metrics.Sensor;
+import org.apache.kafka.common.metrics.stats.Avg;
+import org.apache.kafka.common.metrics.stats.Max;
+import org.apache.kafka.common.metrics.stats.Min;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
-import org.apache.kafka.streams.state.internals.metrics.NamedCacheMetrics;
+import org.apache.kafka.streams.StreamsMetrics;
+import org.apache.kafka.streams.processor.internals.StreamsMetricsImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 class NamedCache {
     private static final Logger log = LoggerFactory.getLogger(NamedCache.class);
+
     private final String name;
-    private final String storeName;
-    private final String taskName;
-    private final NavigableMap<Bytes, LRUNode> cache = new TreeMap<>();
+    private final TreeMap<Bytes, LRUNode> cache;
     private final Set<Bytes> dirtyKeys = new LinkedHashSet<>();
-    private ThreadCache.DirtyEntryFlushListener listener;
+    private final NamedCacheMetrics namedCacheMetrics;
+
     private LRUNode tail;
     private LRUNode head;
     private long currentSizeBytes;
-
-    private final StreamsMetricsImpl streamsMetrics;
-    private final Sensor hitRatioSensor;
+    private ThreadCache.DirtyEntryFlushListener listener;
 
     // internal stats
     private long numReadHits = 0;
@@ -55,17 +57,33 @@ class NamedCache {
     private long numOverwrites = 0;
     private long numFlushes = 0;
 
-    NamedCache(final String name, final StreamsMetricsImpl streamsMetrics) {
+    private static class WrappedBytesComparator implements Comparator<Bytes>, Serializable {
+
+        private final Bytes.ByteArrayComparator inner;
+
+        WrappedBytesComparator(Bytes.ByteArrayComparator inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public int compare(Bytes bytes1, Bytes bytes2) {
+            // note the reason we can directly call the inner compare is that
+            // segment id is a fixed prefix, so comparing it together with the
+            // raw key in the underlying comparator is fine.
+            return inner.compare(bytes1.get(), bytes2.get());
+        }
+    }
+
+
+    // this is for testing only
+    NamedCache(final String name, final StreamsMetrics metrics) {
+        this(name, metrics, Bytes.BYTES_LEXICO_COMPARATOR);
+    }
+
+    NamedCache(final String name, final StreamsMetrics metrics, final Bytes.ByteArrayComparator comparator) {
         this.name = name;
-        this.streamsMetrics = streamsMetrics;
-        storeName = ThreadCache.underlyingStoreNamefromCacheName(name);
-        taskName = ThreadCache.taskIDfromCacheName(name);
-        hitRatioSensor = NamedCacheMetrics.hitRatioSensor(
-            streamsMetrics,
-            Thread.currentThread().getName(),
-            taskName,
-            storeName
-        );
+        this.namedCacheMetrics = new NamedCacheMetrics(metrics, name);
+        this.cache = new TreeMap<>(new WrappedBytesComparator(comparator));
     }
 
     synchronized final String name() {
@@ -131,7 +149,7 @@ class NamedCache {
         // evicted already been removed from the cache so add it to the list of
         // flushed entries and remove from dirtyKeys.
         if (evicted != null) {
-            entries.add(new ThreadCache.DirtyEntry(evicted.key, evicted.entry.value(), evicted.entry));
+            entries.add(new ThreadCache.DirtyEntry(evicted.key, evicted.entry.value, evicted.entry));
             dirtyKeys.remove(evicted.key);
         }
 
@@ -140,9 +158,9 @@ class NamedCache {
             if (node == null) {
                 throw new IllegalStateException("Key = " + key + " found in dirty key set, but entry is null");
             }
-            entries.add(new ThreadCache.DirtyEntry(key, node.entry.value(), node.entry));
+            entries.add(new ThreadCache.DirtyEntry(key, node.entry.value, node.entry));
             node.entry.markClean();
-            if (node.entry.value() == null) {
+            if (node.entry.value == null) {
                 deleted.add(node.key);
             }
         }
@@ -196,7 +214,7 @@ class NamedCache {
             return null;
         } else {
             numReadHits++;
-            hitRatioSensor.record((double) numReadHits / (double) (numReadHits + numReadMisses));
+            namedCacheMetrics.hitRatioSensor.record((double) numReadHits / (double) (numReadHits + numReadMisses));
         }
         return node;
     }
@@ -267,6 +285,7 @@ class NamedCache {
         }
 
         remove(node);
+        cache.remove(key);
         dirtyKeys.remove(key);
         currentSizeBytes -= node.size();
         return node.entry();
@@ -276,32 +295,16 @@ class NamedCache {
         return cache.size();
     }
 
-    public boolean isEmpty() {
-        return cache.isEmpty();
+    synchronized Iterator<Bytes> keyRange(final Bytes from, final Bytes to) {
+        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, true));
     }
 
-    synchronized Iterator<Bytes> keyRange(final Bytes from, final Bytes to, final boolean toInclusive) {
-        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, toInclusive), true);
-    }
-
-    synchronized Iterator<Bytes> reverseKeyRange(final Bytes from, final Bytes to) {
-        return keySetIterator(cache.navigableKeySet().subSet(from, true, to, true), false);
-    }
-
-    private Iterator<Bytes> keySetIterator(final Set<Bytes> keySet, final boolean forward) {
-        if (forward) {
-            return new TreeSet<>(keySet).iterator();
-        } else {
-            return new TreeSet<>(keySet).descendingIterator();
-        }
+    private Iterator<Bytes> keySetIterator(final Set<Bytes> keySet) {
+        return new TreeSet<>(keySet).iterator();
     }
 
     synchronized Iterator<Bytes> allKeys() {
-        return keySetIterator(cache.navigableKeySet(), true);
-    }
-
-    synchronized Iterator<Bytes> reverseAllKeys() {
-        return keySetIterator(cache.navigableKeySet(), false);
+        return keySetIterator(cache.navigableKeySet());
     }
 
     synchronized LRUCacheEntry first() {
@@ -332,7 +335,7 @@ class NamedCache {
         currentSizeBytes = 0;
         dirtyKeys.clear();
         cache.clear();
-        streamsMetrics.removeAllCacheLevelSensors(Thread.currentThread().getName(), taskName, storeName);
+        namedCacheMetrics.removeAllSensors();
     }
 
     /**
@@ -378,4 +381,47 @@ class NamedCache {
         }
     }
 
+    private static class NamedCacheMetrics {
+        private final StreamsMetricsImpl metrics;
+        private final String groupName;
+        private final Map<String, String> metricTags;
+        private final Map<String, String> allMetricTags;
+        private final Sensor hitRatioSensor;
+
+        private NamedCacheMetrics(final StreamsMetrics metrics, final String name) {
+            final String scope = "record-cache";
+            final String opName = "hitRatio";
+            final String tagKey = scope + "-id";
+            final String tagValue = ThreadCache.underlyingStoreNamefromCacheName(name);
+            this.groupName = "stream-" + scope + "-metrics";
+            this.metrics = (StreamsMetricsImpl) metrics;
+            this.allMetricTags = ((StreamsMetricsImpl) metrics).tagMap(tagKey, "all",
+                "task-id", ThreadCache.taskIDfromCacheName(name));
+            this.metricTags = ((StreamsMetricsImpl) metrics).tagMap(tagKey, tagValue,
+                "task-id", ThreadCache.taskIDfromCacheName(name));
+
+            // add parent
+            final Sensor parent = this.metrics.registry().sensor(opName, Sensor.RecordingLevel.DEBUG);
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(parent, this.metrics.registry().metricName(opName + "-avg", groupName,
+                "The average cache hit ratio.", allMetricTags), new Avg());
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(parent, this.metrics.registry().metricName(opName + "-min", groupName,
+                "The minimum cache hit ratio.", allMetricTags), new Min());
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(parent, this.metrics.registry().metricName(opName + "-max", groupName,
+                "The maximum cache hit ratio.", allMetricTags), new Max());
+
+            // add child
+            hitRatioSensor = this.metrics.registry().sensor(opName, Sensor.RecordingLevel.DEBUG, parent);
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(hitRatioSensor, this.metrics.registry().metricName(opName + "-avg", groupName,
+                "The average cache hit ratio.", metricTags), new Avg());
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(hitRatioSensor, this.metrics.registry().metricName(opName + "-min", groupName,
+                "The minimum cache hit ratio.", metricTags), new Min());
+            ((StreamsMetricsImpl) metrics).maybeAddMetric(hitRatioSensor, this.metrics.registry().metricName(opName + "-max", groupName,
+                "The maximum cache hit ratio.", metricTags), new Max());
+
+        }
+
+        private void removeAllSensors() {
+            metrics.removeSensor(hitRatioSensor);
+        }
+    }
 }

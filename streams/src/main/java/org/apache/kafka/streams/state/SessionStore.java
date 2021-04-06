@@ -16,23 +16,44 @@
  */
 package org.apache.kafka.streams.state;
 
-import org.apache.kafka.streams.kstream.Window;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.processor.StateStore;
 
 /**
- * Interface for storing the aggregated values of sessions.
- * <p>
- * The key is internally represented as {@link Windowed Windowed&lt;K&gt;} that comprises the plain key
- * and the {@link Window} that represents window start- and end-timestamp.
- * <p>
- * If two sessions are merged, a new session with new start- and end-timestamp must be inserted into the store
- * while the two old sessions must be deleted.
- *
+ * Interface for storing the aggregated values of sessions
  * @param <K>   type of the record keys
  * @param <AGG> type of the aggregated values
  */
 public interface SessionStore<K, AGG> extends StateStore, ReadOnlySessionStore<K, AGG> {
+
+    /**
+     * Fetch any sessions with the matching key and the sessions end is &ge; earliestSessionEndTime and the sessions
+     * start is &le; latestSessionStartTime
+     *
+     * This iterator must be closed after use.
+     *
+     * @param key the key to return sessions for
+     * @param earliestSessionEndTime the end timestamp of the earliest session to search for
+     * @param latestSessionStartTime the start timestamp of the latest session to search for
+     * @return iterator of sessions with the matching key and aggregated values
+     * @throws NullPointerException If null is used for key.
+     */
+    KeyValueIterator<Windowed<K>, AGG> findSessions(final K key, long earliestSessionEndTime, final long latestSessionStartTime);
+
+    /**
+     * Fetch any sessions in the given range of keys and the sessions end is &ge; earliestSessionEndTime and the sessions
+     * start is &le; latestSessionStartTime
+     *
+     * This iterator must be closed after use.
+     *
+     * @param keyFrom The first key that could be in the range
+     * @param keyTo The last key that could be in the range
+     * @param earliestSessionEndTime the end timestamp of the earliest session to search for
+     * @param latestSessionStartTime the start timestamp of the latest session to search for
+     * @return iterator of sessions with the matching keys and aggregated values
+     * @throws NullPointerException If null is used for any key.
+     */
+    KeyValueIterator<Windowed<K>, AGG> findSessions(final K keyFrom, final K keyTo, long earliestSessionEndTime, final long latestSessionStartTime);
 
     /**
      * Remove the session aggregated with provided {@link Windowed} key from the store

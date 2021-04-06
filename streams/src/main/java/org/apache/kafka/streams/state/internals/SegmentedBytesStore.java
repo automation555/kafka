@@ -41,16 +41,6 @@ public interface SegmentedBytesStore extends StateStore {
     KeyValueIterator<Bytes, byte[]> fetch(final Bytes key, final long from, final long to);
 
     /**
-     * Fetch all records from the segmented store with the provided key and time range
-     * from all existing segments in backward order (from latest to earliest)
-     * @param key       the key to match
-     * @param from      earliest time to match
-     * @param to        latest time to match
-     * @return  an iterator over key-value pairs
-     */
-    KeyValueIterator<Bytes, byte[]> backwardFetch(final Bytes key, final long from, final long to);
-
-    /**
      * Fetch all records from the segmented store in the provided key range and time range
      * from all existing segments
      * @param keyFrom   The first key that could be in the range
@@ -60,18 +50,7 @@ public interface SegmentedBytesStore extends StateStore {
      * @return  an iterator over key-value pairs
      */
     KeyValueIterator<Bytes, byte[]> fetch(final Bytes keyFrom, final Bytes keyTo, final long from, final long to);
-
-    /**
-     * Fetch all records from the segmented store in the provided key range and time range
-     * from all existing segments in backward order (from latest to earliest)
-     * @param keyFrom   The first key that could be in the range
-     * @param keyTo     The last key that could be in the range
-     * @param from      earliest time to match
-     * @param to        latest time to match
-     * @return  an iterator over key-value pairs
-     */
-    KeyValueIterator<Bytes, byte[]> backwardFetch(final Bytes keyFrom, final Bytes keyTo, final long from, final long to);
-
+    
     /**
      * Gets all the key-value pairs in the existing windows.
      *
@@ -79,15 +58,7 @@ public interface SegmentedBytesStore extends StateStore {
      * @throws InvalidStateStoreException if the store is not initialized
      */
     KeyValueIterator<Bytes, byte[]> all();
-
-    /**
-     * Gets all the key-value pairs in the existing windows in backward order (from latest to earliest).
-     *
-     * @return an iterator over windowed key-value pairs {@code <Windowed<K>, value>}
-     * @throws InvalidStateStoreException if the store is not initialized
-     */
-    KeyValueIterator<Bytes, byte[]> backwardAll();
-
+    
     /**
      * Gets all the key-value pairs that belong to the windows within in the given time range.
      *
@@ -98,8 +69,6 @@ public interface SegmentedBytesStore extends StateStore {
      * @throws NullPointerException if null is used for any key
      */
     KeyValueIterator<Bytes, byte[]> fetchAll(final long from, final long to);
-
-    KeyValueIterator<Bytes, byte[]> backwardFetchAll(final long from, final long to);
 
     /**
      * Remove the record with the provided key. The key
@@ -130,54 +99,33 @@ public interface SegmentedBytesStore extends StateStore {
     interface KeySchema {
 
         /**
-         * Given a range of record keys and a time, construct a Segmented key that represents
+         * Initialized the schema with a topic.
+         *
+         * @param topic a topic name
+         */
+        void init(final String topic);
+
+        /**
+         * Given a range of fixed size record keys and a time, construct a Segmented key that represents
          * the upper range of keys to search when performing range queries.
-         * @see SessionKeySchema#upperRange
-         * @see WindowKeySchema#upperRange
-         * @param key
-         * @param to
-         * @return      The key that represents the upper range to search for in the store
+         * @param key the last key in the range
+         * @param to the last timestamp in the range
+         * @return The key that represents the upper range to search for in the store
          */
         Bytes upperRange(final Bytes key, final long to);
 
         /**
-         * Given a range of record keys and a time, construct a Segmented key that represents
+         * Given a range of fixed size record keys and a time, construct a Segmented key that represents
          * the lower range of keys to search when performing range queries.
-         * @see SessionKeySchema#lowerRange
-         * @see WindowKeySchema#lowerRange
-         * @param key
-         * @param from
+         * @param key the first key in the range
+         * @param from the first timestamp in the range
          * @return      The key that represents the lower range to search for in the store
          */
         Bytes lowerRange(final Bytes key, final long from);
 
         /**
-         * Given a range of fixed size record keys and a time, construct a Segmented key that represents
-         * the upper range of keys to search when performing range queries.
-         * @see SessionKeySchema#upperRange
-         * @see WindowKeySchema#upperRange
-         * @param key the last key in the range
-         * @param to the last timestamp in the range
-         * @return The key that represents the upper range to search for in the store
-         */
-        Bytes upperRangeFixedSize(final Bytes key, final long to);
-
-        /**
-         * Given a range of fixed size record keys and a time, construct a Segmented key that represents
-         * the lower range of keys to search when performing range queries.
-         * @see SessionKeySchema#lowerRange
-         * @see WindowKeySchema#lowerRange
-         * @param key the first key in the range
-         * @param from the first timestamp in the range
-         * @return      The key that represents the lower range to search for in the store
-         */
-        Bytes lowerRangeFixedSize(final Bytes key, final long from);
-
-        /**
          * Extract the timestamp of the segment from the key. The key is a composite of
          * the record-key, any timestamps, plus any additional information.
-         * @see SessionKeySchema#lowerRange
-         * @see WindowKeySchema#lowerRange
          * @param key
          * @return
          */
@@ -185,7 +133,7 @@ public interface SegmentedBytesStore extends StateStore {
 
         /**
          * Create an implementation of {@link HasNextCondition} that knows when
-         * to stop iterating over the KeyValueSegments. Used during {@link SegmentedBytesStore#fetch(Bytes, Bytes, long, long)} operations
+         * to stop iterating over the Segments. Used during {@link SegmentedBytesStore#fetch(Bytes, Bytes, long, long)} operations
          * @param binaryKeyFrom the first key in the range
          * @param binaryKeyTo   the last key in the range
          * @param from          starting time range
@@ -202,6 +150,13 @@ public interface SegmentedBytesStore extends StateStore {
          * @param to
          * @return  List of segments to search
          */
-        <S extends Segment> List<S> segmentsToSearch(Segments<S> segments, long from, long to, boolean forward);
+        List<Segment> segmentsToSearch(Segments segments, long from, long to);
+
+        // TODO: this is not declared as a static method since Java7 does not support it;
+        // once we have upgraded to Java8 we should change it to static method
+        /**
+         * Return the bytes comparator for a window key
+         */
+        Bytes.ByteArrayComparator bytesComparator();
     }
 }

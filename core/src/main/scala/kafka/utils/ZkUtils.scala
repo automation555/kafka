@@ -29,13 +29,12 @@ import kafka.server.ConfigType
 import kafka.utils.ZkUtils._
 import org.I0Itec.zkclient.exception.{ZkBadVersionException, ZkException, ZkMarshallingError, ZkNoNodeException, ZkNodeExistsException}
 import org.I0Itec.zkclient.serialize.ZkSerializer
-import org.I0Itec.zkclient.{ZkClient, ZkConnection, IZkDataListener, IZkChildListener, IZkStateListener}
+import org.I0Itec.zkclient.{ZkClient, ZkConnection}
 import org.apache.kafka.common.config.ConfigException
 import org.apache.zookeeper.AsyncCallback.{DataCallback, StringCallback}
 import org.apache.zookeeper.KeeperException.Code
 import org.apache.zookeeper.data.{ACL, Stat}
 import org.apache.zookeeper.{CreateMode, KeeperException, ZooDefs, ZooKeeper}
-import kafka.utils.Json._
 
 import scala.collection._
 import scala.collection.JavaConverters._
@@ -52,7 +51,6 @@ object ZkUtils {
   val ControllerPath = "/controller"
   val ControllerEpochPath = "/controller_epoch"
   val IsrChangeNotificationPath = "/isr_change_notification"
-  val LogDirEventNotificationPath = "/log_dir_event_notification"
   val KafkaAclPath = "/kafka-acl"
   val KafkaAclChangesPath = "/kafka-acl-changes"
 
@@ -77,8 +75,7 @@ object ZkUtils {
                               IsrChangeNotificationPath,
                               KafkaAclPath,
                               KafkaAclChangesPath,
-                              ProducerIdBlockPath,
-                              LogDirEventNotificationPath)
+                              ProducerIdBlockPath)
 
   // Important: it is necessary to add any new top level Zookeeper path that contains
   //            sensitive information that should not be world readable to the Seq
@@ -166,27 +163,44 @@ object ZkUtils {
     DeleteTopicsPath + "/" + topic
 
   // Parses without deduplicating keys so the data can be checked before allowing reassignment to proceed
-  def parsePartitionReassignmentData(jsonData: String): Map[TopicAndPartition, Seq[Int]] = {
-    val seq = for {
-      js <- Json.parseFull(jsonData).toSeq
-      partitionsSeq <- js.asJsonObject.get("partitions").toSeq
-      p <- partitionsSeq.asJsonArray.iterator
-    } yield {
-      val partitionFields = p.asJsonObject
-      val topic = partitionFields("topic").to[String]
-      val partition = partitionFields("partition").to[Int]
-      val newReplicas = partitionFields("replicas").to[Seq[Int]]
-      TopicAndPartition(topic, partition) -> newReplicas
+  def parsePartitionReassignmentDataWithoutDedup(jsonData: String): Seq[(TopicAndPartition, Seq[Int])] = {
+    Json.parseFull(jsonData) match {
+      case Some(m) =>
+        m.asInstanceOf[Map[String, Any]].get("partitions") match {
+          case Some(partitionsSeq) =>
+            partitionsSeq.asInstanceOf[Seq[Map[String, Any]]].map(p => {
+              val topic = p.get("topic").get.asInstanceOf[String]
+              val partition = p.get("partition").get.asInstanceOf[Int]
+              val newReplicas = p.get("replicas").get.asInstanceOf[Seq[Int]]
+              TopicAndPartition(topic, partition) -> newReplicas
+            })
+          case None =>
+            Seq.empty
+        }
+      case None =>
+        Seq.empty
     }
-    seq.toMap
   }
 
+  def parsePartitionReassignmentData(jsonData: String): Map[TopicAndPartition, Seq[Int]] =
+    parsePartitionReassignmentDataWithoutDedup(jsonData).toMap
+
   def parseTopicsData(jsonData: String): Seq[String] = {
-    for {
-      js <- Json.parseFull(jsonData).toSeq
-      partitionsSeq <- js.asJsonObject.get("topics").toSeq
-      p <- partitionsSeq.asJsonArray.iterator
-    } yield p.asJsonObject("topic").to[String]
+    var topics = List.empty[String]
+    Json.parseFull(jsonData) match {
+      case Some(m) =>
+        m.asInstanceOf[Map[String, Any]].get("topics") match {
+          case Some(partitionsSeq) =>
+            val mapPartitionSeq = partitionsSeq.asInstanceOf[Seq[Map[String, Any]]]
+            mapPartitionSeq.foreach(p => {
+              val topic = p.get("topic").get.asInstanceOf[String]
+              topics ++= List(topic)
+            })
+          case None =>
+        }
+      case None =>
+    }
+    topics
   }
 
   def controllerZkData(brokerId: Int, timestamp: Long): String = {
@@ -225,8 +239,7 @@ class ZkUtils(val zkClient: ZkClient,
                               DeleteTopicsPath,
                               BrokerSequenceIdPath,
                               IsrChangeNotificationPath,
-                              ProducerIdBlockPath,
-                              LogDirEventNotificationPath)
+                              ProducerIdBlockPath)
 
   // Visible for testing
   val zkPath = new ZkPath(zkClient)
@@ -254,9 +267,10 @@ class ZkUtils(val zkClient: ZkClient,
     }
 
     def fromJson(clusterIdJson: String): String = {
-      Json.parseFull(clusterIdJson).map(_.asJsonObject("id").to[String]).getOrElse {
-        throw new KafkaException(s"Failed to parse the cluster id json $clusterIdJson")
-      }
+      Json.parseFull(clusterIdJson).map { m =>
+        val clusterIdMap = m.asInstanceOf[Map[String, Any]]
+        clusterIdMap.get("id").get.asInstanceOf[String]
+      }.getOrElse(throw new KafkaException(s"Failed to parse the cluster id json $clusterIdJson"))
     }
   }
 
@@ -292,7 +306,7 @@ class ZkUtils(val zkClient: ZkClient,
 
   def getLeaderForPartition(topic: String, partition: Int): Option[Int] = {
     readDataMaybeNull(getTopicPartitionLeaderAndIsrPath(topic, partition))._1.flatMap { leaderAndIsr =>
-      Json.parseFull(leaderAndIsr).map(_.asJsonObject("leader").to[Int])
+      Json.parseFull(leaderAndIsr).map(_.asInstanceOf[Map[String, Any]]("leader").asInstanceOf[Int])
     }
   }
 
@@ -302,11 +316,12 @@ class ZkUtils(val zkClient: ZkClient,
    * other broker will retry becoming leader with the same new epoch value.
    */
   def getEpochForPartition(topic: String, partition: Int): Int = {
-    readDataMaybeNull(getTopicPartitionLeaderAndIsrPath(topic, partition))._1 match {
+    val leaderAndIsrOpt = readDataMaybeNull(getTopicPartitionLeaderAndIsrPath(topic, partition))._1
+    leaderAndIsrOpt match {
       case Some(leaderAndIsr) =>
         Json.parseFull(leaderAndIsr) match {
           case None => throw new NoEpochForPartitionException("No epoch, leaderAndISR data for partition [%s,%d] is invalid".format(topic, partition))
-          case Some(js) => js.asJsonObject("leader_epoch").to[Int]
+          case Some(m) => m.asInstanceOf[Map[String, Any]].get("leader_epoch").get.asInstanceOf[Int]
         }
       case None => throw new NoEpochForPartitionException("No epoch, ISR path for partition [%s,%d] is empty"
         .format(topic, partition))
@@ -329,7 +344,7 @@ class ZkUtils(val zkClient: ZkClient,
     leaderAndIsrOpt match {
       case Some(leaderAndIsr) =>
         Json.parseFull(leaderAndIsr) match {
-          case Some(js) => js.asJsonObject("isr").to[Seq[Int]]
+          case Some(m) => m.asInstanceOf[Map[String, Any]].get("isr").get.asInstanceOf[Seq[Int]]
           case None => Seq.empty[Int]
         }
       case None => Seq.empty[Int]
@@ -340,13 +355,21 @@ class ZkUtils(val zkClient: ZkClient,
    * Gets the assigned replicas (AR) for a specific topic and partition
    */
   def getReplicasForPartition(topic: String, partition: Int): Seq[Int] = {
-    val seqOpt = for {
-      jsonPartitionMap <- readDataMaybeNull(getTopicPath(topic))._1
-      js <- Json.parseFull(jsonPartitionMap)
-      replicaMap <- js.asJsonObject.get("partitions")
-      seq <- replicaMap.asJsonObject.get(partition.toString)
-    } yield seq.to[Seq[Int]]
-    seqOpt.getOrElse(Seq.empty)
+    val jsonPartitionMapOpt = readDataMaybeNull(getTopicPath(topic))._1
+    jsonPartitionMapOpt match {
+      case Some(jsonPartitionMap) =>
+        Json.parseFull(jsonPartitionMap) match {
+          case Some(m) => m.asInstanceOf[Map[String, Any]].get("partitions") match {
+            case Some(replicaMap) => replicaMap.asInstanceOf[Map[String, Seq[Int]]].get(partition.toString) match {
+              case Some(seq) => seq
+              case None => Seq.empty[Int]
+            }
+            case None => Seq.empty[Int]
+          }
+          case None => Seq.empty[Int]
+        }
+      case None => Seq.empty[Int]
+    }
   }
 
   /**
@@ -398,7 +421,6 @@ class ZkUtils(val zkClient: ZkClient,
     }
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getConsumerPartitionOwnerPath(group: String, topic: String, partition: Int): String = {
     val topicDirs = new ZKGroupTopicDirs(group, topic)
     topicDirs.consumerOwnerDir + "/" + partition
@@ -476,7 +498,7 @@ class ZkUtils(val zkClient: ZkClient,
           case _: ZkNoNodeException => // the node disappeared; treat as if node existed and let caller handles this
         }
         if (storedData == null || storedData != data) {
-          info("Conflict in " + path + " data: " + data + " stored data: " + storedData)
+          info("conflict in " + path + " data: " + data + " stored data: " + storedData)
           throw e
         } else {
           // otherwise, the creation succeeded, return normally
@@ -592,7 +614,14 @@ class ZkUtils(val zkClient: ZkClient,
   }
 
   def deletePath(path: String): Boolean = {
-    zkClient.delete(path)
+    try {
+      zkClient.delete(path)
+    } catch {
+      case _: ZkNoNodeException =>
+        // this can happen during a connection loss event, return normally
+        info(path + " deleted during connection loss; this is ok")
+        false
+    }
   }
 
   /**
@@ -609,26 +638,14 @@ class ZkUtils(val zkClient: ZkClient,
   }
 
   def deletePathRecursive(path: String) {
-    zkClient.deleteRecursive(path)
+    try {
+      zkClient.deleteRecursive(path)
+    } catch {
+      case _: ZkNoNodeException =>
+        // this can happen during a connection loss event, return normally
+        info(path + " deleted during connection loss; this is ok")
+    }
   }
-
-  def subscribeDataChanges(path: String, listener: IZkDataListener): Unit =
-    zkClient.subscribeDataChanges(path, listener)
-
-  def unsubscribeDataChanges(path: String, dataListener: IZkDataListener): Unit =
-    zkClient.unsubscribeDataChanges(path, dataListener)
-
-  def subscribeStateChanges(listener: IZkStateListener): Unit =
-    zkClient.subscribeStateChanges(listener)
-
-  def subscribeChildChanges(path: String, listener: IZkChildListener): Option[Seq[String]] =
-    Option(zkClient.subscribeChildChanges(path, listener)).map(_.asScala)
-
-  def unsubscribeChildChanges(path: String, childListener: IZkChildListener): Unit =
-    zkClient.unsubscribeChildChanges(path, childListener)
-
-  def unsubscribeAll(): Unit =
-    zkClient.unsubscribeAll()
 
   def readData(path: String): (String, Stat) = {
     val stat: Stat = new Stat()
@@ -674,10 +691,6 @@ class ZkUtils(val zkClient: ZkClient,
     zkClient.exists(path)
   }
 
-  def isTopicMarkedForDeletion(topic: String): Boolean = {
-    pathExists(getDeleteTopicPath(topic))
-  }
-
   def getCluster(): Cluster = {
     val cluster = new Cluster
     val nodes = getChildrenParentMayNotExist(BrokerIdsPath)
@@ -688,11 +701,13 @@ class ZkUtils(val zkClient: ZkClient,
     cluster
   }
 
-  def getPartitionLeaderAndIsrForTopics(topicAndPartitions: Set[TopicAndPartition]): mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = {
+  def getPartitionLeaderAndIsrForTopics(zkClient: ZkClient, topicAndPartitions: Set[TopicAndPartition])
+  : mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = {
     val ret = new mutable.HashMap[TopicAndPartition, LeaderIsrAndControllerEpoch]
     for(topicAndPartition <- topicAndPartitions) {
-      ReplicationUtils.getLeaderIsrAndEpochForPartition(this, topicAndPartition.topic, topicAndPartition.partition).foreach { leaderIsrAndControllerEpoch =>
-        ret.put(topicAndPartition, leaderIsrAndControllerEpoch)
+      ReplicationUtils.getLeaderIsrAndEpochForPartition(this, topicAndPartition.topic, topicAndPartition.partition) match {
+        case Some(leaderIsrAndControllerEpoch) => ret.put(topicAndPartition, leaderIsrAndControllerEpoch)
+        case None =>
       }
     }
     ret
@@ -701,15 +716,22 @@ class ZkUtils(val zkClient: ZkClient,
   def getReplicaAssignmentForTopics(topics: Seq[String]): mutable.Map[TopicAndPartition, Seq[Int]] = {
     val ret = new mutable.HashMap[TopicAndPartition, Seq[Int]]
     topics.foreach { topic =>
-      readDataMaybeNull(getTopicPath(topic))._1.foreach { jsonPartitionMap =>
-        Json.parseFull(jsonPartitionMap).foreach { js =>
-          js.asJsonObject.get("partitions").foreach { partitionsJs =>
-            partitionsJs.asJsonObject.iterator.foreach { case (partition, replicas) =>
-              ret.put(TopicAndPartition(topic, partition.toInt), replicas.to[Seq[Int]])
-              debug("Replicas assigned to topic [%s], partition [%s] are [%s]".format(topic, partition, replicas))
+      val jsonPartitionMapOpt = readDataMaybeNull(getTopicPath(topic))._1
+      jsonPartitionMapOpt match {
+        case Some(jsonPartitionMap) =>
+          Json.parseFull(jsonPartitionMap) match {
+            case Some(m) => m.asInstanceOf[Map[String, Any]].get("partitions") match {
+              case Some(repl)  =>
+                val replicaMap = repl.asInstanceOf[Map[String, Seq[Int]]]
+                for((partition, replicas) <- replicaMap){
+                  ret.put(TopicAndPartition(topic, partition.toInt), replicas)
+                  debug("Replicas assigned to topic [%s], partition [%s] are [%s]".format(topic, partition, replicas))
+                }
+              case None =>
             }
+            case None =>
           }
-        }
+        case None =>
       }
     }
     ret
@@ -717,13 +739,21 @@ class ZkUtils(val zkClient: ZkClient,
 
   def getPartitionAssignmentForTopics(topics: Seq[String]): mutable.Map[String, collection.Map[Int, Seq[Int]]] = {
     val ret = new mutable.HashMap[String, Map[Int, Seq[Int]]]()
-    topics.foreach { topic =>
-      val partitionMapOpt = for {
-        jsonPartitionMap <- readDataMaybeNull(getTopicPath(topic))._1
-        js <- Json.parseFull(jsonPartitionMap)
-        replicaMap <- js.asJsonObject.get("partitions")
-      } yield replicaMap.asJsonObject.iterator.map { case (k, v) => (k.toInt, v.to[Seq[Int]]) }.toMap
-      val partitionMap = partitionMapOpt.getOrElse(Map.empty)
+    topics.foreach{ topic =>
+      val jsonPartitionMapOpt = readDataMaybeNull(getTopicPath(topic))._1
+      val partitionMap = jsonPartitionMapOpt match {
+        case Some(jsonPartitionMap) =>
+          Json.parseFull(jsonPartitionMap) match {
+            case Some(m) => m.asInstanceOf[Map[String, Any]].get("partitions") match {
+              case Some(replicaMap) =>
+                val m1 = replicaMap.asInstanceOf[Map[String, Seq[Int]]]
+                m1.map(p => (p._1.toInt, p._2))
+              case None => Map[Int, Seq[Int]]()
+            }
+            case None => Map[Int, Seq[Int]]()
+          }
+        case None => Map[Int, Seq[Int]]()
+      }
       debug("Partition map for /brokers/topics/%s is %s".format(topic, partitionMap))
       ret += (topic -> partitionMap)
     }
@@ -759,7 +789,7 @@ class ZkUtils(val zkClient: ZkClient,
   }
 
   def updatePartitionReassignmentData(partitionsToBeReassigned: Map[TopicAndPartition, Seq[Int]]) {
-    val zkPath = ZkUtils.ReassignPartitionsPath
+    val zkPath = ReassignPartitionsPath
     partitionsToBeReassigned.size match {
       case 0 => // need to delete the /admin/reassign_partitions path
         deletePath(zkPath)
@@ -794,13 +824,11 @@ class ZkUtils(val zkClient: ZkClient,
     zkClient.delete(brokerPartTopicPath)
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getConsumersInGroup(group: String): Seq[String] = {
     val dirs = new ZKGroupDirs(group)
     getChildren(dirs.consumerRegistryDir)
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getConsumersPerTopic(group: String, excludeInternalTopics: Boolean): mutable.Map[String, List[ConsumerThreadId]] = {
     val dirs = new ZKGroupDirs(group)
     val consumers = getChildrenParentMayNotExist(dirs.consumerRegistryDir)
@@ -815,12 +843,11 @@ class ZkUtils(val zkClient: ZkClient,
           }
       }
     }
-    for ((topic, consumerList) <- consumersPerTopicMap)
-      consumersPerTopicMap.put(topic, consumerList.sortWith((s, t) => s < t))
+    for ( (topic, consumerList) <- consumersPerTopicMap )
+      consumersPerTopicMap.put(topic, consumerList.sortWith((s,t) => s < t))
     consumersPerTopicMap
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getTopicsPerMemberId(group: String, excludeInternalTopics: Boolean = true): Map[String, List[String]] = {
     val dirs = new ZKGroupDirs(group)
     val memberIds = getChildrenParentMayNotExist(dirs.consumerRegistryDir)
@@ -882,26 +909,22 @@ class ZkUtils(val zkClient: ZkClient,
 
   def getAllPartitions(): Set[TopicAndPartition] = {
     val topics = getChildrenParentMayNotExist(BrokerTopicsPath)
-    if (topics == null) Set.empty[TopicAndPartition]
+    if(topics == null) Set.empty[TopicAndPartition]
     else {
       topics.flatMap { topic =>
-        // The partitions path may not exist if the topic is in the process of being deleted
-        getChildrenParentMayNotExist(getTopicPartitionsPath(topic)).map(_.toInt).map(TopicAndPartition(topic, _))
+        getChildren(getTopicPartitionsPath(topic)).map(_.toInt).map(TopicAndPartition(topic, _))
       }.toSet
     }
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getConsumerGroups() = {
     getChildren(ConsumersPath)
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getTopicsByConsumerGroup(consumerGroup:String) = {
     getChildrenParentMayNotExist(new ZKGroupDirs(consumerGroup).consumerGroupOwnersDir)
   }
 
-  @deprecated("This method has been deprecated and will be removed in a future release.", "0.11.0.0")
   def getAllConsumerGroupsForTopic(topic: String): Set[String] = {
     val groups = getChildrenParentMayNotExist(ConsumersPath)
     if (groups == null) Set.empty
@@ -935,7 +958,6 @@ private object ZKStringSerializer extends ZkSerializer {
   }
 }
 
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class ZKGroupDirs(val group: String) {
   def consumerDir = ConsumersPath
   def consumerGroupDir = consumerDir + "/" + group
@@ -944,7 +966,6 @@ class ZKGroupDirs(val group: String) {
   def consumerGroupOwnersDir = consumerGroupDir + "/owners"
 }
 
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class ZKGroupTopicDirs(group: String, topic: String) extends ZKGroupDirs(group) {
   def consumerOffsetDir = consumerGroupOffsetsDir + "/" + topic
   def consumerOwnerDir = consumerGroupOwnersDir + "/" + topic
@@ -954,7 +975,6 @@ object ZKConfig {
   val ZkConnectProp = "zookeeper.connect"
   val ZkSessionTimeoutMsProp = "zookeeper.session.timeout.ms"
   val ZkConnectionTimeoutMsProp = "zookeeper.connection.timeout.ms"
-  val ZkSyncTimeMsProp = "zookeeper.sync.time.ms"
 }
 
 class ZKConfig(props: VerifiableProperties) {
@@ -968,9 +988,6 @@ class ZKConfig(props: VerifiableProperties) {
 
   /** the max time that the client waits to establish a connection to zookeeper */
   val zkConnectionTimeoutMs = props.getInt(ZkConnectionTimeoutMsProp, zkSessionTimeoutMs)
-
-  /** how far a ZK follower can be behind a ZK leader */
-  val zkSyncTimeMs = props.getInt(ZkSyncTimeMsProp, 2000)
 }
 
 class ZkPath(client: ZkClient) {

@@ -5,7 +5,7 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- *
+ * 
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -23,8 +23,6 @@ import kafka.utils._
 import kafka.common.{InvalidConfigException, Config}
 import java.util.Locale
 
-@deprecated("This object has been deprecated and will be removed in a future release. " +
-            "Please use org.apache.kafka.clients.consumer.ConsumerConfig instead.", "0.11.0.0")
 object ConsumerConfig extends Config {
   val RefreshMetadataBackoffMs = 200
   val SocketTimeout = 30 * 1000
@@ -42,6 +40,7 @@ object ConsumerConfig extends Config {
   val MinFetchBytes = 1
   val MaxFetchBytes = 50 * 1024 * 1024
   val MaxFetchWaitMs = 100
+  val RebalanceBackoffMs = 2000
   val MirrorTopicsWhitelist = ""
   val MirrorTopicsBlacklist = ""
   val MirrorConsumerNumThreads = 1
@@ -57,7 +56,7 @@ object ConsumerConfig extends Config {
   val MirrorConsumerNumThreadsProp = "mirror.consumer.numthreads"
   val DefaultClientId = ""
 
-  def validate(config: ConsumerConfig): Unit = {
+  def validate(config: ConsumerConfig) {
     validateClientId(config.clientId)
     validateGroupId(config.groupId)
     validateAutoOffsetReset(config.autoOffsetReset)
@@ -65,15 +64,15 @@ object ConsumerConfig extends Config {
     validatePartitionAssignmentStrategy(config.partitionAssignmentStrategy)
   }
 
-  def validateClientId(clientId: String): Unit = {
+  def validateClientId(clientId: String) {
     validateChars("client.id", clientId)
   }
 
-  def validateGroupId(groupId: String): Unit = {
+  def validateGroupId(groupId: String) {
     validateChars("group.id", groupId)
   }
 
-  def validateAutoOffsetReset(autoOffsetReset: String): Unit = {
+  def validateAutoOffsetReset(autoOffsetReset: String) {
     autoOffsetReset match {
       case OffsetRequest.SmallestTimeString =>
       case OffsetRequest.LargestTimeString =>
@@ -82,7 +81,7 @@ object ConsumerConfig extends Config {
     }
   }
 
-  def validateOffsetsStorage(storage: String): Unit = {
+  def validateOffsetsStorage(storage: String) {
     storage match {
       case "zookeeper" =>
       case "kafka" =>
@@ -91,7 +90,7 @@ object ConsumerConfig extends Config {
     }
   }
 
-  def validatePartitionAssignmentStrategy(strategy: String): Unit = {
+  def validatePartitionAssignmentStrategy(strategy: String) {
     strategy match {
       case "range" =>
       case "roundrobin" =>
@@ -101,8 +100,6 @@ object ConsumerConfig extends Config {
   }
 }
 
-@deprecated("This class has been deprecated and will be removed in a future release. " +
-            "Please use org.apache.kafka.clients.consumer.ConsumerConfig instead.", "0.11.0.0")
 class ConsumerConfig private (val props: VerifiableProperties) extends ZKConfig(props) {
   import ConsumerConfig._
 
@@ -120,19 +117,19 @@ class ConsumerConfig private (val props: VerifiableProperties) extends ZKConfig(
 
   /** the socket timeout for network requests. Its value should be at least fetch.wait.max.ms. */
   val socketTimeoutMs = props.getInt("socket.timeout.ms", SocketTimeout)
-
+  
   /** the socket receive buffer for network requests */
   val socketReceiveBufferBytes = props.getInt("socket.receive.buffer.bytes", SocketBufferSize)
-
+  
   /** the number of bytes of messages to attempt to fetch from each partition */
   val fetchMessageMaxBytes = props.getInt("fetch.message.max.bytes", FetchSize)
 
   /** the number threads used to fetch data */
   val numConsumerFetchers = props.getInt("num.consumer.fetchers", NumConsumerFetchers)
-
+  
   /** if true, periodically commit to zookeeper the offset of messages already fetched by the consumer */
   val autoCommitEnable = props.getBoolean("auto.commit.enable", AutoCommit)
-
+  
   /** the frequency in ms that the consumer offsets are committed to zookeeper */
   val autoCommitIntervalMs = props.getInt("auto.commit.interval.ms", AutoCommitInterval)
 
@@ -141,10 +138,10 @@ class ConsumerConfig private (val props: VerifiableProperties) extends ZKConfig(
 
   /** max number of retries during rebalance */
   val rebalanceMaxRetries = props.getInt("rebalance.max.retries", MaxRebalanceRetries)
-
+  
   /** the minimum amount of data the server should return for a fetch request. If insufficient data is available the request will block */
   val fetchMinBytes = props.getInt("fetch.min.bytes", MinFetchBytes)
-
+  
   /** the maximum amount of data the server should return for a fetch request */
   val fetchMaxBytes = props.getInt("fetch.max.bytes", MaxFetchBytes)
 
@@ -152,9 +149,9 @@ class ConsumerConfig private (val props: VerifiableProperties) extends ZKConfig(
   val fetchWaitMaxMs = props.getInt("fetch.wait.max.ms", MaxFetchWaitMs)
   require(fetchWaitMaxMs <= socketTimeoutMs, "socket.timeout.ms should always be at least fetch.wait.max.ms" +
     " to prevent unnecessary socket timeouts")
-
+  
   /** backoff time between retries during rebalance */
-  val rebalanceBackoffMs = props.getInt("rebalance.backoff.ms", zkSyncTimeMs)
+  val rebalanceBackoffMs = props.getInt("rebalance.backoff.ms", RebalanceBackoffMs)
 
   /** backoff time to refresh the leader of a partition after it loses the current leader */
   val refreshLeaderBackoffMs = props.getInt("refresh.leader.backoff.ms", RefreshMetadataBackoffMs)
@@ -199,7 +196,7 @@ class ConsumerConfig private (val props: VerifiableProperties) extends ZKConfig(
 
   /** Select a strategy for assigning partitions to consumer streams. Possible values: range, roundrobin */
   val partitionAssignmentStrategy = props.getString("partition.assignment.strategy", DefaultPartitionAssignmentStrategy)
-
+  
   validate(this)
 }
 

@@ -22,17 +22,16 @@ import org.apache.kafka.common.annotation.InterfaceStability;
 import java.util.Collection;
 
 /**
- * Options for {@link Admin#deleteTopics(Collection)}.
+ * Options for {@link AdminClient#deleteTopics(Collection)}.
  *
- * The API of this class is evolving, see {@link Admin} for details.
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
 @InterfaceStability.Evolving
 public class DeleteTopicsOptions extends AbstractOptions<DeleteTopicsOptions> {
-
-    private boolean retryOnQuotaViolation = true;
+    private boolean validateOnly;
 
     /**
-     * Set the timeout in milliseconds for this operation or {@code null} if the default api timeout for the
+     * Set the request timeout in milliseconds for this operation or {@code null} if the default request timeout for the
      * AdminClient should be used.
      *
      */
@@ -42,18 +41,12 @@ public class DeleteTopicsOptions extends AbstractOptions<DeleteTopicsOptions> {
         return this;
     }
 
-    /**
-     * Set to true if quota violation should be automatically retried.
-     */
-    public DeleteTopicsOptions retryOnQuotaViolation(boolean retryOnQuotaViolation) {
-        this.retryOnQuotaViolation = retryOnQuotaViolation;
+    public DeleteTopicsOptions validateOnly(boolean validateOnly) {
+        this.validateOnly = validateOnly;
         return this;
     }
 
-    /**
-     * Returns true if quota violation should be automatically retried.
-     */
-    public boolean shouldRetryOnQuotaViolation() {
-        return retryOnQuotaViolation;
+    public boolean validateOnly() {
+        return this.validateOnly;
     }
 }

@@ -50,7 +50,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
                   partitions: Int,
                   replicationFactor: Int,
                   topicConfig: Properties = new Properties,
-                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced): Unit = {
+                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
     val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
     createOrUpdateTopicPartitionAssignmentPathInZK(topic, replicaAssignment, topicConfig)
@@ -90,7 +90,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   def createOrUpdateTopicPartitionAssignmentPathInZK(topic: String,
                                                      partitionReplicaAssignment: Map[Int, Seq[Int]],
                                                      config: Properties = new Properties,
-                                                     update: Boolean = false): Unit = {
+                                                     update: Boolean = false) {
     validateCreateOrUpdateTopic(topic, partitionReplicaAssignment, config, update)
 
     // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
@@ -146,7 +146,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
       LogConfig.validate(config)
   }
 
-  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean): Unit = {
+  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean) {
     try {
       val assignment = replicaAssignment.map { case (partitionId, replicas) => (new TopicPartition(topic,partitionId), replicas) }.toMap
 
@@ -169,15 +169,17 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    * Creates a delete path for a given topic
    * @param topic
    */
-  def deleteTopic(topic: String): Unit = {
+  def deleteTopic(topic: String, validateOnly: Boolean = false) {
     if (zkClient.topicExists(topic)) {
-      try {
-        zkClient.createDeleteTopicPath(topic)
-      } catch {
-        case _: NodeExistsException => throw new TopicAlreadyMarkedForDeletionException(
-          "topic %s is already marked for deletion".format(topic))
-        case e: Throwable => throw new AdminOperationException(e.getMessage)
-       }
+      if (!validateOnly) {
+        try {
+          zkClient.createDeleteTopicPath(topic)
+        } catch {
+          case _: NodeExistsException => throw new TopicAlreadyMarkedForDeletionException(
+            "topic %s is already marked for deletion".format(topic))
+          case e: Throwable => throw new AdminOperationException(e.getMessage)
+        }
+      }
     } else {
       throw new UnknownTopicOrPartitionException(s"Topic `$topic` to delete does not exist")
     }
@@ -300,7 +302,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeClientIdConfig(sanitizedClientId: String, configs: Properties): Unit = {
+  def changeClientIdConfig(sanitizedClientId: String, configs: Properties) {
     DynamicConfig.Client.validate(configs)
     changeEntityConfig(ConfigType.Client, sanitizedClientId, configs)
   }
@@ -315,7 +317,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties): Unit = {
+  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties) {
     if (sanitizedEntityName == ConfigEntityName.Default || sanitizedEntityName.contains("/clients"))
       DynamicConfig.Client.validate(configs)
     else
@@ -357,35 +359,12 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     * @param configs: The config to change, as properties
     */
   def changeBrokerConfig(brokers: Seq[Int], configs: Properties): Unit = {
-    validateBrokerConfig(configs)
-    brokers.foreach {
-      broker => changeEntityConfig(ConfigType.Broker, broker.toString, configs)
+    DynamicConfig.Broker.validate(configs)
+    brokers.foreach { broker => changeEntityConfig(ConfigType.Broker, broker.toString, configs)
     }
   }
 
-  /**
-    * Override a broker override or broker default config. These overrides will be persisted between sessions, and will
-    * override any defaults entered in the broker's config files
-    *
-    * @param broker: The broker to apply config changes to or None to update dynamic default configs
-    * @param configs: The config to change, as properties
-    */
-  def changeBrokerConfig(broker: Option[Int], configs: Properties): Unit = {
-    validateBrokerConfig(configs)
-    val entityName = broker.map(_.toString).getOrElse(ConfigEntityName.Default)
-    changeEntityConfig(ConfigType.Broker, broker.map(String.valueOf).getOrElse(ConfigEntityName.Default), configs)
-  }
-
-  /**
-    * Validate dynamic broker configs. Since broker configs may contain custom configs, the validation
-    * only verifies that the provided config does not contain any static configs.
-    * @param configs configs to validate
-    */
-  def validateBrokerConfig(configs: Properties): Unit = {
-    DynamicConfig.Broker.validate(configs)
-  }
-
-  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties): Unit = {
+  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties) {
     val sanitizedEntityPath = rootEntityType + '/' + fullSanitizedEntityName
     zkClient.setOrCreateEntityConfigs(rootEntityType, fullSanitizedEntityName, configs)
 

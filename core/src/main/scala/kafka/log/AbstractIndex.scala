@@ -18,12 +18,11 @@
 package kafka.log
 
 import java.io.{File, RandomAccessFile}
+import java.nio.{ByteBuffer, MappedByteBuffer}
 import java.nio.channels.FileChannel
 import java.nio.file.Files
-import java.nio.{ByteBuffer, MappedByteBuffer}
 import java.util.concurrent.locks.{Lock, ReentrantLock}
 
-import kafka.common.IndexOffsetOverflowException
 import kafka.log.IndexSearchType.IndexSearchEntity
 import kafka.utils.CoreUtils.inLock
 import kafka.utils.{CoreUtils, Logging}
@@ -112,10 +111,6 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @return a boolean indicating whether the size of the memory map and the underneath file is changed or not.
    */
   def resize(newSize: Int): Boolean = {
-    resize(newSize, true)
-  }
-
-  private def resize(newSize: Int, remap: Boolean): Boolean = {
     inLock(lock) {
       val roundedNewSize = roundDownToExactMultiple(newSize, entrySize)
 
@@ -131,11 +126,9 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
             safeForceUnmap()
           raf.setLength(roundedNewSize)
           _length = roundedNewSize
-          if (remap) {
-            mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
-            _maxEntries = mmap.limit() / entrySize
-            mmap.position(position)
-          }
+          mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
+          _maxEntries = mmap.limit() / entrySize
+          mmap.position(position)
           true
         } finally {
           CoreUtils.swallow(raf.close(), this)
@@ -150,7 +143,10 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * @throws IOException if rename fails
    */
   def renameTo(f: File) {
-    try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
+    try{
+      closeHandler()
+      Utils.atomicMoveWithFallback(file.toPath, f.toPath)
+    }
     finally file = f
   }
 
@@ -196,11 +192,9 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    */
   def sizeInBytes = entrySize * _entries
 
-  /** Close the index and unmap memory */
+  /** Close the index */
   def close() {
-     inLock(lock) {
-       resize(entrySize * _entries, false)
-     }
+    trimToValidSize()
   }
 
   def closeHandler(): Unit = {
@@ -235,35 +229,10 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
     resize(maxIndexSize)
   }
 
-  /**
-   * Get offset relative to base offset of this index
-   * @throws IndexOffsetOverflowException
-   */
-  def relativeOffset(offset: Long): Int = {
-    val relativeOffset = toRelative(offset)
-    if (relativeOffset.isEmpty)
-      throw new IndexOffsetOverflowException(s"Integer overflow for offset: $offset (${file.getAbsoluteFile})")
-    relativeOffset.get
-  }
-
-  /**
-   * Check if a particular offset is valid to be appended to this index.
-   * @param offset The offset to check
-   * @return true if this offset is valid to be appended to this index; false otherwise
-   */
-  def canAppendOffset(offset: Long): Boolean = {
-    toRelative(offset).isDefined
-  }
-
   protected def safeForceUnmap(): Unit = {
-    if(mmap == null) {
-      debug(s"Failed to unmap ${file.getAbsolutePath} because it is already unmapped.")
-    } else {
-      try forceUnmap()
-      catch {
-        case t: Throwable => error(s"Error unmapping index $file", t)
-
-      }
+    try forceUnmap()
+    catch {
+      case t: Throwable => error(s"Error unmapping index $file", t)
     }
   }
 
@@ -271,8 +240,10 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * Forcefully free the buffer's mmap.
    */
   protected[log] def forceUnmap() {
-    try MappedByteBuffers.unmap(file.getAbsolutePath, mmap)
-    finally mmap = null // Accessing unmapped mmap crashes JVM by SEGV so we null it out to be safe
+    if(mmap != null){
+      try MappedByteBuffers.unmap(file.getAbsolutePath, mmap)
+      finally mmap = null // Accessing unmapped mmap crashes JVM by SEGV so we null it out to be safe
+    }
   }
 
   /**
@@ -358,14 +329,6 @@ abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Lon
    * E.g. roundDownToExactMultiple(67, 8) == 64
    */
   private def roundDownToExactMultiple(number: Int, factor: Int) = factor * (number / factor)
-
-  private def toRelative(offset: Long): Option[Int] = {
-    val relativeOffset = offset - baseOffset
-    if (relativeOffset < 0 || relativeOffset > Int.MaxValue)
-      None
-    else
-      Some(relativeOffset.toInt)
-  }
 
 }
 

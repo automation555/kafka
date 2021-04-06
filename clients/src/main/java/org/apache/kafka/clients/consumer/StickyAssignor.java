@@ -16,17 +16,6 @@
  */
 package org.apache.kafka.clients.consumer;
 
-import org.apache.kafka.clients.consumer.internals.AbstractPartitionAssignor;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
-import org.apache.kafka.common.protocol.types.Struct;
-import org.apache.kafka.common.protocol.types.Type;
-import org.apache.kafka.common.utils.CollectionUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -42,34 +31,42 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeSet;
 
+import org.apache.kafka.clients.consumer.internals.AbstractPartitionAssignor;
+import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.protocol.types.ArrayOf;
+import org.apache.kafka.common.protocol.types.Field;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.types.Type;
+import org.apache.kafka.common.utils.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
- * <p>The sticky assignor serves two purposes. First, it guarantees an assignment that is as balanced as possible, meaning either:
- * <ul>
- * <li>the numbers of topic partitions assigned to consumers differ by at most one; or</li>
- * <li>each consumer that has 2+ fewer topic partitions than some other consumer cannot get any of those topic partitions transferred to it.</li>
- * </ul>
+ * The sticky assignor serves two purposes. First, it guarantees an assignment that is as balanced as possible, meaning either:
+ * - the numbers of topic partitions assigned to consumers differ by at most one; or
+ * - each consumer that has 2+ fewer topic partitions than some other consumer cannot get any of those topic partitions transferred to it.
  * Second, it preserved as many existing assignment as possible when a reassignment occurs. This helps in saving some of the
- * overhead processing when topic partitions move from one consumer to another.</p>
+ * overhead processing when topic partitions move from one consumer to another.
  *
- * <p>Starting fresh it would work by distributing the partitions over consumers as evenly as possible. Even though this may sound similar to
+ * Starting fresh it would work by distributing the partitions over consumers as evenly as possible. Even though this may sound similar to
  * how round robin assignor works, the second example below shows that it is not.
  * During a reassignment it would perform the reassignment in such a way that in the new assignment
- * <ol>
- * <li>topic partitions are still distributed as evenly as possible, and</li>
- * <li>topic partitions stay with their previously assigned consumers as much as possible.</li>
- * </ol>
- * Of course, the first goal above takes precedence over the second one.</p>
+ * 1. topic partitions are still distributed as evenly as possible, and
+ * 2. topic partitions stay with their previously assigned consumers as much as possible.
+ * Of course, the first goal above takes precedence over the second one.
  *
- * <p><b>Example 1.</b> Suppose there are three consumers <code>C0</code>, <code>C1</code>, <code>C2</code>,
+ * <b>Example 1.</b> Suppose there are three consumers <code>C0</code>, <code>C1</code>, <code>C2</code>,
  * four topics <code>t0,</code> <code>t1</code>, <code>t2</code>, <code>t3</code>, and each topic has 2 partitions,
  * resulting in partitions <code>t0p0</code>, <code>t0p1</code>, <code>t1p0</code>, <code>t1p1</code>, <code>t2p0</code>,
  * <code>t2p1</code>, <code>t3p0</code>, <code>t3p1</code>. Each consumer is subscribed to all three topics.
  *
  * The assignment with both sticky and round robin assignors will be:
  * <ul>
- * <li><code>C0: [t0p0, t1p1, t3p0]</code></li>
- * <li><code>C1: [t0p1, t2p0, t3p1]</code></li>
- * <li><code>C2: [t1p0, t2p1]</code></li>
+ * <li><code>C0: [t0p0, t1p1, t3p0]<code></li>
+ * <li><code>C1: [t0p1, t2p0, t3p1]<code></li>
+ * <li><code>C2: [t1p0, t2p1]<code></li>
  * </ul>
  *
  * Now, let's assume <code>C1</code> is removed and a reassignment is about to happen. The round robin assignor would produce:
@@ -84,8 +81,8 @@ import java.util.TreeSet;
  * <li><code>C2 [t1p0, t2p1, t0p1, t3p1]</code></li>
  * </ul>
  * preserving all the previous assignments (unlike the round robin assignor).
- *</p>
- * <p><b>Example 2.</b> There are three consumers <code>C0</code>, <code>C1</code>, <code>C2</code>,
+ *
+ * <b>Example 2.</b> There are three consumers <code>C0</code>, <code>C1</code>, <code>C2</code>,
  * and three topics <code>t0</code>, <code>t1</code>, <code>t2</code>, with 1, 2, and 3 partitions respectively.
  * Therefore, the partitions are <code>t0p0</code>, <code>t1p0</code>, <code>t1p1</code>, <code>t2p0</code>,
  * <code>t2p1</code>, <code>t2p2</code>. <code>C0</code> is subscribed to <code>t0</code>; <code>C1</code> is subscribed to
@@ -117,14 +114,13 @@ import java.util.TreeSet;
  * <li><code>C1 [t1p0, t1p1, t0p0]</code></li>
  * <li><code>C2 [t2p0, t2p1, t2p2]</code></li>
  * </ul>
- *</p>
+ *
  * <h3>Impact on <code>ConsumerRebalanceListener</code></h3>
  * The sticky assignment strategy can provide some optimization to those consumers that have some partition cleanup code
  * in their <code>onPartitionsRevoked()</code> callback listeners. The cleanup code is placed in that callback listener
  * because the consumer has no assumption or hope of preserving any of its assigned partitions after a rebalance when it
  * is using range or round robin assignor. The listener code would look like this:
- * <pre>
- * {@code
+ * <code>
  * class TheOldRebalanceListener implements ConsumerRebalanceListener {
  *
  *   void onPartitionsRevoked(Collection<TopicPartition> partitions) {
@@ -141,8 +137,7 @@ import java.util.TreeSet;
  *     }
  *   }
  * }
- * }
- * </pre>
+ * </code>
  *
  * As mentioned above, one advantage of the sticky assignor is that, in general, it reduces the number of partitions that
  * actually move from one consumer to another during a reassignment. Therefore, it allows consumers to do their cleanup
@@ -150,8 +145,7 @@ import java.util.TreeSet;
  * listener, but they can be more efficient and make a note of their partitions before and after the rebalance, and do the
  * cleanup after the rebalance only on the partitions they have lost (which is normally not a lot). The code snippet below
  * clarifies this point:
- * <pre>
- * {@code
+ * <code>
  * class TheNewRebalanceListener implements ConsumerRebalanceListener {
  *   Collection<TopicPartition> lastAssignment = Collections.emptyList();
  *
@@ -173,8 +167,7 @@ import java.util.TreeSet;
  *     this.lastAssignment = assignment;
  *   }
  * }
- * }
- * </pre>
+ * </code>
  *
  * Any consumer that uses sticky assignment can leverage this listener like this:
  * <code>consumer.subscribe(topics, new TheNewRebalanceListener());</code>
@@ -197,7 +190,7 @@ public class StickyAssignor extends AbstractPartitionAssignor {
     private List<TopicPartition> memberAssignment = null;
     private PartitionMovements partitionMovements;
 
-    public Map<String, List<TopicPartition>> assign(Map<String, Integer> partitionsPerTopic,
+    public Map<String, List<TopicPartition>> assign(Map<String, List<PartitionInfo>> partitionsPerTopic,
                                                     Map<String, Subscription> subscriptions) {
         Map<String, List<TopicPartition>> currentAssignment = new HashMap<>();
         partitionMovements = new PartitionMovements();
@@ -211,17 +204,23 @@ public class StickyAssignor extends AbstractPartitionAssignor {
         final Map<String, List<TopicPartition>> consumer2AllPotentialPartitions = new HashMap<>();
 
         // initialize partition2AllPotentialConsumers and consumer2AllPotentialPartitions in the following two for loops
-        for (Entry<String, Integer> entry: partitionsPerTopic.entrySet()) {
-            for (int i = 0; i < entry.getValue(); ++i)
-                partition2AllPotentialConsumers.put(new TopicPartition(entry.getKey(), i), new ArrayList<String>());
+        for (Entry<String, List<PartitionInfo>> entry: partitionsPerTopic.entrySet()) {
+            List<PartitionInfo> partitionInfos = entry.getValue();
+            Collections.sort(partitionInfos);
+            for (PartitionInfo partitionInfo : partitionInfos) {
+                partition2AllPotentialConsumers.put(
+                        new TopicPartition(entry.getKey(), partitionInfo.partition()), new ArrayList<String>());
+            }
         }
 
         for (Entry<String, Subscription> entry: subscriptions.entrySet()) {
             String consumer = entry.getKey();
             consumer2AllPotentialPartitions.put(consumer, new ArrayList<TopicPartition>());
             for (String topic: entry.getValue().topics()) {
-                for (int i = 0; i < partitionsPerTopic.get(topic); ++i) {
-                    TopicPartition topicPartition = new TopicPartition(topic, i);
+                List<PartitionInfo> partitionInfos = partitionsPerTopic.get(topic);
+                Collections.sort(partitionInfos);
+                for (PartitionInfo partitionInfo: partitionInfos) {
+                    TopicPartition topicPartition = new TopicPartition(topic, partitionInfo.partition());
                     consumer2AllPotentialPartitions.get(consumer).add(topicPartition);
                     partition2AllPotentialConsumers.get(topicPartition).add(consumer);
                 }
@@ -313,10 +312,9 @@ public class StickyAssignor extends AbstractPartitionAssignor {
     /**
      * determine if the current assignment is a balanced one
      *
-     * @param currentAssignment: the assignment whose balance needs to be checked
      * @param sortedCurrentSubscriptions: an ascending sorted set of consumers based on how many topic partitions are already assigned to them
      * @param allSubscriptions: a mapping of all consumers to all potential topic partitions that can be assigned to them
-     * @return true if the given assignment is balanced; false otherwise
+     * @return
      */
     private boolean isBalanced(Map<String, List<TopicPartition>> currentAssignment,
                                TreeSet<String> sortedCurrentSubscriptions,
@@ -627,41 +625,41 @@ public class StickyAssignor extends AbstractPartitionAssignor {
                                    Map<String, List<TopicPartition>> consumer2AllPotentialPartitions) {
         String consumer = currentPartitionConsumer.get(partition);
 
-        // find the next consumer for partition
-        String nextConsumer = null;
+        // find the new consumer
+        String newConsumer = null;
         for (String anotherConsumer: sortedCurrentSubscriptions) {
             if (consumer2AllPotentialPartitions.get(anotherConsumer).contains(partition)) {
-                nextConsumer = anotherConsumer;
+                newConsumer = anotherConsumer;
                 break;
             }
         }
 
-        assert nextConsumer != null;
+        assert newConsumer != null;
 
         // find the correct partition movement considering the stickiness requirement
-        TopicPartition partitionToBeMoved = partitionMovements.getTheActualPartitionToBeMoved(partition, consumer, nextConsumer);
-        processPartitionMovement(partitionToBeMoved, nextConsumer, currentAssignment, sortedCurrentSubscriptions, currentPartitionConsumer);
+        TopicPartition partitionToBeMoved = partitionMovements.getTheActualPartitionToBeMoved(partition, consumer, newConsumer);
+        processPartitionMovement(partitionToBeMoved, newConsumer, currentAssignment, sortedCurrentSubscriptions, currentPartitionConsumer);
 
         return;
     }
 
     private void processPartitionMovement(TopicPartition partition,
-                                          String nextConsumer,
+                                          String newConsumer,
                                           Map<String, List<TopicPartition>> currentAssignment,
                                           TreeSet<String> sortedCurrentSubscriptions,
                                           Map<TopicPartition, String> currentPartitionConsumer) {
-        String prevConsumer = currentPartitionConsumer.get(partition);
+        String oldConsumer = currentPartitionConsumer.get(partition);
 
-        sortedCurrentSubscriptions.remove(prevConsumer);
-        sortedCurrentSubscriptions.remove(nextConsumer);
+        sortedCurrentSubscriptions.remove(oldConsumer);
+        sortedCurrentSubscriptions.remove(newConsumer);
 
-        partitionMovements.movePartition(partition, prevConsumer, nextConsumer);
+        partitionMovements.movePartition(partition, oldConsumer, newConsumer);
 
-        currentAssignment.get(prevConsumer).remove(partition);
-        currentAssignment.get(nextConsumer).add(partition);
-        currentPartitionConsumer.put(partition, nextConsumer);
-        sortedCurrentSubscriptions.add(nextConsumer);
-        sortedCurrentSubscriptions.add(prevConsumer);
+        currentAssignment.get(oldConsumer).remove(partition);
+        currentAssignment.get(newConsumer).add(partition);
+        currentPartitionConsumer.put(partition, newConsumer);
+        sortedCurrentSubscriptions.add(newConsumer);
+        sortedCurrentSubscriptions.add(oldConsumer);
     }
 
     boolean isSticky() {
@@ -800,23 +798,23 @@ public class StickyAssignor extends AbstractPartitionAssignor {
             partitionMovementsForThisTopic.get(pair).add(partition);
         }
 
-        private void movePartition(TopicPartition partition, String prevConsumer, String nextConsumer) {
-            ConsumerPair pair = new ConsumerPair(prevConsumer, nextConsumer);
+        private void movePartition(TopicPartition partition, String oldConsumer, String newConsumer) {
+            ConsumerPair pair = new ConsumerPair(oldConsumer, newConsumer);
 
             if (partitionMovements.containsKey(partition)) {
                 // this partition has previously moved
                 ConsumerPair existingPair = removeMovementRecordOfPartition(partition);
-                assert existingPair.dstMemberId.equals(prevConsumer);
-                if (!existingPair.srcMemberId.equals(nextConsumer)) {
+                assert existingPair.dstMemberId.equals(oldConsumer);
+                if (!existingPair.srcMemberId.equals(newConsumer)) {
                     // the partition is not moving back to its previous consumer
-                    // return new ConsumerPair2(existingPair.src, nextConsumer);
-                    addPartitionMovementRecord(partition, new ConsumerPair(existingPair.srcMemberId, nextConsumer));
+                    // return new ConsumerPair2(existingPair.src, newConsumer);
+                    addPartitionMovementRecord(partition, new ConsumerPair(existingPair.srcMemberId, newConsumer));
                 }
             } else
                 addPartitionMovementRecord(partition, pair);
         }
 
-        private TopicPartition getTheActualPartitionToBeMoved(TopicPartition partition, String prevConsumer, String nextConsumer) {
+        private TopicPartition getTheActualPartitionToBeMoved(TopicPartition partition, String oldConsumer, String newConsumer) {
             String topic = partition.topic();
 
             if (!partitionMovementsByTopic.containsKey(topic))
@@ -824,12 +822,12 @@ public class StickyAssignor extends AbstractPartitionAssignor {
 
             if (partitionMovements.containsKey(partition)) {
                 // this partition has previously moved
-                assert prevConsumer.equals(partitionMovements.get(partition).dstMemberId);
-                prevConsumer = partitionMovements.get(partition).srcMemberId;
+                assert oldConsumer.equals(partitionMovements.get(partition).dstMemberId);
+                oldConsumer = partitionMovements.get(partition).srcMemberId;
             }
 
             Map<ConsumerPair, Set<TopicPartition>> partitionMovementsForThisTopic = partitionMovementsByTopic.get(topic);
-            ConsumerPair reversePair = new ConsumerPair(nextConsumer, prevConsumer);
+            ConsumerPair reversePair = new ConsumerPair(newConsumer, oldConsumer);
             if (!partitionMovementsForThisTopic.containsKey(reversePair))
                 return partition;
 

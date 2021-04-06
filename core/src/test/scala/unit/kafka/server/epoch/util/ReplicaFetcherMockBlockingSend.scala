@@ -19,11 +19,10 @@ package kafka.server.epoch.util
 import kafka.cluster.BrokerEndPoint
 import kafka.server.BlockingSend
 import org.apache.kafka.clients.{ClientRequest, ClientResponse, MockClient}
-import org.apache.kafka.common.{Node, TopicPartition}
-import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.{ApiKey, Node, TopicPartition}
 import org.apache.kafka.common.requests.AbstractRequest.Builder
 import org.apache.kafka.common.requests.FetchResponse.PartitionData
-import org.apache.kafka.common.requests.{AbstractRequest, EpochEndOffset, FetchResponse, OffsetsForLeaderEpochResponse, FetchMetadata => JFetchMetadata}
+import org.apache.kafka.common.requests.{AbstractRequest, EpochEndOffset, FetchResponse, OffsetsForLeaderEpochResponse}
 import org.apache.kafka.common.utils.{SystemTime, Time}
 
 /**
@@ -35,7 +34,7 @@ class ReplicaFetcherMockBlockingSend(offsets: java.util.Map[TopicPartition, Epoc
   var epochFetchCount = 0
   var callback: Option[() => Unit] = None
 
-  def setEpochRequestCallback(postEpochFunction: () => Unit): Unit ={
+  def setEpochRequestCallback(postEpochFunction: () => Unit){
     callback = Some(postEpochFunction)
   }
 
@@ -46,16 +45,18 @@ class ReplicaFetcherMockBlockingSend(offsets: java.util.Map[TopicPartition, Epoc
     client.send(clientRequest, time.milliseconds())
 
     //Create a suitable response based on the API key
-    val response = requestBuilder.apiKey() match {
-      case ApiKeys.OFFSET_FOR_LEADER_EPOCH =>
-        callback.foreach(_.apply())
+    val response = requestBuilder.api() match {
+      case ApiKey.OFFSET_FOR_LEADER_EPOCH =>
+        callback match {
+          case Some(f) => f()
+          case None => //nothing
+        }
         epochFetchCount += 1
         new OffsetsForLeaderEpochResponse(offsets)
 
-      case ApiKeys.FETCH =>
+      case ApiKey.FETCH =>
         fetchCount += 1
-        new FetchResponse(Errors.NONE, new java.util.LinkedHashMap[TopicPartition, PartitionData], 0,
-          JFetchMetadata.INVALID_SESSION_ID)
+        new FetchResponse(new java.util.LinkedHashMap[TopicPartition, PartitionData], 0)
 
       case _ =>
         throw new UnsupportedOperationException

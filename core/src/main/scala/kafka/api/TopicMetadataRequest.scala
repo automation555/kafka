@@ -20,26 +20,27 @@ package kafka.api
 import java.nio.ByteBuffer
 
 import kafka.api.ApiUtils._
+import kafka.network.{RequestChannel, RequestOrResponseSend}
+import kafka.network.RequestChannel.Response
 import kafka.utils.Logging
-import org.apache.kafka.common.protocol.ApiKeys
+import org.apache.kafka.common.ApiKey
+import org.apache.kafka.common.protocol.Errors
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 object TopicMetadataRequest extends Logging {
   val CurrentVersion = 0.shortValue
   val DefaultClientId = ""
 }
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 case class TopicMetadataRequest(versionId: Short,
                                 correlationId: Int,
                                 clientId: String,
                                 topics: Seq[String])
- extends RequestOrResponse(Some(ApiKeys.METADATA.id)){
+ extends RequestOrResponse(Some(ApiKey.METADATA.id)){
 
   def this(topics: Seq[String], correlationId: Int) =
     this(TopicMetadataRequest.CurrentVersion, correlationId, TopicMetadataRequest.DefaultClientId, topics)
 
-  def writeTo(buffer: ByteBuffer): Unit = {
+  def writeTo(buffer: ByteBuffer) {
     buffer.putShort(versionId)
     buffer.putInt(correlationId)
     writeShortString(buffer, clientId)
@@ -47,7 +48,7 @@ case class TopicMetadataRequest(versionId: Short,
     topics.foreach(topic => writeShortString(buffer, topic))
   }
 
-  def sizeInBytes: Int = {
+  def sizeInBytes(): Int = {
     2 +  /* version id */
     4 + /* correlation id */
     shortStringLength(clientId)  + /* client id */
@@ -57,6 +58,14 @@ case class TopicMetadataRequest(versionId: Short,
 
   override def toString: String = {
     describe(true)
+  }
+
+  override def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
+    val topicMetadata = topics.map {
+      topic => TopicMetadata(topic, Nil, Errors.forException(e))
+    }
+    val errorResponse = TopicMetadataResponse(Seq(), topicMetadata, correlationId)
+    requestChannel.sendResponse(Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))
   }
 
   override def describe(details: Boolean): String = {

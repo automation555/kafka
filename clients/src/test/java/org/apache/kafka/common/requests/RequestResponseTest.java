@@ -16,14 +16,15 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AccessControlEntry;
 import org.apache.kafka.common.acl.AccessControlEntryFilter;
 import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.acl.AclPermissionType;
-import org.apache.kafka.common.Node;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.NotCoordinatorException;
 import org.apache.kafka.common.errors.NotEnoughReplicasException;
 import org.apache.kafka.common.errors.SecurityDisabledException;
@@ -68,7 +69,6 @@ import java.util.Set;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
-import static org.apache.kafka.test.TestUtils.toBuffer;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -87,7 +87,6 @@ public class RequestResponseTest {
         checkRequest(createControlledShutdownRequest());
         checkResponse(createControlledShutdownResponse(), 1);
         checkErrorResponse(createControlledShutdownRequest(), new UnknownServerException());
-        checkErrorResponse(createControlledShutdownRequest(0), new UnknownServerException());
         checkRequest(createFetchRequest(4));
         checkResponse(createFetchResponse(), 4);
         checkErrorResponse(createFetchRequest(4), new UnknownServerException());
@@ -121,7 +120,6 @@ public class RequestResponseTest {
         checkResponse(createMetadataResponse(), 3);
         checkErrorResponse(createMetadataRequest(3, singletonList("topic1")), new UnknownServerException());
         checkResponse(createMetadataResponse(), 4);
-        checkResponse(createMetadataResponse(), 6);
         checkErrorResponse(createMetadataRequest(4, singletonList("topic1")), new UnknownServerException());
         checkRequest(createOffsetCommitRequest(2));
         checkErrorResponse(createOffsetCommitRequest(2), new UnknownServerException());
@@ -226,15 +224,13 @@ public class RequestResponseTest {
         checkRequest(createTxnOffsetCommitRequest());
         checkErrorResponse(createTxnOffsetCommitRequest(), new UnknownServerException());
         checkResponse(createTxnOffsetCommitResponse(), 0);
-        checkRequest(createListAclsRequest());
-        checkErrorResponse(createListAclsRequest(), new SecurityDisabledException("Security is not enabled."));
-        checkResponse(createDescribeAclsResponse(), ApiKeys.DESCRIBE_ACLS.latestVersion());
+        checkResponse(createDescribeAclsResponse(), ApiKey.DESCRIBE_ACLS.supportedRange().highest());
         checkRequest(createCreateAclsRequest());
         checkErrorResponse(createCreateAclsRequest(), new SecurityDisabledException("Security is not enabled."));
-        checkResponse(createCreateAclsResponse(), ApiKeys.CREATE_ACLS.latestVersion());
+        checkResponse(createCreateAclsResponse(), ApiKey.CREATE_ACLS.supportedRange().highest());
         checkRequest(createDeleteAclsRequest());
         checkErrorResponse(createDeleteAclsRequest(), new SecurityDisabledException("Security is not enabled."));
-        checkResponse(createDeleteAclsResponse(), ApiKeys.DELETE_ACLS.latestVersion());
+        checkResponse(createDeleteAclsResponse(), ApiKey.DELETE_ACLS.supportedRange().highest());
         checkRequest(createAlterConfigsRequest());
         checkErrorResponse(createAlterConfigsRequest(), new UnknownServerException());
         checkResponse(createAlterConfigsResponse(), 0);
@@ -242,6 +238,17 @@ public class RequestResponseTest {
         checkRequest(createDescribeConfigsRequestWithConfigEntries());
         checkErrorResponse(createDescribeConfigsRequest(), new UnknownServerException());
         checkResponse(createDescribeConfigsResponse(), 0);
+    }
+
+    @Test
+    public void testRequestHeader() {
+        RequestHeader header = createRequestHeader();
+        ByteBuffer buffer = toBuffer(header.toStruct());
+        RequestHeader deserialized = RequestHeader.parse(buffer);
+        assertEquals(header.apiVersion(), deserialized.apiVersion());
+        assertEquals(header.apiKey(), deserialized.apiKey());
+        assertEquals(header.clientId(), deserialized.clientId());
+        assertEquals(header.correlationId(), deserialized.correlationId());
     }
 
     @Test
@@ -253,7 +260,7 @@ public class RequestResponseTest {
     }
 
     private void checkOlderFetchVersions() throws Exception {
-        int latestVersion = ApiKeys.FETCH.latestVersion();
+        int latestVersion = ApiKey.FETCH.supportedRange().highest();
         for (int i = 0; i < latestVersion; ++i) {
             checkErrorResponse(createFetchRequest(i), new UnknownServerException());
             checkRequest(createFetchRequest(i));
@@ -287,6 +294,13 @@ public class RequestResponseTest {
         return (AbstractRequestResponse) deserializer.invoke(null, buffer, version);
     }
 
+    private ByteBuffer toBuffer(Struct struct) {
+        ByteBuffer buffer = ByteBuffer.allocate(struct.sizeOf());
+        struct.writeTo(buffer);
+        buffer.rewind();
+        return buffer;
+    }
+
     @Test(expected = UnsupportedVersionException.class)
     public void cannotUseFindCoordinatorV0ToFindTransactionCoordinator() {
         FindCoordinatorRequest.Builder builder = new FindCoordinatorRequest.Builder(FindCoordinatorRequest.CoordinatorType.TRANSACTION, "foobar");
@@ -295,7 +309,7 @@ public class RequestResponseTest {
 
     @Test
     public void produceRequestToStringTest() {
-        ProduceRequest request = createProduceRequest(ApiKeys.PRODUCE.latestVersion());
+        ProduceRequest request = createProduceRequest(ApiKey.PRODUCE.supportedRange().highest());
         assertEquals(1, request.partitionRecordsOrFail().size());
         assertFalse(request.toString(false).contains("partitionSizes"));
         assertTrue(request.toString(false).contains("numPartitions=1"));
@@ -319,7 +333,7 @@ public class RequestResponseTest {
 
     @Test
     public void produceRequestGetErrorResponseTest() {
-        ProduceRequest request = createProduceRequest(ApiKeys.PRODUCE.latestVersion());
+        ProduceRequest request = createProduceRequest(ApiKey.PRODUCE.supportedRange().highest());
         Set<TopicPartition> partitions = new HashSet<>(request.partitionRecordsOrFail().keySet());
 
         ProduceResponse errorResponse = (ProduceResponse) request.getErrorResponse(new NotEnoughReplicasException());
@@ -351,11 +365,11 @@ public class RequestResponseTest {
         assertEquals("Throttle time must be zero", 0, v0Response.getThrottleTime());
         assertEquals("Throttle time must be 10", 10, v1Response.getThrottleTime());
         assertEquals("Throttle time must be 10", 10, v2Response.getThrottleTime());
-        assertEquals("Should use schema version 0", ApiKeys.PRODUCE.responseSchema((short) 0),
+        assertEquals("Should use schema version 0", ApiKeys.responseSchema(ApiKey.PRODUCE, (short) 0),
                 v0Response.toStruct((short) 0).schema());
-        assertEquals("Should use schema version 1", ApiKeys.PRODUCE.responseSchema((short) 1),
+        assertEquals("Should use schema version 1", ApiKeys.responseSchema(ApiKey.PRODUCE, (short) 1),
                 v1Response.toStruct((short) 1).schema());
-        assertEquals("Should use schema version 2", ApiKeys.PRODUCE.responseSchema((short) 2),
+        assertEquals("Should use schema version 2", ApiKeys.responseSchema(ApiKey.PRODUCE, (short) 2),
                 v2Response.toStruct((short) 2).schema());
         assertEquals("Response data does not match", responseData, v0Response.responses());
         assertEquals("Response data does not match", responseData, v1Response.responses());
@@ -424,9 +438,9 @@ public class RequestResponseTest {
         FetchResponse v1Response = new FetchResponse(responseData, 10);
         assertEquals("Throttle time must be zero", 0, v0Response.throttleTimeMs());
         assertEquals("Throttle time must be 10", 10, v1Response.throttleTimeMs());
-        assertEquals("Should use schema version 0", ApiKeys.FETCH.responseSchema((short) 0),
+        assertEquals("Should use schema version 0", ApiKeys.responseSchema(ApiKey.FETCH, (short) 0),
                 v0Response.toStruct((short) 0).schema());
-        assertEquals("Should use schema version 1", ApiKeys.FETCH.responseSchema((short) 1),
+        assertEquals("Should use schema version 1", ApiKeys.responseSchema(ApiKey.FETCH, (short) 1),
                 v1Response.toStruct((short) 1).schema());
         assertEquals("Response data does not match", responseData, v0Response.responseData());
         assertEquals("Response data does not match", responseData, v1Response.responseData());
@@ -457,10 +471,10 @@ public class RequestResponseTest {
     @Test
     public void verifyFetchResponseFullWrite() throws Exception {
         FetchResponse fetchResponse = createFetchResponse();
-        short apiVersion = ApiKeys.FETCH.latestVersion();
-        int correlationId = 15;
+        RequestHeader header = new RequestHeader(ApiKey.FETCH.id(), ApiKey.FETCH.supportedRange().highest(),
+                "client", 15);
 
-        Send send = fetchResponse.toSend("1", new ResponseHeader(correlationId), apiVersion);
+        Send send = fetchResponse.toSend("1", header);
         ByteBufferChannel channel = new ByteBufferChannel(send.size());
         send.writeTo(channel);
         channel.close();
@@ -473,11 +487,11 @@ public class RequestResponseTest {
 
         // read the header
         ResponseHeader responseHeader = ResponseHeader.parse(channel.buffer());
-        assertEquals(correlationId, responseHeader.correlationId());
+        assertEquals(header.correlationId(), responseHeader.correlationId());
 
         // read the body
-        Struct responseBody = ApiKeys.FETCH.responseSchema(apiVersion).read(buf);
-        assertEquals(fetchResponse.toStruct(apiVersion), responseBody);
+        Struct responseBody = ApiKeys.responseSchema(ApiKey.FETCH, header.apiVersion()).read(buf);
+        assertEquals(fetchResponse.toStruct(header.apiVersion()), responseBody);
 
         assertEquals(size, responseHeader.sizeOf() + responseBody.sizeOf());
     }
@@ -485,12 +499,24 @@ public class RequestResponseTest {
     @Test
     public void testControlledShutdownResponse() {
         ControlledShutdownResponse response = createControlledShutdownResponse();
-        short version = ApiKeys.CONTROLLED_SHUTDOWN.latestVersion();
+        short version = ApiKey.CONTROLLED_SHUTDOWN_KEY.supportedRange().highest();
         Struct struct = response.toStruct(version);
         ByteBuffer buffer = toBuffer(struct);
         ControlledShutdownResponse deserialized = ControlledShutdownResponse.parse(buffer, version);
         assertEquals(response.error(), deserialized.error());
         assertEquals(response.partitionsRemaining(), deserialized.partitionsRemaining());
+    }
+
+    @Test
+    public void testRequestHeaderWithNullClientId() {
+        RequestHeader header = new RequestHeader((short) 10, (short) 1, null, 10);
+        Struct headerStruct = header.toStruct();
+        ByteBuffer buffer = toBuffer(headerStruct);
+        RequestHeader deserialized = RequestHeader.parse(buffer);
+        assertEquals(header.apiKey(), deserialized.apiKey());
+        assertEquals(header.apiVersion(), deserialized.apiVersion());
+        assertEquals(header.correlationId(), deserialized.correlationId());
+        assertEquals("", deserialized.clientId()); // null is defaulted to ""
     }
 
     @Test(expected = UnsupportedVersionException.class)
@@ -527,14 +553,8 @@ public class RequestResponseTest {
         assertEquals(jgr2.rebalanceTimeout(), jgr.rebalanceTimeout());
     }
 
-    @Test
-    public void testOffsetFetchRequestBuilderToString() {
-        String allTopicPartitionsString = OffsetFetchRequest.Builder.allTopicPartitions("someGroup").toString();
-        assertTrue(allTopicPartitionsString.contains("<ALL>"));
-        String string = new OffsetFetchRequest.Builder("group1",
-                singletonList(new TopicPartition("test11", 1))).toString();
-        assertTrue(string.contains("test11"));
-        assertTrue(string.contains("group1"));
+    private RequestHeader createRequestHeader() {
+        return new RequestHeader((short) 10, (short) 1, "", 10);
     }
 
     private ResponseHeader createResponseHeader() {
@@ -692,13 +712,11 @@ public class RequestResponseTest {
         Node node = new Node(1, "host1", 1001);
         List<Node> replicas = asList(node);
         List<Node> isr = asList(node);
-        List<Node> offlineReplicas = asList();
 
         List<MetadataResponse.TopicMetadata> allTopicMetadata = new ArrayList<>();
         allTopicMetadata.add(new MetadataResponse.TopicMetadata(Errors.NONE, "__consumer_offsets", true,
-                RecordBatch.MAGIC_VALUE_V2, 16384, asList(new MetadataResponse.PartitionMetadata(Errors.NONE, 1, node, replicas, isr, offlineReplicas))));
+                asList(new MetadataResponse.PartitionMetadata(Errors.NONE, 1, node, replicas, isr))));
         allTopicMetadata.add(new MetadataResponse.TopicMetadata(Errors.LEADER_NOT_AVAILABLE, "topic2", false,
-                MetadataResponse.UNKNOWN_TOPIC_MESSAGE_FORMAT_VERSION, MetadataResponse.UNKNOWN_TOPIC_MESSAGE_MAX_BYTES,
                 Collections.<MetadataResponse.PartitionMetadata>emptyList()));
 
         return new MetadataResponse(asList(node), null, MetadataResponse.NO_CONTROLLER_ID, allTopicMetadata);
@@ -765,10 +783,6 @@ public class RequestResponseTest {
         return new ControlledShutdownRequest.Builder(10).build();
     }
 
-    private ControlledShutdownRequest createControlledShutdownRequest(int version) {
-        return new ControlledShutdownRequest.Builder(10).build((short) version);
-    }
-
     private ControlledShutdownResponse createControlledShutdownResponse() {
         Set<TopicPartition> topicPartitions = Utils.mkSet(
                 new TopicPartition("test2", 5),
@@ -778,21 +792,22 @@ public class RequestResponseTest {
     }
 
     private LeaderAndIsrRequest createLeaderAndIsrRequest() {
-        Map<TopicPartition, LeaderAndIsrRequest.PartitionState> partitionStates = new HashMap<>();
+        Map<TopicPartition, PartitionState> partitionStates = new HashMap<>();
         List<Integer> isr = asList(1, 2);
         List<Integer> replicas = asList(1, 2, 3, 4);
         partitionStates.put(new TopicPartition("topic5", 105),
-                new LeaderAndIsrRequest.PartitionState(0, 2, 1, new ArrayList<>(isr), 2, replicas, false));
+                new PartitionState(0, 2, 1, new ArrayList<>(isr), 2, replicas));
         partitionStates.put(new TopicPartition("topic5", 1),
-                new LeaderAndIsrRequest.PartitionState(1, 1, 1, new ArrayList<>(isr), 2, replicas, false));
+                new PartitionState(1, 1, 1, new ArrayList<>(isr), 2, replicas));
         partitionStates.put(new TopicPartition("topic20", 1),
-                new LeaderAndIsrRequest.PartitionState(1, 0, 1, new ArrayList<>(isr), 2, replicas, false));
+                new PartitionState(1, 0, 1, new ArrayList<>(isr), 2, replicas));
 
         Set<Node> leaders = Utils.mkSet(
                 new Node(0, "test0", 1223),
                 new Node(1, "test1", 1223)
         );
-        return new LeaderAndIsrRequest.Builder(ApiKeys.LEADER_AND_ISR.latestVersion(), 1, 10, partitionStates, leaders).build();
+
+        return new LeaderAndIsrRequest.Builder(1, 10, partitionStates, leaders).build();
     }
 
     private LeaderAndIsrResponse createLeaderAndIsrResponse() {
@@ -802,16 +817,15 @@ public class RequestResponseTest {
     }
 
     private UpdateMetadataRequest createUpdateMetadataRequest(int version, String rack) {
-        Map<TopicPartition, UpdateMetadataRequest.PartitionState> partitionStates = new HashMap<>();
+        Map<TopicPartition, PartitionState> partitionStates = new HashMap<>();
         List<Integer> isr = asList(1, 2);
         List<Integer> replicas = asList(1, 2, 3, 4);
-        List<Integer> offlineReplicas = asList();
         partitionStates.put(new TopicPartition("topic5", 105),
-            new UpdateMetadataRequest.PartitionState(0, 2, 1, isr, 2, replicas, offlineReplicas));
+                new PartitionState(0, 2, 1, new ArrayList<>(isr), 2, replicas));
         partitionStates.put(new TopicPartition("topic5", 1),
-            new UpdateMetadataRequest.PartitionState(1, 1, 1, isr, 2, replicas, offlineReplicas));
+                new PartitionState(1, 1, 1, new ArrayList<>(isr), 2, replicas));
         partitionStates.put(new TopicPartition("topic20", 1),
-            new UpdateMetadataRequest.PartitionState(1, 0, 1, isr, 2, replicas, offlineReplicas));
+                new PartitionState(1, 0, 1, new ArrayList<>(isr), 2, replicas));
 
         SecurityProtocol plaintext = SecurityProtocol.PLAINTEXT;
         List<UpdateMetadataRequest.EndPoint> endPoints1 = new ArrayList<>();
@@ -977,12 +991,6 @@ public class RequestResponseTest {
         final Map<TopicPartition, Errors> errorPerPartitions = new HashMap<>();
         errorPerPartitions.put(new TopicPartition("topic", 73), Errors.NONE);
         return new TxnOffsetCommitResponse(0, errorPerPartitions);
-    }
-
-    private DescribeAclsRequest createListAclsRequest() {
-        return new DescribeAclsRequest.Builder(new AclBindingFilter(
-                new ResourceFilter(ResourceType.TOPIC, "mytopic"),
-                new AccessControlEntryFilter(null, null, AclOperation.ANY, AclPermissionType.ANY))).build();
     }
 
     private DescribeAclsResponse createDescribeAclsResponse() {

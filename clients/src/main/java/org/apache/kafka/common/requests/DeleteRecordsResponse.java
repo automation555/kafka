@@ -17,27 +17,17 @@
 
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.utils.CollectionUtils;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
-import static org.apache.kafka.common.protocol.CommonFields.ERROR_MESSAGE;
-import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
-import static org.apache.kafka.common.protocol.CommonFields.THROTTLE_TIME_MS;
-import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
-import static org.apache.kafka.common.protocol.types.Type.INT64;
 
 public class DeleteRecordsResponse extends AbstractResponse {
 
@@ -47,41 +37,13 @@ public class DeleteRecordsResponse extends AbstractResponse {
     private static final String TOPICS_KEY_NAME = "topics";
 
     // topic level key names
+    private static final String TOPIC_KEY_NAME = "topic";
     private static final String PARTITIONS_KEY_NAME = "partitions";
 
     // partition level key names
+    private static final String PARTITION_KEY_NAME = "partition";
     private static final String LOW_WATERMARK_KEY_NAME = "low_watermark";
-
-    private static final Schema DELETE_RECORDS_RESPONSE_PARTITION_V0 = new Schema(
-            PARTITION_ID,
-            new Field(LOW_WATERMARK_KEY_NAME, INT64, "Smallest available offset of all live replicas"),
-            ERROR_CODE);
-
-    private static final Schema DELETE_RECORDS_RESPONSE_PARTITION_V1 = new Schema(
-            PARTITION_ID,
-            new Field(LOW_WATERMARK_KEY_NAME, INT64, "Smallest available offset of all live replicas"),
-            ERROR_CODE,
-            ERROR_MESSAGE);
-
-    private static final Schema DELETE_RECORDS_RESPONSE_TOPIC_V0 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(DELETE_RECORDS_RESPONSE_PARTITION_V0)));
-
-    private static final Schema DELETE_RECORDS_RESPONSE_TOPIC_V1 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(DELETE_RECORDS_RESPONSE_PARTITION_V1)));
-
-    private static final Schema DELETE_RECORDS_RESPONSE_V0 = new Schema(
-            THROTTLE_TIME_MS,
-            new Field(TOPICS_KEY_NAME, new ArrayOf(DELETE_RECORDS_RESPONSE_TOPIC_V0)));
-
-    private static final Schema DELETE_RECORDS_RESPONSE_V1 = new Schema(
-            THROTTLE_TIME_MS,
-            new Field(TOPICS_KEY_NAME, new ArrayOf(DELETE_RECORDS_RESPONSE_TOPIC_V1)));
-
-    public static Schema[] schemaVersions() {
-        return new Schema[]{DELETE_RECORDS_RESPONSE_V0, DELETE_RECORDS_RESPONSE_V1};
-    }
+    private static final String ERROR_CODE_KEY_NAME = "error_code";
 
     private final int throttleTimeMs;
     private final Map<TopicPartition, PartitionResponse> responses;
@@ -93,14 +55,15 @@ public class DeleteRecordsResponse extends AbstractResponse {
      * UNKNOWN_TOPIC_OR_PARTITION (3)
      * NOT_LEADER_FOR_PARTITION (6)
      * REQUEST_TIMED_OUT (7)
+     * NOT_ENOUGH_REPLICAS (19)
      * UNKNOWN (-1)
      */
 
     public static final class PartitionResponse {
         public long lowWatermark;
-        public ApiError error;
+        public Errors error;
 
-        public PartitionResponse(long lowWatermark, ApiError error) {
+        public PartitionResponse(long lowWatermark, Errors error) {
             this.lowWatermark = lowWatermark;
             this.error = error;
         }
@@ -109,9 +72,9 @@ public class DeleteRecordsResponse extends AbstractResponse {
         public String toString() {
             StringBuilder builder = new StringBuilder();
             builder.append('{')
-                   .append("low_watermark: ")
+                   .append(",low_watermark: ")
                    .append(lowWatermark)
-                   .append(", error: ")
+                   .append("error: ")
                    .append(error.toString())
                    .append('}');
             return builder.toString();
@@ -119,16 +82,16 @@ public class DeleteRecordsResponse extends AbstractResponse {
     }
 
     public DeleteRecordsResponse(Struct struct) {
-        this.throttleTimeMs = struct.getOrElse(THROTTLE_TIME_MS, DEFAULT_THROTTLE_TIME);
+        this.throttleTimeMs = struct.hasField(THROTTLE_TIME_KEY_NAME) ? struct.getInt(THROTTLE_TIME_KEY_NAME) : DEFAULT_THROTTLE_TIME;
         responses = new HashMap<>();
         for (Object topicStructObj : struct.getArray(TOPICS_KEY_NAME)) {
             Struct topicStruct = (Struct) topicStructObj;
-            String topic = topicStruct.get(TOPIC_NAME);
+            String topic = topicStruct.getString(TOPIC_KEY_NAME);
             for (Object partitionStructObj : topicStruct.getArray(PARTITIONS_KEY_NAME)) {
                 Struct partitionStruct = (Struct) partitionStructObj;
-                int partition = partitionStruct.get(PARTITION_ID);
+                int partition = partitionStruct.getInt(PARTITION_KEY_NAME);
                 long lowWatermark = partitionStruct.getLong(LOW_WATERMARK_KEY_NAME);
-                ApiError error = new ApiError(partitionStruct);
+                Errors error = Errors.forCode(partitionStruct.getShort(ERROR_CODE_KEY_NAME));
                 responses.put(new TopicPartition(topic, partition), new PartitionResponse(lowWatermark, error));
             }
         }
@@ -144,21 +107,21 @@ public class DeleteRecordsResponse extends AbstractResponse {
 
     @Override
     protected Struct toStruct(short version) {
-        Struct struct = new Struct(ApiKeys.DELETE_RECORDS.responseSchema(version));
-        struct.setIfExists(THROTTLE_TIME_MS, throttleTimeMs);
+        Struct struct = new Struct(ApiKeys.responseSchema(ApiKey.DELETE_RECORDS, version));
+        if (struct.hasField(THROTTLE_TIME_KEY_NAME))
+            struct.set(THROTTLE_TIME_KEY_NAME, throttleTimeMs);
         Map<String, Map<Integer, PartitionResponse>> responsesByTopic = CollectionUtils.groupDataByTopic(responses);
         List<Struct> topicStructArray = new ArrayList<>();
         for (Map.Entry<String, Map<Integer, PartitionResponse>> responsesByTopicEntry : responsesByTopic.entrySet()) {
             Struct topicStruct = struct.instance(TOPICS_KEY_NAME);
-            topicStruct.set(TOPIC_NAME, responsesByTopicEntry.getKey());
+            topicStruct.set(TOPIC_KEY_NAME, responsesByTopicEntry.getKey());
             List<Struct> partitionStructArray = new ArrayList<>();
             for (Map.Entry<Integer, PartitionResponse> responsesByPartitionEntry : responsesByTopicEntry.getValue().entrySet()) {
                 Struct partitionStruct = topicStruct.instance(PARTITIONS_KEY_NAME);
                 PartitionResponse response = responsesByPartitionEntry.getValue();
-                partitionStruct.set(PARTITION_ID, responsesByPartitionEntry.getKey());
+                partitionStruct.set(PARTITION_KEY_NAME, responsesByPartitionEntry.getKey());
                 partitionStruct.set(LOW_WATERMARK_KEY_NAME, response.lowWatermark);
-                response.error.write(partitionStruct);
-
+                partitionStruct.set(ERROR_CODE_KEY_NAME, response.error.code());
                 partitionStructArray.add(partitionStruct);
             }
             topicStruct.set(PARTITIONS_KEY_NAME, partitionStructArray.toArray());
@@ -176,15 +139,7 @@ public class DeleteRecordsResponse extends AbstractResponse {
         return this.responses;
     }
 
-    @Override
-    public Map<Errors, Integer> errorCounts() {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
-        for (PartitionResponse response : responses.values())
-            updateErrorCounts(errorCounts, response.error.error());
-        return errorCounts;
-    }
-
     public static DeleteRecordsResponse parse(ByteBuffer buffer, short version) {
-        return new DeleteRecordsResponse(ApiKeys.DELETE_RECORDS.responseSchema(version).read(buffer));
+        return new DeleteRecordsResponse(ApiKeys.responseSchema(ApiKey.DELETE_RECORDS, version).read(buffer));
     }
 }

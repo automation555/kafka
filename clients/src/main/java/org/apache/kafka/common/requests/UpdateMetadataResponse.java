@@ -16,44 +16,44 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.UpdateMetadataResponseData;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.Map;
 
 public class UpdateMetadataResponse extends AbstractResponse {
 
-    private final UpdateMetadataResponseData data;
+    private static final String ERROR_CODE_KEY_NAME = "error_code";
 
-    public UpdateMetadataResponse(UpdateMetadataResponseData data) {
-        super(ApiKeys.UPDATE_METADATA);
-        this.data = data;
+    /**
+     * Possible error code:
+     *
+     * STALE_CONTROLLER_EPOCH (11)
+     */
+    private final Errors error;
+
+    public UpdateMetadataResponse(Errors error) {
+        this.error = error;
+    }
+
+    public UpdateMetadataResponse(Struct struct) {
+        error = Errors.forCode(struct.getShort(ERROR_CODE_KEY_NAME));
     }
 
     public Errors error() {
-        return Errors.forCode(data.errorCode());
-    }
-
-    @Override
-    public Map<Errors, Integer> errorCounts() {
-        return errorCounts(error());
-    }
-
-    @Override
-    public int throttleTimeMs() {
-        return DEFAULT_THROTTLE_TIME;
+        return error;
     }
 
     public static UpdateMetadataResponse parse(ByteBuffer buffer, short version) {
-        return new UpdateMetadataResponse(new UpdateMetadataResponseData(new ByteBufferAccessor(buffer), version));
+        return new UpdateMetadataResponse(ApiKeys.parseResponse(ApiKey.UPDATE_METADATA_KEY, version, buffer));
     }
 
     @Override
-    public UpdateMetadataResponseData data() {
-        return data;
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.responseSchema(ApiKey.UPDATE_METADATA_KEY, version));
+        struct.set(ERROR_CODE_KEY_NAME, error.code());
+        return struct;
     }
-
 }

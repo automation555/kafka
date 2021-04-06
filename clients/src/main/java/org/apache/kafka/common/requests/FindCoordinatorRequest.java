@@ -16,71 +16,119 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.Node;
-import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.FindCoordinatorRequestData;
-import org.apache.kafka.common.message.FindCoordinatorResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
 
 public class FindCoordinatorRequest extends AbstractRequest {
+    private static final String GROUP_ID_KEY_NAME = "group_id";
+    private static final String COORDINATOR_KEY_KEY_NAME = "coordinator_key";
+    private static final String COORDINATOR_TYPE_KEY_NAME = "coordinator_type";
 
     public static class Builder extends AbstractRequest.Builder<FindCoordinatorRequest> {
-        private final FindCoordinatorRequestData data;
+        private final String coordinatorKey;
+        private final CoordinatorType coordinatorType;
+        private final short minVersion;
 
-        public Builder(FindCoordinatorRequestData data) {
-            super(ApiKeys.FIND_COORDINATOR);
-            this.data = data;
+        public Builder(CoordinatorType coordinatorType, String coordinatorKey) {
+            super(ApiKey.FIND_COORDINATOR);
+            this.coordinatorType = coordinatorType;
+            this.coordinatorKey = coordinatorKey;
+            this.minVersion = coordinatorType == CoordinatorType.TRANSACTION ? (short) 1 : (short) 0;
         }
 
         @Override
         public FindCoordinatorRequest build(short version) {
-            if (version < 1 && data.keyType() == CoordinatorType.TRANSACTION.id()) {
+            if (version < minVersion)
                 throw new UnsupportedVersionException("Cannot create a v" + version + " FindCoordinator request " +
-                        "because we require features supported only in 2 or later.");
-            }
-            return new FindCoordinatorRequest(data, version);
+                        "because we require features supported only in " + minVersion + " or later.");
+            return new FindCoordinatorRequest(coordinatorType, coordinatorKey, version);
+        }
+
+        public String coordinatorKey() {
+            return coordinatorKey;
+        }
+
+        public CoordinatorType coordinatorType() {
+            return coordinatorType;
         }
 
         @Override
         public String toString() {
-            return data.toString();
-        }
-
-        public FindCoordinatorRequestData data() {
-            return data;
+            StringBuilder bld = new StringBuilder();
+            bld.append("(type=FindCoordinatorRequest, coordinatorKey=");
+            bld.append(coordinatorKey);
+            bld.append(", coordinatorType=");
+            bld.append(coordinatorType);
+            bld.append(")");
+            return bld.toString();
         }
     }
 
-    private final FindCoordinatorRequestData data;
+    private final String coordinatorKey;
+    private final CoordinatorType coordinatorType;
 
-    private FindCoordinatorRequest(FindCoordinatorRequestData data, short version) {
-        super(ApiKeys.FIND_COORDINATOR, version);
-        this.data = data;
+    private FindCoordinatorRequest(CoordinatorType coordinatorType, String coordinatorKey, short version) {
+        super(version);
+        this.coordinatorType = coordinatorType;
+        this.coordinatorKey = coordinatorKey;
+    }
+
+    public FindCoordinatorRequest(Struct struct, short version) {
+        super(version);
+
+        if (struct.hasField(COORDINATOR_TYPE_KEY_NAME))
+            this.coordinatorType = CoordinatorType.forId(struct.getByte(COORDINATOR_TYPE_KEY_NAME));
+        else
+            this.coordinatorType = CoordinatorType.GROUP;
+        if (struct.hasField(GROUP_ID_KEY_NAME))
+            this.coordinatorKey = struct.getString(GROUP_ID_KEY_NAME);
+        else
+            this.coordinatorKey = struct.getString(COORDINATOR_KEY_KEY_NAME);
     }
 
     @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
-        FindCoordinatorResponseData response = new FindCoordinatorResponseData();
-        if (version() >= 2) {
-            response.setThrottleTimeMs(throttleTimeMs);
+        short versionId = version();
+        switch (versionId) {
+            case 0:
+                return new FindCoordinatorResponse(Errors.forException(e), Node.noNode());
+            case 1:
+                return new FindCoordinatorResponse(throttleTimeMs, Errors.forException(e), Node.noNode());
+
+            default:
+                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
+                        versionId, this.getClass().getSimpleName(), ApiKey.FIND_COORDINATOR.supportedRange().highest()));
         }
-        Errors error = Errors.forException(e);
-        return FindCoordinatorResponse.prepareResponse(error, Node.noNode());
+    }
+
+    public String coordinatorKey() {
+        return coordinatorKey;
+    }
+
+    public CoordinatorType coordinatorType() {
+        return coordinatorType;
     }
 
     public static FindCoordinatorRequest parse(ByteBuffer buffer, short version) {
-        return new FindCoordinatorRequest(new FindCoordinatorRequestData(new ByteBufferAccessor(buffer), version),
-            version);
+        return new FindCoordinatorRequest(ApiKeys.parseRequest(ApiKey.FIND_COORDINATOR, version, buffer), version);
     }
 
     @Override
-    public FindCoordinatorRequestData data() {
-        return data;
+    protected Struct toStruct() {
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.FIND_COORDINATOR, version()));
+        if (struct.hasField(GROUP_ID_KEY_NAME))
+            struct.set(GROUP_ID_KEY_NAME, coordinatorKey);
+        else
+            struct.set(COORDINATOR_KEY_KEY_NAME, coordinatorKey);
+        if (struct.hasField(COORDINATOR_TYPE_KEY_NAME))
+            struct.set(COORDINATOR_TYPE_KEY_NAME, coordinatorType.id);
+        return struct;
     }
 
     public enum CoordinatorType {
@@ -92,10 +140,6 @@ public class FindCoordinatorRequest extends AbstractRequest {
             this.id = id;
         }
 
-        public byte id() {
-            return id;
-        }
-
         public static CoordinatorType forId(byte id) {
             switch (id) {
                 case 0:
@@ -103,7 +147,7 @@ public class FindCoordinatorRequest extends AbstractRequest {
                 case 1:
                     return TRANSACTION;
                 default:
-                    throw new InvalidRequestException("Unknown coordinator type received: " + id);
+                    throw new IllegalArgumentException("Unknown coordinator type received: " + id);
             }
         }
     }

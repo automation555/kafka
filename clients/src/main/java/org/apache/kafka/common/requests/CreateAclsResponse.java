@@ -16,48 +16,76 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.CreateAclsResponseData;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
-import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 public class CreateAclsResponse extends AbstractResponse {
-    private final CreateAclsResponseData data;
+    private final static String CREATION_RESPONSES = "creation_responses";
 
-    public CreateAclsResponse(CreateAclsResponseData data) {
-        super(ApiKeys.CREATE_ACLS);
-        this.data = data;
+    public static class AclCreationResponse {
+        private final ApiError error;
+
+        public AclCreationResponse(ApiError error) {
+            this.error = error;
+        }
+
+        public ApiError error() {
+            return error;
+        }
+
+        @Override
+        public String toString() {
+            return "(" + error + ")";
+        }
+    }
+
+    private final int throttleTimeMs;
+
+    private final List<AclCreationResponse> aclCreationResponses;
+
+    public CreateAclsResponse(int throttleTimeMs, List<AclCreationResponse> aclCreationResponses) {
+        this.throttleTimeMs = throttleTimeMs;
+        this.aclCreationResponses = aclCreationResponses;
+    }
+
+    public CreateAclsResponse(Struct struct) {
+        this.throttleTimeMs = struct.getInt(THROTTLE_TIME_KEY_NAME);
+        this.aclCreationResponses = new ArrayList<>();
+        for (Object responseStructObj : struct.getArray(CREATION_RESPONSES)) {
+            Struct responseStruct = (Struct) responseStructObj;
+            ApiError error = new ApiError(responseStruct);
+            this.aclCreationResponses.add(new AclCreationResponse(error));
+        }
     }
 
     @Override
-    public CreateAclsResponseData data() {
-        return data;
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.responseSchema(ApiKey.CREATE_ACLS, version));
+        struct.set(THROTTLE_TIME_KEY_NAME, throttleTimeMs);
+        List<Struct> responseStructs = new ArrayList<>();
+        for (AclCreationResponse response : aclCreationResponses) {
+            Struct responseStruct = struct.instance(CREATION_RESPONSES);
+            response.error.write(responseStruct);
+            responseStructs.add(responseStruct);
+        }
+        struct.set(CREATION_RESPONSES, responseStructs.toArray());
+        return struct;
     }
 
-    @Override
     public int throttleTimeMs() {
-        return data.throttleTimeMs();
+        return throttleTimeMs;
     }
 
-    public List<CreateAclsResponseData.AclCreationResult> results() {
-        return data.results();
-    }
-
-    @Override
-    public Map<Errors, Integer> errorCounts() {
-        return errorCounts(results().stream().map(r -> Errors.forCode(r.errorCode())));
+    public List<AclCreationResponse> aclCreationResponses() {
+        return aclCreationResponses;
     }
 
     public static CreateAclsResponse parse(ByteBuffer buffer, short version) {
-        return new CreateAclsResponse(new CreateAclsResponseData(new ByteBufferAccessor(buffer), version));
-    }
-
-    @Override
-    public boolean shouldClientThrottle(short version) {
-        return version >= 1;
+        return new CreateAclsResponse(ApiKeys.responseSchema(ApiKey.CREATE_ACLS, version).read(buffer));
     }
 }

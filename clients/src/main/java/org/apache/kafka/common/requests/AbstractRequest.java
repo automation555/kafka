@@ -16,74 +16,52 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Send;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.MessageUtil;
-import org.apache.kafka.common.protocol.ObjectSerializationCache;
-import org.apache.kafka.common.protocol.SendBuilder;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.Map;
 
-public abstract class AbstractRequest implements AbstractRequestResponse {
+public abstract class AbstractRequest extends AbstractRequestResponse {
 
     public static abstract class Builder<T extends AbstractRequest> {
-        private final ApiKeys apiKey;
-        private final short oldestAllowedVersion;
-        private final short latestAllowedVersion;
+        private final ApiKey api;
+        private final Short desiredVersion;
 
-        /**
-         * Construct a new builder which allows any supported version
-         */
-        public Builder(ApiKeys apiKey) {
-            this(apiKey, apiKey.oldestVersion(), apiKey.latestVersion());
+        public Builder(ApiKey api) {
+            this(api, null);
         }
 
-        /**
-         * Construct a new builder which allows only a specific version
-         */
-        public Builder(ApiKeys apiKey, short allowedVersion) {
-            this(apiKey, allowedVersion, allowedVersion);
+        public Builder(ApiKey api, Short desiredVersion) {
+            this.api = api;
+            this.desiredVersion = desiredVersion;
         }
 
-        /**
-         * Construct a new builder which allows an inclusive range of versions
-         */
-        public Builder(ApiKeys apiKey, short oldestAllowedVersion, short latestAllowedVersion) {
-            this.apiKey = apiKey;
-            this.oldestAllowedVersion = oldestAllowedVersion;
-            this.latestAllowedVersion = latestAllowedVersion;
+        public ApiKey api() {
+            return api;
         }
 
-        public ApiKeys apiKey() {
-            return apiKey;
+        public short desiredOrLatestVersion() {
+            return desiredVersion == null ? api.supportedRange().highest() : desiredVersion;
         }
 
-        public short oldestAllowedVersion() {
-            return oldestAllowedVersion;
-        }
-
-        public short latestAllowedVersion() {
-            return latestAllowedVersion;
+        public Short desiredVersion() {
+            return desiredVersion;
         }
 
         public T build() {
-            return build(latestAllowedVersion());
+            return build(desiredOrLatestVersion());
         }
 
         public abstract T build(short version);
     }
 
     private final short version;
-    private final ApiKeys apiKey;
 
-    public AbstractRequest(ApiKeys apiKey, short version) {
-        if (!apiKey.isVersionSupported(version))
-            throw new UnsupportedVersionException("The " + apiKey + " protocol does not support version " + version);
+    public AbstractRequest(short version) {
         this.version = version;
-        this.apiKey = apiKey;
     }
 
     /**
@@ -93,26 +71,21 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
         return version;
     }
 
-    public ApiKeys apiKey() {
-        return apiKey;
+    public Send toSend(String destination, RequestHeader header) {
+        return new NetworkSend(destination, serialize(header));
     }
 
-    public final Send toSend(RequestHeader header) {
-        return SendBuilder.buildRequestSend(header, data());
+    /**
+     * Use with care, typically {@link #toSend(String, RequestHeader)} should be used instead.
+     */
+    public ByteBuffer serialize(RequestHeader header) {
+        return serialize(header.toStruct(), toStruct());
     }
 
-    // Visible for testing
-    public final ByteBuffer serialize() {
-        return MessageUtil.toByteBuffer(data(), version);
-    }
-
-    // Visible for testing
-    final int sizeInBytes() {
-        return data().size(new ObjectSerializationCache(), version);
-    }
+    protected abstract Struct toStruct();
 
     public String toString(boolean verbose) {
-        return data().toString();
+        return toStruct().toString();
     }
 
     @Override
@@ -133,164 +106,119 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
     public abstract AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e);
 
     /**
-     * Get the error counts corresponding to an error response. This is overridden for requests
-     * where response may be null (e.g produce with acks=0).
+     * Factory method for getting a request object based on ApiKey ID and a buffer
      */
-    public Map<Errors, Integer> errorCounts(Throwable e) {
-        AbstractResponse response = getErrorResponse(0, e);
-        if (response == null)
-            throw new IllegalStateException("Error counts could not be obtained for request " + this);
-        else
-            return response.errorCounts();
-    }
-
-    /**
-     * Factory method for getting a request object based on ApiKey ID and a version
-     */
-    public static RequestAndSize parseRequest(ApiKeys apiKey, short apiVersion, ByteBuffer buffer) {
-        int bufferSize = buffer.remaining();
-        return new RequestAndSize(doParseRequest(apiKey, apiVersion, buffer), bufferSize);
-    }
-
-    private static AbstractRequest doParseRequest(ApiKeys apiKey, short apiVersion, ByteBuffer buffer) {
-        switch (apiKey) {
+    public static RequestAndSize getRequest(int requestId, short version, ByteBuffer buffer) {
+        ApiKey api = ApiKey.fromId(requestId);
+        Struct struct = ApiKeys.parseRequest(api, version, buffer);
+        AbstractRequest request;
+        switch (api) {
             case PRODUCE:
-                return ProduceRequest.parse(buffer, apiVersion);
+                request = new ProduceRequest(struct, version);
+                break;
             case FETCH:
-                return FetchRequest.parse(buffer, apiVersion);
+                request = new FetchRequest(struct, version);
+                break;
             case LIST_OFFSETS:
-                return ListOffsetsRequest.parse(buffer, apiVersion);
+                request = new ListOffsetRequest(struct, version);
+                break;
             case METADATA:
-                return MetadataRequest.parse(buffer, apiVersion);
+                request = new MetadataRequest(struct, version);
+                break;
             case OFFSET_COMMIT:
-                return OffsetCommitRequest.parse(buffer, apiVersion);
+                request = new OffsetCommitRequest(struct, version);
+                break;
             case OFFSET_FETCH:
-                return OffsetFetchRequest.parse(buffer, apiVersion);
+                request = new OffsetFetchRequest(struct, version);
+                break;
             case FIND_COORDINATOR:
-                return FindCoordinatorRequest.parse(buffer, apiVersion);
+                request = new FindCoordinatorRequest(struct, version);
+                break;
             case JOIN_GROUP:
-                return JoinGroupRequest.parse(buffer, apiVersion);
+                request = new JoinGroupRequest(struct, version);
+                break;
             case HEARTBEAT:
-                return HeartbeatRequest.parse(buffer, apiVersion);
+                request = new HeartbeatRequest(struct, version);
+                break;
             case LEAVE_GROUP:
-                return LeaveGroupRequest.parse(buffer, apiVersion);
+                request = new LeaveGroupRequest(struct, version);
+                break;
             case SYNC_GROUP:
-                return SyncGroupRequest.parse(buffer, apiVersion);
+                request = new SyncGroupRequest(struct, version);
+                break;
             case STOP_REPLICA:
-                return StopReplicaRequest.parse(buffer, apiVersion);
-            case CONTROLLED_SHUTDOWN:
-                return ControlledShutdownRequest.parse(buffer, apiVersion);
-            case UPDATE_METADATA:
-                return UpdateMetadataRequest.parse(buffer, apiVersion);
+                request = new StopReplicaRequest(struct, version);
+                break;
+            case CONTROLLED_SHUTDOWN_KEY:
+                request = new ControlledShutdownRequest(struct, version);
+                break;
+            case UPDATE_METADATA_KEY:
+                request = new UpdateMetadataRequest(struct, version);
+                break;
             case LEADER_AND_ISR:
-                return LeaderAndIsrRequest.parse(buffer, apiVersion);
+                request = new LeaderAndIsrRequest(struct, version);
+                break;
             case DESCRIBE_GROUPS:
-                return DescribeGroupsRequest.parse(buffer, apiVersion);
+                request = new DescribeGroupsRequest(struct, version);
+                break;
             case LIST_GROUPS:
-                return ListGroupsRequest.parse(buffer, apiVersion);
+                request = new ListGroupsRequest(struct, version);
+                break;
             case SASL_HANDSHAKE:
-                return SaslHandshakeRequest.parse(buffer, apiVersion);
+                request = new SaslHandshakeRequest(struct, version);
+                break;
             case API_VERSIONS:
-                return ApiVersionsRequest.parse(buffer, apiVersion);
+                request = new ApiVersionsRequest(struct, version);
+                break;
             case CREATE_TOPICS:
-                return CreateTopicsRequest.parse(buffer, apiVersion);
+                request = new CreateTopicsRequest(struct, version);
+                break;
             case DELETE_TOPICS:
-                return DeleteTopicsRequest.parse(buffer, apiVersion);
+                request = new DeleteTopicsRequest(struct, version);
+                break;
             case DELETE_RECORDS:
-                return DeleteRecordsRequest.parse(buffer, apiVersion);
+                request = new DeleteRecordsRequest(struct, version);
+                break;
             case INIT_PRODUCER_ID:
-                return InitProducerIdRequest.parse(buffer, apiVersion);
+                request = new InitProducerIdRequest(struct, version);
+                break;
             case OFFSET_FOR_LEADER_EPOCH:
-                return OffsetsForLeaderEpochRequest.parse(buffer, apiVersion);
+                request = new OffsetsForLeaderEpochRequest(struct, version);
+                break;
             case ADD_PARTITIONS_TO_TXN:
-                return AddPartitionsToTxnRequest.parse(buffer, apiVersion);
+                request = new AddPartitionsToTxnRequest(struct, version);
+                break;
             case ADD_OFFSETS_TO_TXN:
-                return AddOffsetsToTxnRequest.parse(buffer, apiVersion);
+                request = new AddOffsetsToTxnRequest(struct, version);
+                break;
             case END_TXN:
-                return EndTxnRequest.parse(buffer, apiVersion);
+                request = new EndTxnRequest(struct, version);
+                break;
             case WRITE_TXN_MARKERS:
-                return WriteTxnMarkersRequest.parse(buffer, apiVersion);
+                request = new WriteTxnMarkersRequest(struct, version);
+                break;
             case TXN_OFFSET_COMMIT:
-                return TxnOffsetCommitRequest.parse(buffer, apiVersion);
+                request = new TxnOffsetCommitRequest(struct, version);
+                break;
             case DESCRIBE_ACLS:
-                return DescribeAclsRequest.parse(buffer, apiVersion);
+                request = new DescribeAclsRequest(struct, version);
+                break;
             case CREATE_ACLS:
-                return CreateAclsRequest.parse(buffer, apiVersion);
+                request = new CreateAclsRequest(struct, version);
+                break;
             case DELETE_ACLS:
-                return DeleteAclsRequest.parse(buffer, apiVersion);
+                request = new DeleteAclsRequest(struct, version);
+                break;
             case DESCRIBE_CONFIGS:
-                return DescribeConfigsRequest.parse(buffer, apiVersion);
+                request = new DescribeConfigsRequest(struct, version);
+                break;
             case ALTER_CONFIGS:
-                return AlterConfigsRequest.parse(buffer, apiVersion);
-            case ALTER_REPLICA_LOG_DIRS:
-                return AlterReplicaLogDirsRequest.parse(buffer, apiVersion);
-            case DESCRIBE_LOG_DIRS:
-                return DescribeLogDirsRequest.parse(buffer, apiVersion);
-            case SASL_AUTHENTICATE:
-                return SaslAuthenticateRequest.parse(buffer, apiVersion);
-            case CREATE_PARTITIONS:
-                return CreatePartitionsRequest.parse(buffer, apiVersion);
-            case CREATE_DELEGATION_TOKEN:
-                return CreateDelegationTokenRequest.parse(buffer, apiVersion);
-            case RENEW_DELEGATION_TOKEN:
-                return RenewDelegationTokenRequest.parse(buffer, apiVersion);
-            case EXPIRE_DELEGATION_TOKEN:
-                return ExpireDelegationTokenRequest.parse(buffer, apiVersion);
-            case DESCRIBE_DELEGATION_TOKEN:
-                return DescribeDelegationTokenRequest.parse(buffer, apiVersion);
-            case DELETE_GROUPS:
-                return DeleteGroupsRequest.parse(buffer, apiVersion);
-            case ELECT_LEADERS:
-                return ElectLeadersRequest.parse(buffer, apiVersion);
-            case INCREMENTAL_ALTER_CONFIGS:
-                return IncrementalAlterConfigsRequest.parse(buffer, apiVersion);
-            case ALTER_PARTITION_REASSIGNMENTS:
-                return AlterPartitionReassignmentsRequest.parse(buffer, apiVersion);
-            case LIST_PARTITION_REASSIGNMENTS:
-                return ListPartitionReassignmentsRequest.parse(buffer, apiVersion);
-            case OFFSET_DELETE:
-                return OffsetDeleteRequest.parse(buffer, apiVersion);
-            case DESCRIBE_CLIENT_QUOTAS:
-                return DescribeClientQuotasRequest.parse(buffer, apiVersion);
-            case ALTER_CLIENT_QUOTAS:
-                return AlterClientQuotasRequest.parse(buffer, apiVersion);
-            case DESCRIBE_USER_SCRAM_CREDENTIALS:
-                return DescribeUserScramCredentialsRequest.parse(buffer, apiVersion);
-            case ALTER_USER_SCRAM_CREDENTIALS:
-                return AlterUserScramCredentialsRequest.parse(buffer, apiVersion);
-            case VOTE:
-                return VoteRequest.parse(buffer, apiVersion);
-            case BEGIN_QUORUM_EPOCH:
-                return BeginQuorumEpochRequest.parse(buffer, apiVersion);
-            case END_QUORUM_EPOCH:
-                return EndQuorumEpochRequest.parse(buffer, apiVersion);
-            case DESCRIBE_QUORUM:
-                return DescribeQuorumRequest.parse(buffer, apiVersion);
-            case ALTER_ISR:
-                return AlterIsrRequest.parse(buffer, apiVersion);
-            case UPDATE_FEATURES:
-                return UpdateFeaturesRequest.parse(buffer, apiVersion);
-            case ENVELOPE:
-                return EnvelopeRequest.parse(buffer, apiVersion);
-            case FETCH_SNAPSHOT:
-                return FetchSnapshotRequest.parse(buffer, apiVersion);
-            case DESCRIBE_CLUSTER:
-                return DescribeClusterRequest.parse(buffer, apiVersion);
-            case DESCRIBE_PRODUCERS:
-                return DescribeProducersRequest.parse(buffer, apiVersion);
-            case BROKER_REGISTRATION:
-                return BrokerRegistrationRequest.parse(buffer, apiVersion);
-            case BROKER_HEARTBEAT:
-                return BrokerHeartbeatRequest.parse(buffer, apiVersion);
-            case UNREGISTER_BROKER:
-                return UnregisterBrokerRequest.parse(buffer, apiVersion);
-            case DESCRIBE_TRANSACTIONS:
-                return DescribeTransactionsRequest.parse(buffer, apiVersion);
-            case LIST_TRANSACTIONS:
-                return ListTransactionsRequest.parse(buffer, apiVersion);
+                request = new AlterConfigsRequest(struct, version);
+                break;
             default:
-                throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseRequest`, the " +
-                        "code should be updated to do so.", apiKey));
+                throw new AssertionError(String.format("ApiKey %s is not currently handled in `getRequest`, the " +
+                        "code should be updated to do so.", api));
         }
+        return new RequestAndSize(request, struct.sizeOf());
     }
 }

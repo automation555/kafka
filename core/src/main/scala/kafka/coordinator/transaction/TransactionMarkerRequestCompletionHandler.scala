@@ -19,12 +19,12 @@ package kafka.coordinator.transaction
 
 import kafka.utils.Logging
 import org.apache.kafka.clients.{ClientResponse, RequestCompletionHandler}
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{ApiKey, TopicPartition}
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.WriteTxnMarkersResponse
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import collection.JavaConversions._
 
 class TransactionMarkerRequestCompletionHandler(brokerId: Int,
                                                 txnStateManager: TransactionStateManager,
@@ -37,9 +37,11 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
     val requestHeader = response.requestHeader
     val correlationId = requestHeader.correlationId
     if (response.wasDisconnected) {
-      trace(s"Cancelled request with header $requestHeader due to node ${response.destination} being disconnected")
+      val api = ApiKey.fromId(requestHeader.apiKey)
+      val correlation = requestHeader.correlationId
+      trace(s"Cancelled $api request $requestHeader with correlation id $correlation due to node ${response.destination} being disconnected")
 
-      for (txnIdAndMarker <- txnIdAndMarkerEntries.asScala) {
+      for (txnIdAndMarker: TxnIdAndMarkerEntry <- txnIdAndMarkerEntries) {
         val transactionalId = txnIdAndMarker.txnId
         val txnMarker = txnIdAndMarker.txnMarkerEntry
 
@@ -80,7 +82,7 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
                 txnMarker.producerEpoch,
                 txnMarker.transactionResult,
                 txnMarker.coordinatorEpoch,
-                txnMarker.partitions.asScala.toSet)
+                txnMarker.partitions.toSet)
             }
         }
       }
@@ -89,11 +91,10 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
 
       val writeTxnMarkerResponse = response.responseBody.asInstanceOf[WriteTxnMarkersResponse]
 
-      val responseErrors = writeTxnMarkerResponse.errorsByProducerId;
-      for (txnIdAndMarker <- txnIdAndMarkerEntries.asScala) {
+      for (txnIdAndMarker: TxnIdAndMarkerEntry <- txnIdAndMarkerEntries) {
         val transactionalId = txnIdAndMarker.txnId
         val txnMarker = txnIdAndMarker.txnMarkerEntry
-        val errors = responseErrors.get(txnMarker.producerId)
+        val errors = writeTxnMarkerResponse.errors(txnMarker.producerId)
 
         if (errors == null)
           throw new IllegalStateException(s"WriteTxnMarkerResponse does not contain expected error map for producer id ${txnMarker.producerId}")
@@ -130,8 +131,8 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
               txnMarkerChannelManager.removeMarkersForTxnId(transactionalId)
               abortSending = true
             } else {
-              txnMetadata.inLock {
-                for ((topicPartition, error) <- errors.asScala) {
+              txnMetadata synchronized {
+                for ((topicPartition: TopicPartition, error: Errors) <- errors) {
                   error match {
                     case Errors.NONE =>
                       txnMetadata.removePartition(topicPartition)
@@ -144,11 +145,10 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
                       throw new IllegalStateException(s"Received fatal error ${error.exceptionName} while sending txn marker for $transactionalId")
 
                     case Errors.UNKNOWN_TOPIC_OR_PARTITION |
-                         Errors.NOT_LEADER_OR_FOLLOWER |
+                         Errors.NOT_LEADER_FOR_PARTITION |
                          Errors.NOT_ENOUGH_REPLICAS |
                          Errors.NOT_ENOUGH_REPLICAS_AFTER_APPEND |
-                         Errors.REQUEST_TIMED_OUT |
-                         Errors.KAFKA_STORAGE_ERROR => // these are retriable errors
+                         Errors.REQUEST_TIMED_OUT => // these are retriable errors
 
                       info(s"Sending $transactionalId's transaction marker for partition $topicPartition has failed with error ${error.exceptionName}, retrying " +
                         s"with current coordinator epoch ${epochAndMetadata.coordinatorEpoch}")
@@ -194,7 +194,7 @@ class TransactionMarkerRequestCompletionHandler(brokerId: Int,
                   txnMarker.coordinatorEpoch,
                   retryPartitions.toSet)
               } else {
-                txnMarkerChannelManager.maybeWriteTxnCompletion(transactionalId)
+                txnMarkerChannelManager.completeSendMarkersForTxnId(transactionalId)
               }
             }
         }

@@ -19,9 +19,11 @@ package kafka.api
 
 import java.nio.ByteBuffer
 
-import org.apache.kafka.common.protocol.ApiKeys
+import kafka.network.{RequestChannel, RequestOrResponseSend}
+import kafka.network.RequestChannel.Response
+import org.apache.kafka.common.ApiKey
+import org.apache.kafka.common.protocol.Errors
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 object GroupCoordinatorRequest {
   val CurrentVersion = 0.shortValue
   val DefaultClientId = ""
@@ -39,12 +41,11 @@ object GroupCoordinatorRequest {
 
 }
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 case class GroupCoordinatorRequest(group: String,
                                    versionId: Short = GroupCoordinatorRequest.CurrentVersion,
                                    correlationId: Int = 0,
                                    clientId: String = GroupCoordinatorRequest.DefaultClientId)
-  extends RequestOrResponse(Some(ApiKeys.FIND_COORDINATOR.id)) {
+  extends RequestOrResponse(Some(ApiKey.FIND_COORDINATOR.id)) {
 
   def sizeInBytes =
     2 + /* versionId */
@@ -52,7 +53,7 @@ case class GroupCoordinatorRequest(group: String,
     ApiUtils.shortStringLength(clientId) +
     ApiUtils.shortStringLength(group)
 
-  def writeTo(buffer: ByteBuffer): Unit = {
+  def writeTo(buffer: ByteBuffer) {
     // envelope
     buffer.putShort(versionId)
     buffer.putInt(correlationId)
@@ -60,6 +61,12 @@ case class GroupCoordinatorRequest(group: String,
 
     // consumer metadata request
     ApiUtils.writeShortString(buffer, group)
+  }
+
+  override def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
+    // return ConsumerCoordinatorNotAvailable for all uncaught errors
+    val errorResponse = GroupCoordinatorResponse(None, Errors.COORDINATOR_NOT_AVAILABLE, correlationId)
+    requestChannel.sendResponse(Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))
   }
 
   def describe(details: Boolean) = {

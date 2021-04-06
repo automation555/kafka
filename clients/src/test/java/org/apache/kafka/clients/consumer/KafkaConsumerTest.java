@@ -26,8 +26,10 @@ import org.apache.kafka.clients.consumer.internals.ConsumerMetrics;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol;
 import org.apache.kafka.clients.consumer.internals.Fetcher;
+import org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.internals.PartitionAssignor;
 import org.apache.kafka.clients.consumer.internals.SubscriptionState;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
@@ -37,7 +39,6 @@ import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.network.Selectable;
-import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.MemoryRecords;
@@ -62,7 +63,6 @@ import org.apache.kafka.common.requests.SyncGroupResponse;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
@@ -129,12 +129,13 @@ public class KafkaConsumerTest {
         final int oldCloseCount = MockMetricsReporter.CLOSE_COUNT.get();
         try {
             new KafkaConsumer<>(props, new ByteArrayDeserializer(), new ByteArrayDeserializer());
-            Assert.fail("should have caught an exception and returned");
         } catch (KafkaException e) {
             assertEquals(oldInitCount + 1, MockMetricsReporter.INIT_COUNT.get());
             assertEquals(oldCloseCount + 1, MockMetricsReporter.CLOSE_COUNT.get());
             assertEquals("Failed to construct kafka consumer", e.getMessage());
+            return;
         }
+        Assert.fail("should have caught an exception and returned");
     }
 
     @Test
@@ -190,10 +191,9 @@ public class KafkaConsumerTest {
     @Test(expected = IllegalArgumentException.class)
     public void testSubscriptionOnNullTopicCollection() {
         KafkaConsumer<byte[], byte[]> consumer = newConsumer();
-        List<String> nullList = null;
 
         try {
-            consumer.subscribe(nullList);
+            consumer.subscribe(null);
         } finally {
             consumer.close();
         }
@@ -229,7 +229,7 @@ public class KafkaConsumerTest {
         Pattern pattern = null;
 
         try {
-            consumer.subscribe(pattern);
+            consumer.subscribe(pattern, new NoOpConsumerRebalanceListener());
         } finally {
             consumer.close();
         }
@@ -973,7 +973,7 @@ public class KafkaConsumerTest {
 
         // the auto commit is disabled, so no offset commit request should be sent
         for (ClientRequest req: client.requests())
-            assertTrue(req.requestBuilder().apiKey() != ApiKeys.OFFSET_COMMIT);
+            assertTrue(req.requestBuilder().api() != ApiKey.OFFSET_COMMIT);
 
         // subscription change
         consumer.unsubscribe();
@@ -984,7 +984,7 @@ public class KafkaConsumerTest {
 
         // the auto commit is disabled, so no offset commit request should be sent
         for (ClientRequest req: client.requests())
-            assertTrue(req.requestBuilder().apiKey() != ApiKeys.OFFSET_COMMIT);
+            assertTrue(req.requestBuilder().api() != ApiKey.OFFSET_COMMIT);
 
         client.requests().clear();
         consumer.close();
@@ -1113,7 +1113,7 @@ public class KafkaConsumerTest {
 
         // the auto commit is disabled, so no offset commit request should be sent
         for (ClientRequest req : client.requests())
-            assertTrue(req.requestBuilder().apiKey() != ApiKeys.OFFSET_COMMIT);
+            assertTrue(req.requestBuilder().api() != ApiKey.OFFSET_COMMIT);
 
         client.requests().clear();
         consumer.close();
@@ -1191,17 +1191,23 @@ public class KafkaConsumerTest {
 
     @Test(expected = IllegalStateException.class)
     public void testPollWithEmptySubscription() {
-        try (KafkaConsumer<byte[], byte[]> consumer = newConsumer()) {
-            consumer.subscribe(Collections.<String>emptyList());
+        KafkaConsumer<byte[], byte[]> consumer = newConsumer();
+        consumer.subscribe(Collections.<String>emptyList());
+        try {
             consumer.poll(0);
+        } finally {
+            consumer.close();
         }
     }
 
     @Test(expected = IllegalStateException.class)
     public void testPollWithEmptyUserAssignment() {
-        try (KafkaConsumer<byte[], byte[]> consumer = newConsumer()) {
-            consumer.assign(Collections.<TopicPartition>emptySet());
+        KafkaConsumer<byte[], byte[]> consumer = newConsumer();
+        consumer.assign(Collections.<TopicPartition>emptySet());
+        try {
             consumer.poll(0);
+        } finally {
+            consumer.close();
         }
     }
 
@@ -1240,7 +1246,6 @@ public class KafkaConsumerTest {
     @Test
     public void closeShouldBeIdempotent() {
         KafkaConsumer<byte[], byte[]> consumer = newConsumer();
-        consumer.close();
         consumer.close();
         consumer.close();
     }
@@ -1619,14 +1624,11 @@ public class KafkaConsumerTest {
         ConsumerInterceptors<String, String> interceptors = null;
 
         Metrics metrics = new Metrics();
-        ConsumerMetrics metricsRegistry = new ConsumerMetrics(metrics);
+        ConsumerMetrics metricsRegistry = new ConsumerMetrics(metricGroupPrefix);
 
         SubscriptionState subscriptions = new SubscriptionState(autoResetStrategy);
-        LogContext loggerFactory = new LogContext();
-        ConsumerNetworkClient consumerClient = new ConsumerNetworkClient(loggerFactory, client, metadata, time,
-                retryBackoffMs, requestTimeoutMs);
+        ConsumerNetworkClient consumerClient = new ConsumerNetworkClient(client, metadata, time, retryBackoffMs, requestTimeoutMs);
         ConsumerCoordinator consumerCoordinator = new ConsumerCoordinator(
-                loggerFactory,
                 consumerClient,
                 groupId,
                 rebalanceTimeoutMs,
@@ -1646,7 +1648,6 @@ public class KafkaConsumerTest {
                 true);
 
         Fetcher<String, String> fetcher = new Fetcher<>(
-                loggerFactory,
                 consumerClient,
                 minBytes,
                 maxBytes,
@@ -1658,13 +1659,13 @@ public class KafkaConsumerTest {
                 valueDeserializer,
                 metadata,
                 subscriptions,
+                metrics,
                 metricsRegistry.fetcherMetrics,
                 time,
                 retryBackoffMs,
                 IsolationLevel.READ_UNCOMMITTED);
 
         return new KafkaConsumer<>(
-                loggerFactory,
                 clientId,
                 consumerCoordinator,
                 keyDeserializer,
@@ -1677,7 +1678,8 @@ public class KafkaConsumerTest {
                 subscriptions,
                 metadata,
                 retryBackoffMs,
-                requestTimeoutMs);
+                requestTimeoutMs
+        );
     }
 
     private static class FetchInfo {

@@ -16,131 +16,95 @@
  */
 package org.apache.kafka.common.requests;
 
-import java.util.Collections;
-import java.util.stream.Collectors;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.acl.AccessControlEntryFilter;
 import org.apache.kafka.common.acl.AclBindingFilter;
-import org.apache.kafka.common.acl.AclOperation;
-import org.apache.kafka.common.acl.AclPermissionType;
-import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.DeleteAclsRequestData;
-import org.apache.kafka.common.message.DeleteAclsRequestData.DeleteAclsFilter;
-import org.apache.kafka.common.message.DeleteAclsResponseData;
-import org.apache.kafka.common.message.DeleteAclsResponseData.DeleteAclsFilterResult;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
-import org.apache.kafka.common.resource.PatternType;
-import org.apache.kafka.common.resource.ResourcePatternFilter;
-import org.apache.kafka.common.resource.ResourceType;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.resource.ResourceFilter;
+import org.apache.kafka.common.utils.Utils;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
-import static org.apache.kafka.common.protocol.ApiKeys.DELETE_ACLS;
-
 public class DeleteAclsRequest extends AbstractRequest {
-    public static class Builder extends AbstractRequest.Builder<DeleteAclsRequest> {
-        private final DeleteAclsRequestData data;
+    private final static String FILTERS = "filters";
 
-        public Builder(DeleteAclsRequestData data) {
-            super(DELETE_ACLS);
-            this.data = data;
+    public static class Builder extends AbstractRequest.Builder<DeleteAclsRequest> {
+        private final List<AclBindingFilter> filters;
+
+        public Builder(List<AclBindingFilter> filters) {
+            super(ApiKey.DELETE_ACLS);
+            this.filters = filters;
         }
 
         @Override
         public DeleteAclsRequest build(short version) {
-            return new DeleteAclsRequest(data, version);
+            return new DeleteAclsRequest(version, filters);
         }
 
         @Override
         public String toString() {
-            return data.toString();
+            return "(type=DeleteAclsRequest, filters=" + Utils.join(filters, ", ") + ")";
         }
-
     }
 
-    private final DeleteAclsRequestData data;
+    private final List<AclBindingFilter> filters;
 
-    private DeleteAclsRequest(DeleteAclsRequestData data, short version) {
-        super(ApiKeys.DELETE_ACLS, version);
-        this.data = data;
-        normalizeAndValidate();
+    DeleteAclsRequest(short version, List<AclBindingFilter> filters) {
+        super(version);
+        this.filters = filters;
     }
 
-    private void normalizeAndValidate() {
-        if (version() == 0) {
-            for (DeleteAclsRequestData.DeleteAclsFilter filter : data.filters()) {
-                PatternType patternType = PatternType.fromCode(filter.patternTypeFilter());
-
-                // On older brokers, no pattern types existed except LITERAL (effectively). So even though ANY is not
-                // directly supported on those brokers, we can get the same effect as ANY by setting the pattern type
-                // to LITERAL. Note that the wildcard `*` is considered `LITERAL` for compatibility reasons.
-                if (patternType == PatternType.ANY)
-                    filter.setPatternTypeFilter(PatternType.LITERAL.code());
-                else if (patternType != PatternType.LITERAL)
-                    throw new UnsupportedVersionException("Version 0 does not support pattern type " +
-                            patternType + " (only LITERAL and ANY are supported)");
-            }
-        }
-
-        final boolean unknown = data.filters().stream().anyMatch(filter ->
-                filter.patternTypeFilter() == PatternType.UNKNOWN.code()
-                        || filter.resourceTypeFilter() == ResourceType.UNKNOWN.code()
-                        || filter.operation() == AclOperation.UNKNOWN.code()
-                        || filter.permissionType() == AclPermissionType.UNKNOWN.code()
-        );
-
-        if (unknown) {
-            throw new IllegalArgumentException("Filters contain UNKNOWN elements, filters: " + data.filters());
+    public DeleteAclsRequest(Struct struct, short version) {
+        super(version);
+        this.filters = new ArrayList<>();
+        for (Object filterStructObj : struct.getArray(FILTERS)) {
+            Struct filterStruct = (Struct) filterStructObj;
+            ResourceFilter resourceFilter = RequestUtils.resourceFilterFromStructFields(filterStruct);
+            AccessControlEntryFilter aceFilter = RequestUtils.aceFilterFromStructFields(filterStruct);
+            this.filters.add(new AclBindingFilter(resourceFilter, aceFilter));
         }
     }
 
     public List<AclBindingFilter> filters() {
-        return data.filters().stream().map(DeleteAclsRequest::aclBindingFilter).collect(Collectors.toList());
+        return filters;
     }
 
     @Override
-    public DeleteAclsRequestData data() {
-        return data;
+    protected Struct toStruct() {
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.DELETE_ACLS, version()));
+        List<Struct> filterStructs = new ArrayList<>();
+        for (AclBindingFilter filter : filters) {
+            Struct filterStruct = struct.instance(FILTERS);
+            RequestUtils.resourceFilterSetStructFields(filter.resourceFilter(), filterStruct);
+            RequestUtils.aceFilterSetStructFields(filter.entryFilter(), filterStruct);
+            filterStructs.add(filterStruct);
+        }
+        struct.set(FILTERS, filterStructs.toArray());
+        return struct;
     }
 
     @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable throwable) {
-        ApiError apiError = ApiError.fromThrowable(throwable);
-        List<DeleteAclsFilterResult> filterResults = Collections.nCopies(data.filters().size(),
-            new DeleteAclsResponseData.DeleteAclsFilterResult()
-                .setErrorCode(apiError.error().code())
-                .setErrorMessage(apiError.message()));
-        return new DeleteAclsResponse(new DeleteAclsResponseData()
-            .setThrottleTimeMs(throttleTimeMs)
-            .setFilterResults(filterResults), version());
+        short versionId = version();
+        switch (versionId) {
+            case 0:
+                List<DeleteAclsResponse.AclFilterResponse> responses = new ArrayList<>();
+                for (int i = 0; i < filters.size(); i++) {
+                    responses.add(new DeleteAclsResponse.AclFilterResponse(
+                        ApiError.fromThrowable(throwable), Collections.<DeleteAclsResponse.AclDeletionResult>emptySet()));
+                }
+                return new DeleteAclsResponse(throttleTimeMs, responses);
+            default:
+                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
+                    versionId, this.getClass().getSimpleName(), ApiKey.DELETE_ACLS.supportedRange().highest()));
+        }
     }
 
     public static DeleteAclsRequest parse(ByteBuffer buffer, short version) {
-        return new DeleteAclsRequest(new DeleteAclsRequestData(new ByteBufferAccessor(buffer), version), version);
-    }
-
-    public static DeleteAclsFilter deleteAclsFilter(AclBindingFilter filter) {
-        return new DeleteAclsFilter()
-            .setResourceNameFilter(filter.patternFilter().name())
-            .setResourceTypeFilter(filter.patternFilter().resourceType().code())
-            .setPatternTypeFilter(filter.patternFilter().patternType().code())
-            .setHostFilter(filter.entryFilter().host())
-            .setOperation(filter.entryFilter().operation().code())
-            .setPermissionType(filter.entryFilter().permissionType().code())
-            .setPrincipalFilter(filter.entryFilter().principal());
-    }
-
-    private static AclBindingFilter aclBindingFilter(DeleteAclsFilter filter) {
-        ResourcePatternFilter patternFilter = new ResourcePatternFilter(
-            ResourceType.fromCode(filter.resourceTypeFilter()),
-            filter.resourceNameFilter(),
-            PatternType.fromCode(filter.patternTypeFilter()));
-        AccessControlEntryFilter entryFilter = new AccessControlEntryFilter(
-            filter.principalFilter(),
-            filter.hostFilter(),
-            AclOperation.fromCode(filter.operation()),
-            AclPermissionType.fromCode(filter.permissionType()));
-        return new AclBindingFilter(patternFilter, entryFilter);
+        return new DeleteAclsRequest(ApiKeys.parseRequest(ApiKey.DELETE_ACLS, version, buffer), version);
     }
 }

@@ -16,74 +16,55 @@
  */
 package org.apache.kafka.common.protocol;
 
-import org.apache.kafka.common.protocol.types.BoundField;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+
+import org.apache.kafka.common.ApiKey;
+import org.apache.kafka.common.protocol.types.Field;
 import org.apache.kafka.common.protocol.types.Schema;
-import org.junit.jupiter.api.Test;
-
-import java.util.Collections;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.Set;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.Test;
 
 public class ApiKeysTest {
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void testForIdWithInvalidIdLow() {
-        assertThrows(IllegalArgumentException.class, () -> ApiKeys.forId(-1));
+        ApiKey.fromId(-1);
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void testForIdWithInvalidIdHigh() {
-        assertThrows(IllegalArgumentException.class, () -> ApiKeys.forId(10000));
+        ApiKey.fromId(10000);
     }
 
-    @Test
-    public void testAlterIsrIsClusterAction() {
-        assertTrue(ApiKeys.ALTER_ISR.clusterAction);
+    @Test(expected = IllegalArgumentException.class)
+    public void schemaVersionOutOfRange() {
+        ApiKeys.requestSchema(ApiKey.PRODUCE, (short) Protocol.REQUESTS[ApiKey.PRODUCE.id()].length);
     }
 
     /**
      * All valid client responses which may be throttled should have a field named
      * 'throttle_time_ms' to return the throttle time to the client. Exclusions are
      * <ul>
-     *   <li> Cluster actions used only for inter-broker are throttled only if unauthorized
-     *   <li> SASL_HANDSHAKE and SASL_AUTHENTICATE are not throttled when used for authentication
-     *        when a connection is established or for re-authentication thereafter; these requests
-     *        return an error response that may be throttled if they are sent otherwise.
+     *   <li>Cluster actions used only for inter-broker are throttled only if unauthorized
+     *   <li> SASL_HANDSHAKE is not throttled when used for authentication when a connection
+     *        is established. At any other time, this request returns an error response that
+     *        may be throttled.
      * </ul>
      */
     @Test
     public void testResponseThrottleTime() {
-        Set<ApiKeys> authenticationKeys = EnumSet.of(ApiKeys.SASL_HANDSHAKE, ApiKeys.SASL_AUTHENTICATE);
-        // Newer protocol apis include throttle time ms even for cluster actions
-        Set<ApiKeys> clusterActionsWithThrottleTimeMs = EnumSet.of(ApiKeys.ALTER_ISR);
-        for (ApiKeys apiKey: ApiKeys.zkBrokerApis()) {
-            Schema responseSchema = apiKey.messageType.responseSchemas()[apiKey.latestVersion()];
-            BoundField throttleTimeField = responseSchema.get("throttle_time_ms");
-            if ((apiKey.clusterAction && !clusterActionsWithThrottleTimeMs.contains(apiKey))
-                || authenticationKeys.contains(apiKey))
-                assertNull(throttleTimeField, "Unexpected throttle time field: " + apiKey);
+        List<ApiKey> authenticationKeys = Arrays.asList(ApiKey.SASL_HANDSHAKE);
+
+        for (ApiKey api: ApiKey.values()) {
+            Schema responseSchema = ApiKeys.responseSchema(api, api.supportedRange().highest());
+            Field throttleTimeField = responseSchema.get("throttle_time_ms");
+            if (ApiKeys.info(api).clusterAction() || authenticationKeys.contains(api))
+                assertNull("Unexpected throttle time field: " + api, throttleTimeField);
             else
-                assertNotNull(throttleTimeField, "Throttle time field missing: " + apiKey);
+                assertNotNull("Throttle time field missing: " + api, throttleTimeField);
         }
     }
-
-    @Test
-    public void testApiScope() {
-        Set<ApiKeys> apisMissingScope = new HashSet<>();
-        for (ApiKeys apiKey : ApiKeys.values()) {
-            if (apiKey.messageType.listeners().isEmpty()) {
-                apisMissingScope.add(apiKey);
-            }
-        }
-        assertEquals(Collections.emptySet(), apisMissingScope,
-            "Found some APIs missing scope definition");
-    }
-
 }

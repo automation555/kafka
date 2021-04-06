@@ -16,11 +16,9 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.utils.Utils;
 
@@ -30,23 +28,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static org.apache.kafka.common.protocol.CommonFields.TIMEOUT;
-import static org.apache.kafka.common.protocol.types.Type.STRING;
-
 public class DeleteTopicsRequest extends AbstractRequest {
     private static final String TOPICS_KEY_NAME = "topics";
-
-    /* DeleteTopic api */
-    private static final Schema DELETE_TOPICS_REQUEST_V0 = new Schema(
-            new Field(TOPICS_KEY_NAME, new ArrayOf(STRING), "An array of topics to be deleted."),
-            TIMEOUT);
-
-    /* v1 request is the same as v0. Throttle time has been added to the response */
-    private static final Schema DELETE_TOPICS_REQUEST_V1 = DELETE_TOPICS_REQUEST_V0;
-
-    public static Schema[] schemaVersions() {
-        return new Schema[]{DELETE_TOPICS_REQUEST_V0, DELETE_TOPICS_REQUEST_V1};
-    }
+    private static final String TIMEOUT_KEY_NAME = "timeout";
 
     private final Set<String> topics;
     private final Integer timeout;
@@ -56,7 +40,7 @@ public class DeleteTopicsRequest extends AbstractRequest {
         private final Integer timeout;
 
         public Builder(Set<String> topics, Integer timeout) {
-            super(ApiKeys.DELETE_TOPICS);
+            super(ApiKey.DELETE_TOPICS);
             this.topics = topics;
             this.timeout = timeout;
         }
@@ -91,14 +75,14 @@ public class DeleteTopicsRequest extends AbstractRequest {
             topics.add((String) topic);
 
         this.topics = topics;
-        this.timeout = struct.get(TIMEOUT);
+        this.timeout = struct.getInt(TIMEOUT_KEY_NAME);
     }
 
     @Override
     protected Struct toStruct() {
-        Struct struct = new Struct(ApiKeys.DELETE_TOPICS.requestSchema(version()));
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.DELETE_TOPICS, version()));
         struct.set(TOPICS_KEY_NAME, topics.toArray());
-        struct.set(TIMEOUT, timeout);
+        struct.set(TIMEOUT_KEY_NAME, timeout);
         return struct;
     }
 
@@ -115,7 +99,7 @@ public class DeleteTopicsRequest extends AbstractRequest {
                 return new DeleteTopicsResponse(throttleTimeMs, topicErrors);
             default:
                 throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
-                    version(), this.getClass().getSimpleName(), ApiKeys.DELETE_TOPICS.latestVersion()));
+                    version(), this.getClass().getSimpleName(), ApiKey.DELETE_TOPICS.supportedRange().highest()));
         }
     }
 
@@ -128,7 +112,7 @@ public class DeleteTopicsRequest extends AbstractRequest {
     }
 
     public static DeleteTopicsRequest parse(ByteBuffer buffer, short version) {
-        return new DeleteTopicsRequest(ApiKeys.DELETE_TOPICS.parseRequest(version, buffer), version);
+        return new DeleteTopicsRequest(ApiKeys.parseRequest(ApiKey.DELETE_TOPICS, version, buffer), version);
     }
 
 }

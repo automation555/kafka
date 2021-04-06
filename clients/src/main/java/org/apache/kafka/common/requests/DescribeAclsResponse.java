@@ -17,14 +17,12 @@
 
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.acl.AccessControlEntry;
 import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
-import org.apache.kafka.common.resource.PatternType;
-import org.apache.kafka.common.resource.ResourcePattern;
-import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.resource.Resource;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -32,130 +30,83 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Optional;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
-import org.apache.kafka.common.acl.AclOperation;
-import org.apache.kafka.common.acl.AclPermissionType;
-import org.apache.kafka.common.message.DescribeAclsResponseData;
-import org.apache.kafka.common.message.DescribeAclsResponseData.AclDescription;
-import org.apache.kafka.common.message.DescribeAclsResponseData.DescribeAclsResource;
-import org.apache.kafka.common.resource.ResourceType;
 
 public class DescribeAclsResponse extends AbstractResponse {
+    private final static String RESOURCES = "resources";
+    private final static String ACLS = "acls";
 
-    private final DescribeAclsResponseData data;
+    private final int throttleTimeMs;
+    private final ApiError error;
+    private final Collection<AclBinding> acls;
 
-    public DescribeAclsResponse(DescribeAclsResponseData data, short version) {
-        super(ApiKeys.DESCRIBE_ACLS);
-        this.data = data;
-        validate(Optional.of(version));
+    public DescribeAclsResponse(int throttleTimeMs, ApiError error, Collection<AclBinding> acls) {
+        this.throttleTimeMs = throttleTimeMs;
+        this.error = error;
+        this.acls = acls;
     }
 
-    // Skips version validation, visible for testing
-    DescribeAclsResponse(DescribeAclsResponseData data) {
-        super(ApiKeys.DESCRIBE_ACLS);
-        this.data = data;
-        validate(Optional.empty());
+    public DescribeAclsResponse(Struct struct) {
+        this.throttleTimeMs = struct.getInt(THROTTLE_TIME_KEY_NAME);
+        this.error = new ApiError(struct);
+        this.acls = new ArrayList<>();
+        for (Object resourceStructObj : struct.getArray(RESOURCES)) {
+            Struct resourceStruct = (Struct) resourceStructObj;
+            Resource resource = RequestUtils.resourceFromStructFields(resourceStruct);
+            for (Object aclDataStructObj : resourceStruct.getArray(ACLS)) {
+                Struct aclDataStruct = (Struct) aclDataStructObj;
+                AccessControlEntry entry = RequestUtils.aceFromStructFields(aclDataStruct);
+                this.acls.add(new AclBinding(resource, entry));
+            }
+        }
     }
 
     @Override
-    public DescribeAclsResponseData data() {
-        return data;
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.responseSchema(ApiKey.DESCRIBE_ACLS, version));
+        struct.set(THROTTLE_TIME_KEY_NAME, throttleTimeMs);
+        error.write(struct);
+
+        Map<Resource, List<AccessControlEntry>> resourceToData = new HashMap<>();
+        for (AclBinding acl : acls) {
+            List<AccessControlEntry> entry = resourceToData.get(acl.resource());
+            if (entry == null) {
+                entry = new ArrayList<>();
+                resourceToData.put(acl.resource(), entry);
+            }
+            entry.add(acl.entry());
+        }
+
+        List<Struct> resourceStructs = new ArrayList<>();
+        for (Map.Entry<Resource, List<AccessControlEntry>> tuple : resourceToData.entrySet()) {
+            Resource resource = tuple.getKey();
+            Struct resourceStruct = struct.instance(RESOURCES);
+            RequestUtils.resourceSetStructFields(resource, resourceStruct);
+            List<Struct> dataStructs = new ArrayList<>();
+            for (AccessControlEntry entry : tuple.getValue()) {
+                Struct dataStruct = resourceStruct.instance(ACLS);
+                RequestUtils.aceSetStructFields(entry, dataStruct);
+                dataStructs.add(dataStruct);
+            }
+            resourceStruct.set(ACLS, dataStructs.toArray());
+            resourceStructs.add(resourceStruct);
+        }
+        struct.set(RESOURCES, resourceStructs.toArray());
+        return struct;
     }
 
-    @Override
     public int throttleTimeMs() {
-        return data.throttleTimeMs();
+        return throttleTimeMs;
     }
 
     public ApiError error() {
-        return new ApiError(Errors.forCode(data.errorCode()), data.errorMessage());
+        return error;
     }
 
-    @Override
-    public Map<Errors, Integer> errorCounts() {
-        return errorCounts(Errors.forCode(data.errorCode()));
-    }
-
-    public List<DescribeAclsResource> acls() {
-        return data.resources();
+    public Collection<AclBinding> acls() {
+        return acls;
     }
 
     public static DescribeAclsResponse parse(ByteBuffer buffer, short version) {
-        return new DescribeAclsResponse(new DescribeAclsResponseData(new ByteBufferAccessor(buffer), version), version);
-    }
-
-    @Override
-    public boolean shouldClientThrottle(short version) {
-        return version >= 1;
-    }
-
-    private void validate(Optional<Short> version) {
-        if (version.isPresent() && version.get() == 0) {
-            final boolean unsupported = acls().stream()
-                .anyMatch(acl -> acl.patternType() != PatternType.LITERAL.code());
-            if (unsupported) {
-                throw new UnsupportedVersionException("Version 0 only supports literal resource pattern types");
-            }
-        }
-
-        for (DescribeAclsResource resource : acls()) {
-            if (resource.patternType() == PatternType.UNKNOWN.code() || resource.resourceType() == ResourceType.UNKNOWN.code())
-                throw new IllegalArgumentException("Contain UNKNOWN elements");
-            for (AclDescription acl : resource.acls()) {
-                if (acl.operation() == AclOperation.UNKNOWN.code() || acl.permissionType() == AclPermissionType.UNKNOWN.code()) {
-                    throw new IllegalArgumentException("Contain UNKNOWN elements");
-                }
-            }
-        }
-    }
-
-    private static Stream<AclBinding> aclBindings(DescribeAclsResource resource) {
-        return resource.acls().stream().map(acl -> {
-            ResourcePattern pattern = new ResourcePattern(
-                    ResourceType.fromCode(resource.resourceType()),
-                    resource.resourceName(),
-                    PatternType.fromCode(resource.patternType()));
-            AccessControlEntry entry = new AccessControlEntry(
-                    acl.principal(),
-                    acl.host(),
-                    AclOperation.fromCode(acl.operation()),
-                    AclPermissionType.fromCode(acl.permissionType()));
-            return new AclBinding(pattern, entry);
-        });
-    }
-
-    public static List<AclBinding> aclBindings(List<DescribeAclsResource> resources) {
-        return resources.stream().flatMap(DescribeAclsResponse::aclBindings).collect(Collectors.toList());
-    }
-
-    public static List<DescribeAclsResource> aclsResources(Collection<AclBinding> acls) {
-        Map<ResourcePattern, List<AccessControlEntry>> patternToEntries = new HashMap<>();
-        for (AclBinding acl : acls) {
-            patternToEntries.computeIfAbsent(acl.pattern(), v -> new ArrayList<>()).add(acl.entry());
-        }
-        List<DescribeAclsResource> resources = new ArrayList<>(patternToEntries.size());
-        for (Entry<ResourcePattern, List<AccessControlEntry>> entry : patternToEntries.entrySet()) {
-            ResourcePattern key = entry.getKey();
-            List<AclDescription> aclDescriptions = new ArrayList<>();
-            for (AccessControlEntry ace : entry.getValue()) {
-                AclDescription ad = new AclDescription()
-                    .setHost(ace.host())
-                    .setOperation(ace.operation().code())
-                    .setPermissionType(ace.permissionType().code())
-                    .setPrincipal(ace.principal());
-                aclDescriptions.add(ad);
-            }
-            DescribeAclsResource dar = new DescribeAclsResource()
-                .setResourceName(key.name())
-                .setPatternType(key.patternType().code())
-                .setResourceType(key.resourceType().code())
-                .setAcls(aclDescriptions);
-            resources.add(dar);
-        }
-        return resources;
+        return new DescribeAclsResponse(ApiKeys.responseSchema(ApiKey.DESCRIBE_ACLS, version).read(buffer));
     }
 }

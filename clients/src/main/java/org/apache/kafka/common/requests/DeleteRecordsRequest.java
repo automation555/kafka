@@ -17,25 +17,17 @@
 
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.utils.CollectionUtils;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.apache.kafka.common.protocol.CommonFields.PARTITION_ID;
-import static org.apache.kafka.common.protocol.CommonFields.TOPIC_NAME;
-import static org.apache.kafka.common.protocol.CommonFields.TIMEOUT;
-import static org.apache.kafka.common.protocol.types.Type.INT64;
 
 public class DeleteRecordsRequest extends AbstractRequest {
 
@@ -43,29 +35,15 @@ public class DeleteRecordsRequest extends AbstractRequest {
 
     // request level key names
     private static final String TOPICS_KEY_NAME = "topics";
+    private static final String TIMEOUT_KEY_NAME = "timeout";
 
     // topic level key names
+    private static final String TOPIC_KEY_NAME = "topic";
     private static final String PARTITIONS_KEY_NAME = "partitions";
 
     // partition level key names
+    private static final String PARTITION_KEY_NAME = "partition";
     private static final String OFFSET_KEY_NAME = "offset";
-
-
-    private static final Schema DELETE_RECORDS_REQUEST_PARTITION_V0 = new Schema(
-            PARTITION_ID,
-            new Field(OFFSET_KEY_NAME, INT64, "The offset before which the messages will be deleted."));
-
-    private static final Schema DELETE_RECORDS_REQUEST_TOPIC_V0 = new Schema(
-            TOPIC_NAME,
-            new Field(PARTITIONS_KEY_NAME, new ArrayOf(DELETE_RECORDS_REQUEST_PARTITION_V0)));
-
-    private static final Schema DELETE_RECORDS_REQUEST_V0 = new Schema(
-            new Field(TOPICS_KEY_NAME, new ArrayOf(DELETE_RECORDS_REQUEST_TOPIC_V0)),
-            TIMEOUT);
-
-    public static Schema[] schemaVersions() {
-        return new Schema[]{DELETE_RECORDS_REQUEST_V0};
-    }
 
     private final int timeout;
     private final Map<TopicPartition, Long> partitionOffsets;
@@ -75,7 +53,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
         private final Map<TopicPartition, Long> partitionOffsets;
 
         public Builder(int timeout, Map<TopicPartition, Long> partitionOffsets) {
-            super(ApiKeys.DELETE_RECORDS);
+            super(ApiKey.DELETE_RECORDS);
             this.timeout = timeout;
             this.partitionOffsets = partitionOffsets;
         }
@@ -102,15 +80,15 @@ public class DeleteRecordsRequest extends AbstractRequest {
         partitionOffsets = new HashMap<>();
         for (Object topicStructObj : struct.getArray(TOPICS_KEY_NAME)) {
             Struct topicStruct = (Struct) topicStructObj;
-            String topic = topicStruct.get(TOPIC_NAME);
+            String topic = topicStruct.getString(TOPIC_KEY_NAME);
             for (Object partitionStructObj : topicStruct.getArray(PARTITIONS_KEY_NAME)) {
                 Struct partitionStruct = (Struct) partitionStructObj;
-                int partition = partitionStruct.get(PARTITION_ID);
+                int partition = partitionStruct.getInt(PARTITION_KEY_NAME);
                 long offset = partitionStruct.getLong(OFFSET_KEY_NAME);
                 partitionOffsets.put(new TopicPartition(topic, partition), offset);
             }
         }
-        timeout = struct.get(TIMEOUT);
+        timeout = struct.getInt(TIMEOUT_KEY_NAME);
     }
 
     public DeleteRecordsRequest(int timeout, Map<TopicPartition, Long> partitionOffsets, short version) {
@@ -120,17 +98,17 @@ public class DeleteRecordsRequest extends AbstractRequest {
     }
     @Override
     protected Struct toStruct() {
-        Struct struct = new Struct(ApiKeys.DELETE_RECORDS.requestSchema(version()));
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.DELETE_RECORDS, version()));
         Map<String, Map<Integer, Long>> offsetsByTopic = CollectionUtils.groupDataByTopic(partitionOffsets);
-        struct.set(TIMEOUT, timeout);
+        struct.set(TIMEOUT_KEY_NAME, timeout);
         List<Struct> topicStructArray = new ArrayList<>();
         for (Map.Entry<String, Map<Integer, Long>> offsetsByTopicEntry : offsetsByTopic.entrySet()) {
             Struct topicStruct = struct.instance(TOPICS_KEY_NAME);
-            topicStruct.set(TOPIC_NAME, offsetsByTopicEntry.getKey());
+            topicStruct.set(TOPIC_KEY_NAME, offsetsByTopicEntry.getKey());
             List<Struct> partitionStructArray = new ArrayList<>();
             for (Map.Entry<Integer, Long> offsetsByPartitionEntry : offsetsByTopicEntry.getValue().entrySet()) {
                 Struct partitionStruct = topicStruct.instance(PARTITIONS_KEY_NAME);
-                partitionStruct.set(PARTITION_ID, offsetsByPartitionEntry.getKey());
+                partitionStruct.set(PARTITION_KEY_NAME, offsetsByPartitionEntry.getKey());
                 partitionStruct.set(OFFSET_KEY_NAME, offsetsByPartitionEntry.getValue());
                 partitionStructArray.add(partitionStruct);
             }
@@ -155,7 +133,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
                 return new DeleteRecordsResponse(throttleTimeMs, responseMap);
             default:
                 throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
-                    versionId, this.getClass().getSimpleName(), ApiKeys.DELETE_RECORDS.latestVersion()));
+                    versionId, this.getClass().getSimpleName(), ApiKey.DELETE_RECORDS.supportedRange().highest()));
         }
     }
 
@@ -168,6 +146,6 @@ public class DeleteRecordsRequest extends AbstractRequest {
     }
 
     public static DeleteRecordsRequest parse(ByteBuffer buffer, short version) {
-        return new DeleteRecordsRequest(ApiKeys.DELETE_RECORDS.parseRequest(version, buffer), version);
+        return new DeleteRecordsRequest(ApiKeys.parseRequest(ApiKey.DELETE_RECORDS, version, buffer), version);
     }
 }

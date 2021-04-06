@@ -21,12 +21,14 @@ import java.nio.ByteBuffer
 
 import kafka.api.ApiUtils._
 import kafka.common.{OffsetAndMetadata, TopicAndPartition}
+import kafka.network.{RequestChannel, RequestOrResponseSend}
+import kafka.network.RequestChannel.Response
 import kafka.utils.Logging
-import org.apache.kafka.common.protocol.ApiKeys
+import org.apache.kafka.common.ApiKey
+import org.apache.kafka.common.protocol.Errors
 
 import scala.collection._
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 object OffsetCommitRequest extends Logging {
   val CurrentVersion: Short = 2
   val DefaultClientId = ""
@@ -87,7 +89,6 @@ object OffsetCommitRequest extends Logging {
   }
 }
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 case class OffsetCommitRequest(groupId: String,
                                requestInfo: immutable.Map[TopicAndPartition, OffsetAndMetadata],
                                versionId: Short = OffsetCommitRequest.CurrentVersion,
@@ -96,14 +97,14 @@ case class OffsetCommitRequest(groupId: String,
                                groupGenerationId: Int = org.apache.kafka.common.requests.OffsetCommitRequest.DEFAULT_GENERATION_ID,
                                memberId: String =  org.apache.kafka.common.requests.OffsetCommitRequest.DEFAULT_MEMBER_ID,
                                retentionMs: Long = org.apache.kafka.common.requests.OffsetCommitRequest.DEFAULT_RETENTION_TIME)
-    extends RequestOrResponse(Some(ApiKeys.OFFSET_COMMIT.id)) {
+    extends RequestOrResponse(Some(ApiKey.OFFSET_COMMIT.id)) {
 
   assert(versionId == 0 || versionId == 1 || versionId == 2,
          "Version " + versionId + " is invalid for OffsetCommitRequest. Valid versions are 0, 1 or 2.")
 
   lazy val requestInfoGroupedByTopic = requestInfo.groupBy(_._1.topic)
 
-  def writeTo(buffer: ByteBuffer): Unit = {
+  def writeTo(buffer: ByteBuffer) {
     // Write envelope
     buffer.putShort(versionId)
     buffer.putInt(correlationId)
@@ -159,6 +160,14 @@ case class OffsetCommitRequest(groupId: String,
         shortStringLength(offsetAndMetadata._2.metadata)
       })
     })
+
+  override def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
+    val error = Errors.forException(e)
+    val commitStatus = requestInfo.mapValues(_ => error)
+    val commitResponse = OffsetCommitResponse(commitStatus, correlationId)
+
+    requestChannel.sendResponse(Response(request, new RequestOrResponseSend(request.connectionId, commitResponse)))
+  }
 
   override def describe(details: Boolean): String = {
     val offsetCommitRequest = new StringBuilder

@@ -21,10 +21,10 @@ import java.util.Random
 import java.util.concurrent.TimeUnit
 
 import kafka.api._
-import kafka.network.{RequestOrResponseSend, BlockingChannel}
+import kafka.network.{BlockingChannel, RequestOrResponseSend}
 import kafka.utils._
+import org.apache.kafka.common.ApiKey
 import org.apache.kafka.common.network.NetworkReceive
-import org.apache.kafka.common.protocol.ApiKeys
 import org.apache.kafka.common.utils.Utils._
 
 @deprecated("This object has been deprecated and will be removed in a future release. " +
@@ -56,11 +56,11 @@ class SyncProducer(val config: SyncProducerConfig) extends Logging {
      * Also, when verification is turned on, care should be taken to see that the logs don't fill up with unnecessary
      * data. So, leaving the rest of the logging at TRACE, while errors should be logged at ERROR level
      */
-    if (isDebugEnabled) {
+    if (logger.isDebugEnabled) {
       val buffer = new RequestOrResponseSend("", request).buffer
-      trace("verifying sendbuffer of size " + buffer.limit())
+      trace("verifying sendbuffer of size " + buffer.limit)
       val requestTypeId = buffer.getShort()
-      if(requestTypeId == ApiKeys.PRODUCE.id) {
+      if(requestTypeId == ApiKey.PRODUCE.id) {
         val request = ProducerRequest.readFrom(buffer)
         trace(request.toString)
       }
@@ -136,7 +136,7 @@ class SyncProducer(val config: SyncProducerConfig) extends Logging {
    * Disconnect from current channel, closing connection.
    * Side effect: channel field is set to null on successful disconnect
    */
-  private def disconnect(): Unit = {
+  private def disconnect() {
     try {
       info("Disconnecting from " + formatAddress(config.host, config.port))
       blockingChannel.disconnect()
@@ -161,7 +161,7 @@ class SyncProducer(val config: SyncProducerConfig) extends Logging {
     blockingChannel
   }
 
-  private def getOrMakeConnection(): Unit = {
+  private def getOrMakeConnection() {
     if(!blockingChannel.isConnected) {
       connect()
     }

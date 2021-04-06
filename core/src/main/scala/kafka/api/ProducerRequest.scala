@@ -22,9 +22,11 @@ import java.nio._
 import kafka.api.ApiUtils._
 import kafka.common._
 import kafka.message._
-import org.apache.kafka.common.protocol.ApiKeys
+import kafka.network.{RequestChannel, RequestOrResponseSend}
+import kafka.network.RequestChannel.Response
+import org.apache.kafka.common.ApiKey
+import org.apache.kafka.common.protocol.Errors
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 object ProducerRequest {
   val CurrentVersion = 2.shortValue
 
@@ -53,14 +55,13 @@ object ProducerRequest {
   }
 }
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
                            correlationId: Int,
                            clientId: String,
                            requiredAcks: Short,
                            ackTimeoutMs: Int,
                            data: collection.mutable.Map[TopicAndPartition, ByteBufferMessageSet])
-    extends RequestOrResponse(Some(ApiKeys.PRODUCE.id)) {
+    extends RequestOrResponse(Some(ApiKey.PRODUCE.id)) {
 
   /**
    * Partitions the data into a map of maps (one for each topic).
@@ -75,7 +76,7 @@ case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
            data: collection.mutable.Map[TopicAndPartition, ByteBufferMessageSet]) =
     this(ProducerRequest.CurrentVersion, correlationId, clientId, requiredAcks, ackTimeoutMs, data)
 
-  def writeTo(buffer: ByteBuffer): Unit = {
+  def writeTo(buffer: ByteBuffer) {
     buffer.putShort(versionId)
     buffer.putInt(correlationId)
     writeShortString(buffer, clientId)
@@ -93,7 +94,7 @@ case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
           val partitionMessageData = partitionAndData._2
           val bytes = partitionMessageData.buffer
           buffer.putInt(partition)
-          buffer.putInt(bytes.limit())
+          buffer.putInt(bytes.limit)
           buffer.put(bytes)
           bytes.rewind
         })
@@ -128,6 +129,19 @@ case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
     describe(true)
   }
 
+  override def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
+    if (request.body[org.apache.kafka.common.requests.ProduceRequest].acks == 0) {
+        requestChannel.sendResponse(new RequestChannel.Response(request, None, RequestChannel.CloseConnectionAction))
+    }
+    else {
+      val producerResponseStatus = data.map { case (topicAndPartition, _) =>
+        (topicAndPartition, ProducerResponseStatus(Errors.forException(e), -1l, Message.NoTimestamp))
+      }
+      val errorResponse = ProducerResponse(correlationId, producerResponseStatus)
+      requestChannel.sendResponse(Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))
+    }
+  }
+
   override def describe(details: Boolean): String = {
     val producerRequest = new StringBuilder
     producerRequest.append("Name: " + this.getClass.getSimpleName)
@@ -141,7 +155,7 @@ case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
     producerRequest.toString()
   }
 
-  def emptyData(): Unit ={
+  def emptyData(){
     data.clear()
   }
 }

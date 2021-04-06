@@ -23,14 +23,16 @@ import kafka.admin.AdminClient
 import kafka.admin.AdminClient.DeleteRecordsResult
 import kafka.server.KafkaConfig
 import java.lang.{Long => JLong}
+
 import kafka.utils.{Logging, TestUtils}
-import org.apache.kafka.clients.consumer.{KafkaConsumer, ConsumerConfig}
-import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord, ProducerConfig}
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.protocol.{Errors, ApiKeys}
+import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.apache.kafka.common.{ApiKey, TopicPartition}
+import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.DeleteRecordsRequest
 import org.junit.{After, Before, Test}
 import org.junit.Assert._
+
 import scala.collection.JavaConverters._
 
 /**
@@ -158,12 +160,6 @@ class LegacyAdminClientTest extends IntegrationTestHarness with Logging {
   }
 
   @Test
-  def testOffsetsForTimesWhenOffsetNotFound() {
-    val consumer = consumers.head
-    assertNull(consumer.offsetsForTimes(Map(tp -> new JLong(0L)).asJava).get(tp))
-  }
-
-  @Test
   def testOffsetsForTimesAfterDeleteRecords() {
     val consumer = consumers.head
     subscribeAndWaitForAssignment(topic, consumer)
@@ -184,24 +180,13 @@ class LegacyAdminClientTest extends IntegrationTestHarness with Logging {
 
     sendRecords(producers.head, 10, tp)
     // Should get success result
-
-    // DeleteRecordsResult has Exception member, which doesn't implement .equals()
-    def sameResult(expect: DeleteRecordsResult, actual: DeleteRecordsResult): Unit = {
-      assertEquals(expect.lowWatermark, actual.lowWatermark)
-      assertEquals(expect.error == null, actual.error == null)
-      if (expect.error != null && actual.error != null) {
-        assertEquals(expect.error.getClass, actual.error.getClass)
-        assertEquals(expect.error.getMessage, actual.error.getMessage)
-      }
-    }
-
-    sameResult(DeleteRecordsResult(5L, null), client.deleteRecordsBefore(Map((tp, 5L))).get()(tp))
+    assertEquals(DeleteRecordsResult(5L, null), client.deleteRecordsBefore(Map((tp, 5L))).get()(tp))
     // OffsetOutOfRangeException if offset > high_watermark
-    sameResult(DeleteRecordsResult(-1L, Errors.OFFSET_OUT_OF_RANGE.exception("Cannot increment the log start offset to 20 of partition topic-0 since it is larger than the high watermark 10")), client.deleteRecordsBefore(Map((tp, 20))).get()(tp))
+    assertEquals(DeleteRecordsResult(-1L, Errors.OFFSET_OUT_OF_RANGE.exception()), client.deleteRecordsBefore(Map((tp, 20))).get()(tp))
 
     val nonExistPartition = new TopicPartition(topic, 3)
     // UnknownTopicOrPartitionException if user tries to delete records of a non-existent partition
-    sameResult(DeleteRecordsResult(-1L, Errors.LEADER_NOT_AVAILABLE.exception()),
+    assertEquals(DeleteRecordsResult(-1L, Errors.LEADER_NOT_AVAILABLE.exception()),
                  client.deleteRecordsBefore(Map((nonExistPartition, 20))).get()(nonExistPartition))
   }
 
@@ -227,7 +212,7 @@ class LegacyAdminClientTest extends IntegrationTestHarness with Logging {
       val hostStr = s"${node.host}:${node.port}"
       assertTrue(s"Unknown host:port pair $hostStr in brokerVersionInfos", brokers.contains(hostStr))
       val brokerVersionInfo = tryBrokerVersionInfo.get
-      assertEquals(1, brokerVersionInfo.latestUsableVersion(ApiKeys.API_VERSIONS))
+      assertEquals(1, brokerVersionInfo.usableVersion(ApiKey.API_VERSIONS))
     }
   }
 

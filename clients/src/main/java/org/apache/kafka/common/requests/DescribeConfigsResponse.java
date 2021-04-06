@@ -17,29 +17,39 @@
 
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.config.ConfigResource;
-import org.apache.kafka.common.message.DescribeConfigsResponseData;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
-import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 public class DescribeConfigsResponse extends AbstractResponse {
+
+    private static final String RESOURCES_KEY_NAME = "resources";
+
+    private static final String RESOURCE_TYPE_KEY_NAME = "resource_type";
+    private static final String RESOURCE_NAME_KEY_NAME = "resource_name";
+
+    private static final String CONFIG_ENTRIES_KEY_NAME = "config_entries";
+
+    private static final String CONFIG_NAME = "config_name";
+    private static final String CONFIG_VALUE = "config_value";
+    private static final String IS_SENSITIVE = "is_sensitive";
+    private static final String IS_DEFAULT = "is_default";
+    private static final String READ_ONLY = "read_only";
 
     public static class Config {
         private final ApiError error;
         private final Collection<ConfigEntry> entries;
 
         public Config(ApiError error, Collection<ConfigEntry> entries) {
-            this.error = Objects.requireNonNull(error, "error");
-            this.entries = Objects.requireNonNull(entries, "entries");
+            this.error = error;
+            this.entries = entries;
         }
 
         public ApiError error() {
@@ -55,28 +65,15 @@ public class DescribeConfigsResponse extends AbstractResponse {
         private final String name;
         private final String value;
         private final boolean isSensitive;
-        private final ConfigSource source;
+        private final boolean isDefault;
         private final boolean readOnly;
-        private final Collection<ConfigSynonym> synonyms;
-        private final ConfigType type;
-        private final String documentation;
 
-        public ConfigEntry(String name, String value, ConfigSource source, boolean isSensitive, boolean readOnly,
-            Collection<ConfigSynonym> synonyms) {
-            this(name, value, source, isSensitive, readOnly, synonyms, ConfigType.UNKNOWN, null);
-        }
-
-        public ConfigEntry(String name, String value, ConfigSource source, boolean isSensitive, boolean readOnly,
-                           Collection<ConfigSynonym> synonyms, ConfigType type, String documentation) {
-
-            this.name = Objects.requireNonNull(name, "name");
+        public ConfigEntry(String name, String value, boolean isSensitive, boolean isDefault, boolean readOnly) {
+            this.name = name;
             this.value = value;
-            this.source = Objects.requireNonNull(source, "source");
             this.isSensitive = isSensitive;
+            this.isDefault = isDefault;
             this.readOnly = readOnly;
-            this.synonyms = Objects.requireNonNull(synonyms, "synonyms");
-            this.type = type;
-            this.documentation = documentation;
         }
 
         public String name() {
@@ -91,185 +88,98 @@ public class DescribeConfigsResponse extends AbstractResponse {
             return isSensitive;
         }
 
-        public ConfigSource source() {
-            return source;
+        public boolean isDefault() {
+            return isDefault;
         }
 
         public boolean isReadOnly() {
             return readOnly;
         }
-
-        public Collection<ConfigSynonym> synonyms() {
-            return synonyms;
-        }
-
-        public ConfigType type() {
-            return type;
-        }
-
-        public String documentation() {
-            return documentation;
-        }
     }
 
-    public enum ConfigSource {
-        UNKNOWN((byte) 0, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.UNKNOWN),
-        TOPIC_CONFIG((byte) 1, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.DYNAMIC_TOPIC_CONFIG),
-        DYNAMIC_BROKER_CONFIG((byte) 2, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.DYNAMIC_BROKER_CONFIG),
-        DYNAMIC_DEFAULT_BROKER_CONFIG((byte) 3, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.DYNAMIC_DEFAULT_BROKER_CONFIG),
-        STATIC_BROKER_CONFIG((byte) 4, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.STATIC_BROKER_CONFIG),
-        DEFAULT_CONFIG((byte) 5, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.DEFAULT_CONFIG),
-        DYNAMIC_BROKER_LOGGER_CONFIG((byte) 6, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource.DYNAMIC_BROKER_LOGGER_CONFIG);
+    private final int throttleTimeMs;
+    private final Map<Resource, Config> configs;
 
-        final byte id;
-        private final org.apache.kafka.clients.admin.ConfigEntry.ConfigSource source;
-        private static final ConfigSource[] VALUES = values();
-
-        ConfigSource(byte id, org.apache.kafka.clients.admin.ConfigEntry.ConfigSource source) {
-            this.id = id;
-            this.source = source;
-        }
-
-        public byte id() {
-            return id;
-        }
-
-        public static ConfigSource forId(byte id) {
-            if (id < 0)
-                throw new IllegalArgumentException("id should be positive, id: " + id);
-            if (id >= VALUES.length)
-                return UNKNOWN;
-            return VALUES[id];
-        }
-
-        public org.apache.kafka.clients.admin.ConfigEntry.ConfigSource source() {
-            return source;
-        }
+    public DescribeConfigsResponse(int throttleTimeMs, Map<Resource, Config> configs) {
+        this.throttleTimeMs = throttleTimeMs;
+        this.configs = configs;
     }
 
-    public enum ConfigType {
-        UNKNOWN((byte) 0, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.UNKNOWN),
-        BOOLEAN((byte) 1, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.BOOLEAN),
-        STRING((byte) 2, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.STRING),
-        INT((byte) 3, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.INT),
-        SHORT((byte) 4, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.SHORT),
-        LONG((byte) 5, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.LONG),
-        DOUBLE((byte) 6, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.DOUBLE),
-        LIST((byte) 7, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.LIST),
-        CLASS((byte) 8, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.CLASS),
-        PASSWORD((byte) 9, org.apache.kafka.clients.admin.ConfigEntry.ConfigType.PASSWORD);
+    public DescribeConfigsResponse(Struct struct) {
+        throttleTimeMs = struct.getInt(THROTTLE_TIME_KEY_NAME);
+        Object[] resourcesArray = struct.getArray(RESOURCES_KEY_NAME);
+        configs = new HashMap<>(resourcesArray.length);
+        for (Object resourceObj : resourcesArray) {
+            Struct resourceStruct = (Struct) resourceObj;
 
-        final byte id;
-        final org.apache.kafka.clients.admin.ConfigEntry.ConfigType type;
-        private static final ConfigType[] VALUES = values();
+            ApiError error = new ApiError(resourceStruct);
+            ResourceType resourceType = ResourceType.forId(resourceStruct.getByte(RESOURCE_TYPE_KEY_NAME));
+            String resourceName = resourceStruct.getString(RESOURCE_NAME_KEY_NAME);
+            Resource resource = new Resource(resourceType, resourceName);
 
-        ConfigType(byte id, org.apache.kafka.clients.admin.ConfigEntry.ConfigType type) {
-            this.id = id;
-            this.type = type;
-        }
-
-        public byte id() {
-            return id;
-        }
-
-        public static ConfigType forId(byte id) {
-            if (id < 0)
-                throw new IllegalArgumentException("id should be positive, id: " + id);
-            if (id >= VALUES.length)
-                return UNKNOWN;
-            return VALUES[id];
-        }
-
-        public org.apache.kafka.clients.admin.ConfigEntry.ConfigType type() {
-            return type;
-        }
-    }
-
-    public static class ConfigSynonym {
-        private final String name;
-        private final String value;
-        private final ConfigSource source;
-
-        public ConfigSynonym(String name, String value, ConfigSource source) {
-            this.name = Objects.requireNonNull(name, "name");
-            this.value = value;
-            this.source = Objects.requireNonNull(source, "source");
-        }
-
-        public String name() {
-            return name;
-        }
-        public String value() {
-            return value;
-        }
-        public ConfigSource source() {
-            return source;
-        }
-    }
-
-    public Map<ConfigResource, DescribeConfigsResponseData.DescribeConfigsResult> resultMap() {
-        return data().results().stream().collect(Collectors.toMap(
-            configsResult ->
-                    new ConfigResource(ConfigResource.Type.forId(configsResult.resourceType()),
-                            configsResult.resourceName()),
-            Function.identity()));
-    }
-
-    private final DescribeConfigsResponseData data;
-
-    public DescribeConfigsResponse(DescribeConfigsResponseData data) {
-        super(ApiKeys.DESCRIBE_CONFIGS);
-        this.data = data;
-    }
-
-    // This constructor should only be used after deserialization, it has special handling for version 0
-    private DescribeConfigsResponse(DescribeConfigsResponseData data, short version) {
-        super(ApiKeys.DESCRIBE_CONFIGS);
-        this.data = data;
-        if (version == 0) {
-            for (DescribeConfigsResponseData.DescribeConfigsResult result : data.results()) {
-                for (DescribeConfigsResponseData.DescribeConfigsResourceResult config : result.configs()) {
-                    if (config.isDefault()) {
-                        config.setConfigSource(ConfigSource.DEFAULT_CONFIG.id);
-                    } else {
-                        if (result.resourceType() == ConfigResource.Type.BROKER.id()) {
-                            config.setConfigSource(ConfigSource.STATIC_BROKER_CONFIG.id);
-                        } else if (result.resourceType() == ConfigResource.Type.TOPIC.id()) {
-                            config.setConfigSource(ConfigSource.TOPIC_CONFIG.id);
-                        } else {
-                            config.setConfigSource(ConfigSource.UNKNOWN.id);
-                        }
-                    }
-                }
+            Object[] configEntriesArray = resourceStruct.getArray(CONFIG_ENTRIES_KEY_NAME);
+            List<ConfigEntry> configEntries = new ArrayList<>(configEntriesArray.length);
+            for (Object configEntriesObj: configEntriesArray) {
+                Struct configEntriesStruct = (Struct) configEntriesObj;
+                String configName = configEntriesStruct.getString(CONFIG_NAME);
+                String configValue = configEntriesStruct.getString(CONFIG_VALUE);
+                boolean isSensitive = configEntriesStruct.getBoolean(IS_SENSITIVE);
+                boolean isDefault = configEntriesStruct.getBoolean(IS_DEFAULT);
+                boolean readOnly = configEntriesStruct.getBoolean(READ_ONLY);
+                configEntries.add(new ConfigEntry(configName, configValue, isSensitive, isDefault, readOnly));
             }
+            Config config = new Config(error, configEntries);
+            configs.put(resource, config);
         }
     }
 
-    @Override
-    public DescribeConfigsResponseData data() {
-        return data;
+    public Map<Resource, Config> configs() {
+        return configs;
     }
 
-    @Override
+    public Config config(Resource resource) {
+        return configs.get(resource);
+    }
+
     public int throttleTimeMs() {
-        return data.throttleTimeMs();
+        return throttleTimeMs;
     }
 
     @Override
-    public Map<Errors, Integer> errorCounts() {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
-        data.results().forEach(response ->
-            updateErrorCounts(errorCounts, Errors.forCode(response.errorCode()))
-        );
-        return errorCounts;
+    protected Struct toStruct(short version) {
+        Struct struct = new Struct(ApiKeys.responseSchema(ApiKey.DESCRIBE_CONFIGS, version));
+        struct.set(THROTTLE_TIME_KEY_NAME, throttleTimeMs);
+        List<Struct> resourceStructs = new ArrayList<>(configs.size());
+        for (Map.Entry<Resource, Config> entry : configs.entrySet()) {
+            Struct resourceStruct = struct.instance(RESOURCES_KEY_NAME);
+
+            Resource resource = entry.getKey();
+            resourceStruct.set(RESOURCE_TYPE_KEY_NAME, resource.type().id());
+            resourceStruct.set(RESOURCE_NAME_KEY_NAME, resource.name());
+
+            Config config = entry.getValue();
+            config.error.write(resourceStruct);
+
+            List<Struct> configEntryStructs = new ArrayList<>(config.entries.size());
+            for (ConfigEntry configEntry : config.entries) {
+                Struct configEntriesStruct = resourceStruct.instance(CONFIG_ENTRIES_KEY_NAME);
+                configEntriesStruct.set(CONFIG_NAME, configEntry.name);
+                configEntriesStruct.set(CONFIG_VALUE, configEntry.value);
+                configEntriesStruct.set(IS_SENSITIVE, configEntry.isSensitive);
+                configEntriesStruct.set(IS_DEFAULT, configEntry.isDefault);
+                configEntriesStruct.set(READ_ONLY, configEntry.readOnly);
+                configEntryStructs.add(configEntriesStruct);
+            }
+            resourceStruct.set(CONFIG_ENTRIES_KEY_NAME, configEntryStructs.toArray(new Struct[0]));
+            
+            resourceStructs.add(resourceStruct);
+        }
+        struct.set(RESOURCES_KEY_NAME, resourceStructs.toArray(new Struct[0]));
+        return struct;
     }
 
     public static DescribeConfigsResponse parse(ByteBuffer buffer, short version) {
-        return new DescribeConfigsResponse(new DescribeConfigsResponseData(new ByteBufferAccessor(buffer), version), version);
+        return new DescribeConfigsResponse(ApiKeys.parseResponse(ApiKey.DESCRIBE_CONFIGS, version, buffer));
     }
 
-    @Override
-    public boolean shouldClientThrottle(short version) {
-        return version >= 2;
-    }
 }

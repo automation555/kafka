@@ -17,10 +17,8 @@
 
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.ArrayOf;
-import org.apache.kafka.common.protocol.types.Field;
-import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
@@ -30,38 +28,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.kafka.common.protocol.CommonFields.VALIDATE_ONLY;
-import static org.apache.kafka.common.protocol.types.Type.INT8;
-import static org.apache.kafka.common.protocol.types.Type.NULLABLE_STRING;
-import static org.apache.kafka.common.protocol.types.Type.STRING;
-
 public class AlterConfigsRequest extends AbstractRequest {
 
     private static final String RESOURCES_KEY_NAME = "resources";
     private static final String RESOURCE_TYPE_KEY_NAME = "resource_type";
     private static final String RESOURCE_NAME_KEY_NAME = "resource_name";
+    private static final String VALIDATE_ONLY_KEY_NAME = "validate_only";
 
     private static final String CONFIG_ENTRIES_KEY_NAME = "config_entries";
     private static final String CONFIG_NAME = "config_name";
     private static final String CONFIG_VALUE = "config_value";
-
-    private static final Schema CONFIG_ENTRY = new Schema(
-            new Field(CONFIG_NAME, STRING, "Configuration name"),
-            new Field(CONFIG_VALUE, NULLABLE_STRING, "Configuration value"));
-
-    private static final Schema ALTER_CONFIGS_REQUEST_RESOURCE_V0 = new Schema(
-            new Field(RESOURCE_TYPE_KEY_NAME, INT8),
-            new Field(RESOURCE_NAME_KEY_NAME, STRING),
-            new Field(CONFIG_ENTRIES_KEY_NAME, new ArrayOf(CONFIG_ENTRY)));
-
-    private static final Schema ALTER_CONFIGS_REQUEST_V0 = new Schema(
-            new Field(RESOURCES_KEY_NAME, new ArrayOf(ALTER_CONFIGS_REQUEST_RESOURCE_V0),
-                    "An array of resources to update with the provided configs."),
-            VALIDATE_ONLY);
-
-    public static Schema[] schemaVersions() {
-        return new Schema[] {ALTER_CONFIGS_REQUEST_V0};
-    }
 
     public static class Config {
         private final Collection<ConfigEntry> entries;
@@ -100,7 +76,7 @@ public class AlterConfigsRequest extends AbstractRequest {
         private final boolean validateOnly;
 
         public Builder(Map<Resource, Config> configs, boolean validateOnly) {
-            super(ApiKeys.ALTER_CONFIGS);
+            super(ApiKey.ALTER_CONFIGS);
             this.configs = configs;
             this.validateOnly = validateOnly;
         }
@@ -122,7 +98,7 @@ public class AlterConfigsRequest extends AbstractRequest {
 
     public AlterConfigsRequest(Struct struct, short version) {
         super(version);
-        validateOnly = struct.get(VALIDATE_ONLY);
+        validateOnly = struct.getBoolean(VALIDATE_ONLY_KEY_NAME);
         Object[] resourcesArray = struct.getArray(RESOURCES_KEY_NAME);
         configs = new HashMap<>(resourcesArray.length);
         for (Object resourcesObj : resourcesArray) {
@@ -155,8 +131,8 @@ public class AlterConfigsRequest extends AbstractRequest {
 
     @Override
     protected Struct toStruct() {
-        Struct struct = new Struct(ApiKeys.ALTER_CONFIGS.requestSchema(version()));
-        struct.set(VALIDATE_ONLY, validateOnly);
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.ALTER_CONFIGS, version()));
+        struct.set(VALIDATE_ONLY_KEY_NAME, validateOnly);
         List<Struct> resourceStructs = new ArrayList<>(configs.size());
         for (Map.Entry<Resource, Config> entry : configs.entrySet()) {
             Struct resourceStruct = struct.instance(RESOURCES_KEY_NAME);
@@ -193,12 +169,12 @@ public class AlterConfigsRequest extends AbstractRequest {
                 return new AlterConfigsResponse(throttleTimeMs, errors);
             default:
                 throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
-                        version, this.getClass().getSimpleName(), ApiKeys.ALTER_CONFIGS.latestVersion()));
+                        version, this.getClass().getSimpleName(), ApiKey.ALTER_CONFIGS.supportedRange().highest()));
         }
     }
 
     public static AlterConfigsRequest parse(ByteBuffer buffer, short version) {
-        return new AlterConfigsRequest(ApiKeys.ALTER_CONFIGS.parseRequest(version, buffer), version);
+        return new AlterConfigsRequest(ApiKeys.parseRequest(ApiKey.ALTER_CONFIGS, version, buffer), version);
     }
 
 }

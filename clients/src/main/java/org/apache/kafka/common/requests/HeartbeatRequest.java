@@ -16,63 +16,101 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.message.HeartbeatRequestData;
-import org.apache.kafka.common.message.HeartbeatResponseData;
+import org.apache.kafka.common.ApiKey;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
 
 public class HeartbeatRequest extends AbstractRequest {
+    private static final String GROUP_ID_KEY_NAME = "group_id";
+    private static final String GROUP_GENERATION_ID_KEY_NAME = "group_generation_id";
+    private static final String MEMBER_ID_KEY_NAME = "member_id";
 
     public static class Builder extends AbstractRequest.Builder<HeartbeatRequest> {
-        private final HeartbeatRequestData data;
+        private final String groupId;
+        private final int groupGenerationId;
+        private final String memberId;
 
-        public Builder(HeartbeatRequestData data) {
-            super(ApiKeys.HEARTBEAT);
-            this.data = data;
+        public Builder(String groupId, int groupGenerationId, String memberId) {
+            super(ApiKey.HEARTBEAT);
+            this.groupId = groupId;
+            this.groupGenerationId = groupGenerationId;
+            this.memberId = memberId;
         }
 
         @Override
         public HeartbeatRequest build(short version) {
-            if (data.groupInstanceId() != null && version < 3) {
-                throw new UnsupportedVersionException("The broker heartbeat protocol version " +
-                        version + " does not support usage of config group.instance.id.");
-            }
-            return new HeartbeatRequest(data, version);
+            return new HeartbeatRequest(groupId, groupGenerationId, memberId, version);
         }
 
         @Override
         public String toString() {
-            return data.toString();
+            StringBuilder bld = new StringBuilder();
+            bld.append("(type=HeartbeatRequest").
+                append(", groupId=").append(groupId).
+                append(", groupGenerationId=").append(groupGenerationId).
+                append(", memberId=").append(memberId).
+                append(")");
+            return bld.toString();
         }
     }
 
-    private final HeartbeatRequestData data;
+    private final String groupId;
+    private final int groupGenerationId;
+    private final String memberId;
 
-    private HeartbeatRequest(HeartbeatRequestData data, short version) {
-        super(ApiKeys.HEARTBEAT, version);
-        this.data = data;
+    private HeartbeatRequest(String groupId, int groupGenerationId, String memberId, short version) {
+        super(version);
+        this.groupId = groupId;
+        this.groupGenerationId = groupGenerationId;
+        this.memberId = memberId;
+    }
+
+    public HeartbeatRequest(Struct struct, short version) {
+        super(version);
+        groupId = struct.getString(GROUP_ID_KEY_NAME);
+        groupGenerationId = struct.getInt(GROUP_GENERATION_ID_KEY_NAME);
+        memberId = struct.getString(MEMBER_ID_KEY_NAME);
     }
 
     @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
-        HeartbeatResponseData responseData = new HeartbeatResponseData().
-            setErrorCode(Errors.forException(e).code());
-        if (version() >= 1) {
-            responseData.setThrottleTimeMs(throttleTimeMs);
+        short versionId = version();
+        switch (versionId) {
+            case 0:
+                return new HeartbeatResponse(Errors.forException(e));
+            case 1:
+                return new HeartbeatResponse(throttleTimeMs, Errors.forException(e));
+            default:
+                throw new IllegalArgumentException(String.format("Version %d is not valid. Valid versions for %s are 0 to %d",
+                        versionId, this.getClass().getSimpleName(), ApiKey.HEARTBEAT.supportedRange().highest()));
         }
-        return new HeartbeatResponse(responseData);
+    }
+
+    public String groupId() {
+        return groupId;
+    }
+
+    public int groupGenerationId() {
+        return groupGenerationId;
+    }
+
+    public String memberId() {
+        return memberId;
     }
 
     public static HeartbeatRequest parse(ByteBuffer buffer, short version) {
-        return new HeartbeatRequest(new HeartbeatRequestData(new ByteBufferAccessor(buffer), version), version);
+        return new HeartbeatRequest(ApiKeys.parseRequest(ApiKey.HEARTBEAT, version, buffer), version);
     }
 
     @Override
-    public HeartbeatRequestData data() {
-        return data;
+    protected Struct toStruct() {
+        Struct struct = new Struct(ApiKeys.requestSchema(ApiKey.HEARTBEAT, version()));
+        struct.set(GROUP_ID_KEY_NAME, groupId);
+        struct.set(GROUP_GENERATION_ID_KEY_NAME, groupGenerationId);
+        struct.set(MEMBER_ID_KEY_NAME, memberId);
+        return struct;
     }
 }

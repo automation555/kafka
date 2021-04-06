@@ -21,6 +21,7 @@ import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.Node;
 
 import java.util.Collection;
 import java.util.Map;
@@ -205,6 +206,26 @@ public abstract class AdminClient implements AutoCloseable {
     public abstract DescribeClusterResult describeCluster(DescribeClusterOptions options);
 
     /**
+     * Get information about the api versions of nodes in the cluster with the default options.
+     * See {@link AdminClient#apiVersions(Collection<Node>, ApiVersionsOptions)}
+     *
+     * @param nodes             The nodes to get information about, or null to get information about all nodes.
+     * @return                  The ApiVersionsResult.
+     */
+    public ApiVersionsResult apiVersions(Collection<Node> nodes) {
+        return apiVersions(nodes, new ApiVersionsOptions());
+    }
+
+    /**
+     * Get information about the api versions of nodes in the cluster.
+     *
+     * @param nodes             The nodes to get information about, or null to get information about all nodes.
+     * @param options           The options to use when getting api versions of the nodes.
+     * @return                  The ApiVersionsResult.
+     */
+    public abstract ApiVersionsResult apiVersions(Collection<Node> nodes, ApiVersionsOptions options);
+
+    /**
      * Similar to #{@link AdminClient#describeAcls(AclBindingFilter, DescribeAclsOptions)},
      * but uses the default options.
      *
@@ -346,17 +367,4 @@ public abstract class AdminClient implements AutoCloseable {
      * @return                The AlterConfigsResult
      */
     public abstract AlterConfigsResult alterConfigs(Map<ConfigResource, Config> configs, AlterConfigsOptions options);
-
-
-    /**
-     * Get all brokers version info.
-     *
-     * This operation is supported by brokers with version 0.11.0.0 or higher.
-     *
-     * @param configs         The resources with their configs (topic is the only resource type with configs that can
-     *                        be updated currently)
-     * @param options         The options to use when describing configs
-     * @return                The AlterConfigsResult
-     */
-    public abstract ListBrokersVersionInfoResult listBrokersVersionInfo();
 }

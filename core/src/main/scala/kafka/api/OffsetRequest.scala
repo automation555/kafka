@@ -21,9 +21,12 @@ import java.nio.ByteBuffer
 
 import kafka.api.ApiUtils._
 import kafka.common.TopicAndPartition
-import org.apache.kafka.common.protocol.ApiKeys
+import kafka.network.{RequestChannel, RequestOrResponseSend}
+import kafka.network.RequestChannel.Response
+import org.apache.kafka.common.ApiKey
+import org.apache.kafka.common.protocol.Errors
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
+
 object OffsetRequest {
   val CurrentVersion = 0.shortValue
   val DefaultClientId = ""
@@ -55,19 +58,18 @@ object OffsetRequest {
 
 case class PartitionOffsetRequestInfo(time: Long, maxNumOffsets: Int)
 
-@deprecated("This object has been deprecated and will be removed in a future release.", "1.0.0")
 case class OffsetRequest(requestInfo: Map[TopicAndPartition, PartitionOffsetRequestInfo],
                          versionId: Short = OffsetRequest.CurrentVersion,
                          correlationId: Int = 0,
                          clientId: String = OffsetRequest.DefaultClientId,
                          replicaId: Int = Request.OrdinaryConsumerId)
-    extends RequestOrResponse(Some(ApiKeys.LIST_OFFSETS.id)) {
+    extends RequestOrResponse(Some(ApiKey.LIST_OFFSETS.id)) {
 
   def this(requestInfo: Map[TopicAndPartition, PartitionOffsetRequestInfo], correlationId: Int, replicaId: Int) = this(requestInfo, OffsetRequest.CurrentVersion, correlationId, OffsetRequest.DefaultClientId, replicaId)
 
   lazy val requestInfoGroupedByTopic = requestInfo.groupBy(_._1.topic)
 
-  def writeTo(buffer: ByteBuffer): Unit = {
+  def writeTo(buffer: ByteBuffer) {
     buffer.putShort(versionId)
     buffer.putInt(correlationId)
     writeShortString(buffer, clientId)
@@ -110,6 +112,14 @@ case class OffsetRequest(requestInfo: Map[TopicAndPartition, PartitionOffsetRequ
 
   override def toString: String = {
     describe(true)
+  }
+
+  override  def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
+    val partitionOffsetResponseMap = requestInfo.map { case (topicAndPartition, _) =>
+        (topicAndPartition, PartitionOffsetsResponse(Errors.forException(e), Nil))
+    }
+    val errorResponse = OffsetResponse(correlationId, partitionOffsetResponseMap)
+    requestChannel.sendResponse(Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))
   }
 
   override def describe(details: Boolean): String = {

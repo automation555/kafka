@@ -24,11 +24,13 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.errors.MetadataNotAvailableException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.metrics.JmxReporter;
@@ -38,21 +40,18 @@ import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.network.ChannelBuilder;
 import org.apache.kafka.common.network.Selector;
-import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.Records;
-import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.AppInfoParser;
 import org.apache.kafka.common.utils.KafkaThread;
+import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -133,13 +132,6 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private static final Logger log = LoggerFactory.getLogger(KafkaProducer.class);
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
     private static final String JMX_PREFIX = "kafka.producer";
-    /**
-     * APIs used by KafkaProducer
-     */
-    private static final List<ApiKeys> PRODUCER_APIS = Arrays.asList(
-            ApiKeys.METADATA,
-            ApiKeys.PRODUCE);
-    private static final Collection<ApiVersionsResponse.ApiVersion> EXPECTED_API_VERSIONS = ClientUtils.buildExpectedApiVersions(PRODUCER_APIS);
 
     private String clientId;
     private final Partitioner partitioner;
@@ -158,6 +150,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private final ProducerConfig producerConfig;
     private final long maxBlockTimeMs;
     private final int requestTimeoutMs;
+    private final int maxMetaFetchCount;
     private final ProducerInterceptors<K, V> interceptors;
 
     /**
@@ -214,11 +207,10 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     @SuppressWarnings({"unchecked", "deprecation"})
     private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
         try {
-            config.validateValues();
             log.trace("Starting the Kafka producer");
             Map<String, Object> userProvidedConfigs = config.originals();
             this.producerConfig = config;
-            this.time = Time.SYSTEM;
+            this.time = new SystemTime();
 
             clientId = config.getString(ProducerConfig.CLIENT_ID_CONFIG);
             if (clientId.length() <= 0)
@@ -287,6 +279,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 this.maxBlockTimeMs = config.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG);
             }
 
+            if (userProvidedConfigs.containsKey(ProducerConfig.METADATA_FETCH_MAX_COUNT_CONFIG)) {
+                this.maxMetaFetchCount = config.getInt(ProducerConfig.METADATA_FETCH_MAX_COUNT_CONFIG);
+            } else { // if not specified, then this parameter is just not taking effect
+                this.maxMetaFetchCount = Integer.MAX_VALUE;
+            }
+
+
             /* check for user defined settings.
              * If the TIME_OUT config is set use that for request timeout.
              * This should be removed with release 0.9
@@ -307,7 +306,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     metrics,
                     time);
 
-            List<InetSocketAddress> addresses = config.getValidatedBootstrapServersConfigValue();
+            List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
             this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
             NetworkClient client = new NetworkClient(
@@ -318,18 +317,16 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     config.getLong(ProducerConfig.RECONNECT_BACKOFF_MS_CONFIG),
                     config.getInt(ProducerConfig.SEND_BUFFER_CONFIG),
                     config.getInt(ProducerConfig.RECEIVE_BUFFER_CONFIG),
-                    this.requestTimeoutMs,
-                    time,
-                    EXPECTED_API_VERSIONS);
+                    this.requestTimeoutMs, time);
             this.sender = new Sender(client,
                     this.metadata,
                     this.accumulator,
                     config.getInt(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION) == 1,
                     config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG),
-                    (short) config.getValidatedAcksConfigValue(),
+                    (short) parseAcks(config.getString(ProducerConfig.ACKS_CONFIG)),
                     config.getInt(ProducerConfig.RETRIES_CONFIG),
                     this.metrics,
-                    Time.SYSTEM,
+                    new SystemTime(),
                     this.requestTimeoutMs);
             String ioThreadName = "kafka-producer-network-thread" + (clientId.length() > 0 ? " | " + clientId : "");
             this.ioThread = new KafkaThread(ioThreadName, this.sender, true);
@@ -347,6 +344,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             close(0, TimeUnit.MILLISECONDS, true);
             // now propagate the exception
             throw new KafkaException("Failed to construct kafka producer", t);
+        }
+    }
+
+    private static int parseAcks(String acksString) {
+        try {
+            return acksString.trim().equalsIgnoreCase("all") ? -1 : Integer.parseInt(acksString.trim());
+        } catch (NumberFormatException e) {
+            throw new ConfigException("Invalid configuration value for 'acks': " + acksString);
         }
     }
 
@@ -534,12 +539,12 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
         long begin = time.milliseconds();
         long remainingWaitMs = maxWaitMs;
-        long elapsed;
-        // Issue metadata requests until we have metadata for the topic or maxWaitTimeMs is exceeded.
-        // In case we already have cached metadata for the topic, but the requested partition is greater
-        // than expected, issue an update request only once. This is necessary in case the metadata
-        // is stale and the number of partitions for this topic has increased in the meantime.
-        do {
+        long elapsed = 0;
+
+        // update metadata controlled by both maxWaitMs and maxMetaFetchCount
+        // when auto.create.topics.enable=false and sending a msg to non-exist topic
+        // setting maxMetaFetchCount=1 can reduce many unnecessary metadata request
+        for (int i = 0; i < maxMetaFetchCount; ++i) {
             log.trace("Requesting metadata update for topic {}.", topic);
             int version = metadata.requestUpdate();
             sender.wakeup();
@@ -557,7 +562,16 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 throw new TopicAuthorizationException(topic);
             remainingWaitMs = maxWaitMs - elapsed;
             partitionsCount = cluster.partitionCountForTopic(topic);
-        } while (partitionsCount == null);
+
+            // get meta data for this topic, no need to call again
+            if (null != partitionsCount) {
+                break;
+            }
+        }
+
+        if (null == partitionsCount) {
+            throw new MetadataNotAvailableException("Metadata not available for topic=" + topic);
+        }
 
         if (partition != null && partition >= partitionsCount) {
             throw new KafkaException(

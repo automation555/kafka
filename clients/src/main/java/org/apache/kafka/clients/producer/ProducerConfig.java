@@ -12,19 +12,15 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.serialization.Serializer;
 
-import java.net.InetSocketAddress;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -58,6 +54,11 @@ public class ProducerConfig extends AbstractConfig {
     private static final String METADATA_FETCH_TIMEOUT_DOC = "The first time data is sent to a topic we must fetch metadata about that topic to know which servers "
                                                              + "host the topic's partitions. This config specifies the maximum time, in milliseconds, for this fetch "
                                                              + "to succeed before throwing an exception back to the client.";
+
+    public static final String METADATA_FETCH_MAX_COUNT_CONFIG = "metadata.fetch.max.count";
+    private static final String METADATA_FETCH_MAX_COUNT_DOC = "when fetching metadata for a topic, within the time of metadata.fetch.timeout.ms, "
+                                                             + " if the metadata response does not contain the topic's metadata, then it will keep sending the meta request until metadata.fetch.timeout.ms is exceeded"
+                                                             + " this will become too many overhead when broker side has configured auto.create.topics.enable=false and a msg is sent to non-exist topic ";
 
     /** <code>metadata.max.age.ms</code> */
     public static final String METADATA_MAX_AGE_CONFIG = CommonClientConfigs.METADATA_MAX_AGE_CONFIG;
@@ -214,9 +215,7 @@ public class ProducerConfig extends AbstractConfig {
 
     /** <code>request.timeout.ms</code> */
     public static final String REQUEST_TIMEOUT_MS_CONFIG = CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG;
-    private static final String REQUEST_TIMEOUT_MS_DOC = CommonClientConfigs.REQUEST_TIMEOUT_MS_DOC
-                                                        + " request.timeout.ms should be larger than replica.lag.time.max.ms, a broker side configuration,"
-                                                        + " to reduce message duplication caused by unnecessary producer retry.";
+    private static final String REQUEST_TIMEOUT_MS_DOC = CommonClientConfigs.REQUEST_TIMEOUT_MS_DOC;
 
     /** <code>interceptor.classes</code> */
     public static final String INTERCEPTOR_CLASSES_CONFIG = "interceptor.classes";
@@ -257,6 +256,11 @@ public class ProducerConfig extends AbstractConfig {
                                         atLeast(0),
                                         Importance.LOW,
                                         METADATA_FETCH_TIMEOUT_DOC)
+                                .define(METADATA_FETCH_MAX_COUNT_CONFIG,
+                                        Type.INT,
+                                        Integer.MAX_VALUE,
+                                        Importance.LOW,
+                                        METADATA_FETCH_MAX_COUNT_DOC)
                                 .define(MAX_BLOCK_MS_CONFIG,
                                         Type.LONG,
                                         60 * 1000,
@@ -346,29 +350,6 @@ public class ProducerConfig extends AbstractConfig {
 
     public static Set<String> configNames() {
         return CONFIG.names();
-    }
-
-    private List<InetSocketAddress> validatedBootstrapServersConfigValue;
-
-    public List<InetSocketAddress> getValidatedBootstrapServersConfigValue() {
-        return validatedBootstrapServersConfigValue;
-    }
-
-    private int validatedAcksConfigValue;
-
-    public int getValidatedAcksConfigValue() {
-        return validatedAcksConfigValue;
-    }
-
-    public void validateValues() {
-        validatedBootstrapServersConfigValue = ClientUtils.parseAndValidateAddresses(this.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
-
-        String acksConfigValue = this.getString(ProducerConfig.ACKS_CONFIG);
-        try {
-            validatedAcksConfigValue = acksConfigValue.trim().equalsIgnoreCase("all") ? -1 : Integer.parseInt(acksConfigValue.trim());
-        } catch (NumberFormatException e) {
-            throw new ConfigException("Invalid configuration value for 'acks': " + acksConfigValue);
-        }
     }
 
     public static void main(String[] args) {

@@ -22,22 +22,22 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.regex.Pattern
-import java.util.{Collections, Locale, Map, Properties, Random}
+import java.util.{Collections, Locale, Properties, Random}
 
 import com.typesafe.scalalogging.LazyLogging
 import joptsimple._
+import kafka.common.MessageFormatter
 import kafka.utils.Implicits._
-import kafka.utils.{Exit, _}
+import kafka.utils._
 import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, ConsumerRecord, KafkaConsumer}
-import org.apache.kafka.common.{MessageFormatter, TopicPartition}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.{AuthenticationException, TimeoutException, WakeupException}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.requests.ListOffsetRequest
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, Deserializer}
 import org.apache.kafka.common.utils.Utils
 
-import scala.annotation.nowarn
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 /**
  * Consumer that dumps messages to standard out.
@@ -48,7 +48,7 @@ object ConsoleConsumer extends Logging {
 
   private val shutdownLatch = new CountDownLatch(1)
 
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     val conf = new ConsumerConfig(args)
     try {
       run(conf)
@@ -62,7 +62,7 @@ object ConsoleConsumer extends Logging {
     }
   }
 
-  def run(conf: ConsumerConfig): Unit = {
+  def run(conf: ConsumerConfig) {
     val timeoutMs = if (conf.timeoutMs >= 0) conf.timeoutMs else Long.MaxValue
     val consumer = new KafkaConsumer(consumerProps(conf), new ByteArrayDeserializer, new ByteArrayDeserializer)
 
@@ -84,8 +84,9 @@ object ConsoleConsumer extends Logging {
     }
   }
 
-  def addShutdownHook(consumer: ConsumerWrapper, conf: ConsumerConfig): Unit = {
-    Exit.addShutdownHook("consumer-shutdown-hook", {
+  def addShutdownHook(consumer: ConsumerWrapper, conf: ConsumerConfig) {
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run() {
         consumer.wakeup()
 
         shutdownLatch.await()
@@ -93,11 +94,12 @@ object ConsoleConsumer extends Logging {
         if (conf.enableSystestEventsLogging) {
           System.out.println("shutdown_complete")
         }
+      }
     })
   }
 
   def process(maxMessages: Integer, formatter: MessageFormatter, consumer: ConsumerWrapper, output: PrintStream,
-              skipMessageOnError: Boolean): Unit = {
+              skipMessageOnError: Boolean) {
     while (messageCount < maxMessages || maxMessages == -1) {
       val msg: ConsumerRecord[Array[Byte], Array[Byte]] = try {
         consumer.receive()
@@ -131,7 +133,7 @@ object ConsoleConsumer extends Logging {
     }
   }
 
-  def reportRecordCount(): Unit = {
+  def reportRecordCount() {
     System.err.println(s"Processed a total of $messageCount messages")
   }
 
@@ -166,7 +168,7 @@ object ConsoleConsumer extends Logging {
     * In case both --from-beginning and an explicit value are specified an error is thrown if these
     * are conflicting.
     */
-  def setAutoOffsetResetValue(config: ConsumerConfig, props: Properties): Unit = {
+  def setAutoOffsetResetValue(config: ConsumerConfig, props: Properties) {
     val (earliestConfigValue, latestConfigValue) = ("earliest", "latest")
 
     if (props.containsKey(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG)) {
@@ -220,7 +222,12 @@ object ConsoleConsumer extends Logging {
       .describedAs("class")
       .ofType(classOf[String])
       .defaultsTo(classOf[DefaultMessageFormatter].getName)
-    val messageFormatterArgOpt = parser.accepts("property",
+    // Deprecated in favour of the more explicit formatter-property argument
+    val messageFormatterDeprecatedArgOpt = parser.accepts("property", "Deprecated. See formatter-property.")
+      .withRequiredArg
+      .describedAs("prop")
+      .ofType(classOf[String])
+    val messageFormatterArgOpt = parser.accepts("formatter-property",
       "The properties to initialize the message formatter. Default properties include:\n" +
         "\tprint.timestamp=true|false\n" +
         "\tprint.key=true|false\n" +
@@ -262,7 +269,7 @@ object ConsoleConsumer extends Logging {
       "Log lifecycle events of the consumer in addition to logging consumed " +
         "messages. (This is specific for system tests.)")
     val isolationLevelOpt = parser.accepts("isolation-level",
-      "Set to read_committed in order to filter out transactional messages which are not committed. Set to read_uncommitted " +
+      "Set to read_committed in order to filter out transactional messages which are not committed. Set to read_uncommitted" +
         "to read all messages.")
       .withRequiredArg()
       .ofType(classOf[String])
@@ -293,7 +300,14 @@ object ConsoleConsumer extends Logging {
     val partitionArg = if (options.has(partitionIdOpt)) Some(options.valueOf(partitionIdOpt).intValue) else None
     val skipMessageOnError = options.has(skipMessageOnErrorOpt)
     val messageFormatterClass = Class.forName(options.valueOf(messageFormatterOpt))
-    val formatterArgs = CommandLineUtils.parseKeyValueArgs(options.valuesOf(messageFormatterArgOpt).asScala)
+    val formatterArgsNew = CommandLineUtils.parseKeyValueArgs(options.valuesOf(messageFormatterArgOpt).asScala)
+    val formatterArgsDeprecated = CommandLineUtils.parseKeyValueArgs(options.valuesOf(messageFormatterDeprecatedArgOpt).asScala)
+    if (!formatterArgsDeprecated.isEmpty && !formatterArgsNew.isEmpty) {
+      CommandLineUtils.printUsageAndDie(parser, s"${messageFormatterDeprecatedArgOpt.forHelp()} is deprecated. It will be removed from future releases. Please use ${messageFormatterArgOpt} instead. You cannot use both.")
+    } else if (!formatterArgsDeprecated.isEmpty) {
+      System.err.println(s"${messageFormatterDeprecatedArgOpt.forHelp()} is deprecated. It will be removed from future releases. Please use ${messageFormatterArgOpt} instead.")
+    }
+    val formatterArgs = if (formatterArgsDeprecated.isEmpty) formatterArgsNew else formatterArgsDeprecated
     val maxMessages = if (options.has(maxMessagesOpt)) options.valueOf(maxMessagesOpt).intValue else -1
     val timeoutMs = if (options.has(timeoutMsOpt)) options.valueOf(timeoutMsOpt).intValue else -1
     val bootstrapServer = options.valueOf(bootstrapServerOpt)
@@ -308,7 +322,11 @@ object ConsoleConsumer extends Logging {
       formatterArgs.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer)
     }
 
-    formatter.configure(formatterArgs.asScala.asJava)
+    try {
+      formatter.init(formatterArgs)
+    } catch {
+      case e:IllegalArgumentException => CommandLineUtils.printUsageAndDie(parser, e.getMessage)
+    }
 
     val topicOrFilterOpt = List(topicIdOpt, whitelistOpt).filter(options.has)
     if (topicOrFilterOpt.size != 1)
@@ -390,9 +408,9 @@ object ConsoleConsumer extends Logging {
   private[tools] class ConsumerWrapper(topic: Option[String], partitionId: Option[Int], offset: Option[Long], whitelist: Option[String],
                                        consumer: Consumer[Array[Byte], Array[Byte]], val timeoutMs: Long = Long.MaxValue) {
     consumerInit()
-    var recordIter = consumer.poll(Duration.ofMillis(0L), false).iterator
+    var recordIter = Collections.emptyList[ConsumerRecord[Array[Byte], Array[Byte]]]().iterator()
 
-    def consumerInit(): Unit = {
+    def consumerInit() {
       (topic, partitionId, offset, whitelist) match {
         case (Some(topic), Some(partitionId), Some(offset), None) =>
           seek(topic, partitionId, offset)
@@ -411,7 +429,7 @@ object ConsoleConsumer extends Logging {
       }
     }
 
-    def seek(topic: String, partitionId: Int, offset: Long): Unit = {
+    def seek(topic: String, partitionId: Int, offset: Long) {
       val topicPartition = new TopicPartition(topic, partitionId)
       consumer.assign(Collections.singletonList(topicPartition))
       offset match {
@@ -421,7 +439,7 @@ object ConsoleConsumer extends Logging {
       }
     }
 
-    def resetUnconsumedOffsets(): Unit = {
+    def resetUnconsumedOffsets() {
       val smallestUnconsumedOffsets = collection.mutable.Map[TopicPartition, Long]()
       while (recordIter.hasNext) {
         val record = recordIter.next()
@@ -446,7 +464,7 @@ object ConsoleConsumer extends Logging {
       this.consumer.wakeup()
     }
 
-    def cleanup(): Unit = {
+    def cleanup() {
       resetUnconsumedOffsets()
       this.consumer.close()
     }
@@ -455,55 +473,76 @@ object ConsoleConsumer extends Logging {
 }
 
 class DefaultMessageFormatter extends MessageFormatter {
-  var printTimestamp = false
   var printKey = false
   var printValue = true
-  var printPartition = false
+  var printTimestamp = false
   var keySeparator = "\t".getBytes(StandardCharsets.UTF_8)
   var lineSeparator = "\n".getBytes(StandardCharsets.UTF_8)
 
   var keyDeserializer: Option[Deserializer[_]] = None
   var valueDeserializer: Option[Deserializer[_]] = None
 
-  override def configure(configs: Map[String, _]): Unit = {
-    val props = new java.util.Properties()
-    configs.asScala.foreach { case (key, value) => props.put(key, value.toString) }
-    if (props.containsKey("print.timestamp"))
-      printTimestamp = props.getProperty("print.timestamp").trim.equalsIgnoreCase("true")
-    if (props.containsKey("print.key"))
-      printKey = props.getProperty("print.key").trim.equalsIgnoreCase("true")
-    if (props.containsKey("print.value"))
-      printValue = props.getProperty("print.value").trim.equalsIgnoreCase("true")
-    if (props.containsKey("print.partition"))
-      printPartition = props.getProperty("print.partition").trim.equalsIgnoreCase("true")
-    if (props.containsKey("key.separator"))
-      keySeparator = props.getProperty("key.separator").getBytes(StandardCharsets.UTF_8)
-    if (props.containsKey("line.separator"))
-      lineSeparator = props.getProperty("line.separator").getBytes(StandardCharsets.UTF_8)
-    // Note that `toString` will be called on the instance returned by `Deserializer.deserialize`
-    if (props.containsKey("key.deserializer")) {
-      keyDeserializer = Some(Class.forName(props.getProperty("key.deserializer")).getDeclaredConstructor()
-        .newInstance().asInstanceOf[Deserializer[_]])
-      keyDeserializer.get.configure(propertiesWithKeyPrefixStripped("key.deserializer.", props).asScala.asJava, true)
+  override def init(propsOriginal: Properties) {
+    // copy the properties so we can modify it
+    val props = new Properties()
+    def process(key: String, processor: (String) => Unit) = {
+      if (props.containsKey(key)) {
+        processor(props.getProperty(key))
+        props.remove(key)
+      }
     }
-    // Note that `toString` will be called on the instance returned by `Deserializer.deserialize`
-    if (props.containsKey("value.deserializer")) {
-      valueDeserializer = Some(Class.forName(props.getProperty("value.deserializer")).getDeclaredConstructor()
-        .newInstance().asInstanceOf[Deserializer[_]])
-      valueDeserializer.get.configure(propertiesWithKeyPrefixStripped("value.deserializer.", props).asScala.asJava, false)
+
+    // https://github.com/scala/bug/issues/10418
+    props.putAll(propsOriginal: java.util.Map[_, _])
+
+    process("print.timestamp", (value: String) => printTimestamp = value.trim.equalsIgnoreCase("true"))
+    process("print.key", (value: String) => printKey = value.trim.equalsIgnoreCase("true"))
+    process("print.value", (value: String) => printValue = value.trim.equalsIgnoreCase("true"))
+    process("key.separator", (value: String) => keySeparator = value.getBytes(StandardCharsets.UTF_8))
+    process("line.separator", (value: String) => lineSeparator = value.getBytes(StandardCharsets.UTF_8))
+
+    val keyDeserializerKey = "key.deserializer"
+    val keyDeserProps = propertiesWithKeyPrefixStripped(keyDeserializerKey, props)
+    process(keyDeserializerKey, (value: String) => {
+      // Note that `toString` will be called on the instance returned by `Deserializer.deserialize`
+      keyDeserializer = Some(Class.forName(value).getDeclaredConstructor().newInstance().asInstanceOf[Deserializer[_]])
+      keyDeserializer.get.configure(keyDeserProps.asScala.asJava, true)
+    })
+
+    val valueDeserializerKey = "value.deserializer"
+    val valDeserProps = propertiesWithKeyPrefixStripped(valueDeserializerKey, props)
+    process(valueDeserializerKey, (value: String) => {
+      // Note that `toString` will be called on the instance returned by `Deserializer.deserialize`
+      valueDeserializer = Some(Class.forName(value).getDeclaredConstructor().newInstance().asInstanceOf[Deserializer[_]])
+      valueDeserializer.get.configure(valDeserProps.asScala.asJava, false)
+    })
+
+    // remove all deserializer properties as well
+    keyDeserProps.asScala.foreach { case (key, value) =>
+      props.remove(keyDeserializerKey + '.' + key)
+    }
+    valDeserProps.asScala.foreach { case (key, value) =>
+      props.remove(valueDeserializerKey + '.' + key)
+    }
+
+    if (!props.isEmpty) {
+      // props contained an unrecognised property
+      throw new IllegalArgumentException(s"Unrecognised arguments (${props}) passed to ${this.getClass.getName}.")
     }
   }
+
+
 
   private def propertiesWithKeyPrefixStripped(prefix: String, props: Properties): Properties = {
     val newProps = new Properties()
     props.asScala.foreach { case (key, value) =>
       if (key.startsWith(prefix) && key.length > prefix.length)
-        newProps.put(key.substring(prefix.length), value)
+        newProps.put(key.substring(prefix.length + 1), value)
     }
     newProps
   }
 
-  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
+  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream) {
 
     def writeSeparator(columnSeparator: Boolean): Unit = {
       if (columnSeparator)
@@ -512,9 +551,9 @@ class DefaultMessageFormatter extends MessageFormatter {
         output.write(lineSeparator)
     }
 
-    def write(deserializer: Option[Deserializer[_]], sourceBytes: Array[Byte], topic: String): Unit = {
+    def write(deserializer: Option[Deserializer[_]], sourceBytes: Array[Byte], topic: String) {
       val nonNullBytes = Option(sourceBytes).getOrElse("null".getBytes(StandardCharsets.UTF_8))
-      val convertedBytes = deserializer.map(_.deserialize(topic, consumerRecord.headers, nonNullBytes).toString.
+      val convertedBytes = deserializer.map(_.deserialize(topic, nonNullBytes).toString.
         getBytes(StandardCharsets.UTF_8)).getOrElse(nonNullBytes)
       output.write(convertedBytes)
     }
@@ -536,11 +575,6 @@ class DefaultMessageFormatter extends MessageFormatter {
 
     if (printValue) {
       write(valueDeserializer, value, topic)
-      writeSeparator(printPartition)
-    }
-
-    if (printPartition) {
-      output.write(s"$partition".getBytes(StandardCharsets.UTF_8))
       output.write(lineSeparator)
     }
   }
@@ -549,7 +583,7 @@ class DefaultMessageFormatter extends MessageFormatter {
 class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
   private val defaultWriter: DefaultMessageFormatter = new DefaultMessageFormatter
 
-  override def configure(configs: Map[String, _]): Unit = defaultWriter.configure(configs)
+  override def init(props: Properties): Unit = defaultWriter.init(props)
 
   def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
     import consumerRecord._
@@ -561,22 +595,23 @@ class LoggingMessageFormatter extends MessageFormatter with LazyLogging {
 }
 
 class NoOpMessageFormatter extends MessageFormatter {
+  override def init(props: Properties) {}
 
-  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {}
+  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream){}
 }
 
 class ChecksumMessageFormatter extends MessageFormatter {
   private var topicStr: String = _
 
-  override def configure(configs: Map[String, _]): Unit = {
-    topicStr = if (configs.containsKey("topic"))
-      configs.get("topic").toString + ":"
+  override def init(props: Properties) {
+    topicStr = props.getProperty("topic")
+    if (topicStr != null)
+      topicStr = topicStr + ":"
     else
-      ""
+      topicStr = ""
   }
 
-  @nowarn("cat=deprecation")
-  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream): Unit = {
+  def writeTo(consumerRecord: ConsumerRecord[Array[Byte], Array[Byte]], output: PrintStream) {
     output.println(topicStr + "checksum:" + consumerRecord.checksum)
   }
 }

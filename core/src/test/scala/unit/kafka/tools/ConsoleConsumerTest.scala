@@ -24,7 +24,7 @@ import kafka.common.MessageFormatter
 import kafka.tools.ConsoleConsumer.ConsumerWrapper
 import kafka.utils.{Exit, TestUtils}
 import org.apache.kafka.clients.consumer.{ConsumerRecord, MockConsumer, OffsetResetStrategy}
-import org.apache.kafka.common.{Node, PartitionInfo, TopicPartition}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.test.MockDeserializer
 import org.mockito.Mockito._
@@ -43,7 +43,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldResetUnConsumedOffsetsBeforeExit(): Unit = {
+  def shouldResetUnConsumedOffsetsBeforeExit() {
     val topic = "test"
     val maxMessages: Int = 123
     val totalMessages: Int = 700
@@ -75,7 +75,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldLimitReadsToMaxMessageLimit(): Unit = {
+  def shouldLimitReadsToMaxMessageLimit() {
     val consumer = mock(classOf[ConsumerWrapper])
     val formatter = mock(classOf[MessageFormatter])
     val record = new ConsumerRecord("foo", 1, 1, Array[Byte](), Array[Byte]())
@@ -92,7 +92,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldStopWhenOutputCheckErrorFails(): Unit = {
+  def shouldStopWhenOutputCheckErrorFails() {
     val consumer = mock(classOf[ConsumerWrapper])
     val formatter = mock(classOf[MessageFormatter])
     val printStream = mock(classOf[PrintStream])
@@ -113,7 +113,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerValidConfig(): Unit = {
+  def shouldParseValidConsumerValidConfig() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -145,7 +145,7 @@ class ConsoleConsumerTest {
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
-    assertEquals("3", config.offsetArg)
+    assertEquals(3, config.offsetArg)
     assertEquals(false, config.fromBeginning)
 
   }
@@ -170,7 +170,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidSimpleConsumerValidConfigWithStringOffset(): Unit = {
+  def shouldParseValidSimpleConsumerValidConfigWithStringOffset() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -186,13 +186,13 @@ class ConsoleConsumerTest {
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
     assertEquals(0, config.partitionArg.get)
-    assertEquals("latest", config.offsetArg)
+    assertEquals(-1, config.offsetArg)
     assertEquals(false, config.fromBeginning)
     assertEquals(false, config.formatter.asInstanceOf[DefaultMessageFormatter].printValue)
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetLatest(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetLatest() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -211,7 +211,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetEarliest(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetEarliest() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -230,7 +230,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetAndMatchingFromBeginning(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetAndMatchingFromBeginning() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -250,7 +250,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithNoOffsetReset(): Unit = {
+  def shouldParseValidConsumerConfigWithNoOffsetReset() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -268,7 +268,7 @@ class ConsoleConsumerTest {
   }
 
   @Test(expected = classOf[IllegalArgumentException])
-  def shouldExitOnInvalidConfigWithAutoOffsetResetAndConflictingFromBeginning(): Unit = {
+  def shouldExitOnInvalidConfigWithAutoOffsetResetAndConflictingFromBeginning() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
     //Given
@@ -287,7 +287,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseConfigsFromFile(): Unit = {
+  def shouldParseConfigsFromFile() {
     val propsFile = TestUtils.tempFile()
     val propsStream = Files.newOutputStream(propsFile.toPath)
     propsStream.write("request.timeout.ms=1000\n".getBytes())
@@ -306,7 +306,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def groupIdsProvidedInDifferentPlacesMustMatch(): Unit = {
+  def groupIdsProvidedInDifferentPlacesMustMatch() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
     // different in all three places
@@ -420,20 +420,39 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--property", "print.key=true",
       "--property", "key.deserializer=org.apache.kafka.test.MockDeserializer",
-      "--property", "key.deserializer.my-props=abc"
+      "--property", "key.deserializer.my-prop=abc"
     )
     val config = new ConsoleConsumer.ConsumerConfig(args)
     assertTrue(config.formatter.isInstanceOf[DefaultMessageFormatter])
-    assertTrue(config.formatterArgs.containsKey("key.deserializer.my-props"))
+    assertTrue(config.formatterArgs.containsKey("key.deserializer.my-prop"))
     val formatter = config.formatter.asInstanceOf[DefaultMessageFormatter]
     assertTrue(formatter.keyDeserializer.get.isInstanceOf[MockDeserializer])
     assertEquals(1, formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.size)
-    assertEquals("abc", formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.get("my-props"))
+    assertEquals("abc", formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.get("my-prop"))
     assertTrue(formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].isKey)
   }
 
   @Test
-  def shouldParseGroupIdFromBeginningGivenTogether(): Unit = {
+  def testCustomValueDeserializer(): Unit = {
+    val args = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--property", "print.key=true",
+      "--property", "value.deserializer=org.apache.kafka.test.MockDeserializer",
+      "--property", "value.deserializer.my-prop=abc"
+    )
+    val config = new ConsoleConsumer.ConsumerConfig(args)
+    assertTrue(config.formatter.isInstanceOf[DefaultMessageFormatter])
+    assertTrue(config.formatterArgs.containsKey("value.deserializer.my-prop"))
+    val formatter = config.formatter.asInstanceOf[DefaultMessageFormatter]
+    assertTrue(formatter.valueDeserializer.get.isInstanceOf[MockDeserializer])
+    val deserializer = formatter.valueDeserializer.get.asInstanceOf[MockDeserializer]
+    assertEquals(1, deserializer.configs.size)
+    assertEquals("abc", deserializer.configs.get("my-prop"))
+  }
+
+  @Test
+  def shouldParseGroupIdFromBeginningGivenTogether() {
     // Start from earliest
     var args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -444,7 +463,7 @@ class ConsoleConsumerTest {
     var config = new ConsoleConsumer.ConsumerConfig(args)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
-    assertEquals("earliest", config.offsetArg)
+    assertEquals(-2, config.offsetArg)
     assertEquals(true, config.fromBeginning)
 
     // Start from latest
@@ -457,12 +476,12 @@ class ConsoleConsumerTest {
     config = new ConsoleConsumer.ConsumerConfig(args)
     assertEquals("localhost:9092", config.bootstrapServer)
     assertEquals("test", config.topicArg)
-    assertEquals("latest", config.offsetArg)
+    assertEquals(-1, config.offsetArg)
     assertEquals(false, config.fromBeginning)
   }
 
   @Test(expected = classOf[IllegalArgumentException])
-  def shouldExitOnGroupIdAndPartitionGivenTogether(): Unit = {
+  def shouldExitOnGroupIdAndPartitionGivenTogether() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
     val args: Array[String] = Array(
@@ -480,7 +499,7 @@ class ConsoleConsumerTest {
   }
 
   @Test(expected = classOf[IllegalArgumentException])
-  def shouldExitOnOffsetWithoutPartition(): Unit = {
+  def shouldExitOnOffsetWithoutPartition() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
     //Given
     val args: Array[String] = Array(
@@ -496,55 +515,75 @@ class ConsoleConsumerTest {
     }
   }
 
-  @Test
-  def testReadLastNMessages(): Unit = {
-    val topic = "test"
-    val tp1 = new TopicPartition(topic, 0)
-    val startOffset: java.lang.Long = 0L
-    val totalMessages: java.lang.Long = 10L
-    val lastN = -3
-
-    val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
-    val partitionInfo = new PartitionInfo(topic, 0, null, new Array[Node](0), new Array[Node](0))
-
-    mockConsumer.updatePartitions(topic, List(partitionInfo).asJava)
-    mockConsumer.updateBeginningOffsets(Map(tp1 -> startOffset).asJava)
-    mockConsumer.updateEndOffsets(Map(tp1 -> totalMessages).asJava)
-
-    val consumer = new ConsumerWrapper(Some(topic), Some(0), Some(lastN.toString), None, mockConsumer)
-
-    0 until totalMessages.intValue foreach { i =>
-      mockConsumer.addRecord(new ConsumerRecord[Array[Byte], Array[Byte]](topic, 0, i, "key".getBytes, "value".getBytes))
+  /**
+    * There is no test for the default key and value deserializer properties
+    */
+  @Test(expected = classOf[ShouldExitException])
+  def shouldExitOnUnrecognisedProperty() {
+    val expectedMessage = Some("Unrecognised arguments ({not=ok, bad.property=not.good}) passed to kafka.tools.DefaultMessageFormatter.")
+    Exit.setExitProcedure((_, message) => {
+      assertEquals("Console consumer should exit with help information with bad properties listed", expectedMessage, message)
+      throw new ShouldExitException() // Code should exit with help information
     }
+    )
 
-    val formatter = mock(classOf[MessageFormatter])
-    ConsoleConsumer.process(-1, formatter, consumer, System.out, skipMessageOnError = false)
-    verify(formatter, times(Math.abs(lastN))).writeTo(any(), any())
+    val args: Array[String] = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--property", "print.key=true",
+      "--property", "bad.property=not.good",
+      "--property", "not=ok")
+
+    try {
+      try {
+        val config = new ConsoleConsumer.ConsumerConfig(args)
+      } catch {
+        case e: IllegalArgumentException => {
+          assertEquals(e.getClass, classOf[IllegalArgumentException])
+        }
+      }
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   @Test
-  def testLastNExceedingTotalMessageCount(): Unit = {
-    val topic = "test"
-    val tp1 = new TopicPartition(topic, 0)
-    val startOffset: java.lang.Long = 0L
-    val totalMessages: java.lang.Long = 10L
-    val lastN = Long.MinValue
+  def testNewFormatterPropertyName(): Unit = {
+    val args = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--formatter-property", "print.key=true"
+    )
+    val config = new ConsoleConsumer.ConsumerConfig(args)
+    assertTrue(config.formatter.isInstanceOf[DefaultMessageFormatter])
+    val formatter = config.formatter.asInstanceOf[DefaultMessageFormatter]
+    assertTrue("print.key setting picked up properly from new property name", formatter.printKey)
+  }
 
-    val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
-    val partitionInfo = new PartitionInfo(topic, 0, null, new Array[Node](0), new Array[Node](0))
+  @Test(expected = classOf[ShouldExitException])
+  def shouldExitOnDeprecatedPropertyMix() {
+    val expectedMessage = Some("[property] is deprecated. It will be removed from future releases. Please use [formatter-property] instead. You cannot use both.")
+    Exit.setExitProcedure((_, message) => {
+      assertEquals("Console consumer should exit with help information about deprecated option", expectedMessage, message)
+      throw new ShouldExitException() // Code should exit with help information
+    }
+    )
 
-    mockConsumer.updatePartitions(topic, List(partitionInfo).asJava)
-    mockConsumer.updateBeginningOffsets(Map(tp1 -> startOffset).asJava)
-    mockConsumer.updateEndOffsets(Map(tp1 -> totalMessages).asJava)
+    val args: Array[String] = Array(
+      "--bootstrap-server", "localhost:9092",
+      "--topic", "test",
+      "--property", "print.key=true",
+      "--formatter-property", "bad.property=not.good")
 
-    val consumer = new ConsumerWrapper(Some(topic), Some(0), Some(lastN.toString), None, mockConsumer)
 
-    0 until totalMessages.intValue foreach { i =>
-      mockConsumer.addRecord(new ConsumerRecord[Array[Byte], Array[Byte]](topic, 0, i, "key".getBytes, "value".getBytes))
+    try {
+      val config = new ConsoleConsumer.ConsumerConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
     }
 
-    val formatter = mock(classOf[MessageFormatter])
-    ConsoleConsumer.process(-1, formatter, consumer, System.out, skipMessageOnError = false)
-    verify(formatter, times(totalMessages.toInt)).writeTo(any(), any())
   }
+
 }
+
+class ShouldExitException extends RuntimeException

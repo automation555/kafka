@@ -26,6 +26,7 @@ import java.util.{Collections, Properties}
 
 import com.yammer.metrics.core.Gauge
 import joptsimple.OptionParser
+import kafka.consumer.BaseConsumerRecord
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.{CommandLineUtils, CoreUtils, Logging, Whitelist}
 import org.apache.kafka.clients.consumer.{CommitFailedException, Consumer, ConsumerConfig, ConsumerRebalanceListener, ConsumerRecord, KafkaConsumer, OffsetAndMetadata}
@@ -41,6 +42,8 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.HashMap
 import scala.util.{Failure, Success, Try}
 import scala.util.control.ControlThrowable
+
+ import kafka.utils._ 
 
 /**
  * The mirror maker has the following architecture:
@@ -115,6 +118,12 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
         .withRequiredArg()
         .describedAs("Java regex (String)")
         .ofType(classOf[String])
+        
+      val topicMapListOpt = parser.accepts("topicMapList",
+        "Mirror from source topic to destination topic.")
+        .withRequiredArg()
+        .describedAs("List of Map of topics from source to destination.")
+        .ofType(classOf[String])  
 
       val offsetCommitIntervalMsOpt = parser.accepts("offset.commit.interval.ms",
         "Offset commit interval in ms.")
@@ -190,6 +199,11 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
           cleanShutdown()
         }
       })
+      
+      val topicMapList = if (options.has(topicMapListOpt))
+        CoreUtils.parseCsvMap(options.valueOf(topicMapListOpt))
+      else
+        Map.empty[String, String] 
 
       // create producer
       val producerProps = Utils.loadProps(options.valueOf(producerConfigOpt))
@@ -203,7 +217,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
       // Always set producer key and value serializer to ByteArraySerializer.
       producerProps.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, classOf[ByteArraySerializer].getName)
       producerProps.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, classOf[ByteArraySerializer].getName)
-      producer = new MirrorMakerProducer(sync, producerProps)
+      producer = new MirrorMakerProducer(sync, producerProps,topicMapList)
 
       // Create consumers
       val customRebalanceListener: Option[ConsumerRebalanceListener] = {
@@ -347,6 +361,16 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
 
     setName(threadName)
 
+    private def toBaseConsumerRecord(record: ConsumerRecord[Array[Byte], Array[Byte]]): BaseConsumerRecord =
+      BaseConsumerRecord(record.topic,
+        record.partition,
+        record.offset,
+        record.timestamp,
+        record.timestampType,
+        record.key,
+        record.value,
+        record.headers)
+
     override def run() {
       info(s"Starting mirror maker thread $threadName")
       try {
@@ -362,7 +386,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
               } else {
                 trace("Sending message with null value and offset %d.".format(data.offset))
               }
-              val records = messageHandler.handle(data)
+              val records = messageHandler.handle(toBaseConsumerRecord(data))
               records.asScala.foreach(producer.send)
               maybeFlushAndCommitOffsets()
             }
@@ -508,16 +532,18 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     }
   }
 
-  private[tools] class MirrorMakerProducer(val sync: Boolean, val producerProps: Properties) {
+  private[tools] class MirrorMakerProducer(val sync: Boolean, val producerProps: Properties, topicMapList: collection.Map[String, String]) {
 
     val producer = new KafkaProducer[Array[Byte], Array[Byte]](producerProps)
 
     def send(record: ProducerRecord[Array[Byte], Array[Byte]]) {
+      val mappedTopic = topicMapList.getOrElse(record.topic(), record.topic());
+      val newRecord = new ProducerRecord[Array[Byte],Array[Byte]](mappedTopic, record.key(), record.value());
       if (sync) {
-        this.producer.send(record).get()
+        this.producer.send(newRecord).get()
       } else {
-          this.producer.send(record,
-            new MirrorMakerProducerCallback(record.topic(), record.key(), record.value()))
+          this.producer.send(newRecord,
+            new MirrorMakerProducerCallback(mappedTopic, record.key(), record.value()))
       }
     }
 
@@ -557,11 +583,11 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
    * If message.handler.args is specified. A constructor that takes in a String as argument must exist.
    */
   trait MirrorMakerMessageHandler {
-    def handle(record: ConsumerRecord[Array[Byte], Array[Byte]]): util.List[ProducerRecord[Array[Byte], Array[Byte]]]
+    def handle(record: BaseConsumerRecord): util.List[ProducerRecord[Array[Byte], Array[Byte]]]
   }
 
   private[tools] object defaultMirrorMakerMessageHandler extends MirrorMakerMessageHandler {
-    override def handle(record: ConsumerRecord[Array[Byte], Array[Byte]]): util.List[ProducerRecord[Array[Byte], Array[Byte]]] = {
+    override def handle(record: BaseConsumerRecord): util.List[ProducerRecord[Array[Byte], Array[Byte]]] = {
       val timestamp: java.lang.Long = if (record.timestamp == RecordBatch.NO_TIMESTAMP) null else record.timestamp
       Collections.singletonList(new ProducerRecord(record.topic, null, timestamp, record.key, record.value, record.headers))
     }

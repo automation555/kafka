@@ -1,35 +1,27 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements. See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE
+ * file distributed with this work for additional information regarding copyright ownership. The ASF licenses this file
+ * to You under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 package org.apache.kafka.common.config;
 
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.utils.Utils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -55,20 +47,19 @@ import java.util.Set;
  *
  * defs.define(&quot;config_with_default&quot;, Type.STRING, &quot;default string value&quot;, &quot;Configuration with default value.&quot;);
  * defs.define(&quot;config_with_validator&quot;, Type.INT, 42, Range.atLeast(0), &quot;Configuration with user provided validator.&quot;);
- * defs.define(&quot;config_with_dependents&quot;, Type.INT, &quot;Configuration with dependents.&quot;, &quot;group&quot;, 1, &quot;Config With Dependents&quot;, Arrays.asList(&quot;config_with_default&quot;,&quot;config_with_validator&quot;));
+ * defs.define(&quot;config_with_dependents&quot;, Type.INT, &quot;Configuration with dependents.&quot;, &quot;group&quot;, 1, &quot;Config With Dependents&quot;, Arrays.asList(&quot;config_with_default;&quot;,&quot;config_with_validator&quot;));
  *
  * Map&lt;String, String&gt; props = new HashMap&lt;&gt();
  * props.put(&quot;config_with_default&quot;, &quot;some value&quot;);
  * props.put(&quot;config_with_dependents&quot;, &quot;some other value&quot;);
- * 
- * Map&lt;String, Object&gt; configs = defs.parse(props);
  * // will return &quot;some value&quot;
+ * Map&lt;String, Object&gt; configs = defs.parse(props);
  * String someConfig = (String) configs.get(&quot;config_with_default&quot;);
  * // will return default value of 42
  * int anotherConfig = (Integer) configs.get(&quot;config_with_validator&quot;);
  *
  * To validate the full configuration, use:
- * List&lt;Config&gt; configs = defs.validate(props);
+ * List&lt;Config&gt; configs = def.validate(props);
  * The {@link Config} contains updated configuration information given the current configuration values.
  * </pre>
  * <p/>
@@ -76,127 +67,12 @@ import java.util.Set;
  * functionality for accessing configs.
  */
 public class ConfigDef {
-    private static final Logger log = LoggerFactory.getLogger(ConfigDef.class);
 
-    /**
-     * A unique Java object which represents the lack of a default value.
-     */
-    public static final Object NO_DEFAULT_VALUE = new Object();
+    public static final Object NO_DEFAULT_VALUE = new String("");
 
-    /**
-     * Map configuration key names to ConfigKey definitions.
-     *
-     * Note that deprecated key names also appear in this map.  Hence, some
-     * ConfigKey values have multiple keys in the map associated with them.
-     */
-    private final Map<String, ConfigKey> configKeys;
-
-    private final List<String> groups;
+    private final Map<String, ConfigKey> configKeys = new HashMap<>();
+    private final List<String> groups = new LinkedList<>();
     private Set<String> configsWithNoParent;
-
-    public class Builder {
-        private final String name;
-        private final Type type;
-        private final Importance importance;
-        private String documentation = "";
-        private Validator validator = null;
-        private Object defaultValue = NO_DEFAULT_VALUE;
-        private String group = null;
-        private int orderInGroup = -1;
-        private Width width = Width.NONE;
-        private String displayName;
-        private List<String> dependents = Collections.EMPTY_LIST;
-        private Recommender recommender = null;
-        private boolean internalConfig = false;
-        private Collection<String> deprecatedNames = Collections.EMPTY_SET;
-
-        public Builder(String name, Type type, Importance importance) {
-            this.name = name;
-            this.type = type;
-            this.importance = importance;
-            this.displayName = name;
-        }
-
-        public Builder documentation(String documentation) {
-            this.documentation = documentation;
-            return this;
-        }
-
-        public Builder validator(Validator validator) {
-            this.validator = validator;
-            return this;
-        }
-
-        public Builder defaultValue(Object defaultValue) {
-            this.defaultValue = defaultValue;
-            return this;
-        }
-
-        public Builder group(String group) {
-            this.group = group;
-            return this;
-        }
-
-        public Builder orderInGroup(int orderInGroup) {
-            this.orderInGroup = orderInGroup;
-            return this;
-        }
-
-        public Builder width(Width width) {
-            this.width = width;
-            return this;
-        }
-
-        public Builder displayName(String displayName) {
-            this.displayName = displayName;
-            return this;
-        }
-
-        public Builder dependents(List<String> dependents) {
-            this.dependents = dependents;
-            return this;
-        }
-
-        public Builder recommender(Recommender recommender) {
-            this.recommender = recommender;
-            return this;
-        }
-
-        public Builder internalConfig(boolean internalConfig) {
-            this.internalConfig = internalConfig;
-            return this;
-        }
-
-        public Builder deprecatedNames(Collection<String> deprecatedNames) {
-            this.deprecatedNames = deprecatedNames;
-            return this;
-        }
-
-        public ConfigDef build() {
-            ConfigKey configKey = new ConfigKey(name, type, defaultValue, validator, importance,
-                documentation, group, orderInGroup, width, displayName, dependents, recommender,
-                internalConfig, deprecatedNames);
-            return define(configKey);
-        }
-    }
-
-    Builder configBuilder(String name, Type type, Importance importance) {
-        return new Builder(name, type, importance);
-    }
-
-    public ConfigDef() {
-        configKeys = new LinkedHashMap<>();
-        groups = new LinkedList<>();
-        configsWithNoParent = null;
-    }
-
-    public ConfigDef(ConfigDef base) {
-        configKeys = new LinkedHashMap<>(base.configKeys);
-        groups = new LinkedList<>(base.groups);
-        // It is not safe to copy this from the parent because we may subsequently add to the set of configs and
-        // invalidate this
-        configsWithNoParent = null;
-    }
 
     /**
      * Returns unmodifiable set of properties names defined in this {@linkplain ConfigDef}
@@ -205,24 +81,6 @@ public class ConfigDef {
      */
     public Set<String> names() {
         return Collections.unmodifiableSet(configKeys.keySet());
-    }
-
-    public ConfigDef define(ConfigKey key) {
-        if (configKeys.containsKey(key.name)) {
-            throw new ConfigException("Configuration " + key.name + " is defined twice.");
-        }
-        configKeys.put(key.name, key);
-        for (String name : key.deprecatedNames) {
-            if (configKeys.containsKey(name)) {
-                throw new ConfigException("Deprecated configuration key name " + name +
-                    " (a synonym for " + key.name + ") is already defined.");
-            }
-            configKeys.put(name, key);
-        }
-        if (key.group != null && !groups.contains(key.group)) {
-            groups.add(key.group);
-        }
-        return this;
     }
 
     /**
@@ -243,8 +101,15 @@ public class ConfigDef {
      */
     public ConfigDef define(String name, Type type, Object defaultValue, Validator validator, Importance importance, String documentation,
                             String group, int orderInGroup, Width width, String displayName, List<String> dependents, Recommender recommender) {
-        return define(new ConfigKey(name, type, defaultValue, validator, importance, documentation, group, orderInGroup,
-            width, displayName, dependents, recommender, false, Collections.<String>emptyList()));
+        if (configKeys.containsKey(name)) {
+            throw new ConfigException("Configuration " + name + " is defined twice.");
+        }
+        if (group != null && !groups.contains(group)) {
+            groups.add(group);
+        }
+        Object parsedDefault = defaultValue == NO_DEFAULT_VALUE ? NO_DEFAULT_VALUE : parseType(name, defaultValue, type);
+        configKeys.put(name, new ConfigKey(name, type, parsedDefault, validator, importance, documentation, group, orderInGroup, width, displayName, dependents, recommender));
+        return this;
     }
 
     /**
@@ -494,21 +359,6 @@ public class ConfigDef {
     }
 
     /**
-     * Define a new internal configuration. Internal configuration won't show up in the docs and aren't
-     * intended for general use.
-     * @param name              The name of the config parameter
-     * @param type              The type of the config
-     * @param defaultValue      The default value to use if this config isn't present
-     * @param importance
-     * @return This ConfigDef so you can chain calls
-     */
-    public ConfigDef defineInternal(final String name, final Type type, final Object defaultValue, final Importance importance) {
-        return define(new ConfigKey(name, type, defaultValue, null, importance, "", "",
-            -1, Width.NONE, name, Collections.<String>emptyList(), null, true,
-            Collections.<String>emptyList()));
-    }
-
-    /**
      * Get the configuration keys
      * @return a map containing all configuration keys
      */
@@ -559,38 +409,23 @@ public class ConfigDef {
             String joined = Utils.join(undefinedConfigKeys, ",");
             throw new ConfigException("Some configurations in are referred in the dependents, but not defined: " + joined);
         }
-        // Handle all known ConfigKey objects.
+        // parse all known keys
         Map<String, Object> values = new HashMap<>();
         for (ConfigKey key : configKeys.values()) {
-            // ConfigKey objects have multiple names: a single canonical name, plus a set of deprecated
-            // synonyms.  We want to avoid processing ConfigKey objects more than once, because it would
-            // not be useful.  So if the values map already contains the canonical key name, skip
-            // re-processing.
-            if (values.containsKey(key.name))
-                continue;
-            Object value = null;
+            Object value;
+            // props map contains setting - assign ConfigKey value
             if (props.containsKey(key.name)) {
                 value = parseType(key.name, props.get(key.name), key.type);
+                // props map doesn't contain setting, the key is required because no default value specified - its an error
+            } else if (key.defaultValue == NO_DEFAULT_VALUE) {
+                throw new ConfigException("Missing required configuration \"" + key.name + "\" which has no default value.");
             } else {
-                boolean foundDeprecated = false;
-                for (String name : key.deprecatedNames) {
-                    if (props.containsKey(name)) {
-                        value = parseType(name, props.get(name), key.type);
-                        foundDeprecated = true;
-                        log.info("Configuration key {} is deprecated, and may be removed in a " +
-                            "future release.  Please use {} instead.", name, key.name);
-                        break;
-                    }
-                }
-                if (!foundDeprecated) {
-                    if (NO_DEFAULT_VALUE.equals(key.defaultValue))
-                        throw new ConfigException("Missing required configuration \"" + key.name +
-                            "\" which has no default value.");
-                    value = key.defaultValue;
-                }
+                // otherwise assign setting its default value
+                value = key.defaultValue;
             }
-            if (key.validator != null)
+            if (key.validator != null) {
                 key.validator.ensureValid(key.name, value);
+            }
             values.put(key.name, value);
         }
         return values;
@@ -608,12 +443,12 @@ public class ConfigDef {
 
     public Map<String, ConfigValue> validateAll(Map<String, String> props) {
         Map<String, ConfigValue> configValues = new HashMap<>();
-        for (String name : configKeys.keySet()) {
+        for (String name: configKeys.keySet()) {
             configValues.put(name, new ConfigValue(name));
         }
 
         List<String> undefinedConfigKeys = undefinedDependentConfigs();
-        for (String undefinedConfigKey : undefinedConfigKeys) {
+        for (String undefinedConfigKey: undefinedConfigKeys) {
             ConfigValue undefinedConfigValue = new ConfigValue(undefinedConfigKey);
             undefinedConfigValue.addErrorMessage(undefinedConfigKey + " is referred in the dependents, but not defined.");
             undefinedConfigValue.visible(false);
@@ -628,7 +463,7 @@ public class ConfigDef {
     Map<String, Object> parseForValidate(Map<String, String> props, Map<String, ConfigValue> configValues) {
         Map<String, Object> parsed = new HashMap<>();
         Set<String> configsWithNoParent = getConfigsWithNoParent();
-        for (String name : configsWithNoParent) {
+        for (String name: configsWithNoParent) {
             parseForValidate(name, props, parsed, configValues);
         }
         return parsed;
@@ -637,7 +472,7 @@ public class ConfigDef {
 
     private Map<String, ConfigValue> validate(Map<String, Object> parsed, Map<String, ConfigValue> configValues) {
         Set<String> configsWithNoParent = getConfigsWithNoParent();
-        for (String name : configsWithNoParent) {
+        for (String name: configsWithNoParent) {
             validate(name, parsed, configValues);
         }
         return configValues;
@@ -645,8 +480,10 @@ public class ConfigDef {
 
     private List<String> undefinedDependentConfigs() {
         Set<String> undefinedConfigKeys = new HashSet<>();
-        for (ConfigKey configKey : configKeys.values()) {
-            for (String dependent : configKey.dependents) {
+        for (String configName: configKeys.keySet()) {
+            ConfigKey configKey = configKeys.get(configName);
+            List<String> dependents = configKey.dependents;
+            for (String dependent: dependents) {
                 if (!configKeys.containsKey(dependent)) {
                     undefinedConfigKeys.add(dependent);
                 }
@@ -655,14 +492,13 @@ public class ConfigDef {
         return new ArrayList<>(undefinedConfigKeys);
     }
 
-    // package accessible for testing
-    Set<String> getConfigsWithNoParent() {
+    private Set<String> getConfigsWithNoParent() {
         if (this.configsWithNoParent != null) {
             return this.configsWithNoParent;
         }
         Set<String> configsWithParent = new HashSet<>();
 
-        for (ConfigKey configKey : configKeys.values()) {
+        for (ConfigKey configKey: configKeys.values()) {
             List<String> dependents = configKey.dependents;
             configsWithParent.addAll(dependents);
         }
@@ -687,7 +523,7 @@ public class ConfigDef {
             } catch (ConfigException e) {
                 config.addErrorMessage(e.getMessage());
             }
-        } else if (NO_DEFAULT_VALUE.equals(key.defaultValue)) {
+        } else if (key.defaultValue == NO_DEFAULT_VALUE) {
             config.addErrorMessage("Missing required configuration \"" + key.name + "\" which has no default value.");
         } else {
             value = key.defaultValue;
@@ -702,7 +538,7 @@ public class ConfigDef {
         }
         config.value(value);
         parsed.put(name, value);
-        for (String dependent : key.dependents) {
+        for (String dependent: key.dependents) {
             parseForValidate(dependent, props, parsed, configs);
         }
     }
@@ -711,14 +547,13 @@ public class ConfigDef {
         if (!configKeys.containsKey(name)) {
             return;
         }
-        
         ConfigKey key = configKeys.get(name);
-        ConfigValue value = configs.get(name);
-        
+        ConfigValue config = configs.get(name);
+        List<Object> recommendedValues;
         if (key.recommender != null) {
             try {
-                List<Object> recommendedValues = key.recommender.validValues(name, parsed);
-                List<Object> originalRecommendedValues = value.recommendedValues();
+                recommendedValues = key.recommender.validValues(name, parsed);
+                List<Object> originalRecommendedValues = config.recommendedValues();
                 if (!originalRecommendedValues.isEmpty()) {
                     Set<Object> originalRecommendedValueSet = new HashSet<>(originalRecommendedValues);
                     Iterator<Object> it = recommendedValues.iterator();
@@ -729,15 +564,15 @@ public class ConfigDef {
                         }
                     }
                 }
-                value.recommendedValues(recommendedValues);
-                value.visible(key.recommender.visible(name, parsed));
+                config.recommendedValues(recommendedValues);
+                config.visible(key.recommender.visible(name, parsed));
             } catch (ConfigException e) {
-                value.addErrorMessage(e.getMessage());
+                config.addErrorMessage(e.getMessage());
             }
         }
 
-        configs.put(name, value);
-        for (String dependent : key.dependents) {
+        configs.put(name, config);
+        for (String dependent: key.dependents) {
             validate(dependent, parsed, configs);
         }
     }
@@ -749,7 +584,7 @@ public class ConfigDef {
      * @param type  The expected type
      * @return The parsed object
      */
-    public static Object parseType(String name, Object value, Type type) {
+    private Object parseType(String name, Object value, Type type) {
         try {
             if (value == null) return null;
 
@@ -784,39 +619,39 @@ public class ConfigDef {
                         throw new ConfigException(name, value, "Expected value to be a string, but it was a " + value.getClass().getName());
                 case INT:
                     if (value instanceof Integer) {
-                        return value;
+                        return (Integer) value;
                     } else if (value instanceof String) {
                         return Integer.parseInt(trimmed);
                     } else {
-                        throw new ConfigException(name, value, "Expected value to be a 32-bit integer, but it was a " + value.getClass().getName());
+                        throw new ConfigException(name, value, "Expected value to be an number.");
                     }
                 case SHORT:
                     if (value instanceof Short) {
-                        return value;
+                        return (Short) value;
                     } else if (value instanceof String) {
                         return Short.parseShort(trimmed);
                     } else {
-                        throw new ConfigException(name, value, "Expected value to be a 16-bit integer (short), but it was a " + value.getClass().getName());
+                        throw new ConfigException(name, value, "Expected value to be an number.");
                     }
                 case LONG:
                     if (value instanceof Integer)
                         return ((Integer) value).longValue();
                     if (value instanceof Long)
-                        return value;
+                        return (Long) value;
                     else if (value instanceof String)
                         return Long.parseLong(trimmed);
                     else
-                        throw new ConfigException(name, value, "Expected value to be a 64-bit integer (long), but it was a " + value.getClass().getName());
+                        throw new ConfigException(name, value, "Expected value to be an number.");
                 case DOUBLE:
                     if (value instanceof Number)
                         return ((Number) value).doubleValue();
                     else if (value instanceof String)
                         return Double.parseDouble(trimmed);
                     else
-                        throw new ConfigException(name, value, "Expected value to be a double, but it was a " + value.getClass().getName());
+                        throw new ConfigException(name, value, "Expected value to be an number.");
                 case LIST:
                     if (value instanceof List)
-                        return value;
+                        return (List<?>) value;
                     else if (value instanceof String)
                         if (trimmed.isEmpty())
                             return Collections.emptyList();
@@ -826,7 +661,7 @@ public class ConfigDef {
                         throw new ConfigException(name, value, "Expected a comma separated list.");
                 case CLASS:
                     if (value instanceof Class)
-                        return value;
+                        return (Class<?>) value;
                     else if (value instanceof String)
                         return Class.forName(trimmed, true, Utils.getContextOrKafkaClassLoader());
                     else
@@ -864,7 +699,7 @@ public class ConfigDef {
                 return Utils.join(valueList, ",");
             case CLASS:
                 Class<?> clazz = (Class<?>) parsedValue;
-                return clazz.getName();
+                return clazz.getCanonicalName();
             default:
                 throw new IllegalStateException("Unknown type.");
         }
@@ -925,7 +760,6 @@ public class ConfigDef {
          * Perform single configuration validation.
          * @param name The name of the configuration
          * @param value The value of the configuration
-         * @throws ConfigException if the value is invalid.
          */
         void ensureValid(String name, Object value);
     }
@@ -936,10 +770,15 @@ public class ConfigDef {
     public static class Range implements Validator {
         private final Number min;
         private final Number max;
+        private final boolean allowNulls;
 
         private Range(Number min, Number max) {
+            this(min, max, false);
+        }
+        private Range(Number min, Number max, boolean allowNulls) {
             this.min = min;
             this.max = max;
+            this.allowNulls = allowNulls;
         }
 
         /**
@@ -952,6 +791,15 @@ public class ConfigDef {
         }
 
         /**
+         * A numeric range that checks only the lower bound, but allows null values.
+         *
+         * @param min The minimum acceptable value
+         */
+        public static Range atLeastOrNull(Number min) {
+            return new Range(min, null, true);
+        }
+
+        /**
          * A numeric range that checks both the upper and lower bound
          */
         public static Range between(Number min, Number max) {
@@ -959,8 +807,10 @@ public class ConfigDef {
         }
 
         public void ensureValid(String name, Object o) {
-            if (o == null)
-                throw new ConfigException(name, null, "Value must be non-null");
+            if (o == null && !allowNulls)
+                throw new ConfigException(name, o, "Value must be non-null");
+            if (o == null && allowNulls)
+                return;
             Number n = (Number) o;
             if (min != null && n.doubleValue() < min.doubleValue())
                 throw new ConfigException(name, o, "Value must be at least " + min);
@@ -970,17 +820,17 @@ public class ConfigDef {
 
         public String toString() {
             if (min == null)
-                return "[...," + max + "]";
+                return "range=[...," + max + "], allowNulls=" + allowNulls;
             else if (max == null)
-                return "[" + min + ",...]";
+                return "range=[" + min + ",...], allowNulls=" + allowNulls;
             else
-                return "[" + min + ",...," + max + "]";
+                return "range=[" + min + ",...," + max + "], allowNulls=" + allowNulls;
         }
     }
 
     public static class ValidList implements Validator {
 
-        final ValidString validString;
+        ValidString validString;
 
         private ValidList(List<String> validStrings) {
             this.validString = new ValidString(validStrings);
@@ -1004,7 +854,7 @@ public class ConfigDef {
     }
 
     public static class ValidString implements Validator {
-        final List<String> validStrings;
+        List<String> validStrings;
 
         private ValidString(List<String> validStrings) {
             this.validStrings = validStrings;
@@ -1028,22 +878,6 @@ public class ConfigDef {
         }
     }
 
-    public static class NonEmptyString implements Validator {
-
-        @Override
-        public void ensureValid(String name, Object o) {
-            String s = (String) o;
-            if (s != null && s.isEmpty()) {
-                throw new ConfigException(name, o, "String must be non-empty");
-            }
-        }
-
-        @Override
-        public String toString() {
-            return "non-empty string";
-        }
-    }
-
     public static class ConfigKey {
         public final String name;
         public final Type type;
@@ -1057,21 +891,18 @@ public class ConfigDef {
         public final String displayName;
         public final List<String> dependents;
         public final Recommender recommender;
-        public final boolean internalConfig;
-        public final List<String> deprecatedNames;
 
         public ConfigKey(String name, Type type, Object defaultValue, Validator validator,
                          Importance importance, String documentation, String group,
                          int orderInGroup, Width width, String displayName,
-                         List<String> dependents, Recommender recommender,
-                         boolean internalConfig, Collection<String> deprecatedNames) {
+                         List<String> dependents, Recommender recommender) {
             this.name = name;
             this.type = type;
-            this.defaultValue = NO_DEFAULT_VALUE.equals(defaultValue) ? NO_DEFAULT_VALUE : parseType(name, defaultValue, type);
+            this.defaultValue = defaultValue;
             this.validator = validator;
             this.importance = importance;
-            if (this.validator != null && hasDefault())
-                this.validator.ensureValid(name, this.defaultValue);
+            if (this.validator != null && this.hasDefault())
+                this.validator.ensureValid(name, defaultValue);
             this.documentation = documentation;
             this.dependents = dependents;
             this.group = group;
@@ -1079,17 +910,15 @@ public class ConfigDef {
             this.width = width;
             this.displayName = displayName;
             this.recommender = recommender;
-            this.internalConfig = internalConfig;
-            this.deprecatedNames = new ArrayList<>(deprecatedNames);
         }
 
         public boolean hasDefault() {
-            return !NO_DEFAULT_VALUE.equals(this.defaultValue);
+            return this.defaultValue != NO_DEFAULT_VALUE;
         }
     }
 
     protected List<String> headers() {
-        return Arrays.asList("Name", "Description", "Type", "Default", "Valid Values", "Importance", "Deprecated Names");
+        return Arrays.asList("Name", "Description", "Type", "Default", "Valid Values", "Importance");
     }
 
     protected String getConfigValue(ConfigKey key, String headerName) {
@@ -1115,8 +944,6 @@ public class ConfigDef {
                 return key.validator != null ? key.validator.toString() : "";
             case "Importance":
                 return key.importance.toString().toLowerCase(Locale.ROOT);
-            case "Deprecated Names":
-                return Utils.join(key.deprecatedNames, ", ");
             default:
                 throw new RuntimeException("Can't find value for header '" + headerName + "' in " + key.name);
         }
@@ -1134,15 +961,12 @@ public class ConfigDef {
             b.append("</th>\n");
         }
         b.append("</tr>\n");
-        for (ConfigKey key : configs) {
-            if (key.internalConfig) {
-                continue;
-            }
+        for (ConfigKey def : configs) {
             b.append("<tr>\n");
             // print column values
             for (String headerName : headers()) {
                 b.append("<td>");
-                b.append(getConfigValue(key, headerName));
+                b.append(getConfigValue(def, headerName));
                 b.append("</td>");
             }
             b.append("</tr>\n");
@@ -1157,11 +981,8 @@ public class ConfigDef {
      */
     public String toRst() {
         StringBuilder b = new StringBuilder();
-        for (ConfigKey key : sortedConfigs()) {
-            if (key.internalConfig) {
-                continue;
-            }
-            getConfigKeyRst(key, b);
+        for (ConfigKey def : sortedConfigs()) {
+            getConfigKeyRst(def, b);
             b.append("\n");
         }
         return b.toString();
@@ -1175,37 +996,33 @@ public class ConfigDef {
         StringBuilder b = new StringBuilder();
 
         String lastKeyGroupName = "";
-        for (ConfigKey key : sortedConfigs()) {
-            if (key.internalConfig) {
-                continue;
-            }
-            if (key.group != null) {
-                if (!lastKeyGroupName.equalsIgnoreCase(key.group)) {
-                    b.append(key.group).append("\n");
+        for (ConfigKey def : sortedConfigsByGroup()) {
+            if (def.group != null) {
+                if (!lastKeyGroupName.equalsIgnoreCase(def.group)) {
+                    b.append(def.group).append("\n");
 
-                    char[] underLine = new char[key.group.length()];
+                    char[] underLine = new char[def.group.length()];
                     Arrays.fill(underLine, '^');
                     b.append(new String(underLine)).append("\n\n");
                 }
-                lastKeyGroupName = key.group;
+                lastKeyGroupName = def.group;
             }
 
-            getConfigKeyRst(key, b);
+            getConfigKeyRst(def, b);
 
-            if (key.dependents != null && key.dependents.size() > 0) {
+            if (def.dependents != null && def.dependents.size() > 0) {
                 int j = 0;
                 b.append("  * Dependents: ");
-                for (String dependent : key.dependents) {
+                for (String dependent : def.dependents) {
                     b.append("``");
                     b.append(dependent);
-                    if (++j == key.dependents.size())
+                    if (++j == def.dependents.size())
                         b.append("``");
                     else
                         b.append("``, ");
                 }
                 b.append("\n");
             }
-
             b.append("\n");
         }
         return b.toString();
@@ -1214,46 +1031,60 @@ public class ConfigDef {
     /**
      * Shared content on Rst and Enriched Rst.
      */
-    private void getConfigKeyRst(ConfigKey key, StringBuilder b) {
-        b.append("``").append(key.name).append("``").append("\n");
-        for (String docLine : key.documentation.split("\n")) {
+    private void getConfigKeyRst(ConfigKey def, StringBuilder b) {
+        b.append("``").append(def.name).append("``").append("\n");
+        for (String docLine : def.documentation.split("\n")) {
             if (docLine.length() == 0) {
                 continue;
             }
             b.append("  ").append(docLine).append("\n\n");
         }
-        b.append("  * Type: ").append(getConfigValue(key, "Type")).append("\n");
-        if (key.hasDefault()) {
-            b.append("  * Default: ").append(getConfigValue(key, "Default")).append("\n");
+        b.append("  * Type: ").append(getConfigValue(def, "Type")).append("\n");
+        if (def.hasDefault()) {
+            b.append("  * Default: ").append(getConfigValue(def, "Default")).append("\n");
         }
-        if (key.validator != null) {
-            b.append("  * Valid Values: ").append(getConfigValue(key, "Valid Values")).append("\n");
+        if (def.validator != null) {
+            b.append("  * Valid Values: ").append(getConfigValue(def, "Valid Values")).append("\n");
         }
-        b.append("  * Importance: ").append(getConfigValue(key, "Importance")).append("\n");
-        if (!key.deprecatedNames.isEmpty()) {
-            int j = 0;
-            b.append("  * Deprecated Names: ");
-            for (String deprecatedName : key.deprecatedNames) {
-                b.append("``");
-                b.append(deprecatedName);
-                if (++j == key.deprecatedNames.size())
-                    b.append("``");
-                else
-                    b.append("``, ");
+        b.append("  * Importance: ").append(getConfigValue(def, "Importance")).append("\n");
+    }
+
+    /**
+     * Get a list of configs sorted into "natural" order: listing required fields first, then
+     * ordering by importance, and finally by name.
+     */
+    protected List<ConfigKey> sortedConfigs() {
+        // sort first required fields, then by importance, then name
+        List<ConfigKey> configs = new ArrayList<>(this.configKeys.values());
+        Collections.sort(configs, new Comparator<ConfigKey>() {
+            public int compare(ConfigKey k1, ConfigKey k2) {
+                // first take anything with no default value
+                if (!k1.hasDefault() && k2.hasDefault()) {
+                    return -1;
+                } else if (!k2.hasDefault() && k1.hasDefault()) {
+                    return 1;
+                }
+
+                // then sort by importance
+                int cmp = k1.importance.compareTo(k2.importance);
+                if (cmp == 0) {
+                    // then sort in alphabetical order
+                    return k1.name.compareTo(k2.name);
+                } else {
+                    return cmp;
+                }
             }
-            b.append("\n");
-        }
+        });
+        return configs;
     }
 
     /**
      * Get a list of configs sorted taking the 'group' and 'orderInGroup' into account.
-     *
-     * If grouping is not specified, the result will reflect "natural" order: listing required fields first, then ordering by importance, and finally by name.
      */
-    private List<ConfigKey> sortedConfigs() {
+    protected List<ConfigKey> sortedConfigsByGroup() {
         final Map<String, Integer> groupOrd = new HashMap<>(groups.size());
         int ord = 0;
-        for (String group : groups) {
+        for (String group: groups) {
             groupOrd.put(group, ord++);
         }
 
@@ -1266,110 +1097,14 @@ public class ConfigDef {
                         : (k2.group == null ? 1 : Integer.compare(groupOrd.get(k1.group), groupOrd.get(k2.group)));
                 if (cmp == 0) {
                     cmp = Integer.compare(k1.orderInGroup, k2.orderInGroup);
-                    if (cmp == 0) {
-                        // first take anything with no default value
-                        if (!k1.hasDefault() && k2.hasDefault()) {
-                            cmp = -1;
-                        } else if (!k2.hasDefault() && k1.hasDefault()) {
-                            cmp = 1;
-                        } else {
-                            cmp = k1.importance.compareTo(k2.importance);
-                            if (cmp == 0) {
-                                return k1.name.compareTo(k2.name);
-                            }
-                        }
-                    }
+                }
+                if (cmp == 0) {
+                    cmp = k1.name.compareTo(k2.name);
                 }
                 return cmp;
             }
         });
         return configs;
-    }
-
-    public void embed(final String keyPrefix, final String groupPrefix, final int startingOrd, final ConfigDef child) {
-        int orderInGroup = startingOrd;
-        for (ConfigKey key : child.sortedConfigs()) {
-            define(new ConfigKey(
-                    keyPrefix + key.name,
-                    key.type,
-                    key.defaultValue,
-                    embeddedValidator(keyPrefix, key.validator),
-                    key.importance,
-                    key.documentation,
-                    groupPrefix + (key.group == null ? "" : ": " + key.group),
-                    orderInGroup++,
-                    key.width,
-                    key.displayName,
-                    embeddedDependents(keyPrefix, key.dependents),
-                    embeddedRecommender(keyPrefix, key.recommender),
-                    key.internalConfig,
-                    embeddedDeprecatedNames(keyPrefix, key.deprecatedNames)));
-        }
-    }
-
-    /**
-     * Returns a new validator instance that delegates to the base validator but unprefixes the config name along the way.
-     */
-    private static Validator embeddedValidator(final String keyPrefix, final Validator base) {
-        if (base == null) return null;
-        return new ConfigDef.Validator() {
-            @Override
-            public void ensureValid(String name, Object value) {
-                base.ensureValid(name.substring(keyPrefix.length()), value);
-            }
-        };
-    }
-
-    /**
-     * Updated list of dependent configs with the specified {@code prefix} added.
-     */
-    private static List<String> embeddedDependents(final String keyPrefix, final List<String> dependents) {
-        if (dependents == null) return null;
-        final List<String> updatedDependents = new ArrayList<>(dependents.size());
-        for (String dependent : dependents) {
-            updatedDependents.add(keyPrefix + dependent);
-        }
-        return updatedDependents;
-    }
-
-    private static List<String> embeddedDeprecatedNames(final String keyPrefix, final List<String> deprecatedNames) {
-        final List<String> updatedDeprecatedNames = new ArrayList<>(deprecatedNames.size());
-        for (String deprecated : deprecatedNames) {
-            updatedDeprecatedNames.add(keyPrefix + deprecated);
-        }
-        return updatedDeprecatedNames;
-    }
-
-    /**
-     * Returns a new recommender instance that delegates to the base recommender but unprefixes the input parameters along the way.
-     */
-    private static Recommender embeddedRecommender(final String keyPrefix, final Recommender base) {
-        if (base == null) return null;
-        return new Recommender() {
-            private String unprefixed(String k) {
-                return k.substring(keyPrefix.length());
-            }
-
-            private Map<String, Object> unprefixed(Map<String, Object> parsedConfig) {
-                final Map<String, Object> unprefixedParsedConfig = new HashMap<>(parsedConfig.size());
-                for (Map.Entry<String, Object> e : parsedConfig.entrySet()) {
-                    if (e.getKey().startsWith(keyPrefix)) {
-                        unprefixedParsedConfig.put(unprefixed(e.getKey()), e.getValue());
-                    }
-                }
-                return unprefixedParsedConfig;
-            }
-
-            @Override
-            public List<Object> validValues(String name, Map<String, Object> parsedConfig) {
-                return base.validValues(unprefixed(name), unprefixed(parsedConfig));
-            }
-
-            @Override
-            public boolean visible(String name, Map<String, Object> parsedConfig) {
-                return base.visible(unprefixed(name), unprefixed(parsedConfig));
-            }
-        };
     }
 
 }

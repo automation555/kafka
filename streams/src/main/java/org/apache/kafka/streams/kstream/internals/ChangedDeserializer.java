@@ -20,13 +20,15 @@ import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.Deserializer;
 
 import java.nio.ByteBuffer;
-import java.util.Objects;
+import java.util.Map;
 
-public class ChangedDeserializer<T> implements Deserializer<Change<T>>, WrappingNullableDeserializer<Change<T>, Void, T> {
+public class ChangedDeserializer<T> implements Deserializer<Change<T>> {
 
     private static final int NEWFLAG_SIZE = 1;
 
     private Deserializer<T> inner;
+    private boolean isKey;
+    private Map<String, ?> configs;
 
     public ChangedDeserializer(final Deserializer<T> inner) {
         this.inner = inner;
@@ -36,10 +38,23 @@ public class ChangedDeserializer<T> implements Deserializer<Change<T>>, Wrapping
         return inner;
     }
 
-    @Override
-    public void setIfUnset(final Deserializer<Void> defaultKeyDeserializer, final Deserializer<T> defaultValueDeserializer) {
+    public void setInner(final Deserializer<T> inner) {
+        this.inner = inner;
         if (inner == null) {
-            inner = Objects.requireNonNull(defaultValueDeserializer);
+            configs = null;
+        } else if (configs != null) {
+            inner.configure(configs, isKey);
+        }
+    }
+
+    @Override
+    public void configure(final Map<String, ?> configs,
+                          final boolean isKey) {
+        if (inner != null) {
+            inner.configure(configs, isKey);
+        } else {
+            this.configs = configs;
+            this.isKey = isKey;
         }
     }
 

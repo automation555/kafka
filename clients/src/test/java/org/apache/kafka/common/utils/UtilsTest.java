@@ -25,24 +25,25 @@ import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 import java.util.Random;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static java.util.Arrays.asList;
 import static org.apache.kafka.common.utils.Utils.formatAddress;
 import static org.apache.kafka.common.utils.Utils.formatBytes;
 import static org.apache.kafka.common.utils.Utils.getHost;
 import static org.apache.kafka.common.utils.Utils.getPort;
-import static org.apache.kafka.common.utils.Utils.mkSet;
 import static org.apache.kafka.common.utils.Utils.validHostPattern;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -113,8 +114,8 @@ public class UtilsTest {
     @Test
     public void testJoin() {
         assertEquals("", Utils.join(Collections.emptyList(), ","));
-        assertEquals("1", Utils.join(Collections.singletonList("1"), ","));
-        assertEquals("1,2,3", Utils.join(asList(1, 2, 3), ","));
+        assertEquals("1", Utils.join(Arrays.asList("1"), ","));
+        assertEquals("1,2,3", Utils.join(Arrays.asList(1, 2, 3), ","));
     }
 
     @Test
@@ -471,20 +472,32 @@ public class UtilsTest {
     }
 
     @Test
-    public void testConvertTo32BitField() {
-        Set<Byte> bytes = mkSet((byte) 0, (byte) 1, (byte) 5, (byte) 10, (byte) 31);
-        int bitField = Utils.to32BitField(bytes);
-        assertEquals(bytes, Utils.from32BitField(bitField));
+    public void testDuplicateProperties() throws Exception {
+        URL url = getClass().getResource("/properties/duplicates.properties");
+        File propFile = new File(url.toURI());
+        String absPath = propFile.getAbsolutePath();
+        Map<Object, List<Object>> propMap = Utils.loadPropsMap(absPath);
+        assertEquals(propMap.get("prop1").size(), 2);
+        assertEquals(propMap.get("prop2").size(), 3);
+        assertEquals(propMap.get("prop3").size(), 1);
 
-        bytes = new HashSet<>();
-        bitField = Utils.to32BitField(bytes);
-        assertEquals(bytes, Utils.from32BitField(bitField));
+        Properties props = Utils.stripDuplicateProps(propMap);
+        assertEquals(props.getProperty("prop1"), "value1-overwrite1");
+        assertEquals(props.getProperty("prop2"), "value2-overwrite2");
+        assertEquals(props.getProperty("prop3"), "value3");
+    }
 
-        bytes = mkSet((byte) 0, (byte) 11, (byte) 32);
-        try {
-            Utils.to32BitField(bytes);
-            fail("Expected exception not thrown");
-        } catch (IllegalArgumentException e) {
-        }
+    @Test
+    public void testNoDuplicateProperties() throws Exception {
+        URL url = getClass().getResource("/properties/no-duplicates.properties");
+        File propFile = new File(url.toURI());
+        String absPath = propFile.getAbsolutePath();
+        Map<Object, List<Object>> propMap = Utils.loadPropsMap(absPath);
+        propMap.values().forEach(values -> assertEquals(values.size(), 1));
+
+        Properties props = Utils.stripDuplicateProps(propMap);
+        assertEquals(props.getProperty("prop1"), "value1");
+        assertEquals(props.getProperty("prop2"), "value2");
+        assertEquals(props.getProperty("prop3"), "value3");
     }
 }

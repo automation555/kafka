@@ -20,8 +20,8 @@ package kafka
 import java.util.Properties
 
 import joptsimple.OptionParser
-import kafka.server.{KafkaServer, KafkaServerStartable}
 import kafka.utils.Implicits._
+import kafka.server.{KafkaServer, KafkaServerStartable}
 import kafka.utils.{CommandLineUtils, Exit, Logging}
 import org.apache.kafka.common.utils.{Java, LoggingSignalHandler, OperatingSystem, Utils}
 
@@ -39,7 +39,8 @@ object Kafka extends Logging {
       CommandLineUtils.printUsageAndDie(optionParser, "USAGE: java [options] %s server.properties [--override property=value]*".format(classOf[KafkaServer].getSimpleName()))
     }
 
-    val props = Utils.loadProps(args(0))
+    val propMap = Utils.loadPropsMap(args(0))
+    val props = Utils.stripDuplicateProps(propMap)
 
     if (args.length > 1) {
       val options = optionParser.parse(args.slice(1, args.length): _*)

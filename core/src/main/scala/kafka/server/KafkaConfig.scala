@@ -19,14 +19,13 @@ package kafka.server
 
 import java.util.Properties
 
-import kafka.api.{ApiVersion, KAFKA_0_10_0_IV1}
+import kafka.api.{ApiVersion, KAFKA_0_10_0_IV0}
 import kafka.cluster.EndPoint
 import kafka.consumer.ConsumerConfig
 import kafka.coordinator.OffsetConfig
 import kafka.log.LogConfig
 import kafka.message.{BrokerCompressionCodec, CompressionCodec, Message, MessageSet}
 import kafka.utils.CoreUtils
-import kafka.utils.Os
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.common.config.SaslConfigs
 import org.apache.kafka.common.config.{AbstractConfig, ConfigDef, SslConfigs}
@@ -76,6 +75,7 @@ object Defaults {
   val LogRetentionHours = 24 * 7
 
   val LogRetentionBytes = -1L
+  val LogRetentionDiskUsagePercent = 100L
   val LogCleanupIntervalMs = 5 * 60 * 1000L
   val Delete = "delete"
   val Compact = "compact"
@@ -103,7 +103,6 @@ object Defaults {
   val NumRecoveryThreadsPerDataDir = 1
   val AutoCreateTopicsEnable = true
   val MinInSyncReplicas = 1
-  val MemoryMappedFileUpdatesEnabled = !Os.isWindows
 
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMs = RequestTimeoutMs
@@ -245,6 +244,7 @@ object KafkaConfig {
   val LogRetentionTimeHoursProp = "log.retention.hours"
 
   val LogRetentionBytesProp = "log.retention.bytes"
+  val LogRetentionDiskUsagePercentProp = "log.retention.disk.usage.percent"
   val LogCleanupIntervalMsProp = "log.retention.check.interval.ms"
   val LogCleanupPolicyProp = "log.cleanup.policy"
   val LogCleanerThreadsProp = "log.cleaner.threads"
@@ -270,7 +270,6 @@ object KafkaConfig {
   val NumRecoveryThreadsPerDataDirProp = "num.recovery.threads.per.data.dir"
   val AutoCreateTopicsEnableProp = "auto.create.topics.enable"
   val MinInSyncReplicasProp = "min.insync.replicas"
-  val MemoryMappedFileUpdatesEnabledProp = "memorymapped.file.updates.enabled"
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsProp = "controller.socket.timeout.ms"
   val DefaultReplicationFactorProp = "default.replication.factor"
@@ -359,7 +358,7 @@ object KafkaConfig {
   val ZkSyncTimeMsDoc = "How far a ZK follower can be behind a ZK leader"
   val ZkEnableSecureAclsDoc = "Set client to use secure ACLs"
   /** ********* General Configuration ***********/
-  val BrokerIdGenerationEnableDoc = s"Enable automatic broker id generation on the server. When enabled the value configured for $MaxReservedBrokerIdProp should be reviewed."
+  val BrokerIdGenerationEnableDoc = s"Enable automatic broker id generation on the server? When enabled the value configured for $MaxReservedBrokerIdProp should be reviewed."
   val MaxReservedBrokerIdDoc = "Max number that can be used for a broker.id"
   val BrokerIdDoc = "The broker id for this server. If unset, a unique broker id will be generated." +
   "To avoid conflicts between zookeeper generated broker id's and user configured broker id's, generated broker ids" +
@@ -399,8 +398,8 @@ object KafkaConfig {
   val AdvertisedListenersDoc = "Listeners to publish to ZooKeeper for clients to use, if different than the listeners above." +
   " In IaaS environments, this may need to be different from the interface to which the broker binds." +
   " If this is not set, the value for `listeners` will be used."
-  val SocketSendBufferBytesDoc = "The SO_SNDBUF buffer of the socket sever sockets. If the value is -1, the OS default will be used."
-  val SocketReceiveBufferBytesDoc = "The SO_RCVBUF buffer of the socket sever sockets. If the value is -1, the OS default will be used."
+  val SocketSendBufferBytesDoc = "The SO_SNDBUF buffer of the socket sever sockets"
+  val SocketReceiveBufferBytesDoc = "The SO_RCVBUF buffer of the socket sever sockets"
   val SocketRequestMaxBytesDoc = "The maximum number of bytes in a socket request"
   val MaxConnectionsPerIpDoc = "The maximum number of connections we allow from each ip address"
   val MaxConnectionsPerIpOverridesDoc = "Per-ip or hostname overrides to the default maximum number of connections"
@@ -423,6 +422,7 @@ object KafkaConfig {
   val LogRetentionTimeHoursDoc = "The number of hours to keep a log file before deleting it (in hours), tertiary to " + LogRetentionTimeMillisProp + " property"
 
   val LogRetentionBytesDoc = "The maximum size of the log before deleting it"
+  val LogRetentionDiskUsagePercentDoc = "The maximum percentage of disk space to use (per-disk). Deletes oldest segments (across all topics) to maintain this usage ceiling."
   val LogCleanupIntervalMsDoc = "The frequency in milliseconds that the log cleaner checks whether any log is eligible for deletion"
   val LogCleanupPolicyDoc = "The default cleanup policy for segments beyond the retention window, must be either \"delete\" or \"compact\""
   val LogCleanerThreadsDoc = "The number of background threads to use for log cleaning"
@@ -455,8 +455,6 @@ object KafkaConfig {
   val NumRecoveryThreadsPerDataDirDoc = "The number of threads per data directory to be used for log recovery at startup and flushing at shutdown"
   val AutoCreateTopicsEnableDoc = "Enable auto creation of topic on the server"
   val MinInSyncReplicasDoc = "define the minimum number of replicas in ISR needed to satisfy a produce request with acks=all (or -1)"
-  val MemoryMappedFileUpdatesEnabledDoc = "Indicates if the underlying OS supports metadata(resize, update length)" + 
-    " updates on memory mapped failes. Default is false for windows."
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsDoc = "The socket timeout for controller-to-broker channels"
   val ControllerMessageQueueSizeDoc = "The buffer size for controller-to-broker-channels"
@@ -614,6 +612,7 @@ object KafkaConfig {
       .define(LogRetentionTimeHoursProp, INT, Defaults.LogRetentionHours, HIGH, LogRetentionTimeHoursDoc)
 
       .define(LogRetentionBytesProp, LONG, Defaults.LogRetentionBytes, HIGH, LogRetentionBytesDoc)
+      .define(LogRetentionDiskUsagePercentProp, LONG, Defaults.LogRetentionDiskUsagePercent, MEDIUM, LogRetentionDiskUsagePercentDoc)
       .define(LogCleanupIntervalMsProp, LONG, Defaults.LogCleanupIntervalMs, atLeast(1), MEDIUM, LogCleanupIntervalMsDoc)
       .define(LogCleanupPolicyProp, STRING, Defaults.LogCleanupPolicy, in(Defaults.Compact, Defaults.Delete), MEDIUM, LogCleanupPolicyDoc)
       .define(LogCleanerThreadsProp, INT, Defaults.LogCleanerThreads, atLeast(0), MEDIUM, LogCleanerThreadsDoc)
@@ -639,7 +638,7 @@ object KafkaConfig {
       .define(LogMessageFormatVersionProp, STRING, Defaults.LogMessageFormatVersion, MEDIUM, LogMessageFormatVersionDoc)
       .define(LogMessageTimestampTypeProp, STRING, Defaults.LogMessageTimestampType, in("CreateTime", "LogAppendTime"), MEDIUM, LogMessageTimestampTypeDoc)
       .define(LogMessageTimestampDifferenceMaxMsProp, LONG, Defaults.LogMessageTimestampDifferenceMaxMs, atLeast(0), MEDIUM, LogMessageTimestampDifferenceMaxMsDoc)
-      .define(MemoryMappedFileUpdatesEnabledProp, BOOLEAN, Defaults.MemoryMappedFileUpdatesEnabled, HIGH, MemoryMappedFileUpdatesEnabledDoc)
+
       /** ********* Replication configuration ***********/
       .define(ControllerSocketTimeoutMsProp, INT, Defaults.ControllerSocketTimeoutMs, MEDIUM, ControllerSocketTimeoutMsDoc)
       .define(DefaultReplicationFactorProp, INT, Defaults.DefaultReplicationFactor, MEDIUM, DefaultReplicationFactorDoc)
@@ -819,6 +818,7 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean) extends Abstra
   val offsetsRetentionMinutes = getInt(KafkaConfig.OffsetsRetentionMinutesProp)
   val offsetsRetentionCheckIntervalMs = getLong(KafkaConfig.OffsetsRetentionCheckIntervalMsProp)
   val logRetentionBytes = getLong(KafkaConfig.LogRetentionBytesProp)
+  val logRetentionDiskUsagePercent = getLong(KafkaConfig.LogRetentionDiskUsagePercentProp)
   val logCleanerDedupeBufferSize = getLong(KafkaConfig.LogCleanerDedupeBufferSizeProp)
   val logCleanerDedupeBufferLoadFactor = getDouble(KafkaConfig.LogCleanerDedupeBufferLoadFactorProp)
   val logCleanerIoBufferSize = getInt(KafkaConfig.LogCleanerIoBufferSizeProp)
@@ -842,8 +842,7 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean) extends Abstra
   val logMessageFormatVersion = ApiVersion(logMessageFormatVersionString)
   val logMessageTimestampType = TimestampType.forName(getString(KafkaConfig.LogMessageTimestampTypeProp))
   val logMessageTimestampDifferenceMaxMs = getLong(KafkaConfig.LogMessageTimestampDifferenceMaxMsProp)
-  val memoryMappedFileUpdatesEnabled: java.lang.Boolean = getMemoryMappedFileUpdatesEnabled 
-  
+
   /** ********* Replication configuration ***********/
   val controllerSocketTimeoutMs: Int = getInt(KafkaConfig.ControllerSocketTimeoutMsProp)
   val defaultReplicationFactor: Int = getInt(KafkaConfig.DefaultReplicationFactorProp)
@@ -918,7 +917,7 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean) extends Abstra
   val saslKerberosTicketRenewJitter = getDouble(KafkaConfig.SaslKerberosTicketRenewJitterProp)
   val saslKerberosMinTimeBeforeRelogin = getLong(KafkaConfig.SaslKerberosMinTimeBeforeReloginProp)
   val saslKerberosPrincipalToLocalRules = getList(KafkaConfig.SaslKerberosPrincipalToLocalRulesProp)
-  val saslInterBrokerHandshakeRequestEnable = interBrokerProtocolVersion >= KAFKA_0_10_0_IV1
+  val saslInterBrokerHandshakeRequestEnable = interBrokerProtocolVersion >= KAFKA_0_10_0_IV0
 
   /** ********* Quota Configuration **************/
   val producerQuotaBytesPerSecondDefault = getLong(KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp)
@@ -945,15 +944,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean) extends Abstra
 
     if (millis < 0) return -1
     millis
-  }
-  
-  private def getMemoryMappedFileUpdatesEnabled: Boolean = {
-    try {
-      getBoolean(KafkaConfig.MemoryMappedFileUpdatesEnabledProp)
-    }
-    catch {
-      case e: Exception => !Os.isWindows
-    }
   }
 
   private def getMap(propName: String, propValue: String): Map[String, String] = {
@@ -1017,7 +1007,8 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean) extends Abstra
     require(logRollTimeMillis >= 1, "log.roll.ms must be equal or greater than 1")
     require(logRollTimeJitterMillis >= 0, "log.roll.jitter.ms must be equal or greater than 0")
     require(logRetentionTimeMillis >= 1 || logRetentionTimeMillis == -1, "log.retention.ms must be unlimited (-1) or, equal or greater than 1")
-    require(logDirs.nonEmpty)
+    require(logRetentionDiskUsagePercent >= 0 && logRetentionDiskUsagePercent <= 100, "log.retention.disk.usage.percent must be between 0 and 100, inclusive")
+    require(logDirs.size > 0)
     require(logCleanerDedupeBufferSize / logCleanerThreads > 1024 * 1024, "log.cleaner.dedupe.buffer.size must be at least 1MB per cleaner thread.")
     require(replicaFetchWaitMaxMs <= replicaSocketTimeoutMs, "replica.socket.timeout.ms should always be at least replica.fetch.wait.max.ms" +
       " to prevent unnecessary socket timeouts")

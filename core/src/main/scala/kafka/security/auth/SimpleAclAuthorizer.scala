@@ -26,6 +26,7 @@ import kafka.server.KafkaConfig
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils._
 import org.I0Itec.zkclient.exception.{ZkNodeExistsException, ZkNoNodeException}
+import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.security.auth.KafkaPrincipal
 import scala.collection.JavaConverters._
 import org.apache.log4j.Logger
@@ -63,25 +64,25 @@ object SimpleAclAuthorizer {
   //prefix of all the change notification sequence node.
   val AclChangedPrefix = "acl_changes_"
 
-  private case class VersionedAcls(acls: Set[Acl], zkVersion: Int)
+  case class VersionedAcls(acls: Set[Acl], zkVersion: Int)
 }
 
-class SimpleAclAuthorizer extends CachedAuthorizer with Logging {
-  private val authorizerLogger = Logger.getLogger("kafka.authorizer.logger")
-  private var superUsers = Set.empty[KafkaPrincipal]
-  private var shouldAllowEveryoneIfNoAclIsFound = false
-  private var zkUtils: ZkUtils = null
-  private var aclChangeListener: ZkNodeChangeNotificationListener = null
+class SimpleAclAuthorizer extends Authorizer with Logging {
+  protected val authorizerLogger: Logger = Logger.getLogger("kafka.authorizer.logger")
+  protected var superUsers = Set.empty[KafkaPrincipal]
+  protected var shouldAllowEveryoneIfNoAclIsFound = false
+  protected var zkUtils: ZkUtils = null
+  protected var aclChangeListener: ZkNodeChangeNotificationListener = null
 
-  private val aclCache = new scala.collection.mutable.HashMap[Resource, VersionedAcls]
-  private val lock = new ReentrantReadWriteLock()
+  protected val aclCache = new scala.collection.mutable.HashMap[Resource, VersionedAcls]
+  protected val lock = new ReentrantReadWriteLock()
 
   // The maximum number of times we should try to update the resource acls in zookeeper before failing;
   // This should never occur, but is a safeguard just in case.
   protected[auth] var maxUpdateRetries = 10
 
-  private val retryBackoffMs = 100
-  private val retryBackoffJitterMs = 50
+  protected val retryBackoffMs = 100
+  protected val retryBackoffJitterMs = 50
 
   /**
    * Guaranteed to be called before any authorize call is made.
@@ -118,7 +119,7 @@ class SimpleAclAuthorizer extends CachedAuthorizer with Logging {
     aclChangeListener.init()
   }
 
-  def authorizeUncached(session: Session, operation: Operation, resource: Resource): Boolean = {
+  override def authorize(session: Session, operation: Operation, resource: Resource): Boolean = {
     val principal = session.principal
     val host = session.clientAddress.getHostAddress
     val acls = getAcls(resource) ++ getAcls(new Resource(resource.resourceType, Resource.WildCardResource))
@@ -344,8 +345,6 @@ class SimpleAclAuthorizer extends CachedAuthorizer with Logging {
     } else {
       aclCache.remove(resource)
     }
-    // any time we get new Acls, we need to invalidate the authorizer's cache
-    this.invalidateAuthorizerCache()
   }
 
   private def updateAclChangedFlag(resource: Resource) {

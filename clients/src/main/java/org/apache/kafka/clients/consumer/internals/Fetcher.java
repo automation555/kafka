@@ -118,7 +118,7 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
     private final int fetchSize;
     private final long retryBackoffMs;
     private final long requestTimeoutMs;
-    private final int maxPollRecords;
+    private int maxPollRecords;
     private final boolean checkCrcs;
     private final Metadata metadata;
     private final FetchManagerMetrics sensors;
@@ -174,6 +174,14 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
 
         subscriptions.addListener(this);
     }
+    
+    public int getMaxPollRecords() {
+		return maxPollRecords;
+	}
+
+	public void setMaxPollRecords(int maxPollRecords) {
+		this.maxPollRecords = maxPollRecords;
+	}
 
     /**
      * Represents data about an offset returned by a broker.
@@ -376,7 +384,7 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
         if (exception != null)
             throw exception;
 
-        Set<TopicPartition> partitions = subscriptions.partitionsNeedingReset(time.absoluteMilliseconds());
+        Set<TopicPartition> partitions = subscriptions.partitionsNeedingReset(time.milliseconds());
         if (partitions.isEmpty())
             return;
 
@@ -596,14 +604,14 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
         for (Map.Entry<Node, Map<TopicPartition, ListOffsetRequest.PartitionData>> entry : timestampsToSearchByNode.entrySet()) {
             Node node = entry.getKey();
             final Map<TopicPartition, ListOffsetRequest.PartitionData> resetTimestamps = entry.getValue();
-            subscriptions.setResetPending(resetTimestamps.keySet(), time.absoluteMilliseconds() + requestTimeoutMs);
+            subscriptions.setResetPending(resetTimestamps.keySet(), time.milliseconds() + requestTimeoutMs);
 
             RequestFuture<ListOffsetResult> future = sendListOffsetRequest(node, resetTimestamps, false);
             future.addListener(new RequestFutureListener<ListOffsetResult>() {
                 @Override
                 public void onSuccess(ListOffsetResult result) {
                     if (!result.partitionsToRetry.isEmpty()) {
-                        subscriptions.resetFailed(result.partitionsToRetry, time.absoluteMilliseconds() + retryBackoffMs);
+                        subscriptions.resetFailed(result.partitionsToRetry, time.milliseconds() + retryBackoffMs);
                         metadata.requestUpdate();
                     }
 
@@ -617,7 +625,7 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
 
                 @Override
                 public void onFailure(RuntimeException e) {
-                    subscriptions.resetFailed(resetTimestamps.keySet(), time.absoluteMilliseconds() + retryBackoffMs);
+                    subscriptions.resetFailed(resetTimestamps.keySet(), time.milliseconds() + retryBackoffMs);
                     metadata.requestUpdate();
 
                     if (!(e instanceof RetriableException) && !cachedListOffsetsException.compareAndSet(null, e))

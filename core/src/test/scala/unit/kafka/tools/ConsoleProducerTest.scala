@@ -17,13 +17,24 @@
 
 package kafka.tools
 
+import kafka.utils.Exit
 import kafka.producer.ProducerConfig
 import ConsoleProducer.LineMessageReader
 import org.apache.kafka.clients.producer.KafkaProducer
-import org.junit.{Assert, Test}
+import org.junit.{After, Assert, Before, Test}
 
 class ConsoleProducerTest {
 
+  @Before
+  def setUp() {
+    Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
+  }
+
+  @After
+  def tearDown() {
+    Exit.resetExitProcedure()
+  }
+  
   val validArgs: Array[String] = Array(
     "--broker-list",
     "localhost:1001,localhost:1002",
@@ -41,7 +52,7 @@ class ConsoleProducerTest {
   )
 
   @Test
-  def testValidConfigsNewProducer(): Unit = {
+  def testValidConfigsNewProducer() {
     val config = new ConsoleProducer.ProducerConfig(validArgs)
     // New ProducerConfig constructor is package private, so we can't call it directly
     // Creating new Producer to validate instead
@@ -51,18 +62,19 @@ class ConsoleProducerTest {
 
   @Test
   @deprecated("This test has been deprecated and it will be removed in a future release.", "0.10.0.0")
-  def testValidConfigsOldProducer(): Unit = {
+  def testValidConfigsOldProducer() {
     val config = new ConsoleProducer.ProducerConfig(validArgs)
     new ProducerConfig(ConsoleProducer.getOldProducerProps(config))
   }
 
   @Test
-  def testInvalidConfigs(): Unit = {
+  def testInvalidConfigs() : Unit = {
+    val msg = "t is not a recognized option"
     try {
       new ConsoleProducer.ProducerConfig(invalidArgs)
       Assert.fail("Should have thrown an UnrecognizedOptionException")
     } catch {
-      case _: joptsimple.OptionException => // expected exception
+      case e: Exception => Assert.assertTrue(s"Expected exception with message:\n[$msg]\nbut was\n[${e.getMessage}]", e.getMessage.startsWith(msg))
     }
   }
 

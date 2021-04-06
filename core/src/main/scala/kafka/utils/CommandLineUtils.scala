@@ -16,7 +16,7 @@
  */
  package kafka.utils
 
-import joptsimple.{OptionSpec, OptionSet, OptionParser}
+import joptsimple.{OptionSpec, OptionSet, OptionParser, OptionException}
 import scala.collection.Set
 import java.util.Properties
 
@@ -35,19 +35,6 @@ object CommandLineUtils extends Logging {
     }
   }
 
-   /**
-     * Check that at least one option is present
-     */
-   def checkRequiredArgNotMissing(parser: OptionParser, options: OptionSet, required: OptionSpec[_]*) {
-     var areAllArgsMissing = true
-     for (arg <- required) {
-       if (options.has(arg))
-         areAllArgsMissing = false
-     }
-     if (areAllArgsMissing)
-       printUsageAndDie(parser, s"Must specify at least one parameter in ${required.mkString(",")}")
-   }
-
   /**
    * Check that none of the listed options are present
    */
@@ -64,7 +51,7 @@ object CommandLineUtils extends Logging {
    * Print usage and exit
    */
   def printUsageAndDie(parser: OptionParser, message: String): Nothing = {
-    System.err.println(message)
+    System.err.println(System.lineSeparator() + message + System.lineSeparator())
     parser.printHelpOn(System.err)
     Exit.exit(1, Some(message))
   }
@@ -88,5 +75,19 @@ object CommandLineUtils extends Logging {
       }
     }
     props
+  }
+  
+  /**
+   * Parse the user-supplied command line. Any exceptions during processing
+   * the command line is caught and help message for the given command is
+   * printed.
+   */
+  def tryParse(parser: OptionParser, args: Array[String]): OptionSet = {
+      try
+        parser.parse(args: _*)
+      catch {
+        case e: OptionException =>
+          CommandLineUtils.printUsageAndDie(parser, e.getMessage)
+      }
   }
 }

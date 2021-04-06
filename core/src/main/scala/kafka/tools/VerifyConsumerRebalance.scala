@@ -23,27 +23,30 @@ import kafka.utils.{CommandLineUtils, Exit, Logging, ZKGroupTopicDirs, ZkUtils}
 
 @deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 object VerifyConsumerRebalance extends Logging {
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     val parser = new OptionParser(false)
     warn("WARNING: VerifyConsumerRebalance is deprecated and will be dropped in a future release following 0.11.0.0.")
 
-    val zkConnectOpt = parser.accepts("zookeeper.connect", "ZooKeeper connect string.").
-      withRequiredArg().defaultsTo("localhost:2181").ofType(classOf[String])
-    val groupOpt = parser.accepts("group", "Consumer group.").
-      withRequiredArg().ofType(classOf[String])
-    parser.accepts("help", "Print this message.")
+    val zkConnectOpt = parser.accepts("zookeeper.connect", "ZooKeeper connect string.")
+      .withRequiredArg()
+      .describedAs("url(s) for the zookeeper connection")
+      .defaultsTo("localhost:2181")
+      .ofType(classOf[String])
+    val groupOpt = parser.accepts("group", "Consumer group.")
+      .withRequiredArg()
+      .describedAs("consumer group id")
+      .ofType(classOf[String])
+      .required
+    parser.accepts("help", "Print usage information.").forHelp
     
+    var commandDef: String = "Validate that all partitions have a consumer for a given consumer group."
     if(args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, "Validate that all partitions have a consumer for a given consumer group.")
+      CommandLineUtils.printUsageAndDie(parser, commandDef)
 
-    val options = parser.parse(args : _*)
+    val options = CommandLineUtils.tryParse(parser, args)
 
-    if (options.has("help")) {
-      parser.printHelpOn(System.out)
-      Exit.exit(0)
-    }
-
-    CommandLineUtils.checkRequiredArgs(parser, options, groupOpt)
+    if (options.has("help")) 
+      CommandLineUtils.printUsageAndDie(parser, commandDef)
 
     val zkConnect = options.valueOf(zkConnectOpt)
     val group = options.valueOf(groupOpt)

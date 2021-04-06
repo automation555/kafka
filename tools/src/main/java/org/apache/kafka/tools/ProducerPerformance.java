@@ -53,8 +53,7 @@ public class ProducerPerformance {
 
             /* parse args */
             String topicName = res.getString("topic");
-            Long numRecords = res.getLong("numRecords");
-            Long durationSeconds = res.getLong("durationSeconds");
+            long numRecords = res.getLong("numRecords");
             Integer recordSize = res.getInt("recordSize");
             int throughput = res.getInt("throughput");
             List<String> producerProps = res.getList("producerConfig");
@@ -120,19 +119,14 @@ public class ProducerPerformance {
                     payload[i] = (byte) (random.nextInt(26) + 65);
             }
             ProducerRecord<byte[], byte[]> record;
-            // When running for a fixed duration we do not know how many records
-            // the test will generate.  In that case have the Stats class keep
-            // the maximum number of latency measurements it allows.
-            Stats stats = new Stats(numRecords != null ? numRecords : Integer.MAX_VALUE, 5000);
+            Stats stats = new Stats(numRecords, 5000);
             long startMs = System.currentTimeMillis();
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
-            for (long i = 0;
-                 (numRecords != null && i < numRecords) ||
-                     (durationSeconds != null && ((System.currentTimeMillis() - startMs) / 1000 <= durationSeconds)); i++) {
+            for (int i = 0; i < numRecords; i++) {
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
@@ -202,33 +196,22 @@ public class ProducerPerformance {
         MutuallyExclusiveGroup payloadOptions = parser
                 .addMutuallyExclusiveGroup()
                 .required(true)
-                .description("either --record-size or --payload-file must be specified but not both.");
-
-        MutuallyExclusiveGroup produceRecordsOptions = parser
-                .addMutuallyExclusiveGroup()
-                .required(true)
-                .description("either --num-records or --duration-seconds must be specified but not both.");
+                .description("Either --record-size or --payload-file must be specified but not both.");
 
         parser.addArgument("--topic")
                 .action(store())
                 .required(true)
                 .type(String.class)
                 .metavar("TOPIC")
-                .help("produce messages to this topic");
+                .help("Produce messages to this topic.");
 
-        produceRecordsOptions.addArgument("--num-records")
+        parser.addArgument("--num-records")
                 .action(store())
+                .required(true)
                 .type(Long.class)
                 .metavar("NUM-RECORDS")
                 .dest("numRecords")
-                .help("number of messages to produce");
-
-        produceRecordsOptions.addArgument("--duration-seconds")
-                .action(store())
-                .type(Long.class)
-                .metavar("PRODUCE-FOR-SECONDS")
-                .dest("durationSeconds")
-                .help("how many seconds to produce for.  Can not be used with --num-records.");
+                .help("Number of messages to produce.");
 
         payloadOptions.addArgument("--record-size")
                 .action(store())
@@ -236,7 +219,7 @@ public class ProducerPerformance {
                 .type(Integer.class)
                 .metavar("RECORD-SIZE")
                 .dest("recordSize")
-                .help("message size in bytes. Note that you must provide exactly one of --record-size or --payload-file.");
+                .help("Message size in bytes. Note that you must provide exactly one of --record-size or --payload-file.");
 
         payloadOptions.addArgument("--payload-file")
                 .action(store())
@@ -244,7 +227,7 @@ public class ProducerPerformance {
                 .type(String.class)
                 .metavar("PAYLOAD-FILE")
                 .dest("payloadFile")
-                .help("file to read the message payloads from. This works only for UTF-8 encoded text files. " +
+                .help("File to read the message payloads from. This works only for UTF-8 encoded text files. " +
                         "Payloads will be read from this file and a payload will be randomly selected when sending messages. " +
                         "Note that you must provide exactly one of --record-size or --payload-file.");
 
@@ -255,7 +238,7 @@ public class ProducerPerformance {
                 .metavar("PAYLOAD-DELIMITER")
                 .dest("payloadDelimiter")
                 .setDefault("\\n")
-                .help("provides delimiter to be used when --payload-file is provided. " +
+                .help("Provides delimiter to be used when --payload-file is provided. " +
                         "Defaults to new line. " +
                         "Note that this parameter will be ignored if --payload-file is not provided.");
 
@@ -264,7 +247,7 @@ public class ProducerPerformance {
                 .required(true)
                 .type(Integer.class)
                 .metavar("THROUGHPUT")
-                .help("throttle maximum message throughput to *approximately* THROUGHPUT messages/sec");
+                .help("Throttle maximum message throughput to *approximately* THROUGHPUT messages/sec.");
 
         parser.addArgument("--producer-props")
                  .nargs("+")
@@ -272,7 +255,7 @@ public class ProducerPerformance {
                  .metavar("PROP-NAME=PROP-VALUE")
                  .type(String.class)
                  .dest("producerConfig")
-                 .help("kafka producer related configuration properties like bootstrap.servers,client.id etc. " +
+                 .help("Kafka producer related configuration properties like bootstrap.servers,client.id etc. " +
                          "These configs take precedence over those passed via --producer.config.");
 
         parser.addArgument("--producer.config")
@@ -281,14 +264,14 @@ public class ProducerPerformance {
                 .type(String.class)
                 .metavar("CONFIG-FILE")
                 .dest("producerConfigFile")
-                .help("producer config properties file.");
+                .help("Producer config properties file.");
 
         parser.addArgument("--print-metrics")
                 .action(storeTrue())
                 .type(Boolean.class)
                 .metavar("PRINT-METRICS")
                 .dest("printMetrics")
-                .help("print out metrics at the end of the test.");
+                .help("Print out metrics at the end of the test.");
 
         parser.addArgument("--transactional-id")
                .action(store())

@@ -1,19 +1,19 @@
 /**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+  * Licensed to the Apache Software Foundation (ASF) under one or more
+  * contributor license agreements.  See the NOTICE file distributed with
+  * this work for additional information regarding copyright ownership.
+  * The ASF licenses this file to You under the Apache License, Version 2.0
+  * (the "License"); you may not use this file except in compliance with
+  * the License.  You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
 
 package kafka.server
 
@@ -23,17 +23,16 @@ import kafka.metrics.KafkaMetricsGroup
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 
-import com.yammer.metrics.core.Meter
+import com.codahale.metrics.Meter
 import org.apache.kafka.common.internals.FatalExitError
-import org.apache.kafka.common.memory.BounceBufferPool
 import org.apache.kafka.common.utils.{KafkaThread, Time}
 
 import scala.collection.mutable
 import scala.collection.JavaConverters._
 
 /**
- * A thread that answers kafka requests.
- */
+  * A thread that answers kafka requests.
+  */
 class KafkaRequestHandler(id: Int,
                           brokerId: Int,
                           val aggregateIdleMeter: Meter,
@@ -104,7 +103,7 @@ class KafkaRequestHandlerPool(val brokerId: Int,
 
   private val threadPoolSize: AtomicInteger = new AtomicInteger(numThreads)
   /* a meter to track the average free capacity of the request handlers */
-  private val aggregateIdleMeter = newMeter(requestHandlerAvgIdleMetricName, "percent", TimeUnit.NANOSECONDS)
+  private val aggregateIdleMeter = newMeter(requestHandlerAvgIdleMetricName)
 
   this.logIdent = "[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "
   val runnables = new mutable.ArrayBuffer[KafkaRequestHandler](numThreads)
@@ -158,7 +157,7 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
         meterLock synchronized {
           meter = lazyMeter
           if (meter == null) {
-            meter = newMeter(metricType, eventType, TimeUnit.SECONDS, tags)
+            meter = newMeter(metricType, tags)
             lazyMeter = meter
           }
         }
@@ -189,65 +188,43 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
     BrokerTopicStats.TotalProduceRequestsPerSec -> MeterWrapper(BrokerTopicStats.TotalProduceRequestsPerSec, "requests"),
     BrokerTopicStats.TotalFetchRequestsPerSec -> MeterWrapper(BrokerTopicStats.TotalFetchRequestsPerSec, "requests"),
     BrokerTopicStats.FetchMessageConversionsPerSec -> MeterWrapper(BrokerTopicStats.FetchMessageConversionsPerSec, "requests"),
-    BrokerTopicStats.ProduceMessageConversionsPerSec -> MeterWrapper(BrokerTopicStats.ProduceMessageConversionsPerSec, "requests"),
-    BrokerTopicStats.NoKeyCompactedTopicRecordsPerSec -> MeterWrapper(BrokerTopicStats.NoKeyCompactedTopicRecordsPerSec, "requests"),
-    BrokerTopicStats.InvalidMagicNumberRecordsPerSec -> MeterWrapper(BrokerTopicStats.InvalidMagicNumberRecordsPerSec, "requests"),
-    BrokerTopicStats.InvalidMessageCrcRecordsPerSec -> MeterWrapper(BrokerTopicStats.InvalidMessageCrcRecordsPerSec, "requests"),
-    BrokerTopicStats.InvalidOffsetOrSequenceRecordsPerSec -> MeterWrapper(BrokerTopicStats.InvalidOffsetOrSequenceRecordsPerSec, "requests")
+    BrokerTopicStats.ProduceMessageConversionsPerSec -> MeterWrapper(BrokerTopicStats.ProduceMessageConversionsPerSec, "requests")
   ).asJava)
   if (name.isEmpty) {
     metricTypeMap.put(BrokerTopicStats.ReplicationBytesInPerSec, MeterWrapper(BrokerTopicStats.ReplicationBytesInPerSec, "bytes"))
     metricTypeMap.put(BrokerTopicStats.ReplicationBytesOutPerSec, MeterWrapper(BrokerTopicStats.ReplicationBytesOutPerSec, "bytes"))
-    metricTypeMap.put(BrokerTopicStats.ReassignmentBytesInPerSec, MeterWrapper(BrokerTopicStats.ReassignmentBytesInPerSec, "bytes"))
-    metricTypeMap.put(BrokerTopicStats.ReassignmentBytesOutPerSec, MeterWrapper(BrokerTopicStats.ReassignmentBytesOutPerSec, "bytes"))
   }
 
   // used for testing only
   def metricMap: Map[String, MeterWrapper] = metricTypeMap.toMap
 
-  def messagesInRate: Meter = metricTypeMap.get(BrokerTopicStats.MessagesInPerSec).meter()
+  def messagesInRate = metricTypeMap.get(BrokerTopicStats.MessagesInPerSec).meter()
 
-  def bytesInRate: Meter = metricTypeMap.get(BrokerTopicStats.BytesInPerSec).meter()
+  def bytesInRate = metricTypeMap.get(BrokerTopicStats.BytesInPerSec).meter()
 
-  def bytesOutRate: Meter = metricTypeMap.get(BrokerTopicStats.BytesOutPerSec).meter()
+  def bytesOutRate = metricTypeMap.get(BrokerTopicStats.BytesOutPerSec).meter()
 
-  def bytesRejectedRate: Meter = metricTypeMap.get(BrokerTopicStats.BytesRejectedPerSec).meter()
+  def bytesRejectedRate = metricTypeMap.get(BrokerTopicStats.BytesRejectedPerSec).meter()
 
-  private[server] def replicationBytesInRate: Option[Meter] =
+  private[server] def replicationBytesInRate =
     if (name.isEmpty) Some(metricTypeMap.get(BrokerTopicStats.ReplicationBytesInPerSec).meter())
     else None
 
-  private[server] def replicationBytesOutRate: Option[Meter] =
+  private[server] def replicationBytesOutRate =
     if (name.isEmpty) Some(metricTypeMap.get(BrokerTopicStats.ReplicationBytesOutPerSec).meter())
     else None
 
-  private[server] def reassignmentBytesInPerSec: Option[Meter] =
-    if (name.isEmpty) Some(metricTypeMap.get(BrokerTopicStats.ReassignmentBytesInPerSec).meter())
-    else None
+  def failedProduceRequestRate = metricTypeMap.get(BrokerTopicStats.FailedProduceRequestsPerSec).meter()
 
-  private[server] def reassignmentBytesOutPerSec: Option[Meter] =
-    if (name.isEmpty) Some(metricTypeMap.get(BrokerTopicStats.ReassignmentBytesOutPerSec).meter())
-    else None
+  def failedFetchRequestRate = metricTypeMap.get(BrokerTopicStats.FailedFetchRequestsPerSec).meter()
 
-  def failedProduceRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedProduceRequestsPerSec).meter()
+  def totalProduceRequestRate = metricTypeMap.get(BrokerTopicStats.TotalProduceRequestsPerSec).meter()
 
-  def failedFetchRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.FailedFetchRequestsPerSec).meter()
+  def totalFetchRequestRate = metricTypeMap.get(BrokerTopicStats.TotalFetchRequestsPerSec).meter()
 
-  def totalProduceRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.TotalProduceRequestsPerSec).meter()
+  def fetchMessageConversionsRate = metricTypeMap.get(BrokerTopicStats.FetchMessageConversionsPerSec).meter()
 
-  def totalFetchRequestRate: Meter = metricTypeMap.get(BrokerTopicStats.TotalFetchRequestsPerSec).meter()
-
-  def fetchMessageConversionsRate: Meter = metricTypeMap.get(BrokerTopicStats.FetchMessageConversionsPerSec).meter()
-
-  def produceMessageConversionsRate: Meter = metricTypeMap.get(BrokerTopicStats.ProduceMessageConversionsPerSec).meter()
-
-  def noKeyCompactedTopicRecordsPerSec: Meter = metricTypeMap.get(BrokerTopicStats.NoKeyCompactedTopicRecordsPerSec).meter()
-
-  def invalidMagicNumberRecordsPerSec: Meter = metricTypeMap.get(BrokerTopicStats.InvalidMagicNumberRecordsPerSec).meter()
-
-  def invalidMessageCrcRecordsPerSec: Meter = metricTypeMap.get(BrokerTopicStats.InvalidMessageCrcRecordsPerSec).meter()
-
-  def invalidOffsetOrSequenceRecordsPerSec: Meter = metricTypeMap.get(BrokerTopicStats.InvalidOffsetOrSequenceRecordsPerSec).meter()
+  def produceMessageConversionsRate = metricTypeMap.get(BrokerTopicStats.ProduceMessageConversionsPerSec).meter()
 
   def closeMetric(metricType: String): Unit = {
     val meter = metricTypeMap.get(metricType)
@@ -271,15 +248,6 @@ object BrokerTopicStats {
   val TotalFetchRequestsPerSec = "TotalFetchRequestsPerSec"
   val FetchMessageConversionsPerSec = "FetchMessageConversionsPerSec"
   val ProduceMessageConversionsPerSec = "ProduceMessageConversionsPerSec"
-  val ReassignmentBytesInPerSec = "ReassignmentBytesInPerSec"
-  val ReassignmentBytesOutPerSec = "ReassignmentBytesOutPerSec"
-
-  // These following topics are for LogValidator for better debugging on failed records
-  val NoKeyCompactedTopicRecordsPerSec = "NoKeyCompactedTopicRecordsPerSec"
-  val InvalidMagicNumberRecordsPerSec = "InvalidMagicNumberRecordsPerSec"
-  val InvalidMessageCrcRecordsPerSec = "InvalidMessageCrcRecordsPerSec"
-  val InvalidOffsetOrSequenceRecordsPerSec = "InvalidOffsetOrSequenceRecordsPerSec"
-
   private val valueFactory = (k: String) => new BrokerTopicMetrics(Some(k))
 }
 
@@ -304,18 +272,6 @@ class BrokerTopicStats {
     }
   }
 
-  def updateReassignmentBytesIn(value: Long): Unit = {
-    allTopicsStats.reassignmentBytesInPerSec.foreach { metric =>
-      metric.mark(value)
-    }
-  }
-
-  def updateReassignmentBytesOut(value: Long): Unit = {
-    allTopicsStats.reassignmentBytesOutPerSec.foreach { metric =>
-      metric.mark(value)
-    }
-  }
-
   // This method only removes metrics only used for leader
   def removeOldLeaderMetrics(topic: String): Unit = {
     val topicMetrics = topicStats(topic)
@@ -327,17 +283,14 @@ class BrokerTopicStats {
       topicMetrics.closeMetric(BrokerTopicStats.TotalProduceRequestsPerSec)
       topicMetrics.closeMetric(BrokerTopicStats.ProduceMessageConversionsPerSec)
       topicMetrics.closeMetric(BrokerTopicStats.ReplicationBytesOutPerSec)
-      topicMetrics.closeMetric(BrokerTopicStats.ReassignmentBytesOutPerSec)
     }
   }
 
   // This method only removes metrics only used for follower
   def removeOldFollowerMetrics(topic: String): Unit = {
     val topicMetrics = topicStats(topic)
-    if (topicMetrics != null) {
+    if (topicMetrics != null)
       topicMetrics.closeMetric(BrokerTopicStats.ReplicationBytesInPerSec)
-      topicMetrics.closeMetric(BrokerTopicStats.ReassignmentBytesInPerSec)
-    }
   }
 
   def removeMetrics(topic: String): Unit = {
@@ -346,10 +299,8 @@ class BrokerTopicStats {
       metrics.close()
   }
 
-  def updateBytesOut(topic: String, isFollower: Boolean, isReassignment: Boolean, value: Long): Unit = {
+  def updateBytesOut(topic: String, isFollower: Boolean, value: Long): Unit = {
     if (isFollower) {
-      if (isReassignment)
-        updateReassignmentBytesOut(value)
       updateReplicationBytesOut(value)
     } else {
       topicStats(topic).bytesOutRate.mark(value)

@@ -757,7 +757,7 @@ class KafkaConfigTest {
         case KafkaConfig.DelegationTokenExpiryTimeMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
         case KafkaConfig.DelegationTokenExpiryCheckIntervalMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
 
-        //Kafka Yammer metrics reporter configs
+        //Kafka Dropwizard metrics reporter configs
         case KafkaConfig.KafkaMetricsReporterClassesProp => // ignore
         case KafkaConfig.KafkaMetricsPollingIntervalSecondsProp => //ignore
 
@@ -806,7 +806,6 @@ class KafkaConfigTest {
     assertEquals(SnappyCompressionCodec, config.offsetsTopicCompressionCodec)
     assertEquals(Sensor.RecordingLevel.DEBUG.toString, config.metricRecordingLevel)
     assertEquals(false, config.tokenAuthEnabled)
-    assertEquals(false, config.tokenCleanSchedulerEnable)
     assertEquals(7 * 24 * 60L * 60L * 1000L, config.delegationTokenMaxLifeMs)
     assertEquals(24 * 60L * 60L * 1000L, config.delegationTokenExpiryTimeMs)
     assertEquals(1 * 60L * 1000L * 60, config.delegationTokenExpiryCheckIntervalMs)
@@ -814,11 +813,6 @@ class KafkaConfigTest {
     defaults.put(KafkaConfig.DelegationTokenMasterKeyProp, "1234567890")
     val config1 = KafkaConfig.fromProps(defaults)
     assertEquals(true, config1.tokenAuthEnabled)
-    assertEquals(true, config1.tokenCleanSchedulerEnable)
-
-    defaults.put(KafkaConfig.DelegationTokenCleanSchedulerEnableProp, "false")
-    val config2 = KafkaConfig.fromProps(defaults)
-    assertEquals(false, config2.tokenCleanSchedulerEnable)
   }
 
   @Test

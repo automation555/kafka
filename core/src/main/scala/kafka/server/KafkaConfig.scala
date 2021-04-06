@@ -29,6 +29,7 @@ import kafka.utils.CoreUtils
 import kafka.utils.Implicits._
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.common.Reconfigurable
+import org.apache.kafka.common.config.SecurityConfig
 import org.apache.kafka.common.config.ConfigDef.{ConfigKey, ValidList}
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs
 import org.apache.kafka.common.config.{AbstractConfig, ConfigDef, ConfigException, SaslConfigs, SslClientAuth, SslConfigs, TopicConfig}
@@ -42,9 +43,6 @@ import scala.collection.JavaConverters._
 import scala.collection.{Map, Seq}
 
 object Defaults {
-  /** ********* FetchRequest Configuration ***********/
-  val FetchLimitBytes = 1024 * 1024 * 1024
-
   /** ********* Zookeeper Configuration ***********/
   val ZkSessionTimeoutMs = 6000
   val ZkSyncTimeMs = 2000
@@ -210,7 +208,7 @@ object Defaults {
   val MetricRecordingLevel = Sensor.RecordingLevel.INFO.toString()
 
 
-  /** ********* Kafka Yammer Metrics Reporter Configuration ***********/
+  /** ********* Kafka Dropwizard Metrics Reporter Configuration ***********/
   val KafkaMetricReporterClasses = ""
   val KafkaMetricsPollingIntervalSeconds = 10
 
@@ -260,9 +258,6 @@ object KafkaConfig {
   def main(args: Array[String]): Unit = {
     System.out.println(configDef.toHtmlTable(DynamicBrokerConfig.dynamicConfigUpdateModes))
   }
-
-  /** ********* FetchRequest Configuration ***********/
-  val FetchLimitBytesProp = "fetch.limit.bytes"
 
   /** ********* Zookeeper Configuration ***********/
   val ZkConnectProp = "zookeeper.connect"
@@ -431,13 +426,14 @@ object KafkaConfig {
   val MetricReporterClassesProp: String = CommonClientConfigs.METRIC_REPORTER_CLASSES_CONFIG
   val MetricRecordingLevelProp: String = CommonClientConfigs.METRICS_RECORDING_LEVEL_CONFIG
 
-  /** ********* Kafka Yammer Metrics Reporters Configuration ***********/
+  /** ********* Kafka Dropwizard Metrics Reporters Configuration ***********/
   val KafkaMetricsReporterClassesProp = "kafka.metrics.reporters"
   val KafkaMetricsPollingIntervalSecondsProp = "kafka.metrics.polling.interval.secs"
 
   /** ******** Common Security Configuration *************/
   val PrincipalBuilderClassProp = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_CONFIG
   val ConnectionsMaxReauthMsProp = BrokerSecurityConfigs.CONNECTIONS_MAX_REAUTH_MS
+  val securityProviderClassProp = SecurityConfig.SECURITY_PROVIDERS_CONFIG
 
   /** ********* SSL Configuration ****************/
   val SslProtocolProp = SslConfigs.SSL_PROTOCOL_CONFIG
@@ -492,9 +488,6 @@ object KafkaConfig {
   val PasswordEncoderIterationsProp =  "password.encoder.iterations"
 
   /* Documentation */
-  /** ********* FetchRequest Configuration ***********/
-  val FetchLimitBytesDoc = "Client can fetch the max bytes size each fetch requeset"
-
   /** ********* Zookeeper Configuration ***********/
   val ZkConnectDoc = "Specifies the ZooKeeper connection string in the form <code>hostname:port</code> where host and port are the " +
   "host and port of a ZooKeeper server. To allow connecting through other ZooKeeper nodes when that ZooKeeper machine is " +
@@ -782,8 +775,8 @@ object KafkaConfig {
   val MetricRecordingLevelDoc = CommonClientConfigs.METRICS_RECORDING_LEVEL_DOC
 
 
-  /** ********* Kafka Yammer Metrics Reporter Configuration ***********/
-  val KafkaMetricsReporterClassesDoc = "A list of classes to use as Yammer metrics custom reporters." +
+  /** ********* Kafka Dropwizard Metrics Reporter Configuration ***********/
+  val KafkaMetricsReporterClassesDoc = "A list of classes to use as Dropwizard metrics custom reporters." +
     " The reporters should implement <code>kafka.metrics.KafkaMetricsReporter</code> trait. If a client wants" +
     " to expose JMX operations on a custom reporter, the custom reporter needs to additionally implement an MBean" +
     " trait that extends <code>kafka.metrics.KafkaMetricsReporterMBean</code> trait so that the registered MBean is compliant with" +
@@ -795,6 +788,7 @@ object KafkaConfig {
   /** ******** Common Security Configuration *************/
   val PrincipalBuilderClassDoc = BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_DOC
   val ConnectionsMaxReauthMsDoc = BrokerSecurityConfigs.CONNECTIONS_MAX_REAUTH_MS_DOC
+  val securityProviderClassDoc = SecurityConfig.SECURITY_PROVIDERS_DOC
 
   /** ********* SSL Configuration ****************/
   val SslProtocolDoc = SslConfigs.SSL_PROTOCOL_DOC
@@ -859,8 +853,6 @@ object KafkaConfig {
     import ConfigDef.ValidString._
 
     new ConfigDef()
-      /** ********* FetchRequest Configuration ***********/
-      .define(FetchLimitBytesProp, INT, Defaults.FetchLimitBytes, atLeast(0), MEDIUM, FetchLimitBytesDoc)
 
       /** ********* Zookeeper Configuration ***********/
       .define(ZkConnectProp, STRING, HIGH, ZkConnectDoc)
@@ -1026,7 +1018,7 @@ object KafkaConfig {
       .define(MetricReporterClassesProp, LIST, Defaults.MetricReporterClasses, LOW, MetricReporterClassesDoc)
       .define(MetricRecordingLevelProp, STRING, Defaults.MetricRecordingLevel, LOW, MetricRecordingLevelDoc)
 
-      /** ********* Kafka Yammer Metrics Reporter Configuration for docs ***********/
+      /** ********* Kafka Dropwizard Metrics Reporter Configuration for docs ***********/
       .define(KafkaMetricsReporterClassesProp, LIST, Defaults.KafkaMetricReporterClasses, LOW, KafkaMetricsReporterClassesDoc)
       .define(KafkaMetricsPollingIntervalSecondsProp, INT, Defaults.KafkaMetricsPollingIntervalSeconds, atLeast(1), LOW, KafkaMetricsPollingIntervalSecondsDoc)
 
@@ -1043,6 +1035,7 @@ object KafkaConfig {
 
       /** ********* General Security Configuration ****************/
       .define(ConnectionsMaxReauthMsProp, LONG, Defaults.ConnectionsMaxReauthMsDefault, MEDIUM, ConnectionsMaxReauthMsDoc)
+      .define(securityProviderClassProp, STRING, null, LOW, securityProviderClassDoc)
 
       /** ********* SSL Configuration ****************/
       .define(PrincipalBuilderClassProp, CLASS, null, MEDIUM, PrincipalBuilderClassDoc)
@@ -1152,9 +1145,6 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   private[server] def valuesFromThisConfig: util.Map[String, _] = super.values
   private[server] def valuesFromThisConfigWithPrefixOverride(prefix: String): util.Map[String, AnyRef] =
     super.valuesWithPrefixOverride(prefix)
-
-  /** ********* FetchRequest Configuration ***********/
-  val fetchLimitBytes:Int = getInt(KafkaConfig.FetchLimitBytesProp)
 
   /** ********* Zookeeper Configuration ***********/
   val zkConnect: String = getString(KafkaConfig.ZkConnectProp)

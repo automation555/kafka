@@ -22,11 +22,10 @@ import java.nio.ByteBuffer
 import java.util.concurrent._
 
 import com.typesafe.scalalogging.Logger
-import com.yammer.metrics.core.{Gauge, Meter}
+import com.codahale.metrics.Meter
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.{Logging, NotNothing, Pool}
 import org.apache.kafka.common.memory.MemoryPool
-import org.apache.kafka.common.message.ApiMessageType
 import org.apache.kafka.common.network.Send
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 import org.apache.kafka.common.requests._
@@ -92,11 +91,10 @@ object RequestChannel extends Logging {
     def header: RequestHeader = context.header
     def sizeOfBodyInBytes: Int = bodyAndSize.size
 
-    // Most request types are parsed entirely into objects at this point.  For those, we can
-    // release the underlying buffer.  Some other requests contain zero-copy fields.
-    // These fields hold a reference to the underlying buffer.  Therefore, we cannot release
-    // that buffer until all the request processing is done.
-    if (!ApiMessageType.fromApiKey(header.apiKey().id).requestContainsZeroCopyFields()) {
+    //most request types are parsed entirely into objects at this point. for those we can release the underlying buffer.
+    //some (like produce, or any time the schema contains fields of types BYTES or NULLABLE_BYTES) retain a reference
+    //to the buffer. for those requests we cannot release the buffer early, but only when request processing is done.
+    if (!header.apiKey.requiresDelayedAllocation) {
       releaseBuffer()
     }
 
@@ -282,24 +280,18 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String) extends 
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
 
-  newGauge(requestQueueSizeMetricName, new Gauge[Int] {
-      def value = requestQueue.size
-  })
+  newGauge[Int](requestQueueSizeMetricName, () => requestQueue.size)
 
-  newGauge(responseQueueSizeMetricName, new Gauge[Int]{
-    def value = processors.values.asScala.foldLeft(0) {(total, processor) =>
+  newGauge[Int](responseQueueSizeMetricName, () => processors.values.asScala.foldLeft(0) {(total, processor) =>
       total + processor.responseQueueSize
     }
-  })
+  )
 
   def addProcessor(processor: Processor): Unit = {
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
 
-    newGauge(responseQueueSizeMetricName,
-      new Gauge[Int] {
-        def value = processor.responseQueueSize
-      },
+    newGauge[Int](responseQueueSizeMetricName, () => processor.responseQueueSize,
       Map(ProcessorMetricTag -> processor.id.toString)
     )
   }
@@ -425,7 +417,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
   Errors.values.foreach(error => errorMeters.put(error, new ErrorMeter(name, error)))
 
   def requestRate(version: Short): Meter = {
-    requestRateInternal.getAndMaybePut(version, newMeter("RequestsPerSec", "requests", TimeUnit.SECONDS, tags + ("version" -> version.toString)))
+    requestRateInternal.getAndMaybePut(version, newMeter("RequestsPerSec", tags + ("version" -> version.toString)))
   }
 
   class ErrorMeter(name: String, error: Errors) {
@@ -439,7 +431,7 @@ class RequestMetrics(name: String) extends KafkaMetricsGroup {
       else {
         synchronized {
           if (meter == null)
-             meter = newMeter(ErrorsPerSec, "requests", TimeUnit.SECONDS, tags)
+             meter = newMeter(ErrorsPerSec, tags)
           meter
         }
       }

@@ -24,7 +24,7 @@ sealed abstract class ControllerState {
   def value: Byte
 
   def rateAndTimeMetricName: Option[String] =
-    if (hasRateAndTimeMetric) Some(s"${toString}RateAndTimeMs") else None
+    if (hasRateAndTimeMetric) Some(s"${toString}RateAndTime") else None
 
   protected def hasRateAndTimeMetric: Boolean = true
 }
@@ -45,9 +45,9 @@ object ControllerState {
 
   case object BrokerChange extends ControllerState {
     def value = 2
-    // The LeaderElectionRateAndTimeMs metric existed before `ControllerState` was introduced and we keep the name
+    // The LeaderElectionRateAndTime metric existed before `ControllerState` was introduced and we keep the name
     // for backwards compatibility. The alternative would be to have the same metric under two different names.
-    override def rateAndTimeMetricName = Some("LeaderElectionRateAndTimeMs")
+    override def rateAndTimeMetricName = Some("LeaderElectionRateAndTime")
   }
 
   case object TopicChange extends ControllerState {
@@ -58,10 +58,8 @@ object ControllerState {
     def value = 4
   }
 
-  case object AlterPartitionReassignment extends ControllerState {
+  case object PartitionReassignment extends ControllerState {
     def value = 5
-
-    override def rateAndTimeMetricName: Option[String] = Some("PartitionReassignmentRateAndTimeMs")
   }
 
   case object AutoLeaderBalance extends ControllerState {
@@ -100,23 +98,7 @@ object ControllerState {
     def value = 14
   }
 
-  case object ListPartitionReassignment extends ControllerState {
-    def value = 15
-  }
-
-  case object UpdateMetadataResponseReceived extends ControllerState {
-    def value = 16
-
-    override protected def hasRateAndTimeMetric: Boolean = false
-  }
-
-  case object UpdateFeatures extends ControllerState {
-    def value = 17
-  }
-
   val values: Seq[ControllerState] = Seq(Idle, ControllerChange, BrokerChange, TopicChange, TopicDeletion,
-    AlterPartitionReassignment, AutoLeaderBalance, ManualLeaderBalance, ControlledShutdown, IsrChange,
-    LeaderAndIsrResponseReceived, LogDirChange, ControllerShutdown, UncleanLeaderElectionEnable,
-    TopicUncleanLeaderElectionEnable, ListPartitionReassignment, UpdateMetadataResponseReceived,
-    UpdateFeatures)
+    PartitionReassignment, AutoLeaderBalance, ManualLeaderBalance, ControlledShutdown, IsrChange, LeaderAndIsrResponseReceived,
+    LogDirChange, ControllerShutdown, UncleanLeaderElectionEnable, TopicUncleanLeaderElectionEnable)
 }

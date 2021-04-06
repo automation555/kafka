@@ -94,9 +94,10 @@ versions += [
   kafka_20: "2.0.1",
   kafka_21: "2.1.1",
   kafka_22: "2.2.1",
+  kafka_23: "2.3.0",
   lz4: "1.6.0",
   mavenArtifact: "3.6.1",
-  metrics: "2.2.0",
+  metrics: "4.1.0",
   mockito: "3.0.0",
   owaspDepCheckPlugin: "5.2.1",
   powermock: "2.0.2",
@@ -115,8 +116,7 @@ versions += [
   spotbugsPlugin: "1.6.9",
   spotlessPlugin: "3.23.1",
   zookeeper: "3.5.5",
-  zstd: "1.4.2-1",
-  mx4jtools: "3.0.1"
+  zstd: "1.4.2-1"
 ]
 
 libs += [
@@ -162,9 +162,11 @@ libs += [
   kafkaStreams_20: "org.apache.kafka:kafka-streams:$versions.kafka_20",
   kafkaStreams_21: "org.apache.kafka:kafka-streams:$versions.kafka_21",
   kafkaStreams_22: "org.apache.kafka:kafka-streams:$versions.kafka_22",
+  kafkaStreams_23: "org.apache.kafka:kafka-streams:$versions.kafka_23",
   log4j: "log4j:log4j:$versions.log4j",
   lz4: "org.lz4:lz4-java:$versions.lz4",
-  metrics: "com.yammer.metrics:metrics-core:$versions.metrics",
+  metrics: "io.dropwizard.metrics:metrics-core:$versions.metrics",
+  metricsJmx: "io.dropwizard.metrics:metrics-jmx:$versions.metrics",
   mockitoCore: "org.mockito:mockito-core:$versions.mockito",
   powermockJunit4: "org.powermock:powermock-module-junit4:$versions.powermock",
   powermockEasymock: "org.powermock:powermock-api-easymock:$versions.powermock",
@@ -185,6 +187,5 @@ libs += [
   jfreechart: "jfreechart:jfreechart:$versions.jfreechart",
   mavenArtifact: "org.apache.maven:maven-artifact:$versions.mavenArtifact",
   zstd: "com.github.luben:zstd-jni:$versions.zstd",
-  httpclient: "org.apache.httpcomponents:httpclient:$versions.httpclient",
-  mx4jtools: "mx4j:mx4j-tools:$versions.mx4jtools"
+  httpclient: "org.apache.httpcomponents:httpclient:$versions.httpclient"
 ]

@@ -36,16 +36,14 @@ import kafka.server.epoch.LeaderEpochFileCache
 import kafka.server.{BrokerTopicStats, FetchDataInfo, FetchHighWatermark, FetchIsolation, FetchLogEnd, FetchTxnCommitted, LogDirFailureChannel, LogOffsetMetadata, OffsetAndEpoch}
 import kafka.utils._
 import org.apache.kafka.common.errors._
-import org.apache.kafka.common.message.FetchResponseData
 import org.apache.kafka.common.record.FileRecords.TimestampAndOffset
 import org.apache.kafka.common.record._
 import org.apache.kafka.common.requests.FetchResponse.AbortedTransaction
-import org.apache.kafka.common.requests.ProduceResponse.RecordError
 import org.apache.kafka.common.requests.{EpochEndOffset, ListOffsetRequest}
 import org.apache.kafka.common.utils.{Time, Utils}
-import org.apache.kafka.common.{InvalidRecordException, KafkaException, TopicPartition}
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.collection.{Seq, Set, mutable}
 
@@ -55,25 +53,7 @@ object LogAppendInfo {
 
   def unknownLogAppendInfoWithLogStartOffset(logStartOffset: Long): LogAppendInfo =
     LogAppendInfo(None, -1, RecordBatch.NO_TIMESTAMP, -1L, RecordBatch.NO_TIMESTAMP, logStartOffset,
-      RecordConversionStats.EMPTY, NoCompressionCodec, NoCompressionCodec, -1, -1,
-      offsetsMonotonic = false, -1L)
-
-  /**
-   * In ProduceResponse V8+, we add two new fields record_errors and error_message (see KIP-467).
-   * For any record failures with InvalidTimestamp or InvalidRecordException, we construct a LogAppendInfo object like the one
-   * in unknownLogAppendInfoWithLogStartOffset, but with additiona fields recordErrors and errorMessage
-   */
-  def unknownLogAppendInfoWithAdditionalInfo(logStartOffset: Long, recordErrors: Seq[RecordError], errorMessage: String): LogAppendInfo =
-    LogAppendInfo(None, -1, RecordBatch.NO_TIMESTAMP, -1L, RecordBatch.NO_TIMESTAMP, logStartOffset,
-      RecordConversionStats.EMPTY, NoCompressionCodec, NoCompressionCodec, -1, -1,
-      offsetsMonotonic = false, -1L, recordErrors, errorMessage)
-}
-
-sealed trait LeaderHwChange
-object LeaderHwChange {
-  case object Increased extends LeaderHwChange
-  case object Same extends LeaderHwChange
-  case object None extends LeaderHwChange
+      RecordConversionStats.EMPTY, NoCompressionCodec, NoCompressionCodec, -1, -1, offsetsMonotonic = false, -1L)
 }
 
 /**
@@ -93,9 +73,6 @@ object LeaderHwChange {
  * @param validBytes The number of valid bytes
  * @param offsetsMonotonic Are the offsets in this message set monotonically increasing
  * @param lastOffsetOfFirstBatch The last offset of the first batch
- * @param leaderHwChange Incremental if the high watermark needs to be increased after appending record.
- *                       Same if high watermark is not changed. None is the default value and it means append failed
- *
  */
 case class LogAppendInfo(var firstOffset: Option[Long],
                          var lastOffset: Long,
@@ -109,10 +86,7 @@ case class LogAppendInfo(var firstOffset: Option[Long],
                          shallowCount: Int,
                          validBytes: Int,
                          offsetsMonotonic: Boolean,
-                         lastOffsetOfFirstBatch: Long,
-                         recordErrors: Seq[RecordError] = List(),
-                         errorMessage: String = null,
-                         leaderHwChange: LeaderHwChange = LeaderHwChange.None) {
+                         lastOffsetOfFirstBatch: Long) {
   /**
    * Get the first offset if it exists, else get the last offset of the first batch
    * For magic versions 2 and newer, this method will return first offset. For magic versions
@@ -136,7 +110,7 @@ case class LogAppendInfo(var firstOffset: Option[Long],
 /**
  * Container class which represents a snapshot of the significant offsets for a partition. This allows fetching
  * of these offsets atomically without the possibility of a leader change affecting their consistency relative
- * to each other. See [[Log.fetchOffsetSnapshot()]].
+ * to each other. See [[kafka.cluster.Partition.fetchOffsetSnapshot()]].
  */
 case class LogOffsetSnapshot(logStartOffset: Long,
                              logEndOffset: LogOffsetMetadata,
@@ -147,7 +121,6 @@ case class LogOffsetSnapshot(logStartOffset: Long,
  * Another container which is used for lower level reads using  [[kafka.cluster.Partition.readRecords()]].
  */
 case class LogReadInfo(fetchedData: FetchDataInfo,
-                       divergingEpoch: Option[FetchResponseData.EpochEndOffset],
                        highWatermark: Long,
                        logStartOffset: Long,
                        logEndOffset: Long,
@@ -193,17 +166,6 @@ object RollParams {
   }
 }
 
-sealed trait LogStartOffsetIncrementReason
-case object ClientRecordDeletion extends LogStartOffsetIncrementReason {
-  override def toString: String = "client delete records request"
-}
-case object LeaderOffsetIncremented extends LogStartOffsetIncrementReason {
-  override def toString: String = "leader offset increment"
-}
-case object SegmentDeletion extends LogStartOffsetIncrementReason {
-  override def toString: String = "segment deletion"
-}
-
 /**
  * An append-only log for storing messages.
  *
@@ -212,7 +174,7 @@ case object SegmentDeletion extends LogStartOffsetIncrementReason {
  * New log segments are created according to a configurable policy that controls the size in bytes or time interval
  * for a given segment.
  *
- * @param _dir The directory in which log segments are created.
+ * @param dir The directory in which log segments are created.
  * @param config The log configuration settings
  * @param logStartOffset The earliest offset allowed to be exposed to kafka client.
  *                       The logStartOffset can be updated by :
@@ -227,13 +189,13 @@ case object SegmentDeletion extends LogStartOffsetIncrementReason {
  *                       Other activities such as log cleaning are not affected by logStartOffset.
  * @param recoveryPoint The offset at which to begin recovery--i.e. the first offset which has not been flushed to disk
  * @param scheduler The thread pool scheduler used for background actions
- * @param brokerTopicStats Container for Broker Topic Yammer Metrics
+ * @param brokerTopicStats Container for Broker Topic Dropwizard Metrics
  * @param time The time instance used for checking the clock
  * @param maxProducerIdExpirationMs The maximum amount of time to wait before a producer id is considered expired
  * @param producerIdExpirationCheckIntervalMs How often to check for producer ids which need to be expired
  */
 @threadsafe
-class Log(@volatile private var _dir: File,
+class Log(@volatile var dir: File,
           @volatile var config: LogConfig,
           @volatile var logStartOffset: Long,
           @volatile var recoveryPoint: Long,
@@ -252,16 +214,36 @@ class Log(@volatile private var _dir: File,
 
   /* A lock that guards all modifications to the log */
   private val lock = new Object
-
   // The memory mapped buffer for index files of this log will be closed with either delete() or closeHandlers()
   // After memory mapped buffer is closed, no disk IO operation should be performed for this log
   @volatile private var isMemoryMappedBufferClosed = false
 
-  // Cache value of parent directory to avoid allocations in hot paths like ReplicaManager.checkpointHighWatermarks
-  @volatile private var _parentDir: String = dir.getParent
-
   /* last time it was flushed */
   private val lastFlushedTime = new AtomicLong(time.milliseconds)
+
+  def initFileSize: Int = {
+    if (config.preallocate)
+      config.segmentSize
+    else
+      0
+  }
+
+  def updateConfig(updatedKeys: Set[String], newConfig: LogConfig): Unit = {
+    val oldConfig = this.config
+    this.config = newConfig
+    if (updatedKeys.contains(LogConfig.MessageFormatVersionProp)) {
+      val oldRecordVersion = oldConfig.messageFormatVersion.recordVersion
+      val newRecordVersion = newConfig.messageFormatVersion.recordVersion
+      if (newRecordVersion.precedes(oldRecordVersion))
+        warn(s"Record format version has been downgraded from $oldRecordVersion to $newRecordVersion.")
+      initializeLeaderEpochCache()
+    }
+  }
+
+  private def checkIfMemoryMappedBufferClosed(): Unit = {
+    if (isMemoryMappedBufferClosed)
+      throw new KafkaStorageException(s"The memory mapped buffer for log of $topicPartition is already closed")
+  }
 
   @volatile private var nextOffsetMetadata: LogOffsetMetadata = _
 
@@ -292,6 +274,8 @@ class Log(@volatile private var _dir: File,
   @volatile var leaderEpochCache: Option[LeaderEpochFileCache] = None
 
   locally {
+    val startMs = time.milliseconds
+
     // create the log directory if it doesn't exist
     Files.createDirectories(dir.toPath)
 
@@ -304,7 +288,7 @@ class Log(@volatile private var _dir: File,
 
     leaderEpochCache.foreach(_.truncateFromEnd(nextOffsetMetadata.messageOffset))
 
-    updateLogStartOffset(math.max(logStartOffset, segments.firstEntry.getValue.baseOffset))
+    logStartOffset = math.max(logStartOffset, segments.firstEntry.getValue.baseOffset)
 
     // The earliest leader epoch may not be flushed during a hard failure. Recover it here.
     leaderEpochCache.foreach(_.truncateFromStart(logStartOffset))
@@ -313,41 +297,10 @@ class Log(@volatile private var _dir: File,
     // from scratch.
     if (!producerStateManager.isEmpty)
       throw new IllegalStateException("Producer state must be empty during log initialization")
-
-    // Reload all snapshots into the ProducerStateManager cache, the intermediate ProducerStateManager used
-    // during log recovery may have deleted some files without the Log.producerStateManager instance witnessing the
-    // deletion.
-    producerStateManager.removeStraySnapshots(segments.values().asScala.map(_.baseOffset).toSeq)
     loadProducerState(logEndOffset, reloadFromCleanShutdown = hasCleanShutdownFile)
-  }
 
-  def dir: File = _dir
-
-  def parentDir: String = _parentDir
-
-  def parentDirFile: File = new File(_parentDir)
-
-  def initFileSize: Int = {
-    if (config.preallocate)
-      config.segmentSize
-    else
-      0
-  }
-
-  def updateConfig(newConfig: LogConfig): Unit = {
-    val oldConfig = this.config
-    this.config = newConfig
-    val oldRecordVersion = oldConfig.messageFormatVersion.recordVersion
-    val newRecordVersion = newConfig.messageFormatVersion.recordVersion
-    if (newRecordVersion.precedes(oldRecordVersion))
-      warn(s"Record format version has been downgraded from $oldRecordVersion to $newRecordVersion.")
-    if (newRecordVersion.value != oldRecordVersion.value)
-      initializeLeaderEpochCache()
-  }
-
-  private def checkIfMemoryMappedBufferClosed(): Unit = {
-    if (isMemoryMappedBufferClosed)
-      throw new KafkaStorageException(s"The memory mapped buffer for log of $topicPartition is already closed")
+    info(s"Completed load of log with ${segments.size} segments, log start offset $logStartOffset and " +
+      s"log end offset $logEndOffset in ${time.milliseconds() - startMs} ms")
   }
 
   def highWatermark: Long = highWatermarkMetadata.messageOffset
@@ -373,20 +326,6 @@ class Log(@volatile private var _dir: File,
     newHighWatermark
   }
 
-  def updateHighWatermarkOffsetMetadata(hw: LogOffsetMetadata): Long = {
-    val newHighWatermark = if (hw.messageOffset < logStartOffset) {
-      updateHighWatermarkMetadata(LogOffsetMetadata(logStartOffset))
-      logStartOffset
-    } else if (hw.messageOffset > logEndOffset) {
-      updateHighWatermarkMetadata(logEndOffsetMetadata)
-      logEndOffset
-    } else {
-      updateHighWatermarkMetadata(hw)
-      hw.messageOffset
-    }
-    newHighWatermark
-  }
-
   /**
    * Update the high watermark to a new value if and only if it is larger than the old value. It is
    * an error to update to a value which is larger than the log end offset.
@@ -401,18 +340,16 @@ class Log(@volatile private var _dir: File,
       throw new IllegalArgumentException(s"High watermark $newHighWatermark update exceeds current " +
         s"log end offset $logEndOffsetMetadata")
 
-    lock.synchronized {
-      val oldHighWatermark = fetchHighWatermarkMetadata
+    val oldHighWatermark = fetchHighWatermarkMetadata
 
-      // Ensure that the high watermark increases monotonically. We also update the high watermark when the new
-      // offset metadata is on a newer segment, which occurs whenever the log is rolled to a new segment.
-      if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset ||
-        (oldHighWatermark.messageOffset == newHighWatermark.messageOffset && oldHighWatermark.onOlderSegment(newHighWatermark))) {
-        updateHighWatermarkMetadata(newHighWatermark)
-        Some(oldHighWatermark)
-      } else {
-        None
-      }
+    // Ensure that the high watermark increases monotonically. We also update the high watermark when the new
+    // offset metadata is on a newer segment, which occurs whenever the log is rolled to a new segment.
+    if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset ||
+      (oldHighWatermark.messageOffset == newHighWatermark.messageOffset && oldHighWatermark.onOlderSegment(newHighWatermark))) {
+      updateHighWatermarkMetadata(newHighWatermark)
+      Some(oldHighWatermark)
+    } else {
+      None
     }
   }
 
@@ -458,11 +395,8 @@ class Log(@volatile private var _dir: File,
   private def fetchLastStableOffsetMetadata: LogOffsetMetadata = {
     checkIfMemoryMappedBufferClosed()
 
-    // cache the current high watermark to avoid a concurrent update invalidating the range check
-    val highWatermarkMetadata = fetchHighWatermarkMetadata
-
     firstUnstableOffsetMetadata match {
-      case Some(offsetMetadata) if offsetMetadata.messageOffset < highWatermarkMetadata.messageOffset =>
+      case Some(offsetMetadata) if offsetMetadata.messageOffset < highWatermark =>
         if (offsetMetadata.messageOffsetOnly) {
           lock synchronized {
             val fullOffset = convertToOffsetMetadataOrThrow(offsetMetadata.messageOffset)
@@ -473,7 +407,7 @@ class Log(@volatile private var _dir: File,
         } else {
           offsetMetadata
         }
-      case _ => highWatermarkMetadata
+      case _ => fetchHighWatermarkMetadata
     }
   }
 
@@ -515,10 +449,13 @@ class Log(@volatile private var _dir: File,
     Map("topic" -> topicPartition.topic, "partition" -> topicPartition.partition.toString) ++ maybeFutureTag
   }
 
-  newGauge(LogMetricNames.NumLogSegments, () => numberOfSegments, tags)
-  newGauge(LogMetricNames.LogStartOffset, () => logStartOffset, tags)
-  newGauge(LogMetricNames.LogEndOffset, () => logEndOffset, tags)
-  newGauge(LogMetricNames.Size, () => size, tags)
+  newGauge[Int]("NumLogSegments", () => numberOfSegments, tags)
+
+  newGauge[Long]("LogStartOffset", () => logStartOffset, tags)
+
+  newGauge[Long]("LogEndOffset", () => logEndOffset, tags)
+
+  newGauge[Long]("Size", () => size, tags)
 
   val producerExpireCheck = scheduler.schedule(name = "PeriodicProducerExpirationCheck", fun = () => {
     lock synchronized {
@@ -536,7 +473,7 @@ class Log(@volatile private var _dir: File,
 
     def newLeaderEpochFileCache(): LeaderEpochFileCache = {
       val checkpointFile = new LeaderEpochCheckpointFile(leaderEpochFile, logDirFailureChannel)
-      new LeaderEpochFileCache(topicPartition, () => logEndOffset, checkpointFile)
+      new LeaderEpochFileCache(topicPartition, logEndOffset _, checkpointFile)
     }
 
     if (recordVersion.precedes(RecordVersion.V2)) {
@@ -572,8 +509,8 @@ class Log(@volatile private var _dir: File,
       Files.deleteIfExists(Log.transactionIndexFile(dir, offset, suffix).toPath)
     }
 
-    val swapFiles = mutable.Set[File]()
-    val cleanFiles = mutable.Set[File]()
+    var swapFiles = Set[File]()
+    var cleanFiles = Set[File]()
     var minCleanedFileOffset = Long.MaxValue
 
     for (file <- dir.listFiles if file.isFile) {
@@ -772,29 +709,13 @@ class Log(@volatile private var _dir: File,
     }
   }
 
-  private def updateLogEndOffset(offset: Long): Unit = {
-    nextOffsetMetadata = LogOffsetMetadata(offset, activeSegment.baseOffset, activeSegment.size)
+  private def updateLogEndOffset(messageOffset: Long): Unit = {
+    nextOffsetMetadata = LogOffsetMetadata(messageOffset, activeSegment.baseOffset, activeSegment.size)
 
-    // Update the high watermark in case it has gotten ahead of the log end offset following a truncation
-    // or if a new segment has been rolled and the offset metadata needs to be updated.
-    if (highWatermark >= offset) {
+    // Update the high watermark in case it has gotten ahead of the log end offset
+    // following a truncation.
+    if (highWatermark > messageOffset) {
       updateHighWatermarkMetadata(nextOffsetMetadata)
-    }
-
-    if (this.recoveryPoint > offset) {
-      this.recoveryPoint = offset
-    }
-  }
-
-  private def updateLogStartOffset(offset: Long): Unit = {
-    logStartOffset = offset
-
-    if (highWatermark < offset) {
-      updateHighWatermark(offset)
-    }
-
-    if (this.recoveryPoint < offset) {
-      this.recoveryPoint = offset
     }
   }
 
@@ -808,11 +729,11 @@ class Log(@volatile private var _dir: File,
     // if we have the clean shutdown marker, skip recovery
     if (!hasCleanShutdownFile) {
       // okay we need to actually recover this log
-      val unflushed = logSegments(this.recoveryPoint, Long.MaxValue).iterator
+      val unflushed = logSegments(this.recoveryPoint, Long.MaxValue).toIterator
       var truncated = false
 
       while (unflushed.hasNext && !truncated) {
-        val segment = unflushed.next()
+        val segment = unflushed.next
         info(s"Recovering unflushed segment ${segment.baseOffset}")
         val truncatedBytes =
           try {
@@ -827,9 +748,7 @@ class Log(@volatile private var _dir: File,
         if (truncatedBytes > 0) {
           // we had an invalid message, delete all remaining log
           warn(s"Corruption found in segment ${segment.baseOffset}, truncating to offset ${segment.readNextOffset}")
-          removeAndDeleteSegments(unflushed.toList,
-            asyncDelete = true,
-            reason = LogRecovery)
+          removeAndDeleteSegments(unflushed.toList, asyncDelete = true)
           truncated = true
         }
       }
@@ -840,9 +759,7 @@ class Log(@volatile private var _dir: File,
       if (logEndOffset < logStartOffset) {
         warn(s"Deleting all segments because logEndOffset ($logEndOffset) is smaller than logStartOffset ($logStartOffset). " +
           "This could happen if segment files were deleted from the file system.")
-        removeAndDeleteSegments(logSegments,
-          asyncDelete = true,
-          reason = LogRecovery)
+        removeAndDeleteSegments(logSegments, asyncDelete = true)
       }
     }
 
@@ -948,12 +865,12 @@ class Log(@volatile private var _dir: File,
   private def loadProducersFromLog(producerStateManager: ProducerStateManager, records: Records): Unit = {
     val loadedProducers = mutable.Map.empty[Long, ProducerAppendInfo]
     val completedTxns = ListBuffer.empty[CompletedTxn]
-    records.batches.forEach { batch =>
+    records.batches.asScala.foreach { batch =>
       if (batch.hasProducerId) {
         val maybeCompletedTxn = updateProducers(batch,
           loadedProducers,
           firstOffsetMetadata = None,
-          origin = AppendOrigin.Replication)
+          isFromClient = false)
         maybeCompletedTxn.foreach(completedTxns += _)
       }
     }
@@ -1016,10 +933,9 @@ class Log(@volatile private var _dir: File,
         val renamedDir = new File(dir.getParent, name)
         Utils.atomicMoveWithFallback(dir.toPath, renamedDir.toPath)
         if (renamedDir != dir) {
-          _dir = renamedDir
-          _parentDir = renamedDir.getParent
-          logSegments.foreach(_.updateParentDir(renamedDir))
-          producerStateManager.updateParentDir(dir)
+          dir = renamedDir
+          logSegments.foreach(_.updateDir(renamedDir))
+          producerStateManager.logDir = dir
           // re-initialize leader epoch cache so that LeaderEpochCheckpointFile.checkpoint can correctly reference
           // the checkpoint file in renamed log directory
           initializeLeaderEpochCache()
@@ -1043,16 +959,14 @@ class Log(@volatile private var _dir: File,
    * Append this message set to the active segment of the log, assigning offsets and Partition Leader Epochs
    *
    * @param records The records to append
-   * @param origin Declares the origin of the append which affects required validations
+   * @param isFromClient Whether or not this append is from a producer
    * @param interBrokerProtocolVersion Inter-broker message protocol version
    * @throws KafkaStorageException If the append fails due to an I/O error.
    * @return Information about the appended messages including the first and last offset.
    */
-  def appendAsLeader(records: MemoryRecords,
-                     leaderEpoch: Int,
-                     origin: AppendOrigin = AppendOrigin.Client,
+  def appendAsLeader(records: MemoryRecords, leaderEpoch: Int, isFromClient: Boolean = true,
                      interBrokerProtocolVersion: ApiVersion = ApiVersion.latestVersion): LogAppendInfo = {
-    append(records, origin, interBrokerProtocolVersion, assignOffsets = true, leaderEpoch, ignoreRecordSize = false)
+    append(records, isFromClient, interBrokerProtocolVersion, assignOffsets = true, leaderEpoch)
   }
 
   /**
@@ -1063,13 +977,7 @@ class Log(@volatile private var _dir: File,
    * @return Information about the appended messages including the first and last offset.
    */
   def appendAsFollower(records: MemoryRecords): LogAppendInfo = {
-    append(records,
-      origin = AppendOrigin.Replication,
-      interBrokerProtocolVersion = ApiVersion.latestVersion,
-      assignOffsets = false,
-      leaderEpoch = -1,
-      // disable to check the validation of record size since the record is already accepted by leader.
-      ignoreRecordSize = true)
+    append(records, isFromClient = false, interBrokerProtocolVersion = ApiVersion.latestVersion, assignOffsets = false, leaderEpoch = -1)
   }
 
   /**
@@ -1079,24 +987,18 @@ class Log(@volatile private var _dir: File,
    * however if the assignOffsets=false flag is passed we will only check that the existing offsets are valid.
    *
    * @param records The log records to append
-   * @param origin Declares the origin of the append which affects required validations
+   * @param isFromClient Whether or not this append is from a producer
    * @param interBrokerProtocolVersion Inter-broker message protocol version
    * @param assignOffsets Should the log assign offsets to this message set or blindly apply what it is given
    * @param leaderEpoch The partition's leader epoch which will be applied to messages when offsets are assigned on the leader
-   * @param ignoreRecordSize true to skip validation of record size.
    * @throws KafkaStorageException If the append fails due to an I/O error.
    * @throws OffsetsOutOfOrderException If out of order offsets found in 'records'
    * @throws UnexpectedAppendOffsetException If the first or last offset in append is less than next offset
    * @return Information about the appended messages including the first and last offset.
    */
-  private def append(records: MemoryRecords,
-                     origin: AppendOrigin,
-                     interBrokerProtocolVersion: ApiVersion,
-                     assignOffsets: Boolean,
-                     leaderEpoch: Int,
-                     ignoreRecordSize: Boolean): LogAppendInfo = {
+  private def append(records: MemoryRecords, isFromClient: Boolean, interBrokerProtocolVersion: ApiVersion, assignOffsets: Boolean, leaderEpoch: Int): LogAppendInfo = {
     maybeHandleIOException(s"Error while appending records to $topicPartition in dir ${dir.getParent}") {
-      val appendInfo = analyzeAndValidateRecords(records, origin, ignoreRecordSize)
+      val appendInfo = analyzeAndValidateRecords(records, isFromClient = isFromClient)
 
       // return if we have no valid messages or if this is a duplicate of the last appended entry
       if (appendInfo.shallowCount == 0)
@@ -1115,7 +1017,6 @@ class Log(@volatile private var _dir: File,
           val now = time.milliseconds
           val validateAndOffsetAssignResult = try {
             LogValidator.validateMessagesAndAssignOffsets(validRecords,
-              topicPartition,
               offset,
               time,
               now,
@@ -1126,9 +1027,8 @@ class Log(@volatile private var _dir: File,
               config.messageTimestampType,
               config.messageTimestampDifferenceMaxMs,
               leaderEpoch,
-              origin,
-              interBrokerProtocolVersion,
-              brokerTopicStats)
+              isFromClient,
+              interBrokerProtocolVersion)
           } catch {
             case e: IOException =>
               throw new KafkaException(s"Error validating messages while appending to log $name", e)
@@ -1143,7 +1043,7 @@ class Log(@volatile private var _dir: File,
 
           // re-validate message sizes if there's a possibility that they have changed (due to re-compression or message
           // format conversion)
-          if (!ignoreRecordSize && validateAndOffsetAssignResult.messageSizeMaybeChanged) {
+          if (validateAndOffsetAssignResult.messageSizeMaybeChanged) {
             for (batch <- validRecords.batches.asScala) {
               if (batch.sizeInBytes > config.maxMessageSize) {
                 // we record the original message set size instead of the trimmed size
@@ -1181,7 +1081,7 @@ class Log(@volatile private var _dir: File,
         }
 
         // update the epoch cache with the epoch stamped onto the message by the leader
-        validRecords.batches.forEach { batch =>
+        validRecords.batches.asScala.foreach { batch =>
           if (batch.magic >= RecordBatch.MAGIC_VALUE_V2) {
             maybeAssignEpochStartOffset(batch.partitionLeaderEpoch, batch.baseOffset)
           } else {
@@ -1212,7 +1112,7 @@ class Log(@volatile private var _dir: File,
         // now that we have valid records, offsets assigned, and timestamps updated, we need to
         // validate the idempotent/transactional state of the producers and collect some metadata
         val (updatedProducers, completedTxns, maybeDuplicate) = analyzeAndValidateProducerState(
-          logOffsetMetadata, validRecords, origin)
+          logOffsetMetadata, validRecords, isFromClient)
 
         maybeDuplicate.foreach { duplicate =>
           appendInfo.firstOffset = Some(duplicate.firstOffset)
@@ -1305,22 +1205,22 @@ class Log(@volatile private var _dir: File,
   /**
    * Increment the log start offset if the provided offset is larger.
    */
-  def maybeIncrementLogStartOffset(newLogStartOffset: Long, reason: LogStartOffsetIncrementReason): Unit = {
+  def maybeIncrementLogStartOffset(newLogStartOffset: Long): Unit = {
+    if (newLogStartOffset > highWatermark)
+      throw new OffsetOutOfRangeException(s"Cannot increment the log start offset to $newLogStartOffset of partition $topicPartition " +
+        s"since it is larger than the high watermark $highWatermark")
+
     // We don't have to write the log start offset to log-start-offset-checkpoint immediately.
     // The deleteRecordsOffset may be lost only if all in-sync replicas of this broker are shutdown
     // in an unclean manner within log.flush.start.offset.checkpoint.interval.ms. The chance of this happening is low.
     maybeHandleIOException(s"Exception while increasing log start offset for $topicPartition to $newLogStartOffset in dir ${dir.getParent}") {
       lock synchronized {
-        if (newLogStartOffset > highWatermark)
-          throw new OffsetOutOfRangeException(s"Cannot increment the log start offset to $newLogStartOffset of partition $topicPartition " +
-            s"since it is larger than the high watermark $highWatermark")
-
         checkIfMemoryMappedBufferClosed()
         if (newLogStartOffset > logStartOffset) {
-          updateLogStartOffset(newLogStartOffset)
-          info(s"Incremented log start offset to $newLogStartOffset due to $reason")
+          info(s"Incrementing log start offset to $newLogStartOffset")
+          logStartOffset = newLogStartOffset
           leaderEpochCache.foreach(_.truncateFromStart(logStartOffset))
-          producerStateManager.onLogStartOffsetIncremented(newLogStartOffset)
+          producerStateManager.truncateHead(logStartOffset)
           maybeIncrementFirstUnstableOffset()
         }
       }
@@ -1329,7 +1229,7 @@ class Log(@volatile private var _dir: File,
 
   private def analyzeAndValidateProducerState(appendOffsetMetadata: LogOffsetMetadata,
                                               records: MemoryRecords,
-                                              origin: AppendOrigin):
+                                              isFromClient: Boolean):
   (mutable.Map[Long, ProducerAppendInfo], List[CompletedTxn], Option[BatchMetadata]) = {
     val updatedProducers = mutable.Map.empty[Long, ProducerAppendInfo]
     val completedTxns = ListBuffer.empty[CompletedTxn]
@@ -1341,7 +1241,7 @@ class Log(@volatile private var _dir: File,
 
         // if this is a client produce request, there will be up to 5 batches which could have been duplicated.
         // If we find a duplicate, we return the metadata of the appended batch to the client.
-        if (origin == AppendOrigin.Client) {
+        if (isFromClient) {
           maybeLastEntry.flatMap(_.findDuplicateBatch(batch)).foreach { duplicate =>
             return (updatedProducers, completedTxns.toList, Some(duplicate))
           }
@@ -1354,7 +1254,11 @@ class Log(@volatile private var _dir: File,
         else
           None
 
-        val maybeCompletedTxn = updateProducers(batch, updatedProducers, firstOffsetMetadata, origin)
+        val maybeCompletedTxn = updateProducers(batch,
+          updatedProducers,
+          firstOffsetMetadata = firstOffsetMetadata,
+          isFromClient = isFromClient)
+
         maybeCompletedTxn.foreach(completedTxns += _)
       }
 
@@ -1367,7 +1271,7 @@ class Log(@volatile private var _dir: File,
    * Validate the following:
    * <ol>
    * <li> each message matches its CRC
-   * <li> each message size is valid (if ignoreRecordSize is false)
+   * <li> each message size is valid
    * <li> that the sequence numbers of the incoming record batches are consistent with the existing state and with each other.
    * </ol>
    *
@@ -1381,9 +1285,7 @@ class Log(@volatile private var _dir: File,
    * <li> Whether any compression codec is used (if many are used, then the last one is given)
    * </ol>
    */
-  private def analyzeAndValidateRecords(records: MemoryRecords,
-                                        origin: AppendOrigin,
-                                        ignoreRecordSize: Boolean): LogAppendInfo = {
+  private def analyzeAndValidateRecords(records: MemoryRecords, isFromClient: Boolean): LogAppendInfo = {
     var shallowMessageCount = 0
     var validBytesCount = 0
     var firstOffset: Option[Long] = None
@@ -1397,7 +1299,7 @@ class Log(@volatile private var _dir: File,
 
     for (batch <- records.batches.asScala) {
       // we only validate V2 and higher to avoid potential compatibility issues with older clients
-      if (batch.magic >= RecordBatch.MAGIC_VALUE_V2 && origin == AppendOrigin.Client && batch.baseOffset != 0)
+      if (batch.magic >= RecordBatch.MAGIC_VALUE_V2 && isFromClient && batch.baseOffset != 0)
         throw new InvalidRecordException(s"The baseOffset of the record batch in the append to $topicPartition should " +
           s"be 0, but it is ${batch.baseOffset}")
 
@@ -1423,7 +1325,7 @@ class Log(@volatile private var _dir: File,
 
       // Check if the message sizes are valid.
       val batchSize = batch.sizeInBytes
-      if (!ignoreRecordSize && batchSize > config.maxMessageSize) {
+      if (batchSize > config.maxMessageSize) {
         brokerTopicStats.topicStats(topicPartition.topic).bytesRejectedRate.mark(records.sizeInBytes)
         brokerTopicStats.allTopicsStats.bytesRejectedRate.mark(records.sizeInBytes)
         throw new RecordTooLargeException(s"The record batch size in the append to $topicPartition is $batchSize bytes " +
@@ -1431,10 +1333,7 @@ class Log(@volatile private var _dir: File,
       }
 
       // check the validity of the message by checking CRC
-      if (!batch.isValid) {
-        brokerTopicStats.allTopicsStats.invalidMessageCrcRecordsPerSec.mark()
-        throw new CorruptRecordException(s"Record is corrupt (stored crc = ${batch.checksum()}) in topic partition $topicPartition.")
-      }
+      batch.ensureValid()
 
       if (batch.maxTimestamp > maxTimestamp) {
         maxTimestamp = batch.maxTimestamp
@@ -1458,9 +1357,9 @@ class Log(@volatile private var _dir: File,
   private def updateProducers(batch: RecordBatch,
                               producers: mutable.Map[Long, ProducerAppendInfo],
                               firstOffsetMetadata: Option[LogOffsetMetadata],
-                              origin: AppendOrigin): Option[CompletedTxn] = {
+                              isFromClient: Boolean): Option[CompletedTxn] = {
     val producerId = batch.producerId
-    val appendInfo = producers.getOrElseUpdate(producerId, producerStateManager.prepareUpdate(producerId, origin))
+    val appendInfo = producers.getOrElseUpdate(producerId, producerStateManager.prepareUpdate(producerId, isFromClient))
     appendInfo.append(batch, firstOffsetMetadata)
   }
 
@@ -1512,15 +1411,17 @@ class Log(@volatile private var _dir: File,
            isolation: FetchIsolation,
            minOneMessage: Boolean): FetchDataInfo = {
     maybeHandleIOException(s"Exception while reading from $topicPartition in dir ${dir.getParent}") {
-      trace(s"Reading maximum $maxLength bytes at offset $startOffset from log with " +
-        s"total length $size bytes")
+      trace(s"Reading $maxLength bytes from offset $startOffset of length $size bytes")
 
       val includeAbortedTxns = isolation == FetchTxnCommitted
 
       // Because we don't use the lock for reading, the synchronization is a little bit tricky.
       // We create the local variables to avoid race conditions with updates to the log.
       val endOffsetMetadata = nextOffsetMetadata
-      val endOffset = endOffsetMetadata.messageOffset
+      val endOffset = nextOffsetMetadata.messageOffset
+      if (startOffset == endOffset)
+        return emptyFetchDataInfo(endOffsetMetadata, includeAbortedTxns)
+
       var segmentEntry = segments.floorEntry(startOffset)
 
       // return error on attempt to read beyond the log end offset or read below log start offset
@@ -1529,14 +1430,12 @@ class Log(@volatile private var _dir: File,
           s"but we only have log segments in the range $logStartOffset to $endOffset.")
 
       val maxOffsetMetadata = isolation match {
-        case FetchLogEnd => endOffsetMetadata
+        case FetchLogEnd => nextOffsetMetadata
         case FetchHighWatermark => fetchHighWatermarkMetadata
         case FetchTxnCommitted => fetchLastStableOffsetMetadata
       }
 
-      if (startOffset == maxOffsetMetadata.messageOffset) {
-        return emptyFetchDataInfo(maxOffsetMetadata, includeAbortedTxns)
-      } else if (startOffset > maxOffsetMetadata.messageOffset) {
+      if (startOffset > maxOffsetMetadata.messageOffset) {
         val startOffsetMetadata = convertToOffsetMetadataOrThrow(startOffset)
         return emptyFetchDataInfo(startOffsetMetadata, includeAbortedTxns)
       }
@@ -1663,8 +1562,16 @@ class Log(@volatile private var _dir: File,
         return Some(new TimestampAndOffset(RecordBatch.NO_TIMESTAMP, logEndOffset, epochOptional))
       }
 
-      // We need to search the first segment whose largest timestamp is >= the target timestamp if there is one.
-      val targetSeg = segmentsCopy.find(_.largestTimestamp >= targetTimestamp)
+      val targetSeg = {
+        // Get all the segments whose largest timestamp is smaller than target timestamp
+        val earlierSegs = segmentsCopy.takeWhile(_.largestTimestamp < targetTimestamp)
+        // We need to search the first segment whose largest timestamp is greater than the target timestamp if there is one.
+        if (earlierSegs.length < segmentsCopy.length)
+          Some(segmentsCopy(earlierSegs.length))
+        else
+          None
+      }
+
       targetSeg.flatMap(_.findOffsetByTimestamp(targetTimestamp, logStartOffset))
     }
   }
@@ -1734,18 +1641,16 @@ class Log(@volatile private var _dir: File,
    *                  (if there is one) and returns true iff it is deletable
    * @return The number of segments deleted
    */
-  private def deleteOldSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean,
-                                reason: SegmentDeletionReason): Int = {
+  private def deleteOldSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean, reason: String): Int = {
     lock synchronized {
       val deletable = deletableSegments(predicate)
       if (deletable.nonEmpty)
-        deleteSegments(deletable, reason)
-      else
-        0
+        info(s"Found deletable segments with base offsets [${deletable.map(_.baseOffset).mkString(",")}] due to $reason")
+      deleteSegments(deletable)
     }
   }
 
-  private def deleteSegments(deletable: Iterable[LogSegment], reason: SegmentDeletionReason): Int = {
+  private def deleteSegments(deletable: Iterable[LogSegment]): Int = {
     maybeHandleIOException(s"Error while deleting segments for $topicPartition in dir ${dir.getParent}") {
       val numToDelete = deletable.size
       if (numToDelete > 0) {
@@ -1755,8 +1660,8 @@ class Log(@volatile private var _dir: File,
         lock synchronized {
           checkIfMemoryMappedBufferClosed()
           // remove the segments for lookups
-          removeAndDeleteSegments(deletable, asyncDelete = true, reason)
-          maybeIncrementLogStartOffset(segments.firstEntry.getValue.baseOffset, SegmentDeletion)
+          removeAndDeleteSegments(deletable, asyncDelete = true)
+          maybeIncrementLogStartOffset(segments.firstEntry.getValue.baseOffset)
         }
       }
       numToDelete
@@ -1817,18 +1722,14 @@ class Log(@volatile private var _dir: File,
   private def deleteRetentionMsBreachedSegments(): Int = {
     if (config.retentionMs < 0) return 0
     val startMs = time.milliseconds
-
-    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
-      startMs - segment.largestTimestamp > config.retentionMs
-    }
-
-    deleteOldSegments(shouldDelete, RetentionMsBreach)
+    deleteOldSegments((segment, _) => startMs - segment.largestTimestamp > config.retentionMs,
+      reason = s"retention time ${config.retentionMs}ms breach")
   }
 
   private def deleteRetentionSizeBreachedSegments(): Int = {
     if (config.retentionSize < 0 || size < config.retentionSize) return 0
     var diff = size - config.retentionSize
-    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
+    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]) = {
       if (diff - segment.size >= 0) {
         diff -= segment.size
         true
@@ -1837,15 +1738,14 @@ class Log(@volatile private var _dir: File,
       }
     }
 
-    deleteOldSegments(shouldDelete, RetentionSizeBreach)
+    deleteOldSegments(shouldDelete, reason = s"retention size in bytes ${config.retentionSize} breach")
   }
 
   private def deleteLogStartOffsetBreachedSegments(): Int = {
-    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
+    def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]) =
       nextSegmentOpt.exists(_.baseOffset <= logStartOffset)
-    }
 
-    deleteOldSegments(shouldDelete, StartOffsetBreach)
+    deleteOldSegments(shouldDelete, reason = s"log start offset $logStartOffset breach")
   }
 
   def isFuture: Boolean = dir.getName.endsWith(Log.FutureDirSuffix)
@@ -1936,7 +1836,7 @@ class Log(@volatile private var _dir: File,
                  s"=max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already " +
                  s"exists and is active with size 0. Size of time index: ${activeSegment.timeIndex.entries}," +
                  s" size of offset index: ${activeSegment.offsetIndex.entries}.")
-            removeAndDeleteSegments(Seq(activeSegment), asyncDelete = true, LogRoll)
+            removeAndDeleteSegments(Seq(activeSegment), asyncDelete = true)
           } else {
             throw new KafkaException(s"Trying to roll a new log segment for topic partition $topicPartition with start offset $newOffset" +
                                      s" =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already exists. Existing " +
@@ -1975,11 +1875,9 @@ class Log(@volatile private var _dir: File,
           initFileSize = initFileSize,
           preallocate = config.preallocate)
         addSegment(segment)
-
         // We need to update the segment base offset and append position data of the metadata when log rolls.
         // The next offset should not change.
         updateLogEndOffset(nextOffsetMetadata.messageOffset)
-
         // schedule an asynchronous flush of the old segment
         scheduler.schedule("flush-log", () => flush(newOffset), delay = 0L)
 
@@ -2024,6 +1922,39 @@ class Log(@volatile private var _dir: File,
     }
   }
 
+  /**
+   * Cleanup old producer snapshots after the recovery point is checkpointed. It is useful to retain
+   * the snapshots from the recent segments in case we need to truncate and rebuild the producer state.
+   * Otherwise, we would always need to rebuild from the earliest segment.
+   *
+   * More specifically:
+   *
+   * 1. We always retain the producer snapshot from the last two segments. This solves the common case
+   * of truncating to an offset within the active segment, and the rarer case of truncating to the previous segment.
+   *
+   * 2. We only delete snapshots for offsets less than the recovery point. The recovery point is checkpointed
+   * periodically and it can be behind after a hard shutdown. Since recovery starts from the recovery point, the logic
+   * of rebuilding the producer snapshots in one pass and without loading older segments is simpler if we always
+   * have a producer snapshot for all segments being recovered.
+   *
+   * Return the minimum snapshots offset that was retained.
+   */
+  def deleteSnapshotsAfterRecoveryPointCheckpoint(): Long = {
+    val minOffsetToRetain = minSnapshotsOffsetToRetain
+    producerStateManager.deleteSnapshotsBefore(minOffsetToRetain)
+    minOffsetToRetain
+  }
+
+  // Visible for testing, see `deleteSnapshotsAfterRecoveryPointCheckpoint()` for details
+  private[log] def minSnapshotsOffsetToRetain: Long = {
+    lock synchronized {
+      val twoSegmentsMinOffset = lowerSegment(activeSegment.baseOffset).getOrElse(activeSegment).baseOffset
+      // Prefer segment base offset
+      val recoveryPointOffset = lowerSegment(recoveryPoint).map(_.baseOffset).getOrElse(recoveryPoint)
+      math.min(recoveryPointOffset, twoSegmentsMinOffset)
+    }
+  }
+
   private def lowerSegment(offset: Long): Option[LogSegment] =
     Option(segments.lowerEntry(offset)).map(_.getValue)
 
@@ -2034,8 +1965,8 @@ class Log(@volatile private var _dir: File,
     maybeHandleIOException(s"Error while deleting log for $topicPartition in dir ${dir.getParent}") {
       lock synchronized {
         checkIfMemoryMappedBufferClosed()
-        producerExpireCheck.cancel(true)
-        removeAndDeleteSegments(logSegments, asyncDelete = false, LogDeletion)
+        removeLogMetrics()
+        removeAndDeleteSegments(logSegments, asyncDelete = false)
         leaderEpochCache.foreach(_.clear())
         Utils.delete(dir)
         // File handlers will be closed if this log is deleted
@@ -2071,7 +2002,7 @@ class Log(@volatile private var _dir: File,
    * @param targetOffset The offset to truncate to, an upper bound on all offsets in the log after truncation is complete.
    * @return True iff targetOffset < logEndOffset
    */
-  private[kafka] def truncateTo(targetOffset: Long): Boolean = {
+  private[log] def truncateTo(targetOffset: Long): Boolean = {
     maybeHandleIOException(s"Error while truncating log to offset $targetOffset for $topicPartition in dir ${dir.getParent}") {
       if (targetOffset < 0)
         throw new IllegalArgumentException(s"Cannot truncate partition $topicPartition to a negative offset (%d).".format(targetOffset))
@@ -2086,10 +2017,11 @@ class Log(@volatile private var _dir: File,
             truncateFullyAndStartAt(targetOffset)
           } else {
             val deletable = logSegments.filter(segment => segment.baseOffset > targetOffset)
-            removeAndDeleteSegments(deletable, asyncDelete = true, LogTruncation)
+            removeAndDeleteSegments(deletable, asyncDelete = true)
             activeSegment.truncateTo(targetOffset)
             updateLogEndOffset(targetOffset)
-            updateLogStartOffset(math.min(targetOffset, this.logStartOffset))
+            this.recoveryPoint = math.min(targetOffset, this.recoveryPoint)
+            this.logStartOffset = math.min(targetOffset, this.logStartOffset)
             leaderEpochCache.foreach(_.truncateFromEnd(targetOffset))
             loadProducerState(targetOffset, reloadFromCleanShutdown = false)
           }
@@ -2109,7 +2041,7 @@ class Log(@volatile private var _dir: File,
       debug(s"Truncate and start at offset $newOffset")
       lock synchronized {
         checkIfMemoryMappedBufferClosed()
-        removeAndDeleteSegments(logSegments, asyncDelete = true, LogTruncation)
+        removeAndDeleteSegments(logSegments, asyncDelete = true)
         addSegment(LogSegment.open(dir,
           baseOffset = newOffset,
           config = config,
@@ -2123,7 +2055,9 @@ class Log(@volatile private var _dir: File,
         producerStateManager.truncate()
         producerStateManager.updateMapEndOffset(newOffset)
         maybeIncrementFirstUnstableOffset()
-        updateLogStartOffset(newOffset)
+
+        this.recoveryPoint = math.min(newOffset, this.recoveryPoint)
+        this.logStartOffset = newOffset
       }
     }
   }
@@ -2145,31 +2079,14 @@ class Log(@volatile private var _dir: File,
 
   /**
    * Get all segments beginning with the segment that includes "from" and ending with the segment
-   * that includes up to "to-1" or the end of the log (if to > logEndOffset).
+   * that includes up to "to-1" or the end of the log (if to > logEndOffset)
    */
   def logSegments(from: Long, to: Long): Iterable[LogSegment] = {
-    if (from == to) {
-      // Handle non-segment-aligned empty sets
-      List.empty[LogSegment]
-    } else if (to < from) {
-      throw new IllegalArgumentException(s"Invalid log segment range: requested segments in $topicPartition " +
-        s"from offset $from which is greater than limit offset $to")
-    } else {
-      lock synchronized {
-        val view = Option(segments.floorKey(from)).map { floor =>
-          segments.subMap(floor, to)
-        }.getOrElse(segments.headMap(to))
-        view.values.asScala
-      }
-    }
-  }
-
-  def nonActiveLogSegmentsFrom(from: Long): Iterable[LogSegment] = {
     lock synchronized {
-      if (from > activeSegment.baseOffset)
-        Seq.empty
-      else
-        logSegments(from, activeSegment.baseOffset)
+      val view = Option(segments.floorKey(from)).map { floor =>
+        segments.subMap(floor, to)
+      }.getOrElse(segments.headMap(to))
+      view.values.asScala
     }
   }
 
@@ -2210,21 +2127,16 @@ class Log(@volatile private var _dir: File,
    * @param segments The log segments to schedule for deletion
    * @param asyncDelete Whether the segment files should be deleted asynchronously
    */
-  private def removeAndDeleteSegments(segments: Iterable[LogSegment],
-                                      asyncDelete: Boolean,
-                                      reason: SegmentDeletionReason): Unit = {
-    if (segments.nonEmpty) {
-      lock synchronized {
-        // As most callers hold an iterator into the `segments` collection and `removeAndDeleteSegment` mutates it by
-        // removing the deleted segment, we should force materialization of the iterator here, so that results of the
-        // iteration remain valid and deterministic.
-        val toDelete = segments.toList
-        reason.logReason(this, toDelete)
-        toDelete.foreach { segment =>
-          this.segments.remove(segment.baseOffset)
-        }
-        deleteSegmentFiles(toDelete, asyncDelete)
+  private def removeAndDeleteSegments(segments: Iterable[LogSegment], asyncDelete: Boolean): Unit = {
+    lock synchronized {
+      // As most callers hold an iterator into the `segments` collection and `removeAndDeleteSegment` mutates it by
+      // removing the deleted segment, we should force materialization of the iterator here, so that results of the
+      // iteration remain valid and deterministic.
+      val toDelete = segments.toList
+      toDelete.foreach { segment =>
+        this.segments.remove(segment.baseOffset)
       }
+      deleteSegmentFiles(toDelete, asyncDelete)
     }
   }
 
@@ -2238,24 +2150,22 @@ class Log(@volatile private var _dir: File,
    *
    * @throws IOException if the file can't be renamed and still exists
    */
-  private def deleteSegmentFiles(segments: Iterable[LogSegment], asyncDelete: Boolean, deleteProducerStateSnapshots: Boolean = true): Unit = {
+  private def deleteSegmentFiles(segments: Iterable[LogSegment], asyncDelete: Boolean): Unit = {
     segments.foreach(_.changeFileSuffixes("", Log.DeletedFileSuffix))
 
     def deleteSegments(): Unit = {
-      info(s"Deleting segment files ${segments.mkString(",")}")
+      info(s"Deleting segments $segments")
       maybeHandleIOException(s"Error while deleting segments for $topicPartition in dir ${dir.getParent}") {
-        segments.foreach { segment =>
-          segment.deleteIfExists()
-          if (deleteProducerStateSnapshots)
-            producerStateManager.removeAndDeleteSnapshot(segment.baseOffset)
-        }
+        segments.foreach(_.deleteIfExists())
       }
     }
 
-    if (asyncDelete)
-      scheduler.schedule("delete-file", () => deleteSegments(), delay = config.fileDeleteDelayMs)
-    else
+    if (asyncDelete) {
+      info(s"Scheduling segments for deletion $segments")
+      scheduler.schedule("delete-file", () => deleteSegments, delay = config.fileDeleteDelayMs)
+    } else {
       deleteSegments()
+    }
   }
 
   /**
@@ -2304,24 +2214,18 @@ class Log(@volatile private var _dir: File,
       if (!isRecoveredSwapFile)
         sortedNewSegments.reverse.foreach(_.changeFileSuffixes(Log.CleanedFileSuffix, Log.SwapFileSuffix))
       sortedNewSegments.reverse.foreach(addSegment(_))
-      val newSegmentBaseOffsets = sortedNewSegments.map(_.baseOffset).toSet
 
       // delete the old files
       for (seg <- sortedOldSegments) {
         // remove the index entry
         if (seg.baseOffset != sortedNewSegments.head.baseOffset)
           segments.remove(seg.baseOffset)
-        // delete segment files, but do not delete producer state for segment objects which are being replaced.
-        deleteSegmentFiles(List(seg), asyncDelete = true, deleteProducerStateSnapshots = !newSegmentBaseOffsets.contains(seg.baseOffset))
+        // delete segment files
+        deleteSegmentFiles(List(seg), asyncDelete = true)
       }
       // okay we are safe now, remove the swap suffix
       sortedNewSegments.foreach(_.changeFileSuffixes(Log.SwapFileSuffix, ""))
     }
-  }
-
-  private[log] def removeEmptySegmentsAndMaybeUpdateLogStartOffset(segments: Seq[LogSegment]): Unit = lock synchronized {
-    removeAndDeleteSegments(segments.filter(_.size == 0), true)
-    maybeIncrementLogStartOffset(this.segments.firstKey, SegmentDeletion)
   }
 
   /**
@@ -2342,10 +2246,10 @@ class Log(@volatile private var _dir: File,
    * remove deleted log metrics
    */
   private[log] def removeLogMetrics(): Unit = {
-    removeMetric(LogMetricNames.NumLogSegments, tags)
-    removeMetric(LogMetricNames.LogStartOffset, tags)
-    removeMetric(LogMetricNames.LogEndOffset, tags)
-    removeMetric(LogMetricNames.Size, tags)
+    removeMetric("NumLogSegments", tags)
+    removeMetric("LogStartOffset", tags)
+    removeMetric("LogEndOffset", tags)
+    removeMetric("Size", tags)
   }
 
   /**
@@ -2429,7 +2333,7 @@ class Log(@volatile private var _dir: File,
 
       // replace old segment with new ones
       info(s"Replacing overflowed segment $segment with split segments $newSegments")
-      replaceSegments(newSegments.toList, List(segment))
+      replaceSegments(newSegments.toList, List(segment), isRecoveredSwapFile = false)
       newSegments.toList
     } catch {
       case e: Exception =>
@@ -2668,76 +2572,4 @@ object Log {
   private def isLogFile(file: File): Boolean =
     file.getPath.endsWith(LogFileSuffix)
 
-}
-
-object LogMetricNames {
-  val NumLogSegments: String = "NumLogSegments"
-  val LogStartOffset: String = "LogStartOffset"
-  val LogEndOffset: String = "LogEndOffset"
-  val Size: String = "Size"
-
-  def allMetricNames: List[String] = {
-    List(NumLogSegments, LogStartOffset, LogEndOffset, Size)
-  }
-}
-
-sealed trait SegmentDeletionReason {
-  def logReason(log: Log, toDelete: List[LogSegment]): Unit
-}
-
-case object RetentionMsBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    val retentionMs = log.config.retentionMs
-    toDelete.foreach { segment =>
-      segment.largestRecordTimestamp match {
-        case Some(_) =>
-          log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the largest " +
-            s"record timestamp in the segment")
-        case None =>
-          log.info(s"Deleting segment $segment due to retention time ${retentionMs}ms breach based on the " +
-            s"last modified time of the segment")
-      }
-    }
-  }
-}
-
-case object RetentionSizeBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    var size = log.size
-    toDelete.foreach { segment =>
-      size -= segment.size
-      log.info(s"Deleting segment $segment due to retention size ${log.config.retentionSize} breach. Log size " +
-        s"after deletion will be $size.")
-    }
-  }
-}
-
-case object StartOffsetBreach extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments due to log start offset ${log.logStartOffset} breach: ${toDelete.mkString(",")}")
-  }
-}
-
-case object LogRecovery extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log recovery: ${toDelete.mkString(",")}")
-  }
-}
-
-case object LogTruncation extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log truncation: ${toDelete.mkString(",")}")
-  }
-}
-
-case object LogRoll extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as part of log roll: ${toDelete.mkString(",")}")
-  }
-}
-
-case object LogDeletion extends SegmentDeletionReason {
-  override def logReason(log: Log, toDelete: List[LogSegment]): Unit = {
-    log.info(s"Deleting segments as the log has been deleted: ${toDelete.mkString(",")}")
-  }
 }

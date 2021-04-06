@@ -17,14 +17,14 @@
 
 package kafka.server
 
+import kafka.utils.Logging
 import kafka.cluster.BrokerEndPoint
 import kafka.metrics.KafkaMetricsGroup
-import kafka.utils.Implicits._
-import kafka.utils.Logging
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.utils.Utils
 
-import scala.collection.{Map, Set, mutable}
+import scala.collection.mutable
+import scala.collection.{Map, Set}
 
 abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: String, clientId: String, numFetchers: Int)
   extends Logging with KafkaMetricsGroup {
@@ -36,43 +36,44 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   val failedPartitions = new FailedPartitions
   this.logIdent = "[" + name + "] "
 
-  private val tags = Map("clientId" -> clientId)
+  newGauge[Long](
+    "MaxLag",
+    () => {
+      fetcherThreadMap.foldLeft(0L)((curMaxAll, fetcherThreadMapEntry) => {
+        fetcherThreadMapEntry._2.fetcherLagStats.stats.foldLeft(0L)((curMaxThread, fetcherLagStatsEntry) => {
+          curMaxThread.max(fetcherLagStatsEntry._2.lag)
+        }).max(curMaxAll)
+      })
+    },
+    Map("clientId" -> clientId)
+  )
 
-  newGauge("MaxLag", () => {
-    // current max lag across all fetchers/topics/partitions
-    fetcherThreadMap.values.foldLeft(0L) { (curMaxLagAll, fetcherThread) =>
-      val maxLagThread = fetcherThread.fetcherLagStats.stats.values.foldLeft(0L)((curMaxLagThread, lagMetrics) =>
-        math.max(curMaxLagThread, lagMetrics.lag))
-      math.max(curMaxLagAll, maxLagThread)
-    }
-  }, tags)
-
-  newGauge("MinFetchRate", () => {
+  newGauge[Double](
+    "MinFetchRate",
     // current min fetch rate across all fetchers/topics/partitions
-    val headRate = fetcherThreadMap.values.headOption.map(_.fetcherStats.requestRate.oneMinuteRate).getOrElse(0.0)
-    fetcherThreadMap.values.foldLeft(headRate)((curMinAll, fetcherThread) =>
-      math.min(curMinAll, fetcherThread.fetcherStats.requestRate.oneMinuteRate))
-  }, tags)
+    () => {
+      val headRate: Double =
+        fetcherThreadMap.headOption.map(_._2.fetcherStats.requestRate.getOneMinuteRate).getOrElse(0)
 
-  newGauge("FailedPartitionsCount", () => failedPartitions.size, tags)
+      fetcherThreadMap.foldLeft(headRate)((curMinAll, fetcherThreadMapEntry) => {
+        fetcherThreadMapEntry._2.fetcherStats.requestRate.getOneMinuteRate.min(curMinAll)
+      })
+    },
+    Map("clientId" -> clientId)
+  )
 
-  newGauge("DeadThreadCount", () => deadThreadCount, tags)
-
-  private[server] def deadThreadCount: Int = lock synchronized { fetcherThreadMap.values.count(_.isThreadFailed) }
+  val failedPartitionsCount = newGauge[Int]("FailedPartitionsCount", () => failedPartitions.size,
+    Map("clientId" -> clientId)
+  )
 
   def resizeThreadPool(newSize: Int): Unit = {
     def migratePartitions(newSize: Int): Unit = {
-      fetcherThreadMap.forKeyValue { (id, thread) =>
-        val partitionStates = removeFetcherForPartitions(thread.partitions)
+      fetcherThreadMap.foreach { case (id, thread) =>
+        val removedPartitions = thread.partitionsAndOffsets
+        removeFetcherForPartitions(removedPartitions.keySet)
         if (id.fetcherId >= newSize)
           thread.shutdown()
-        val fetchStates = partitionStates.map { case (topicPartition, currentFetchState) =>
-          val initialFetchState = InitialFetchState(thread.sourceBroker,
-            currentLeaderEpoch = currentFetchState.currentLeaderEpoch,
-            initOffset = currentFetchState.fetchOffset)
-          topicPartition -> initialFetchState
-        }
-        addFetcherForPartitions(fetchStates)
+        addFetcherForPartitions(removedPartitions)
       }
     }
     lock synchronized {
@@ -125,8 +126,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
         BrokerAndFetcherId(brokerAndInitialFetchOffset.leader, getFetcherId(topicPartition))
       }
 
-      def addAndStartFetcherThread(brokerAndFetcherId: BrokerAndFetcherId,
-                                   brokerIdAndFetcherId: BrokerIdAndFetcherId): T = {
+      def addAndStartFetcherThread(brokerAndFetcherId: BrokerAndFetcherId, brokerIdAndFetcherId: BrokerIdAndFetcherId): AbstractFetcherThread = {
         val fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
         fetcherThreadMap.put(brokerIdAndFetcherId, fetcherThread)
         fetcherThread.start()
@@ -146,27 +146,26 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
             addAndStartFetcherThread(brokerAndFetcherId, brokerIdAndFetcherId)
         }
 
-        addPartitionsToFetcherThread(fetcherThread, initialFetchOffsets)
+        val initialOffsetAndEpochs = initialFetchOffsets.map { case (tp, brokerAndInitOffset) =>
+          tp -> OffsetAndEpoch(brokerAndInitOffset.initOffset, brokerAndInitOffset.currentLeaderEpoch)
+        }
+
+        fetcherThread.addPartitions(initialOffsetAndEpochs)
+        info(s"Added fetcher to broker ${brokerAndFetcherId.broker} for partitions $initialOffsetAndEpochs")
+
+        failedPartitions.removeAll(partitionAndOffsets.keySet)
       }
     }
   }
 
-  protected def addPartitionsToFetcherThread(fetcherThread: T,
-                                             initialOffsetAndEpochs: collection.Map[TopicPartition, InitialFetchState]): Unit = {
-    fetcherThread.addPartitions(initialOffsetAndEpochs)
-    info(s"Added fetcher to broker ${fetcherThread.sourceBroker.id} for partitions $initialOffsetAndEpochs")
-  }
-
-  def removeFetcherForPartitions(partitions: Set[TopicPartition]): Map[TopicPartition, PartitionFetchState] = {
-    val fetchStates = mutable.Map.empty[TopicPartition, PartitionFetchState]
+  def removeFetcherForPartitions(partitions: Set[TopicPartition]): Unit = {
     lock synchronized {
       for (fetcher <- fetcherThreadMap.values)
-        fetchStates ++= fetcher.removePartitions(partitions)
+        fetcher.removePartitions(partitions)
       failedPartitions.removeAll(partitions)
     }
     if (partitions.nonEmpty)
       info(s"Removed fetcher for partitions $partitions")
-    fetchStates
   }
 
   def shutdownIdleFetcherThreads(): Unit = {
@@ -184,11 +183,11 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
 
   def closeAllFetchers(): Unit = {
     lock synchronized {
-      for ((_, fetcher) <- fetcherThreadMap) {
+      for ( (_, fetcher) <- fetcherThreadMap) {
         fetcher.initiateShutdown()
       }
 
-      for ((_, fetcher) <- fetcherThreadMap) {
+      for ( (_, fetcher) <- fetcherThreadMap) {
         fetcher.shutdown()
       }
       fetcherThreadMap.clear()

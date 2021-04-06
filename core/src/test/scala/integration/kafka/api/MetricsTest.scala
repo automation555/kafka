@@ -17,20 +17,20 @@ import java.util.{Locale, Properties}
 import kafka.log.LogConfig
 import kafka.server.{KafkaConfig, KafkaServer}
 import kafka.utils.{JaasTestUtils, TestUtils}
-import com.yammer.metrics.core.{Gauge, Histogram, Meter}
-import kafka.metrics.KafkaYammerMetrics
+import com.codahale.metrics.{Gauge, Histogram, Meter}
+import javax.management.ObjectName
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.{Metric, MetricName, TopicPartition}
 import org.apache.kafka.common.config.SaslConfigs
-import org.apache.kafka.common.errors.{InvalidTopicException, UnknownTopicOrPartitionException}
+import org.apache.kafka.common.errors.InvalidTopicException
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.apache.kafka.common.security.authenticator.TestJaasConfig
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
-import org.junit.jupiter.api.Assertions._
+import org.junit.{After, Before, Test}
+import org.junit.Assert._
+import org.scalatest.Assertions.fail
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 class MetricsTest extends IntegrationTestHarness with SaslSetup {
 
@@ -42,7 +42,7 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
   private val kafkaServerJaasEntryName =
     s"${listenerName.value.toLowerCase(Locale.ROOT)}.${JaasTestUtils.KafkaServerContextName}"
   this.serverConfig.setProperty(KafkaConfig.ZkEnableSecureAclsProp, "false")
-  this.serverConfig.setProperty(KafkaConfig.AutoCreateTopicsEnableProp, "false")
+  this.serverConfig.setProperty(KafkaConfig.AutoCreateTopicsEnableDoc, "false")
   this.producerConfig.setProperty(ProducerConfig.LINGER_MS_CONFIG, "10")
   // intentionally slow message down conversion via gzip compression to ensure we can measure the time it takes
   this.producerConfig.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, "gzip")
@@ -52,14 +52,14 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
   override protected val clientSaslProperties =
     Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     verifyNoRequestMetrics("Request metrics not removed in a previous test")
     startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), KafkaSasl, kafkaServerJaasEntryName))
     super.setUp()
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     super.tearDown()
     closeSasl()
@@ -113,8 +113,8 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
   // Create a producer that fails authentication to verify authentication failure metrics
   private def generateAuthenticationFailure(tp: TopicPartition): Unit = {
     val saslProps = new Properties()
-    saslProps.put(SaslConfigs.SASL_MECHANISM, kafkaClientSaslMechanism)
-    saslProps.put(SaslConfigs.SASL_JAAS_CONFIG, TestJaasConfig.jaasConfigProperty(kafkaClientSaslMechanism, "badUser", "badPass"))
+     // Temporary limit to reduce blocking before KIP-152 client-side changes are merged
+    saslProps.put(SaslConfigs.SASL_MECHANISM, "SCRAM-SHA-256")
     // Use acks=0 to verify error metric when connection is closed without a response
     val producer = TestUtils.createProducer(brokerList,
       acks = 0,
@@ -144,7 +144,8 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
       val name = rateMetricName.name
       val totalExists = exists(name.replace("-rate", "-total"), rateMetricName, allMetricNames)
       val totalTimeExists = exists(name.replace("-rate", "-time"), rateMetricName, allMetricNames)
-      assertTrue(totalExists || totalTimeExists, s"No cumulative count/time metric for rate metric $rateMetricName")
+      assertTrue(s"No cumulative count/time metric for rate metric $rateMetricName",
+          totalExists || totalTimeExists)
     }
 
     val consumerMetricNames = consumer.metrics.keySet.asScala.toSet
@@ -170,10 +171,10 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
         assertEquals(1, matchingMetrics.size)
         val metric = matchingMetrics.head
         val value = metric.metricValue
-        assertNotNull(value, s"$entity metric not recorded $name")
-        assertNotNull(value.isInstanceOf[String] && value.asInstanceOf[String].nonEmpty,
-          s"$entity metric $name should be a non-empty String")
-        assertTrue(metric.metricName.tags.containsKey("client-id"), "Client-id not specified")
+        assertNotNull(s"$entity metric not recorded $name", value)
+        assertNotNull(s"$entity metric $name should be a non-empty String",
+            value.isInstanceOf[String] && !value.asInstanceOf[String].isEmpty)
+        assertTrue("Client-id not specified", metric.metricName.tags.containsKey("client-id"))
       }
     }
   }
@@ -191,60 +192,56 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
 
   private def verifyBrokerMessageConversionMetrics(server: KafkaServer, recordSize: Int, tp: TopicPartition): Unit = {
     val requestMetricsPrefix = "kafka.network:type=RequestMetrics"
-    val requestBytes = verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Produce")
-    val tempBytes = verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=TemporaryMemoryBytes,request=Produce")
-    assertTrue(tempBytes >= recordSize, s"Unexpected temporary memory size requestBytes $requestBytes tempBytes $tempBytes")
+    val requestBytes = verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Produce")
+    val tempBytes = verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=TemporaryMemoryBytes,request=Produce")
+    assertTrue(s"Unexpected temporary memory size requestBytes $requestBytes tempBytes $tempBytes",
+        tempBytes >= recordSize)
 
-    verifyYammerMetricRecorded(s"kafka.server:type=BrokerTopicMetrics,name=ProduceMessageConversionsPerSec")
-    verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=MessageConversionsTimeMs,request=Produce", value => value > 0.0)
-    verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Fetch")
-    verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=TemporaryMemoryBytes,request=Fetch", value => value == 0.0)
+    verifyDropwizardMetricRecorded(s"kafka.server:type=BrokerTopicMetrics,name=ProduceMessageConversionsPerSec")
+    verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=MessageConversionsTimeMs,request=Produce", value => value > 0.0)
+    verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Fetch")
+    verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=TemporaryMemoryBytes,request=Fetch", value => value == 0.0)
 
      // request size recorded for all request types, check one
-    verifyYammerMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Metadata")
+    verifyDropwizardMetricRecorded(s"$requestMetricsPrefix,name=RequestBytes,request=Metadata")
   }
 
   private def verifyBrokerZkMetrics(server: KafkaServer, topic: String): Unit = {
-    val histogram = yammerHistogram("kafka.server:type=ZooKeeperClientMetrics,name=ZooKeeperRequestLatencyMs")
+    val histogram = dropwizardHistogram("kafka.server:type=ZooKeeperClientMetrics,name=ZooKeeperRequestLatencyMs")
     // Latency is rounded to milliseconds, so check the count instead
-    val initialCount = histogram.count
+    val initialCount = histogram.getCount
     servers.head.zkClient.getLeaderForPartition(new TopicPartition(topic, 0))
-    val newCount = histogram.count
-    assertTrue(newCount > initialCount, "ZooKeeper latency not recorded")
+    val newCount = histogram.getCount
+    assertTrue("ZooKeeper latency not recorded",  newCount > initialCount)
 
-    val min = histogram.min
-    assertTrue(min >= 0, s"Min latency should not be negative: $min")
-
-    assertEquals("CONNECTED", yammerMetricValue("SessionState"), s"Unexpected ZK state")
+    assertEquals(s"Unexpected ZK state", "CONNECTED", dropwizardMetricValue("SessionState"))
   }
 
   private def verifyBrokerErrorMetrics(server: KafkaServer): Unit = {
 
-    def errorMetricCount = KafkaYammerMetrics.defaultRegistry.allMetrics.keySet.asScala.filter(_.getName == "ErrorsPerSec").size
+    def errorMetricCount = kafka.metrics.getKafkaMetrics.keySet.count(ObjectName.getInstance(_).getKeyProperty("name") == "ErrorsPerSec")
 
     val startErrorMetricCount = errorMetricCount
     val errorMetricPrefix = "kafka.network:type=RequestMetrics,name=ErrorsPerSec"
-    verifyYammerMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=NONE")
+    verifyDropwizardMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=NONE")
 
-    val consumer = createConsumer()
     try {
+      val consumer = createConsumer()
       consumer.partitionsFor("12{}!")
     } catch {
       case _: InvalidTopicException => // expected
     }
-    verifyYammerMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=INVALID_TOPIC_EXCEPTION")
+    verifyDropwizardMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=INVALID_TOPIC_EXCEPTION")
 
     // Check that error metrics are registered dynamically
     val currentErrorMetricCount = errorMetricCount
     assertEquals(startErrorMetricCount + 1, currentErrorMetricCount)
-    assertTrue(currentErrorMetricCount < 10, s"Too many error metrics $currentErrorMetricCount")
+    assertTrue(s"Too many error metrics $currentErrorMetricCount" , currentErrorMetricCount < 10)
 
-    try {
-      consumer.partitionsFor("non-existing-topic")
-    } catch {
-      case _: UnknownTopicOrPartitionException => // expected
-    }
-    verifyYammerMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=UNKNOWN_TOPIC_OR_PARTITION")
+    // Verify that error metric is updated with producer acks=0 when no response is sent
+    val producer = createProducer()
+    sendRecords(producer, numRecords = 1, recordSize = 100, new TopicPartition("non-existent", 0))
+    verifyDropwizardMetricRecorded(s"$errorMetricPrefix,request=Metadata,error=LEADER_NOT_AVAILABLE")
   }
 
   private def verifyKafkaMetric[T](name: String, metrics: java.util.Map[MetricName, _ <: Metric], entity: String,
@@ -252,7 +249,7 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
     val matchingMetrics = metrics.asScala.filter {
       case (metricName, _) => metricName.name == name && group.forall(_ == metricName.group)
     }
-    assertTrue(matchingMetrics.nonEmpty, s"Metric not found $name")
+    assertTrue(s"Metric not found $name", matchingMetrics.nonEmpty)
     verify(matchingMetrics.values)
   }
 
@@ -267,41 +264,41 @@ class MetricsTest extends IntegrationTestHarness with SaslSetup {
   private def verifyKafkaMetricRecorded(name: String, metrics: java.util.Map[MetricName, _ <: Metric], entity: String,
       group: Option[String] = None): Unit = {
     val value = maxKafkaMetricValue(name, metrics, entity, group)
-    assertTrue(value > 0.0, s"$entity metric not recorded correctly for $name value $value")
+    assertTrue(s"$entity metric not recorded correctly for $name value $value", value > 0.0)
   }
 
-  private def yammerMetricValue(name: String): Any = {
-    val allMetrics = KafkaYammerMetrics.defaultRegistry.allMetrics.asScala
-    val (_, metric) = allMetrics.find { case (n, _) => n.getMBeanName.endsWith(name) }
-      .getOrElse(fail(s"Unable to find broker metric $name: allMetrics: ${allMetrics.keySet.map(_.getMBeanName)}"))
+  private def dropwizardMetricValue(name: String): Any = {
+    val allMetrics = kafka.metrics.getKafkaMetrics
+    val (_, metric) = allMetrics.find { case (n, _) => n.endsWith(name) }
+      .getOrElse(fail(s"Unable to find broker metric $name: allMetrics: ${allMetrics.keySet}"))
     metric match {
-      case m: Meter => m.count.toDouble
-      case m: Histogram => m.max
-      case m: Gauge[_] => m.value
+      case m: Meter => m.getCount
+      case m: Histogram => m.getSnapshot.getMax
+      case m: Gauge[_] => m.getValue
       case m => fail(s"Unexpected broker metric of class ${m.getClass}")
     }
   }
 
-  private def yammerHistogram(name: String): Histogram = {
-    val allMetrics = KafkaYammerMetrics.defaultRegistry.allMetrics.asScala
-    val (_, metric) = allMetrics.find { case (n, _) => n.getMBeanName.endsWith(name) }
-      .getOrElse(fail(s"Unable to find broker metric $name: allMetrics: ${allMetrics.keySet.map(_.getMBeanName)}"))
+  private def dropwizardHistogram(name: String): Histogram = {
+    val allMetrics = kafka.metrics.getKafkaMetrics
+    val (_, metric) = allMetrics.find { case (n, _) => n.endsWith(name) }
+      .getOrElse(fail(s"Unable to find broker metric $name: allMetrics: ${allMetrics.keySet}"))
     metric match {
       case m: Histogram => m
-      case m => throw new AssertionError(s"Unexpected broker metric of class ${m.getClass}")
+      case m => fail(s"Unexpected broker metric of class ${m.getClass}")
     }
   }
 
-  private def verifyYammerMetricRecorded(name: String, verify: Double => Boolean = d => d > 0): Double = {
-    val metricValue = yammerMetricValue(name).asInstanceOf[Double]
-    assertTrue(verify(metricValue), s"Broker metric not recorded correctly for $name value $metricValue")
+  private def verifyDropwizardMetricRecorded(name: String, verify: Long => Boolean = d => d > 0): Long = {
+    val metricValue = dropwizardMetricValue(name).asInstanceOf[Long]
+    assertTrue(s"Broker metric not recorded correctly for $name value $metricValue", verify(metricValue))
     metricValue
   }
 
   private def verifyNoRequestMetrics(errorMessage: String): Unit = {
-    val metrics = KafkaYammerMetrics.defaultRegistry.allMetrics.asScala.filter { case (n, _) =>
-      n.getMBeanName.startsWith("kafka.network:type=RequestMetrics")
+    val metrics = kafka.metrics.getKafkaMetrics.filter { case (n, _) =>
+      n.startsWith("kafka.network:type=RequestMetrics")
     }
-    assertTrue(metrics.isEmpty, s"$errorMessage: ${metrics.keys}")
+    assertTrue(s"$errorMessage: ${metrics.keys}", metrics.isEmpty)
   }
 }

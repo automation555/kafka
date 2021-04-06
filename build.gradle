@@ -667,6 +667,7 @@ project(':core') {
     compile libs.jacksonJDK8Datatypes
     compile libs.joptSimple
     compile libs.metrics
+    compile libs.metricsJmx
     compile libs.scalaCollectionCompat
     compile libs.scalaJava8Compat
     compile libs.scalaLibrary
@@ -681,7 +682,6 @@ project(':core') {
     }
     // ZooKeeperMain depends on commons-cli but declares the dependency as `provided`
     compile libs.commonsCli
-    compile libs.mx4jtools
 
     compileOnly libs.log4j
 
@@ -1378,6 +1378,18 @@ project(':streams:upgrade-system-tests-22') {
 
   dependencies {
     testCompile libs.kafkaStreams_22
+  }
+
+  systemTestLibs {
+    dependsOn testJar
+  }
+}
+
+project(':streams:upgrade-system-tests-23') {
+  archivesBaseName = "kafka-streams-upgrade-system-tests-23"
+
+  dependencies {
+    testCompile libs.kafkaStreams_23
   }
 
   systemTestLibs {

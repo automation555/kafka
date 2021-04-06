@@ -48,7 +48,7 @@ class LogSegment(val log: FileMessageSet,
                  val rollJitterMs: Long,
                  time: Time) extends Logging {
 
-  var created = time.milliseconds
+  var created = time.absoluteMilliseconds
 
   /* the number of bytes since we last added an entry in the offset index */
   private var bytesSinceLastIndexEntry = 0
@@ -184,7 +184,7 @@ class LogSegment(val log: FileMessageSet,
               case NoCompressionCodec =>
                 entry.offset
               case _ =>
-                ByteBufferMessageSet.deepIterator(entry).next().offset
+                ByteBufferMessageSet.deepIterator(entry.message).next().offset
           }
           index.append(startOffset, validBytes)
           lastIndexEntry = validBytes
@@ -219,7 +219,7 @@ class LogSegment(val log: FileMessageSet,
     index.resize(index.maxIndexSize)
     val bytesTruncated = log.truncateTo(mapping.position)
     if(log.sizeInBytes == 0)
-      created = time.milliseconds
+      created = time.absoluteMilliseconds
     bytesSinceLastIndexEntry = 0
     bytesTruncated
   }
@@ -259,7 +259,7 @@ class LogSegment(val log: FileMessageSet,
 
     def kafkaStorageException(fileType: String, e: IOException) =
       new KafkaStorageException(s"Failed to change the $fileType file suffix from $oldSuffix to $newSuffix for log segment $baseOffset", e)
-    close()
+
     try log.renameTo(new File(CoreUtils.replaceSuffix(log.file.getPath, oldSuffix, newSuffix)))
     catch {
       case e: IOException => throw kafkaStorageException("log", e)

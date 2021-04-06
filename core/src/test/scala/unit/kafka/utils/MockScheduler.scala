@@ -19,8 +19,6 @@ package kafka.utils
 import scala.collection.mutable.PriorityQueue
 import java.util.concurrent.TimeUnit
 
-import org.apache.kafka.common.utils.Time
-
 /**
  * A mock scheduler that executes tasks synchronously using a mock time instance. Tasks are executed synchronously when
  * the time is advanced. This class is meant to be used in conjunction with MockTime.
@@ -37,13 +35,13 @@ import org.apache.kafka.common.utils.Time
 class MockScheduler(val time: Time) extends Scheduler {
   
   /* a priority queue of tasks ordered by next execution time */
-  private val tasks = new PriorityQueue[MockTask]()
+  var tasks = new PriorityQueue[MockTask]()
   
   def isStarted = true
 
-  def startup(): Unit = {}
+  def startup() {}
   
-  def shutdown(): Unit = {
+  def shutdown() {
     this synchronized {
       tasks.foreach(_.fun())
       tasks.clear()
@@ -55,10 +53,10 @@ class MockScheduler(val time: Time) extends Scheduler {
    * when this method is called and the execution happens synchronously in the calling thread.
    * If you are using the scheduler associated with a MockTime instance this call be triggered automatically.
    */
-  def tick(): Unit = {
+  def tick() {
     this synchronized {
-      val now = time.milliseconds
-      while(tasks.nonEmpty && tasks.head.nextExecution <= now) {
+      val now = time.absoluteMilliseconds
+      while(!tasks.isEmpty && tasks.head.nextExecution <= now) {
         /* pop and execute the task with the lowest next execution time */
         val curr = tasks.dequeue
         curr.fun()
@@ -71,22 +69,16 @@ class MockScheduler(val time: Time) extends Scheduler {
     }
   }
   
-  def schedule(name: String, fun: () => Unit, delay: Long = 0, period: Long = -1, unit: TimeUnit = TimeUnit.MILLISECONDS): Unit = {
+  def schedule(name: String, fun: ()=>Unit, delay: Long = 0, period: Long = -1, unit: TimeUnit = TimeUnit.MILLISECONDS) {
     this synchronized {
-      tasks += MockTask(name, fun, time.milliseconds + delay, period = period)
+      tasks += MockTask(name, fun, time.absoluteMilliseconds + delay, period = period)
       tick()
-    }
-  }
-
-  def clear(): Unit = {
-    this synchronized {
-      tasks.clear()
     }
   }
   
 }
 
-case class MockTask(name: String, fun: () => Unit, var nextExecution: Long, period: Long) extends Ordered[MockTask] {
+case class MockTask(val name: String, val fun: () => Unit, var nextExecution: Long, val period: Long) extends Ordered[MockTask] {
   def periodic = period >= 0
   def compare(t: MockTask): Int = {
     if(t.nextExecution == nextExecution)

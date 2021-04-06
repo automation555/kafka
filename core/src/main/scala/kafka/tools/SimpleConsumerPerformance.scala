@@ -19,24 +19,21 @@ package kafka.tools
 
 import java.net.URI
 import java.text.SimpleDateFormat
-
-import com.typesafe.scalalogging.LazyLogging
-import kafka.api.{FetchRequestBuilder, OffsetRequest, PartitionOffsetRequestInfo}
+import kafka.api.{PartitionOffsetRequestInfo, FetchRequestBuilder, OffsetRequest}
 import kafka.consumer.SimpleConsumer
 import kafka.utils._
+import org.apache.log4j.Logger
 import kafka.common.TopicAndPartition
-import org.apache.kafka.common.utils.Time
 
 
 /**
  * Performance test for the simple consumer
  */
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
-object SimpleConsumerPerformance extends LazyLogging {
+object SimpleConsumerPerformance {
+
+  private val logger = Logger.getLogger(getClass())
 
   def main(args: Array[String]) {
-    logger.warn("WARNING: SimpleConsumerPerformance is deprecated and will be dropped in a future release following 0.11.0.0.")
- 
     val config = new ConsumerPerfConfig(args)
     logger.info("Starting SimpleConsumer...")
 
@@ -56,7 +53,7 @@ object SimpleConsumerPerformance extends LazyLogging {
       ))
     var offset: Long = consumer.getOffsetsBefore(request).partitionErrorAndOffsets(topicAndPartition).offsets.head
 
-    val startMs = System.currentTimeMillis
+    val startMs = SystemTime.relativeMilliseconds
     var done = false
     var totalBytesRead = 0L
     var totalMessagesRead = 0L
@@ -95,11 +92,11 @@ object SimpleConsumerPerformance extends LazyLogging {
           val reportTime = System.currentTimeMillis
           val elapsed = (reportTime - lastReportTime)/1000.0
           val totalMBRead = ((totalBytesRead-lastBytesRead)*1.0)/(1024*1024)
-          println("%s, %d, %.4f, %.4f, %d, %.4f".format(config.dateFormat.format(reportTime), config.fetchSize,
+          println(("%s, %d, %.4f, %.4f, %d, %.4f").format(config.dateFormat.format(reportTime), config.fetchSize,
             (totalBytesRead*1.0)/(1024*1024), totalMBRead/elapsed,
             totalMessagesRead, (totalMessagesRead-lastMessagesRead)/elapsed))
         }
-        lastReportTime = Time.SYSTEM.milliseconds
+        lastReportTime = SystemTime.relativeMilliseconds
         lastBytesRead = totalBytesRead
         lastMessagesRead = totalMessagesRead
         consumedInterval = 0
@@ -110,53 +107,44 @@ object SimpleConsumerPerformance extends LazyLogging {
 
     if(!config.showDetailedStats) {
       val totalMBRead = (totalBytesRead*1.0)/(1024*1024)
-      println("%s, %s, %d, %.4f, %.4f, %d, %.4f".format(config.dateFormat.format(startMs),
+      println(("%s, %s, %d, %.4f, %.4f, %d, %.4f").format(config.dateFormat.format(startMs),
         config.dateFormat.format(reportTime), config.fetchSize, totalMBRead, totalMBRead/elapsed,
         totalMessagesRead, totalMessagesRead/elapsed))
     }
-    Exit.exit(0)
+    System.exit(0)
   }
 
   class ConsumerPerfConfig(args: Array[String]) extends PerfConfig(args) {
-    val urlOpt = parser.accepts("server", "The hostname of the server to connect to.")
+    val urlOpt = parser.accepts("server", "REQUIRED: The hostname of the server to connect to.")
                            .withRequiredArg
                            .describedAs("kafka://hostname:port")
                            .ofType(classOf[String])
-                           .required
-    val topicOpt = parser.accepts("topic", "The topic to consume from.")
+    val topicOpt = parser.accepts("topic", "REQUIRED: The topic to consume from.")
       .withRequiredArg
       .describedAs("topic")
       .ofType(classOf[String])
-      .required
     val resetBeginningOffsetOpt = parser.accepts("from-latest", "If the consumer does not already have an established " +
       "offset to consume from, start with the latest message present in the log rather than the earliest message.")
     val partitionOpt = parser.accepts("partition", "The topic partition to consume from.")
                            .withRequiredArg
-                           .describedAs("topic partition to consume from")
+                           .describedAs("partition")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(0)
-    val fetchSizeOpt = parser.accepts("fetch-size", "The fetch size to use for consumption.")
+    val fetchSizeOpt = parser.accepts("fetch-size", "REQUIRED: The fetch size to use for consumption.")
                            .withRequiredArg
-                           .describedAs("fetch size(in bytes)")
+                           .describedAs("bytes")
                            .ofType(classOf[java.lang.Integer])
                            .defaultsTo(1024*1024)
     val clientIdOpt = parser.accepts("clientId", "The ID of this client.")
                            .withRequiredArg
-                           .describedAs("client id")
+                           .describedAs("clientId")
                            .ofType(classOf[String])
                            .defaultsTo("SimpleConsumerPerformanceClient")
-    val showDetailedStatsOpt = parser.accepts("show-detailed-stats", "If set, stats are reported for each reporting " +
-      "interval as configured by reporting-interval")
 
-    var commandDef: String = "Run performance test for Simple Consumer."
-    if (args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
-      
-    val options = CommandLineUtils.tryParse(parser, args)
+    val options = parser.parse(args : _*)
 
-    if (options.has("help"))
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
-    
+    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, urlOpt, numMessagesOpt)
+
     val url = new URI(options.valueOf(urlOpt))
     val fetchSize = options.valueOf(fetchSizeOpt).intValue
     val fromLatest = options.has(resetBeginningOffsetOpt)

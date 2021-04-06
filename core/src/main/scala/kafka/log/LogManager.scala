@@ -19,14 +19,11 @@ package kafka.log
 
 import java.io._
 import java.util.concurrent.TimeUnit
-
 import kafka.utils._
-
 import scala.collection._
-import kafka.common.{KafkaException, TopicAndPartition}
-import kafka.server.{BrokerState, OffsetCheckpoint, RecoveringFromUncleanShutdown}
-import java.util.concurrent.{ExecutionException, ExecutorService, Executors, Future}
-import java.nio.file.{Files, FileStore, Paths}
+import kafka.common.{TopicAndPartition, KafkaException}
+import kafka.server.{RecoveringFromUncleanShutdown, BrokerState, OffsetCheckpoint}
+import java.util.concurrent.{Executors, ExecutorService, ExecutionException, Future}
 
 /**
  * The entry point to the kafka log management subsystem. The log manager is responsible for log creation, retrieval, and cleaning.
@@ -47,7 +44,6 @@ class LogManager(val logDirs: Array[File],
                  val flushCheckMs: Long,
                  val flushCheckpointMs: Long,
                  val retentionCheckMs: Long,
-                 val retentionDiskUsagePercent: Long,
                  scheduler: Scheduler,
                  val brokerState: BrokerState,
                  private val time: Time) extends Logging {
@@ -288,10 +284,8 @@ class LogManager(val logDirs: Array[File],
         if (needToStopCleaner && cleaner != null)
           cleaner.abortAndPauseCleaning(topicAndPartition)
         log.truncateTo(truncateOffset)
-        if (needToStopCleaner && cleaner != null) {
-          cleaner.maybeTruncateCheckpoint(log.dir.getParentFile, topicAndPartition, log.activeSegment.baseOffset)
+        if (needToStopCleaner && cleaner != null)
           cleaner.resumeCleaning(topicAndPartition)
-        }
       }
     }
     checkpointRecoveryPointOffsets()
@@ -299,6 +293,7 @@ class LogManager(val logDirs: Array[File],
 
   /**
    *  Delete all data in a partition and start the log at the new offset
+ *
    *  @param newOffset The new offset to start the log with
    */
   def truncateFullyAndStartAt(topicAndPartition: TopicAndPartition, newOffset: Long) {
@@ -309,10 +304,8 @@ class LogManager(val logDirs: Array[File],
       if (cleaner != null)
         cleaner.abortAndPauseCleaning(topicAndPartition)
       log.truncateFullyAndStartAt(newOffset)
-      if (cleaner != null) {
-        cleaner.maybeTruncateCheckpoint(log.dir.getParentFile, topicAndPartition, log.activeSegment.baseOffset)
+      if (cleaner != null)
         cleaner.resumeCleaning(topicAndPartition)
-      }
     }
     checkpointRecoveryPointOffsets()
   }
@@ -425,7 +418,7 @@ class LogManager(val logDirs: Array[File],
   private def cleanupExpiredSegments(log: Log): Int = {
     if (log.config.retentionMs < 0)
       return 0
-    val startMs = time.milliseconds
+    val startMs = time.absoluteMilliseconds
     log.deleteOldSegments(startMs - _.lastModified > log.config.retentionMs)
   }
 
@@ -449,77 +442,18 @@ class LogManager(val logDirs: Array[File],
   }
 
   /**
-   *  Removes oldest segments (across all logs) from each physical disk until
-   *  the percentage of capacity in use is less than logRetentionDiskUsagePercent.
-   *  Returns the number of segments scheduled for deletion. The underlying method
-   *  Log.deleteOldSegments() guarantees that at least one segment per topic
-   *  partition remains.
-   */
-  private def cleanupSegmentsToMaintainFreeSpace(): Int = {
-    if(retentionDiskUsagePercent == 100)
-      return 0
-    var totalSegmentsDeleted = 0
-
-    // Determine the number of bytes to delete from each disk.
-    var bytesToDeleteByDisk = mutable.Map.empty[String, Long]
-    for(dir <- this.logDirs) {
-      val fileStore = Files.getFileStore(Paths.get(dir.getAbsolutePath()));
-      if(!bytesToDeleteByDisk.contains(fileStore.name)) {
-        val totalBytes = fileStore.getTotalSpace()
-        val usedBytes = totalBytes - fileStore.getUsableSpace()
-        val goalBytes = totalBytes * retentionDiskUsagePercent / 100
-        val bytesToDelete = math.max(0, usedBytes - goalBytes)
-        bytesToDeleteByDisk += ((fileStore.name, bytesToDelete))
-        if(bytesToDelete > 0) {
-          val currentUsagePercent = 100 * usedBytes / totalBytes
-          info("Usage matches or exceeds log.retention.disk.usage.percent" +
-              " (%d%% >= %d%%) on disk %s. Oldest segments will be deleted.".format(
-                  currentUsagePercent, retentionDiskUsagePercent, fileStore.name))
-        }
-      }
-    }
-    // Gather all the segments for each disk that requires deletions.
-    type LogAndSegmentArray = mutable.ArrayBuffer[Tuple2[Log, LogSegment]]
-    var logsAndSegmentsByDisk = mutable.Map.empty[String, LogAndSegmentArray]
-    for(log <- allLogs; if !log.config.compact) {
-      val fileStore = Files.getFileStore(Paths.get(log.dir.getAbsolutePath()));
-      var bytesToDelete = bytesToDeleteByDisk(fileStore.name)
-      if(bytesToDelete > 0) {
-        var logAndSegmentArray = logsAndSegmentsByDisk.getOrElseUpdate(
-            fileStore.name, new LogAndSegmentArray)
-        logAndSegmentArray ++= (for (segment <- log.logSegments) yield (log, segment))
-      }
-    }
-    // Delete oldest segments from each disk that requires deletions.
-    for((fileStoreName, logAndSegmentArray) <- logsAndSegmentsByDisk) {
-      var bytesToDelete = bytesToDeleteByDisk(fileStoreName)
-      val sortedArray = logAndSegmentArray.sortWith((s1, s2) => s1._2.lastModified < s2._2.lastModified)
-      for((log, segment) <- sortedArray; if bytesToDelete > 0) {
-        val size = segment.size
-        val segmentsDeleted = log.deleteOldSegments(_.baseOffset == segment.baseOffset)
-        if(segmentsDeleted > 0) {
-          bytesToDelete -= size
-          totalSegmentsDeleted += segmentsDeleted
-        }
-      }
-    }
-    totalSegmentsDeleted
-  }
-
-  /**
    * Delete any eligible logs. Return the number of segments deleted.
    */
   def cleanupLogs() {
     debug("Beginning log cleanup...")
     var total = 0
-    val startMs = time.milliseconds
+    val startMs = time.absoluteMilliseconds
     for(log <- allLogs; if !log.config.compact) {
       debug("Garbage collecting '" + log.name + "'")
       total += cleanupExpiredSegments(log) + cleanupSegmentsToMaintainSize(log)
     }
-    total += cleanupSegmentsToMaintainFreeSpace()
     debug("Log cleanup completed. " + total + " files deleted in " +
-                  (time.milliseconds - startMs) / 1000 + " seconds")
+                  (time.absoluteMilliseconds - startMs) / 1000 + " seconds")
   }
 
   /**
@@ -530,7 +464,7 @@ class LogManager(val logDirs: Array[File],
   /**
    * Get a map of TopicAndPartition => Log
    */
-  def logsByTopicPartition: Map[TopicAndPartition, Log] = logs.toMap
+  def logsByTopicPartition = logs.toMap
 
   /**
    * Map of log dir to logs by topic and partitions in that dir
@@ -549,7 +483,7 @@ class LogManager(val logDirs: Array[File],
 
     for ((topicAndPartition, log) <- logs) {
       try {
-        val timeSinceLastFlush = time.milliseconds - log.lastFlushTime
+        val timeSinceLastFlush = time.absoluteMilliseconds - log.lastFlushTime
         debug("Checking if flush is needed on " + topicAndPartition.topic + " flush interval  " + log.config.flushMs +
               " last flushed " + log.lastFlushTime + " time since last flush: " + timeSinceLastFlush)
         if(timeSinceLastFlush >= log.config.flushMs)

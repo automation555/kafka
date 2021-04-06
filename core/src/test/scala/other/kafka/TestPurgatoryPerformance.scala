@@ -23,12 +23,11 @@ import java.util.Random
 import java.util.concurrent._
 
 import joptsimple._
-import kafka.server.{DelayedOperation, DelayedOperationPurgatory}
+import kafka.server.{DelayedOperationPurgatory, DelayedOperation}
 import kafka.utils._
-import org.apache.kafka.common.utils.Time
 
 import scala.math._
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConversions._
 
 /**
  * This is a benchmark test of the purgatory.
@@ -36,7 +35,7 @@ import scala.jdk.CollectionConverters._
 object TestPurgatoryPerformance {
 
   def main(args: Array[String]): Unit = {
-    val parser = new OptionParser(false)
+    val parser = new OptionParser
     val keySpaceSizeOpt = parser.accepts("key-space-size", "The total number of possible keys")
       .withRequiredArg
       .describedAs("total_num_possible_keys")
@@ -91,12 +90,12 @@ object TestPurgatoryPerformance {
     val pct50 = options.valueOf(pct50Opt).doubleValue
     val verbose = options.valueOf(verboseOpt).booleanValue
 
-    val gcMXBeans = ManagementFactory.getGarbageCollectorMXBeans().asScala.sortBy(_.getName)
+    val gcMXBeans = ManagementFactory.getGarbageCollectorMXBeans().sortBy(_.getName)
     val osMXBean = ManagementFactory.getOperatingSystemMXBean
     val latencySamples = new LatencySamples(1000000, pct75, pct50)
     val intervalSamples = new IntervalSamples(1000000, requestRate)
 
-    val purgatory = DelayedOperationPurgatory[FakeOperation]("fake purgatory")
+    val purgatory = new DelayedOperationPurgatory[FakeOperation]("fake purgatory")
     val queue = new CompletionQueue()
 
     val gcNames = gcMXBeans.map(_.getName)
@@ -105,7 +104,7 @@ object TestPurgatoryPerformance {
     val latch = new CountDownLatch(numRequests)
     val start = System.currentTimeMillis
     val rand = new Random()
-    val keys = (0 until numKeys).map(_ => "fakeKey%d".format(rand.nextInt(numPossibleKeys)))
+    val keys = (0 until numKeys).map(i => "fakeKey%d".format(rand.nextInt(numPossibleKeys)))
     @volatile var requestArrivalTime = start
     @volatile var end = 0L
     val generator = new Runnable {
@@ -238,6 +237,7 @@ object TestPurgatoryPerformance {
   }
 
   private class FakeOperation(delayMs: Long, size: Int, val latencyMs: Long, latch: CountDownLatch) extends DelayedOperation(delayMs) {
+    private[this] val data = new Array[Byte](size)
     val completesAt = System.currentTimeMillis + latencyMs
 
     def onExpiration(): Unit = {}
@@ -276,7 +276,7 @@ object TestPurgatoryPerformance {
 
     private class Scheduled(val operation: FakeOperation) extends Delayed {
       def getDelay(unit: TimeUnit): Long = {
-        unit.convert(max(operation.completesAt - Time.SYSTEM.milliseconds, 0), TimeUnit.MILLISECONDS)
+        unit.convert(max(operation.completesAt - SystemTime.absoluteMilliseconds, 0), TimeUnit.MILLISECONDS)
       }
 
       def compareTo(d: Delayed): Int = {

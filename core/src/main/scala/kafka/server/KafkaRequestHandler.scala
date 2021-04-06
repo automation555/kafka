@@ -21,9 +21,8 @@ import kafka.network._
 import kafka.utils._
 import kafka.metrics.KafkaMetricsGroup
 import java.util.concurrent.TimeUnit
-
-import com.codahale.metrics.Meter
-import org.apache.kafka.common.utils.{Time, Utils}
+import com.yammer.metrics.core.Meter
+import org.apache.kafka.common.utils.Utils
 
 /**
  * A thread that answers kafka requests.
@@ -33,8 +32,7 @@ class KafkaRequestHandler(id: Int,
                           val aggregateIdleMeter: Meter,
                           val totalHandlerThreads: Int,
                           val requestChannel: RequestChannel,
-                          apis: KafkaApis,
-                          time: Time) extends Runnable with Logging {
+                          apis: KafkaApis) extends Runnable with Logging {
   this.logIdent = "[Kafka Request Handler " + id + " on Broker " + brokerId + "], "
 
   def run() {
@@ -46,9 +44,9 @@ class KafkaRequestHandler(id: Int,
           // Since meter is calculated as total_recorded_value / time_window and
           // time_window is independent of the number of threads, each recorded idle
           // time should be discounted by # threads.
-          val startSelectTime = time.nanoseconds
+          val startSelectTime = SystemTime.relativeNanoseconds
           req = requestChannel.receiveRequest(300)
-          val idleTime = time.nanoseconds - startSelectTime
+          val idleTime = SystemTime.relativeNanoseconds - startSelectTime
           aggregateIdleMeter.mark(idleTime / totalHandlerThreads)
         }
 
@@ -57,7 +55,7 @@ class KafkaRequestHandler(id: Int,
             id, brokerId))
           return
         }
-        req.requestDequeueTimeMs = time.milliseconds
+        req.requestDequeueTimeMs = SystemTime.absoluteMilliseconds
         trace("Kafka request handler %d on broker %d handling request %s".format(id, brokerId, req))
         apis.handle(req)
       } catch {
@@ -72,17 +70,16 @@ class KafkaRequestHandler(id: Int,
 class KafkaRequestHandlerPool(val brokerId: Int,
                               val requestChannel: RequestChannel,
                               val apis: KafkaApis,
-                              time: Time,
                               numThreads: Int) extends Logging with KafkaMetricsGroup {
 
   /* a meter to track the average free capacity of the request handlers */
-  private val aggregateIdleMeter = newMeter("RequestHandlerAvgIdlePercent")
+  private val aggregateIdleMeter = newMeter("RequestHandlerAvgIdlePercent", "percent", TimeUnit.NANOSECONDS)
 
   this.logIdent = "[Kafka Request Handler on Broker " + brokerId + "], "
   val threads = new Array[Thread](numThreads)
   val runnables = new Array[KafkaRequestHandler](numThreads)
   for(i <- 0 until numThreads) {
-    runnables(i) = new KafkaRequestHandler(i, brokerId, aggregateIdleMeter, numThreads, requestChannel, apis, time)
+    runnables(i) = new KafkaRequestHandler(i, brokerId, aggregateIdleMeter, numThreads, requestChannel, apis)
     threads(i) = Utils.daemonThread("kafka-request-handler-" + i, runnables(i))
     threads(i).start()
   }
@@ -103,37 +100,17 @@ class BrokerTopicMetrics(name: Option[String]) extends KafkaMetricsGroup {
     case Some(topic) => Map("topic" -> topic)
   }
 
-  val messagesInRate = newMeter(BrokerTopicStats.MessagesInPerSec, tags)
-  val bytesInRate = newMeter(BrokerTopicStats.BytesInPerSec, tags)
-  val bytesOutRate = newMeter(BrokerTopicStats.BytesOutPerSec, tags)
-  val bytesRejectedRate = newMeter(BrokerTopicStats.BytesRejectedPerSec, tags)
-  val failedProduceRequestRate = newMeter(BrokerTopicStats.FailedProduceRequestsPerSec, tags)
-  val failedFetchRequestRate = newMeter(BrokerTopicStats.FailedFetchRequestsPerSec, tags)
-  val totalProduceRequestRate = newMeter(BrokerTopicStats.TotalProduceRequestsPerSec, tags)
-  val totalFetchRequestRate = newMeter(BrokerTopicStats.TotalFetchRequestsPerSec, tags)
-
-  def close() {
-    removeMetric(BrokerTopicStats.MessagesInPerSec, tags)
-    removeMetric(BrokerTopicStats.BytesInPerSec, tags)
-    removeMetric(BrokerTopicStats.BytesOutPerSec, tags)
-    removeMetric(BrokerTopicStats.BytesRejectedPerSec, tags)
-    removeMetric(BrokerTopicStats.FailedProduceRequestsPerSec, tags)
-    removeMetric(BrokerTopicStats.FailedFetchRequestsPerSec, tags)
-    removeMetric(BrokerTopicStats.TotalProduceRequestsPerSec, tags)
-    removeMetric(BrokerTopicStats.TotalFetchRequestsPerSec, tags)
-  }
+  val messagesInRate = newMeter("MessagesInPerSec", "messages", TimeUnit.SECONDS, tags)
+  val bytesInRate = newMeter("BytesInPerSec", "bytes", TimeUnit.SECONDS, tags)
+  val bytesOutRate = newMeter("BytesOutPerSec", "bytes", TimeUnit.SECONDS, tags)
+  val bytesRejectedRate = newMeter("BytesRejectedPerSec", "bytes", TimeUnit.SECONDS, tags)
+  val failedProduceRequestRate = newMeter("FailedProduceRequestsPerSec", "requests", TimeUnit.SECONDS, tags)
+  val failedFetchRequestRate = newMeter("FailedFetchRequestsPerSec", "requests", TimeUnit.SECONDS, tags)
+  val totalProduceRequestRate = newMeter("TotalProduceRequestsPerSec", "requests", TimeUnit.SECONDS, tags)
+  val totalFetchRequestRate = newMeter("TotalFetchRequestsPerSec", "requests", TimeUnit.SECONDS, tags)
 }
 
 object BrokerTopicStats extends Logging {
-  val MessagesInPerSec = "MessagesInPerSec"
-  val BytesInPerSec = "BytesInPerSec"
-  val BytesOutPerSec = "BytesOutPerSec"
-  val BytesRejectedPerSec = "BytesRejectedPerSec"
-  val FailedProduceRequestsPerSec = "FailedProduceRequestsPerSec"
-  val FailedFetchRequestsPerSec = "FailedFetchRequestsPerSec"
-  val TotalProduceRequestsPerSec = "TotalProduceRequestsPerSec"
-  val TotalFetchRequestsPerSec = "TotalFetchRequestsPerSec"
-
   private val valueFactory = (k: String) => new BrokerTopicMetrics(Some(k))
   private val stats = new Pool[String, BrokerTopicMetrics](Some(valueFactory))
   private val allTopicsStats = new BrokerTopicMetrics(None)
@@ -142,11 +119,5 @@ object BrokerTopicStats extends Logging {
 
   def getBrokerTopicStats(topic: String): BrokerTopicMetrics = {
     stats.getAndMaybePut(topic)
-  }
-
-  def removeMetrics(topic: String) {
-    val metrics = stats.remove(topic)
-    if (metrics != null)
-      metrics.close()
   }
 }

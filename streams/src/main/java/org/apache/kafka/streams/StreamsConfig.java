@@ -102,7 +102,7 @@ import static org.apache.kafka.common.requests.IsolationLevel.READ_COMMITTED;
  * When increasing {@link ProducerConfig#MAX_BLOCK_MS_CONFIG} to be more resilient to non-available brokers you should also
  * increase {@link ConsumerConfig#MAX_POLL_INTERVAL_MS_CONFIG} using the following guidance:
  * <pre>
- *     max.poll.interval.ms &gt; max.block.ms
+ *     max.poll.interval.ms > max.block.ms
  * </pre>
  *
  *
@@ -486,7 +486,7 @@ public class StreamsConfig extends AbstractConfig {
                     Importance.HIGH,
                     CommonClientConfigs.BOOTSTRAP_SERVERS_DOC)
             .define(REPLICATION_FACTOR_CONFIG,
-                    Type.SHORT,
+                    Type.INT,
                     1,
                     Importance.HIGH,
                     REPLICATION_FACTOR_DOC)
@@ -954,7 +954,8 @@ public class StreamsConfig extends AbstractConfig {
      */
     @SuppressWarnings("WeakerAccess")
     @Deprecated
-    public Map<String, Object> getConsumerConfigs(final String groupId, final String clientId) {
+    public Map<String, Object> getConsumerConfigs(final String groupId,
+                                                  final String clientId) {
         return getMainConsumerConfigs(groupId, clientId);
     }
 
@@ -973,7 +974,8 @@ public class StreamsConfig extends AbstractConfig {
      * @return Map of the consumer configuration.
      */
     @SuppressWarnings("WeakerAccess")
-    public Map<String, Object> getMainConsumerConfigs(final String groupId, final String clientId) {
+    public Map<String, Object> getMainConsumerConfigs(final String groupId,
+                                                      final String clientId) {
         final Map<String, Object> consumerProps = getCommonConsumerConfigs();
 
         // Get main consumer override configs
@@ -982,15 +984,14 @@ public class StreamsConfig extends AbstractConfig {
             consumerProps.put(entry.getKey(), entry.getValue());
         }
 
-        // this is a hack to work around StreamsConfig constructor inside StreamsPartitionAssignor to avoid casting
-        consumerProps.put(APPLICATION_ID_CONFIG, groupId);
         // add client id with stream client id prefix, and group id
+        consumerProps.put(APPLICATION_ID_CONFIG, groupId);
         consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-        consumerProps.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId);
+        consumerProps.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId + "-consumer");
 
         // add configs required for stream partition assignor
         consumerProps.put(UPGRADE_FROM_CONFIG, getString(UPGRADE_FROM_CONFIG));
-        consumerProps.put(REPLICATION_FACTOR_CONFIG, getShort(REPLICATION_FACTOR_CONFIG));
+        consumerProps.put(REPLICATION_FACTOR_CONFIG, getInt(REPLICATION_FACTOR_CONFIG));
         consumerProps.put(APPLICATION_SERVER_CONFIG, getString(APPLICATION_SERVER_CONFIG));
         consumerProps.put(NUM_STANDBY_REPLICAS_CONFIG, getInt(NUM_STANDBY_REPLICAS_CONFIG));
         consumerProps.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, StreamsPartitionAssignor.class.getName());
@@ -1053,7 +1054,7 @@ public class StreamsConfig extends AbstractConfig {
         // no need to set group id for a restore consumer
         baseConsumerProps.remove(ConsumerConfig.GROUP_ID_CONFIG);
         // add client id with stream client id prefix
-        baseConsumerProps.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId);
+        baseConsumerProps.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId + "-restore-consumer");
         baseConsumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
 
         return baseConsumerProps;
@@ -1113,7 +1114,7 @@ public class StreamsConfig extends AbstractConfig {
 
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, originals().get(BOOTSTRAP_SERVERS_CONFIG));
         // add client id with stream client id prefix
-        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId);
+        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId + "-producer");
 
         return props;
     }
@@ -1132,7 +1133,7 @@ public class StreamsConfig extends AbstractConfig {
         props.putAll(clientProvidedProps);
 
         // add client id with stream client id prefix
-        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId);
+        props.put(CommonClientConfigs.CLIENT_ID_CONFIG, clientId + "-admin");
 
         return props;
     }
@@ -1161,6 +1162,7 @@ public class StreamsConfig extends AbstractConfig {
         props.keySet().removeAll(originalsWithPrefix(CONSUMER_PREFIX, false).keySet());
         props.keySet().removeAll(originalsWithPrefix(PRODUCER_PREFIX, false).keySet());
         props.keySet().removeAll(originalsWithPrefix(ADMIN_CLIENT_PREFIX, false).keySet());
+        props.keySet().removeAll(originalsWithPrefix(TOPIC_PREFIX, false).keySet());
         return props;
     }
 

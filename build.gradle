@@ -79,7 +79,7 @@ allprojects {
 }
 
 ext {
-  gradleVersion = "4.5.1"
+  gradleVersion = "4.4.1"
   buildVersionFileName = "kafka-version.properties"
 
   maxPermSizeArgs = []
@@ -99,7 +99,7 @@ ext {
 
   userTestLoggingEvents = project.hasProperty("testLoggingEvents") ? Arrays.asList(testLoggingEvents.split(",")) : null
 
-  generatedDocsDir = new File("${project.rootDir}/docs/generated/")
+  generatedDocsDir = new File("${project.rootDir}/docs/generated")
 
   commitId = project.hasProperty('commitId') ? commitId : null
 }
@@ -384,12 +384,7 @@ subprojects {
 
   // Ignore core since its a scala project
   if (it.path != ':core') {
-
-    jacoco {
-      toolVersion = "0.8.0"
-    }
-
-    // NOTE: Jacoco Gradle plugin does not support "offline instrumentation" this means that classes mocked by PowerMock
+    // NOTE: Gradles Jacoco plugin does not support "offline instrumentation" this means that classes mocked by PowerMock
     // may report 0 coverage, since the source was modified after initial instrumentation.
     // See https://github.com/jacoco/jacoco/issues/51
     jacocoTestReport {
@@ -518,7 +513,7 @@ for ( sv in availableScalaVersions ) {
 }
 
 def connectPkgs = ['connect:api', 'connect:runtime', 'connect:transforms', 'connect:json', 'connect:file']
-def pkgs = ['clients', 'examples', 'log4j-appender', 'tools', 'streams', 'streams:test-utils', 'streams:examples'] + connectPkgs
+def pkgs = ['clients', 'examples', 'log4j-appender', 'tools', 'testkit', 'streams', 'streams:examples'] + connectPkgs
 
 /** Create one task per default Scala version */
 def withDefScalaVersions(taskName) {
@@ -627,86 +622,85 @@ project(':core') {
     duplicatesStrategy 'exclude'
   }
 
-  task genMainDocs(type: Exec, dependsOn: ['genProtocolErrorDocs', 'genProtocolApiKeyDocs', 'genProtocolMessageDocs',
-                                           'genAdminClientConfigDocs', 'genProducerConfigDocs', 'genConsumerConfigDocs',
-                                           'genKafkaConfigDocs', 'genTopicConfigDocs',
-                                           ':connect:runtime:genConnectConfigDocs', ':connect:runtime:genConnectTransformationDocs',
-                                           ':streams:genStreamsConfigDocs', 'genConsumerMetricsDocs', 'genProducerMetricsDocs',
-                                           ':connect:runtime:genConnectMetricsDocs']) {
-    workingDir = '../docs/'
-    commandLine 'make', 'clean', 'html'
-  }
-
-  task genGeneratedDocsDir() {
-    if (!generatedDocsDir.exists()) {
-      generatedDocsDir.mkdirs()
-    }
-  }
-
-  task genProtocolErrorDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genProtocolErrorDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.common.protocol.Errors'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "protocol_errors.html").newOutputStream()
   }
 
-  task genProtocolApiKeyDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genProtocolApiKeyDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.common.protocol.ApiKeys'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "protocol_api_keys.html").newOutputStream()
   }
 
-  task genProtocolMessageDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genProtocolMessageDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.common.protocol.Protocol'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "protocol_messages.html").newOutputStream()
   }
 
-  task genAdminClientConfigDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genAdminClientConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.clients.admin.AdminClientConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "admin_client_config.html").newOutputStream()
   }
 
-  task genProducerConfigDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genProducerConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.clients.producer.ProducerConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "producer_config.html").newOutputStream()
   }
 
-  task genConsumerConfigDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genConsumerConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.clients.consumer.ConsumerConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "consumer_config.html").newOutputStream()
   }
 
-  task genKafkaConfigDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genKafkaConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'kafka.server.KafkaConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "kafka_config.html").newOutputStream()
   }
 
-  task genTopicConfigDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genTopicConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'kafka.log.LogConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "topic_config.html").newOutputStream()
   }
 
-  task genConsumerMetricsDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genConsumerMetricsDocs(type: JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     main = 'org.apache.kafka.clients.consumer.internals.ConsumerMetrics'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "consumer_metrics.html").newOutputStream()
   }
 
-  task genProducerMetricsDocs(type: JavaExec, dependsOn: genGeneratedDocsDir) {
+  task genProducerMetricsDocs(type: JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     main = 'org.apache.kafka.clients.producer.internals.ProducerMetrics'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "producer_metrics.html").newOutputStream()
   }
 
-  task siteDocsTar(dependsOn: genMainDocs, type: Tar) {
+  task siteDocsTar(dependsOn: ['genProtocolErrorDocs', 'genProtocolApiKeyDocs', 'genProtocolMessageDocs',
+                               'genAdminClientConfigDocs', 'genProducerConfigDocs', 'genConsumerConfigDocs',
+                               'genKafkaConfigDocs', 'genTopicConfigDocs',
+                               ':connect:runtime:genConnectConfigDocs', ':connect:runtime:genConnectTransformationDocs',
+                               ':streams:genStreamsConfigDocs', 'genConsumerMetricsDocs', 'genProducerMetricsDocs',
+                               ':connect:runtime:genConnectMetricsDocs'], type: Tar) {
     classifier = 'site-docs'
     compression = Compression.GZIP
-    from project.file("$rootDir/docs/_build/html")
+    from project.file("$rootDir/docs")
     into 'site-docs'
     duplicatesStrategy 'exclude'
   }
@@ -735,8 +729,6 @@ project(':core') {
     from(project(':connect:file').configurations.runtime) { into("libs/") }
     from(project(':streams').jar) { into("libs/") }
     from(project(':streams').configurations.runtime) { into("libs/") }
-    from(project(':streams:test-utils').jar) { into("libs/") }
-    from(project(':streams:test-utils').configurations.runtime) { into("libs/") }
     from(project(':streams:examples').jar) { into("libs/") }
     from(project(':streams:examples').configurations.runtime) { into("libs/") }
     duplicatesStrategy 'exclude'
@@ -863,6 +855,48 @@ project(':clients') {
   }
 }
 
+project(':testkit') {
+  archivesBaseName = "kafka-testkit"
+
+  dependencies {
+    compile project(':core')
+    compile project(':clients')
+    compile project(':log4j-appender')
+    compile libs.slf4jApi
+
+    testCompile project(':clients')
+    testCompile libs.junit
+    testCompile project(':clients').sourceSets.test.output
+    testCompile libs.easymock
+    testCompile libs.powermockJunit4
+    testCompile libs.powermockEasymock
+
+    testRuntime libs.slf4jlog4j
+
+    compile(libs.zkclient) {
+      exclude module: 'zookeeper'
+    }
+    compile(libs.zookeeper) {
+      exclude module: 'slf4j-log4j12'
+      exclude module: 'log4j'
+      exclude module: 'netty'
+    }
+  }
+
+  tasks.create(name: "copyDependantLibs", type: Copy) {
+    from (configurations.testRuntime) {
+      include('slf4j-log4j12*')
+      include('log4j*jar')
+    }
+    into "$buildDir/dependant-libs"
+    duplicatesStrategy 'exclude'
+  }
+
+  jar {
+    dependsOn 'copyDependantLibs'
+  }
+}
+
 project(':tools') {
   archivesBaseName = "kafka-tools"
 
@@ -954,43 +988,12 @@ project(':streams') {
     dependsOn testJar
   }
 
-  task genStreamsConfigDocs(type: JavaExec, dependsOn: ':core:genGeneratedDocsDir') {
+  task genStreamsConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.streams.StreamsConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "streams_config.html").newOutputStream()
   }
-}
-
-project(':streams:test-utils') {
-  archivesBaseName = "kafka-streams-test-utils"
-
-  dependencies {
-    compile project(':streams')
-    compile project(':clients')
-
-    testCompile project(':clients').sourceSets.test.output
-    testCompile libs.junit
-
-    testRuntime libs.slf4jlog4j
-  }
-
-  javadoc {
-    include "**/org/apache/kafka/streams/test/**"
-    exclude "**/internals/**"
-  }
-
-  tasks.create(name: "copyDependantLibs", type: Copy) {
-    from (configurations.runtime) {
-      exclude('kafka-streams*')
-    }
-    into "$buildDir/dependant-libs-${versions.scala}"
-    duplicatesStrategy 'exclude'
-  }
-
-  jar {
-    dependsOn 'copyDependantLibs'
-  }
-
 }
 
 project(':streams:examples') {
@@ -1206,7 +1209,6 @@ project(':connect:runtime') {
     compile libs.jettyServer
     compile libs.jettyServlet
     compile libs.jettyServlets
-    compile libs.jettyClient
     compile(libs.reflections)
     compile(libs.mavenArtifact)
 
@@ -1243,21 +1245,24 @@ project(':connect:runtime') {
     dependsOn copyDependantLibs
   }
 
-  task genConnectConfigDocs(type: JavaExec, dependsOn: ':core:genGeneratedDocsDir') {
+  task genConnectConfigDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.connect.runtime.distributed.DistributedConfig'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "connect_config.html").newOutputStream()
   }
 
-  task genConnectTransformationDocs(type: JavaExec, dependsOn: ':core:genGeneratedDocsDir') {
+  task genConnectTransformationDocs(type: JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     main = 'org.apache.kafka.connect.tools.TransformationDoc'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "connect_transforms.html").newOutputStream()
   }
 
-  task genConnectMetricsDocs(type: JavaExec, dependsOn: ':core:genGeneratedDocsDir') {
+  task genConnectMetricsDocs(type: JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     main = 'org.apache.kafka.connect.runtime.ConnectMetrics'
+    if( !generatedDocsDir.exists() ) { generatedDocsDir.mkdirs() }
     standardOutput = new File(generatedDocsDir, "connect_metrics.html").newOutputStream()
   }
 

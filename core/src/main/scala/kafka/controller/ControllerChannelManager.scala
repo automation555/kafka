@@ -19,9 +19,10 @@ package kafka.controller
 import java.net.SocketTimeoutException
 import java.util.concurrent.{BlockingQueue, LinkedBlockingQueue, TimeUnit}
 
-import com.yammer.metrics.core.{Gauge, Timer}
+import com.yammer.metrics.core.Gauge
 import kafka.api._
 import kafka.cluster.Broker
+import kafka.common.KafkaException
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.KafkaConfig
 import kafka.utils._
@@ -34,15 +35,16 @@ import org.apache.kafka.common.requests._
 import org.apache.kafka.common.security.JaasContext
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.utils.{LogContext, Time}
-import org.apache.kafka.common.{KafkaException, Node, TopicPartition}
+import org.apache.kafka.common.{Node, TopicPartition}
+import org.slf4j.event.Level
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.HashMap
 import scala.collection.{Set, mutable}
 
+
 object ControllerChannelManager {
   val QueueSizeMetricName = "QueueSize"
-  val RequestRateAndQueueTimeMetricName = "RequestRateAndQueueTimeMs"
 }
 
 class ControllerChannelManager(controllerContext: ControllerContext, config: KafkaConfig, time: Time, metrics: Metrics,
@@ -81,7 +83,7 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
       val stateInfoOpt = brokerStateInfo.get(brokerId)
       stateInfoOpt match {
         case Some(stateInfo) =>
-          stateInfo.messageQueue.put(QueueItem(apiKey, request, callback, time.milliseconds()))
+          stateInfo.messageQueue.put(QueueItem(apiKey, request, callback))
         case None =>
           warn(s"Not sending request $request to broker $brokerId, since it is offline.")
       }
@@ -116,15 +118,16 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
         config,
         config.interBrokerListenerName,
         config.saslMechanismInterBrokerProtocol,
-        time,
         config.saslInterBrokerHandshakeRequestEnable
       )
       val selector = new Selector(
+        NetworkReceive.UNLIMITED,
         Selector.NO_IDLE_TIMEOUT_MS,
         metrics,
         time,
         "controller-channel",
         Map("broker-id" -> brokerNode.idString).asJava,
+        false,
         channelBuilder,
         logContext
       )
@@ -138,7 +141,6 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
         Selectable.USE_DEFAULT_BUFFER_SIZE,
         Selectable.USE_DEFAULT_BUFFER_SIZE,
         config.requestTimeoutMs,
-        ClientDnsLookup.DEFAULT,
         time,
         false,
         new ApiVersions,
@@ -150,12 +152,8 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
       case Some(name) => s"$name:Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
     }
 
-    val requestRateAndQueueTimeMetrics = newTimer(
-      RequestRateAndQueueTimeMetricName, TimeUnit.MILLISECONDS, TimeUnit.SECONDS, brokerMetricTags(broker.id)
-    )
-
     val requestThread = new RequestSendThread(config.brokerId, controllerContext, messageQueue, networkClient,
-      brokerNode, config, time, requestRateAndQueueTimeMetrics, stateChangeLogger, threadName)
+      brokerNode, config, time, stateChangeLogger, threadName)
     requestThread.setDaemon(false)
 
     val queueSizeGauge = newGauge(
@@ -163,14 +161,14 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
       new Gauge[Int] {
         def value: Int = messageQueue.size
       },
-      brokerMetricTags(broker.id)
+      queueSizeTags(broker.id)
     )
 
-    brokerStateInfo.put(broker.id, ControllerBrokerStateInfo(networkClient, brokerNode, messageQueue,
-      requestThread, queueSizeGauge, requestRateAndQueueTimeMetrics))
+    brokerStateInfo.put(broker.id, new ControllerBrokerStateInfo(networkClient, brokerNode, messageQueue,
+      requestThread, queueSizeGauge))
   }
 
-  private def brokerMetricTags(brokerId: Int) = Map("broker-id" -> brokerId.toString)
+  private def queueSizeTags(brokerId: Int) = Map("broker-id" -> brokerId.toString)
 
   private def removeExistingBroker(brokerState: ControllerBrokerStateInfo) {
     try {
@@ -181,8 +179,7 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
       brokerState.requestSendThread.shutdown()
       brokerState.networkClient.close()
       brokerState.messageQueue.clear()
-      removeMetric(QueueSizeMetricName, brokerMetricTags(brokerState.brokerNode.id))
-      removeMetric(RequestRateAndQueueTimeMetricName, brokerMetricTags(brokerState.brokerNode.id))
+      removeMetric(QueueSizeMetricName, queueSizeTags(brokerState.brokerNode.id))
       brokerStateInfo.remove(brokerState.brokerNode.id)
     } catch {
       case e: Throwable => error("Error while removing broker by the controller", e)
@@ -197,7 +194,7 @@ class ControllerChannelManager(controllerContext: ControllerContext, config: Kaf
 }
 
 case class QueueItem(apiKey: ApiKeys, request: AbstractRequest.Builder[_ <: AbstractRequest],
-                     callback: AbstractResponse => Unit, enqueueTimeMs: Long)
+                     callback: AbstractResponse => Unit)
 
 class RequestSendThread(val controllerId: Int,
                         val controllerContext: ControllerContext,
@@ -206,7 +203,6 @@ class RequestSendThread(val controllerId: Int,
                         val brokerNode: Node,
                         val config: KafkaConfig,
                         val time: Time,
-                        val requestRateAndQueueTimeMetrics: Timer,
                         val stateChangeLogger: StateChangeLogger,
                         name: String)
   extends ShutdownableThread(name = name) {
@@ -219,9 +215,7 @@ class RequestSendThread(val controllerId: Int,
 
     def backoff(): Unit = pause(100, TimeUnit.MILLISECONDS)
 
-    val QueueItem(apiKey, requestBuilder, callback, enqueueTimeMs) = queue.take()
-    requestRateAndQueueTimeMetrics.update(time.milliseconds() - enqueueTimeMs, TimeUnit.MILLISECONDS)
-
+    val QueueItem(apiKey, requestBuilder, callback) = queue.take()
     var clientResponse: ClientResponse = null
     try {
       var isSendSuccessful = false
@@ -381,14 +375,20 @@ class ControllerBrokerRequestBatch(controller: KafkaController, stateChangeLogge
       }
     }
 
-    val givenPartitions = if (partitions.isEmpty)
-      controllerContext.partitionLeadershipInfo.keySet
-    else
-      partitions
+    val filteredPartitions = {
+      val givenPartitions = if (partitions.isEmpty)
+        controllerContext.partitionLeadershipInfo.keySet
+      else
+        partitions
+      if (controller.topicDeletionManager.partitionsToBeDeleted.isEmpty)
+        givenPartitions
+      else
+        givenPartitions -- controller.topicDeletionManager.partitionsToBeDeleted
+    }
 
     updateMetadataRequestBrokerSet ++= brokerIds.filter(_ >= 0)
-    givenPartitions.foreach(partition => updateMetadataRequestPartitionInfo(partition,
-      beingDeleted = controller.topicDeletionManager.topicsToBeDeleted.contains(partition.topic)))
+    filteredPartitions.foreach(partition => updateMetadataRequestPartitionInfo(partition, beingDeleted = false))
+    controller.topicDeletionManager.partitionsToBeDeleted.foreach(partition => updateMetadataRequestPartitionInfo(partition, beingDeleted = true))
   }
 
   def sendRequestsToBrokers(controllerEpoch: Int) {
@@ -430,7 +430,7 @@ class ControllerBrokerRequestBatch(controller: KafkaController, stateChangeLogge
         else if (controller.config.interBrokerProtocolVersion >= KAFKA_0_9_0) 1
         else 0
 
-      val updateMetadataRequest = {
+      lazy val updateMetadataRequest = {
         val liveBrokers = if (updateMetadataRequestVersion == 0) {
           // Version 0 of UpdateMetadataRequest only supports PLAINTEXT.
           controllerContext.liveOrShuttingDownBrokers.map { broker =>
@@ -503,8 +503,7 @@ case class ControllerBrokerStateInfo(networkClient: NetworkClient,
                                      brokerNode: Node,
                                      messageQueue: BlockingQueue[QueueItem],
                                      requestSendThread: RequestSendThread,
-                                     queueSizeGauge: Gauge[Int],
-                                     requestRateAndTimeMetrics: Timer)
+                                     queueSizeGauge: Gauge[Int])
 
 case class StopReplicaRequestInfo(replica: PartitionAndReplica, deletePartition: Boolean, callback: AbstractResponse => Unit)
 

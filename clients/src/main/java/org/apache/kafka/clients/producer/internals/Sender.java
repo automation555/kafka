@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.clients.producer.internals;
 
-import java.util.ArrayList;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.ClientRequest;
 import org.apache.kafka.clients.ClientResponse;
@@ -32,6 +31,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.InvalidMetadataException;
+import org.apache.kafka.common.errors.InvalidProduceOffsetException;
 import org.apache.kafka.common.errors.OutOfOrderSequenceException;
 import org.apache.kafka.common.errors.ProducerFencedException;
 import org.apache.kafka.common.errors.RetriableException;
@@ -59,6 +59,7 @@ import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -230,7 +231,7 @@ public class Sender implements Runnable {
         // main loop, runs until close is called
         while (running) {
             try {
-                run(time.absoluteMilliseconds());
+                run(time.milliseconds());
             } catch (Exception e) {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
             }
@@ -243,7 +244,7 @@ public class Sender implements Runnable {
         // wait until these are completed.
         while (!forceClose && (this.accumulator.hasUndrained() || this.client.inFlightRequestCount() > 0)) {
             try {
-                run(time.absoluteMilliseconds());
+                run(time.milliseconds());
             } catch (Exception e) {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
             }
@@ -479,12 +480,12 @@ public class Sender implements Runnable {
     private ClientResponse sendAndAwaitInitProducerIdRequest(Node node) throws IOException {
         String nodeId = node.idString();
         InitProducerIdRequest.Builder builder = new InitProducerIdRequest.Builder(null);
-        ClientRequest request = client.newClientRequest(nodeId, builder, time.absoluteMilliseconds(), true, requestTimeoutMs, null);
+        ClientRequest request = client.newClientRequest(nodeId, builder, time.milliseconds(), true, requestTimeoutMs, null);
         return NetworkClientUtils.sendAndReceive(client, request, time);
     }
 
     private Node awaitLeastLoadedNodeReady(long remainingTimeMs) throws IOException {
-        Node node = client.leastLoadedNode(time.absoluteMilliseconds());
+        Node node = client.leastLoadedNode(time.milliseconds());
         if (node != null && NetworkClientUtils.awaitReady(client, node, time, remainingTimeMs)) {
             return node;
         }
@@ -625,6 +626,8 @@ public class Sender implements Runnable {
                     exception = new TopicAuthorizationException(batch.topicPartition.topic());
                 else if (error == Errors.CLUSTER_AUTHORIZATION_FAILED)
                     exception = new ClusterAuthorizationException("The producer is not authorized to do idempotent sends");
+                else if (error == Errors.INVALID_PRODUCE_OFFSET)
+                    exception = new InvalidProduceOffsetException(Errors.INVALID_PRODUCE_OFFSET.message(), response.logEndOffset);
                 else
                     exception = error.exception();
                 // tell the user the result of their request. We only adjust sequence numbers if the batch didn't exhaust
@@ -778,10 +781,10 @@ public class Sender implements Runnable {
             transactionalId = transactionManager.transactionalId();
         }
         ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
-                produceRecordsByPartition, transactionalId);
+                produceRecordsByPartition, transactionalId, accumulator.useOffsets());
         RequestCompletionHandler callback = new RequestCompletionHandler() {
             public void onComplete(ClientResponse response) {
-                handleProduceResponse(response, recordsByPartition, time.absoluteMilliseconds());
+                handleProduceResponse(response, recordsByPartition, time.milliseconds());
             }
         };
 
@@ -902,7 +905,7 @@ public class Sender implements Runnable {
         }
 
         public void updateProduceRequestMetrics(Map<Integer, List<ProducerBatch>> batches) {
-            long now = time.absoluteMilliseconds();
+            long now = time.milliseconds();
             for (List<ProducerBatch> nodeBatch : batches.values()) {
                 int records = 0;
                 for (ProducerBatch batch : nodeBatch) {
@@ -937,7 +940,7 @@ public class Sender implements Runnable {
         }
 
         public void recordRetries(String topic, int count) {
-            long now = time.absoluteMilliseconds();
+            long now = time.milliseconds();
             this.retrySensor.record(count, now);
             String topicRetryName = "topic." + topic + ".record-retries";
             Sensor topicRetrySensor = this.metrics.getSensor(topicRetryName);
@@ -946,7 +949,7 @@ public class Sender implements Runnable {
         }
 
         public void recordErrors(String topic, int count) {
-            long now = time.absoluteMilliseconds();
+            long now = time.milliseconds();
             this.errorSensor.record(count, now);
             String topicErrorName = "topic." + topic + ".record-errors";
             Sensor topicErrorSensor = this.metrics.getSensor(topicErrorName);
@@ -955,7 +958,7 @@ public class Sender implements Runnable {
         }
 
         public void recordLatency(String node, long latency) {
-            long now = time.absoluteMilliseconds();
+            long now = time.milliseconds();
             this.requestTimeSensor.record(latency, now);
             if (!node.isEmpty()) {
                 String nodeTimeName = "node-" + node + ".latency";

@@ -111,7 +111,7 @@ class TransactionStateManager(brokerId: Int,
   // since the timestamp is volatile and we will get the lock when actually trying to transit the transaction
   // metadata to abort later.
   def timedOutTransactions(): Iterable[TransactionalIdAndProducerIdEpoch] = {
-    val now = time.absoluteMilliseconds()
+    val now = time.milliseconds()
     inReadLock(stateLock) {
       transactionMetadataCache.filter { case (txnPartitionId, _) =>
         !leavingPartitions.exists(_.txnPartitionId == txnPartitionId)
@@ -135,7 +135,7 @@ class TransactionStateManager(brokerId: Int,
 
   def enableTransactionalIdExpiration() {
     scheduler.schedule("transactionalId-expiration", () => {
-      val now = time.absoluteMilliseconds()
+      val now = time.milliseconds()
       inReadLock(stateLock) {
         val transactionalIdByPartition: Map[Int, mutable.Iterable[TransactionalIdCoordinatorEpochAndMetadata]] =
           transactionMetadataCache.flatMap { case (_, entry) =>
@@ -200,6 +200,7 @@ class TransactionStateManager(brokerId: Int,
           TransactionLog.EnforcedRequiredAcks,
           internalTopicsAllowed = true,
           isFromClient = false,
+          assignOffsets = true,
           recordsPerPartition,
           removeFromCacheCallback,
           Some(stateLock.readLock)
@@ -282,7 +283,7 @@ class TransactionStateManager(brokerId: Int,
   private def loadTransactionMetadata(topicPartition: TopicPartition, coordinatorEpoch: Int): Pool[String, TransactionMetadata] =  {
     def logEndOffset = replicaManager.getLogEndOffset(topicPartition).getOrElse(-1L)
 
-    val startMs = time.absoluteMilliseconds()
+    val startMs = time.milliseconds()
     val loadedTransactions = new Pool[String, TransactionMetadata]
 
     replicaManager.getLog(topicPartition) match {
@@ -340,7 +341,7 @@ class TransactionStateManager(brokerId: Int,
               }
             }
 
-            info(s"Finished loading ${loadedTransactions.size} transaction metadata from $topicPartition in ${time.absoluteMilliseconds() - startMs} milliseconds")
+            info(s"Finished loading ${loadedTransactions.size} transaction metadata from $topicPartition in ${time.milliseconds() - startMs} milliseconds")
           }
         } catch {
           case t: Throwable => error(s"Error loading transactions from transaction log $topicPartition", t)
@@ -401,10 +402,10 @@ class TransactionStateManager(brokerId: Int,
                 txnMetadata.state match {
                   case PrepareAbort =>
                     transactionsPendingForCompletion +=
-                      TransactionalIdCoordinatorEpochAndTransitMetadata(transactionalId, coordinatorEpoch, TransactionResult.ABORT, txnMetadata, txnMetadata.prepareComplete(time.absoluteMilliseconds()))
+                      TransactionalIdCoordinatorEpochAndTransitMetadata(transactionalId, coordinatorEpoch, TransactionResult.ABORT, txnMetadata, txnMetadata.prepareComplete(time.milliseconds()))
                   case PrepareCommit =>
                     transactionsPendingForCompletion +=
-                      TransactionalIdCoordinatorEpochAndTransitMetadata(transactionalId, coordinatorEpoch, TransactionResult.COMMIT, txnMetadata, txnMetadata.prepareComplete(time.absoluteMilliseconds()))
+                      TransactionalIdCoordinatorEpochAndTransitMetadata(transactionalId, coordinatorEpoch, TransactionResult.COMMIT, txnMetadata, txnMetadata.prepareComplete(time.milliseconds()))
                   case _ =>
                     // nothing need to be done
                 }
@@ -476,7 +477,7 @@ class TransactionStateManager(brokerId: Int,
     // generate the message for this transaction metadata
     val keyBytes = TransactionLog.keyToBytes(transactionalId)
     val valueBytes = TransactionLog.valueToBytes(newMetadata)
-    val timestamp = time.absoluteMilliseconds()
+    val timestamp = time.milliseconds()
 
     val records = MemoryRecords.withRecords(TransactionLog.EnforcedCompressionType, new SimpleRecord(timestamp, keyBytes, valueBytes))
     val topicPartition = new TopicPartition(Topic.TRANSACTION_STATE_TOPIC_NAME, partitionFor(transactionalId))
@@ -623,6 +624,7 @@ class TransactionStateManager(brokerId: Int,
                 TransactionLog.EnforcedRequiredAcks,
                 internalTopicsAllowed = true,
                 isFromClient = false,
+                assignOffsets = true,
                 recordsPerPartition,
                 updateCacheCallback,
                 delayedProduceLock = Some(stateLock.readLock))

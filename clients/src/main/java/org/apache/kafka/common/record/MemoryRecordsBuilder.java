@@ -18,11 +18,8 @@ package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.message.LeaderChangeMessage;
-import org.apache.kafka.common.protocol.MessageUtil;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.utils.ByteBufferOutputStream;
-import org.apache.kafka.common.utils.Utils;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -40,7 +37,7 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  * and the builder is closed (e.g. the Producer), it's important to call `closeForRecordAppends` when the former happens.
  * This will release resources like compression buffers that can be relatively large (64 KB for LZ4).
  */
-public class MemoryRecordsBuilder implements AutoCloseable {
+public class MemoryRecordsBuilder {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
     private static final DataOutputStream CLOSED_STREAM = new DataOutputStream(new OutputStream() {
         @Override
@@ -404,9 +401,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             if (isControlRecord != isControlBatch)
                 throw new IllegalArgumentException("Control records can only be appended to control batches");
 
-            if (lastOffset != null && offset <= lastOffset)
-                throw new IllegalArgumentException(String.format("Illegal offset %s following previous offset %s " +
-                        "(Offsets must increase monotonically).", offset, lastOffset));
+            validateOffset(offset);
 
             if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Invalid negative timestamp " + timestamp);
@@ -421,11 +416,21 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
                 return null;
             } else {
-                return appendLegacyRecord(offset, timestamp, key, value, magic);
+                return appendLegacyRecord(offset, timestamp, key, value);
             }
         } catch (IOException e) {
             throw new KafkaException("I/O exception when writing to the append stream, closing", e);
         }
+    }
+
+    private void validateOffset(long offset) {
+        if (offset < baseOffset)
+            throw new IllegalArgumentException(String.format("Illegal offset %s < baseOffset %s " +
+                    "(Offsets must increase monotonically).", offset, baseOffset));
+
+        if (lastOffset != null && offset <= lastOffset)
+            throw new IllegalArgumentException(String.format("Illegal offset %s following previous offset %s " +
+                    "(Offsets must increase monotonically).", offset, lastOffset));
     }
 
     /**
@@ -486,24 +491,6 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      */
     public Long appendWithOffset(long offset, SimpleRecord record) {
         return appendWithOffset(offset, record.timestamp(), record.key(), record.value(), record.headers());
-    }
-
-    /**
-     * Append a control record at the given offset. The control record type must be known or
-     * this method will raise an error.
-     *
-     * @param offset The absolute offset of the record in the log buffer
-     * @param record The record to append
-     * @return CRC of the record or null if record-level CRC is not supported for the message format
-     */
-    public Long appendControlRecordWithOffset(long offset, SimpleRecord record) {
-        short typeId = ControlRecordType.parseTypeId(record.key());
-        ControlRecordType type = ControlRecordType.fromTypeId(typeId);
-        if (type == ControlRecordType.UNKNOWN)
-            throw new IllegalArgumentException("Cannot append record with unknown control record type " + typeId);
-
-        return appendWithOffset(offset, true, record.timestamp(),
-            record.key(), record.value(), record.headers());
     }
 
     /**
@@ -589,17 +576,6 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     }
 
     /**
-     * Return CRC of the record or null if record-level CRC is not supported for the message format
-     */
-    public Long appendLeaderChangeMessage(long timestamp, LeaderChangeMessage leaderChangeMessage) {
-        if (partitionLeaderEpoch == RecordBatch.NO_PARTITION_LEADER_EPOCH) {
-            throw new IllegalArgumentException("Partition leader epoch must be valid, but get " + partitionLeaderEpoch);
-        }
-        return appendControlRecord(timestamp, ControlRecordType.LEADER_CHANGE,
-                MessageUtil.toByteBuffer(leaderChangeMessage, ControlRecordUtils.LEADER_CHANGE_SCHEMA_VERSION));
-    }
-
-    /**
      * Add a legacy record without doing offset/magic validation (this should only be used in testing).
      * @param offset The offset of the record
      * @param record The record to add
@@ -616,35 +592,6 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             recordWritten(offset, record.timestamp(), size + Records.LOG_OVERHEAD);
         } catch (IOException e) {
             throw new KafkaException("I/O exception when writing to the append stream, closing", e);
-        }
-    }
-
-    /**
-     * Append a record without doing offset/magic validation (this should only be used in testing).
-     *
-     * @param offset The offset of the record
-     * @param record The record to add
-     */
-    public void appendUncheckedWithOffset(long offset, SimpleRecord record) throws IOException {
-        if (magic >= RecordBatch.MAGIC_VALUE_V2) {
-            int offsetDelta = (int) (offset - baseOffset);
-            long timestamp = record.timestamp();
-            if (firstTimestamp == null)
-                firstTimestamp = timestamp;
-
-            int sizeInBytes = DefaultRecord.writeTo(appendStream,
-                offsetDelta,
-                timestamp - firstTimestamp,
-                record.key(),
-                record.value(),
-                record.headers());
-            recordWritten(offset, timestamp, sizeInBytes);
-        } else {
-            LegacyRecord legacyRecord = LegacyRecord.create(magic,
-                record.timestamp(),
-                Utils.toNullableArray(record.key()),
-                Utils.toNullableArray(record.value()));
-            appendUncheckedWithOffset(offset, legacyRecord);
         }
     }
 
@@ -693,7 +640,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         recordWritten(offset, timestamp, sizeInBytes);
     }
 
-    private long appendLegacyRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value, byte magic) throws IOException {
+    private long appendLegacyRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value) throws IOException {
         ensureOpenForRecordAppend();
         if (compressionType == CompressionType.NONE && timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
@@ -823,7 +770,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         return magic;
     }
 
-    private long nextSequentialOffset() {
+    public long nextSequentialOffset() {
         return lastOffset == null ? baseOffset : lastOffset + 1;
     }
 

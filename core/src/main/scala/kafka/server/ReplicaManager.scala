@@ -461,21 +461,23 @@ class ReplicaManager(val config: KafkaConfig,
                     requiredAcks: Short,
                     internalTopicsAllowed: Boolean,
                     isFromClient: Boolean,
+                    assignOffsets: Boolean = true,
                     entriesPerPartition: Map[TopicPartition, MemoryRecords],
                     responseCallback: Map[TopicPartition, PartitionResponse] => Unit,
                     delayedProduceLock: Option[Lock] = None,
                     recordConversionStatsCallback: Map[TopicPartition, RecordConversionStats] => Unit = _ => ()) {
     if (isValidRequiredAcks(requiredAcks)) {
-      val sTime = time.absoluteMilliseconds
+      val sTime = time.milliseconds
       val localProduceResults = appendToLocalLog(internalTopicsAllowed = internalTopicsAllowed,
-        isFromClient = isFromClient, entriesPerPartition, requiredAcks)
-      debug("Produce to local log in %d ms".format(time.absoluteMilliseconds - sTime))
+        isFromClient = isFromClient, assignOffsets = assignOffsets, entriesPerPartition, requiredAcks)
+      debug("Produce to local log in %d ms".format(time.milliseconds - sTime))
 
       val produceStatus = localProduceResults.map { case (topicPartition, result) =>
         topicPartition ->
                 ProducePartitionStatus(
                   result.info.lastOffset + 1, // required offset
-                  new PartitionResponse(result.error, result.info.firstOffset.getOrElse(-1), result.info.logAppendTime, result.info.logStartOffset)) // response status
+                  new PartitionResponse(result.error, result.info.firstOffset.getOrElse(-1), 
+                      result.info.logAppendTime, result.info.logStartOffset, result.info.logEndOffset)) // response status
       }
 
       recordConversionStatsCallback(localProduceResults.mapValues(_.info.recordConversionStats))
@@ -503,7 +505,8 @@ class ReplicaManager(val config: KafkaConfig,
       // Just return an error and don't handle the request at all
       val responseStatus = entriesPerPartition.map { case (topicPartition, _) =>
         topicPartition -> new PartitionResponse(Errors.INVALID_REQUIRED_ACKS,
-          LogAppendInfo.UnknownLogAppendInfo.firstOffset.getOrElse(-1), RecordBatch.NO_TIMESTAMP, LogAppendInfo.UnknownLogAppendInfo.logStartOffset)
+          LogAppendInfo.UnknownLogAppendInfo.firstOffset.getOrElse(-1), RecordBatch.NO_TIMESTAMP, 
+          LogAppendInfo.UnknownLogAppendInfo.logStartOffset, LogAppendInfo.UnknownLogAppendInfo.logEndOffset)
       }
       responseCallback(responseStatus)
     }
@@ -667,9 +670,9 @@ class ReplicaManager(val config: KafkaConfig,
   def deleteRecords(timeout: Long,
                     offsetPerPartition: Map[TopicPartition, Long],
                     responseCallback: Map[TopicPartition, DeleteRecordsResponse.PartitionResponse] => Unit) {
-    val timeBeforeLocalDeleteRecords = time.absoluteMilliseconds
+    val timeBeforeLocalDeleteRecords = time.milliseconds
     val localDeleteRecordsResults = deleteRecordsOnLocalLog(offsetPerPartition)
-    debug("Delete records on local log in %d ms".format(time.absoluteMilliseconds - timeBeforeLocalDeleteRecords))
+    debug("Delete records on local log in %d ms".format(time.milliseconds - timeBeforeLocalDeleteRecords))
 
     val deleteRecordsStatus = localDeleteRecordsResults.map { case (topicPartition, result) =>
       topicPartition ->
@@ -718,6 +721,7 @@ class ReplicaManager(val config: KafkaConfig,
    */
   private def appendToLocalLog(internalTopicsAllowed: Boolean,
                                isFromClient: Boolean,
+                               assignOffsets : Boolean,
                                entriesPerPartition: Map[TopicPartition, MemoryRecords],
                                requiredAcks: Short): Map[TopicPartition, LogAppendResult] = {
     trace(s"Append [$entriesPerPartition] to local log")
@@ -733,7 +737,7 @@ class ReplicaManager(val config: KafkaConfig,
       } else {
         try {
           val partition = getPartitionOrException(topicPartition, expectLeader = true)
-          val info = partition.appendRecordsToLeader(records, isFromClient, requiredAcks)
+          val info = partition.appendRecordsToLeader(records, isFromClient, assignOffsets, requiredAcks)
           val numAppendedMessages = info.numMessages
 
           // update stats for successfully appended bytes and messages as bytesInRate and messageInRate
@@ -756,6 +760,14 @@ class ReplicaManager(val config: KafkaConfig,
                    _: KafkaStorageException |
                    _: InvalidTimestampException) =>
             (topicPartition, LogAppendResult(LogAppendInfo.UnknownLogAppendInfo, Some(e)))
+          case ioe: InvalidProduceOffsetException =>
+            val logEndOffset = getPartition(topicPartition) match {
+              case Some(partition) =>
+                partition.logEndOffset
+              case _ =>
+                -1
+            }
+            (topicPartition, LogAppendResult(LogAppendInfo.unknownLogAppendInfoWithLogEndOffset(logEndOffset), Some(ioe)))
           case t: Throwable =>
             val logStartOffset = getPartition(topicPartition) match {
               case Some(partition) =>
@@ -893,7 +905,7 @@ class ReplicaManager(val config: KafkaConfig,
 
         val partition = getPartitionOrException(tp, expectLeader = fetchOnlyFromLeader)
         val adjustedMaxBytes = math.min(fetchInfo.maxBytes, limitBytes)
-        val fetchTimeMs = time.absoluteMilliseconds
+        val fetchTimeMs = time.milliseconds
 
         // Try the read first, this tells us whether we need all of adjustedFetchSize for this partition
         val readInfo = partition.readRecords(

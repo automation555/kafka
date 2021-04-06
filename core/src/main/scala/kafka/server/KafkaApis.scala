@@ -151,7 +151,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       case e: FatalExitError => throw e
       case e: Throwable => handleError(request, e)
     } finally {
-      request.apiLocalCompleteTimeNanos = time.relativeNanoseconds
+      request.apiLocalCompleteTimeNanos = time.nanoseconds
     }
   }
 
@@ -338,7 +338,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         //   - If v1 and explicit retention time is provided we calculate expiration timestamp based on that
         //   - If v2/v3/v4 (no explicit commit timestamp) we treat it the same as v5.
         //   - For v5 and beyond there is no per partition expiration timestamp, so this field is no longer in effect
-        val currentTimestamp = time.absoluteMilliseconds
+        val currentTimestamp = time.milliseconds
         val partitionData = authorizedTopicRequestInfo.mapValues { partitionData =>
           val metadata = if (partitionData.metadata == null) OffsetAndMetadata.NoMetadata else partitionData.metadata
           new OffsetAndMetadata(
@@ -389,6 +389,12 @@ class KafkaApis(val requestChannel: RequestChannel,
       return
     }
 
+    // The producer must have ReplicatorWrite on ClusterResource in order to impose offsets.
+    if (produceRequest.useOffsets && !authorize(request.session, ReplicatorWrite, Resource.ClusterResource)) {
+      sendErrorResponseMaybeThrottle(request, new ClusterAuthorizationException("Produce with offsets requires ReplicatorWrite authorization"))
+      return
+    }
+
     val unauthorizedTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val nonExistingTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val authorizedRequestInfo = mutable.Map[TopicPartition, MemoryRecords]()
@@ -419,12 +425,12 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       // When this callback is triggered, the remote API call has completed
-      request.apiRemoteCompleteTimeNanos = time.relativeNanoseconds
+      request.apiRemoteCompleteTimeNanos = time.nanoseconds
 
       // Record both bandwidth and request quota-specific values and throttle by muting the channel if any of the quotas
       // have been violated. If both quotas have been violated, use the max throttle time between the two quotas. Note
       // that the request quota is not enforced if acks == 0.
-      val bandwidthThrottleTimeMs = quotas.produce.maybeRecordAndGetThrottleTimeMs(request, numBytesAppended, time.absoluteMilliseconds())
+      val bandwidthThrottleTimeMs = quotas.produce.maybeRecordAndGetThrottleTimeMs(request, numBytesAppended, time.milliseconds())
       val requestThrottleTimeMs = if (produceRequest.acks == 0) 0 else quotas.request.maybeRecordAndGetThrottleTimeMs(request)
       val maxThrottleTimeMs = Math.max(bandwidthThrottleTimeMs, requestThrottleTimeMs)
       if (maxThrottleTimeMs > 0) {
@@ -477,6 +483,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         requiredAcks = produceRequest.acks,
         internalTopicsAllowed = internalTopicsAllowed,
         isFromClient = true,
+        assignOffsets = !produceRequest.useOffsets,
         entriesPerPartition = authorizedRequestInfo,
         responseCallback = sendResponseCallback,
         recordConversionStatsCallback = processingStatsCallback)
@@ -601,7 +608,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       // When this callback is triggered, the remote API call has completed.
       // Record time before any byte-rate throttling.
-      request.apiRemoteCompleteTimeNanos = time.relativeNanoseconds
+      request.apiRemoteCompleteTimeNanos = time.nanoseconds
 
       var unconvertedFetchResponse: FetchResponse[Records] = null
 
@@ -652,7 +659,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         // quotas have been violated. If both quotas have been violated, use the max throttle time between the two
         // quotas. When throttled, we unrecord the recorded bandwidth quota value
         val responseSize = fetchContext.getResponseSize(partitions, versionId)
-        val timeMs = time.absoluteMilliseconds()
+        val timeMs = time.milliseconds()
         val requestThrottleTimeMs = quotas.request.maybeRecordAndGetThrottleTimeMs(request)
         val bandwidthThrottleTimeMs = quotas.fetch.maybeRecordAndGetThrottleTimeMs(request, responseSize, timeMs)
 
@@ -1683,6 +1690,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           requiredAcks = -1,
           internalTopicsAllowed = true,
           isFromClient = false,
+          assignOffsets = true,
           entriesPerPartition = controlRecords,
           responseCallback = maybeSendResponseCallback(producerId, marker.transactionResult))
       }
@@ -1837,7 +1845,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   private def convertTxnOffsets(offsetsMap: immutable.Map[TopicPartition, TxnOffsetCommitRequest.CommittedOffset]): immutable.Map[TopicPartition, OffsetAndMetadata] = {
-    val currentTimestamp = time.absoluteMilliseconds
+    val currentTimestamp = time.milliseconds
     offsetsMap.map { case (topicPartition, partitionData) =>
       val metadata = if (partitionData.metadata == null) OffsetAndMetadata.NoMetadata else partitionData.metadata
       topicPartition -> new OffsetAndMetadata(

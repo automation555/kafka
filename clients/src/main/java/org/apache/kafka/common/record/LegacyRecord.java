@@ -17,7 +17,6 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.errors.CorruptRecordException;
 import org.apache.kafka.common.utils.ByteBufferOutputStream;
 import org.apache.kafka.common.utils.ByteUtils;
 import org.apache.kafka.common.utils.Checksums;
@@ -46,10 +45,10 @@ public final class LegacyRecord {
     public static final int MAGIC_OFFSET = CRC_OFFSET + CRC_LENGTH;
     public static final int MAGIC_LENGTH = 1;
     public static final int ATTRIBUTES_OFFSET = MAGIC_OFFSET + MAGIC_LENGTH;
-    public static final int ATTRIBUTES_LENGTH = 1;
-    public static final int TIMESTAMP_OFFSET = ATTRIBUTES_OFFSET + ATTRIBUTES_LENGTH;
+    public static final int ATTRIBUTE_LENGTH = 1;
+    public static final int TIMESTAMP_OFFSET = ATTRIBUTES_OFFSET + ATTRIBUTE_LENGTH;
     public static final int TIMESTAMP_LENGTH = 8;
-    public static final int KEY_SIZE_OFFSET_V0 = ATTRIBUTES_OFFSET + ATTRIBUTES_LENGTH;
+    public static final int KEY_SIZE_OFFSET_V0 = ATTRIBUTES_OFFSET + ATTRIBUTE_LENGTH;
     public static final int KEY_SIZE_OFFSET_V1 = TIMESTAMP_OFFSET + TIMESTAMP_LENGTH;
     public static final int KEY_SIZE_LENGTH = 4;
     public static final int KEY_OFFSET_V0 = KEY_SIZE_OFFSET_V0 + KEY_SIZE_LENGTH;
@@ -59,18 +58,17 @@ public final class LegacyRecord {
     /**
      * The size for the record header
      */
-    public static final int HEADER_SIZE_V0 = CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTES_LENGTH;
-    public static final int HEADER_SIZE_V1 = CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTES_LENGTH + TIMESTAMP_LENGTH;
+    public static final int HEADER_SIZE = CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTE_LENGTH;
 
     /**
      * The amount of overhead bytes in a record
      */
-    public static final int RECORD_OVERHEAD_V0 = HEADER_SIZE_V0 + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
+    public static final int RECORD_OVERHEAD_V0 = HEADER_SIZE + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
 
     /**
      * The amount of overhead bytes in a record
      */
-    public static final int RECORD_OVERHEAD_V1 = HEADER_SIZE_V1 + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
+    public static final int RECORD_OVERHEAD_V1 = HEADER_SIZE + TIMESTAMP_LENGTH + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
 
     /**
      * Specifies the mask for the compression code. 3 bits to hold the compression codec. 0 is reserved to indicate no
@@ -132,15 +130,15 @@ public final class LegacyRecord {
     }
 
     /**
-     * Throw an CorruptRecordException if isValid is false for this record
+     * Throw an InvalidRecordException if isValid is false for this record
      */
     public void ensureValid() {
         if (sizeInBytes() < RECORD_OVERHEAD_V0)
-            throw new CorruptRecordException("Record is corrupt (crc could not be retrieved as the record is too "
+            throw new InvalidRecordException("Record is corrupt (crc could not be retrieved as the record is too "
                     + "small, size = " + sizeInBytes() + ")");
 
         if (!isValid())
-            throw new CorruptRecordException("Record is corrupt (stored crc = " + checksum()
+            throw new InvalidRecordException("Record is corrupt (stored crc = " + checksum()
                     + ", computed crc = " + computeChecksum() + ")");
     }
 
@@ -385,8 +383,7 @@ public final class LegacyRecord {
                               ByteBuffer value,
                               CompressionType compressionType,
                               TimestampType timestampType) {
-        try {
-            DataOutputStream out = new DataOutputStream(new ByteBufferOutputStream(buffer));
+        try (DataOutputStream out = new DataOutputStream(new ByteBufferOutputStream(buffer))) {
             write(out, magic, timestamp, key, value, compressionType, timestampType);
         } catch (IOException e) {
             throw new KafkaException(e);
@@ -485,11 +482,19 @@ public final class LegacyRecord {
         }
     }
 
-    static int recordSize(byte magic, ByteBuffer key, ByteBuffer value) {
+    public static int recordSize(byte[] key, byte[] value) {
+        return recordSize(RecordBatch.CURRENT_MAGIC_VALUE, key, value);
+    }
+
+    public static int recordSize(byte magic, byte[] key, byte[] value) {
+        return recordSize(magic, key == null ? 0 : key.length, value == null ? 0 : value.length);
+    }
+
+    public static int recordSize(byte magic, ByteBuffer key, ByteBuffer value) {
         return recordSize(magic, key == null ? 0 : key.limit(), value == null ? 0 : value.limit());
     }
 
-    public static int recordSize(byte magic, int keySize, int valueSize) {
+    private static int recordSize(byte magic, int keySize, int valueSize) {
         return recordOverhead(magic) + keySize + valueSize;
     }
 
@@ -541,28 +546,16 @@ public final class LegacyRecord {
         return crc.getValue();
     }
 
-    static int recordOverhead(byte magic) {
+    public static int recordOverhead(byte magic) {
         if (magic == 0)
             return RECORD_OVERHEAD_V0;
-        else if (magic == 1)
-            return RECORD_OVERHEAD_V1;
-        throw new IllegalArgumentException("Invalid magic used in LegacyRecord: " + magic);
-    }
-
-    static int headerSize(byte magic) {
-        if (magic == 0)
-            return HEADER_SIZE_V0;
-        else if (magic == 1)
-            return HEADER_SIZE_V1;
-        throw new IllegalArgumentException("Invalid magic used in LegacyRecord: " + magic);
+        return RECORD_OVERHEAD_V1;
     }
 
     private static int keyOffset(byte magic) {
         if (magic == 0)
             return KEY_OFFSET_V0;
-        else if (magic == 1)
-            return KEY_OFFSET_V1;
-        throw new IllegalArgumentException("Invalid magic used in LegacyRecord: " + magic);
+        return KEY_OFFSET_V1;
     }
 
     public static TimestampType timestampType(byte magic, TimestampType wrapperRecordTimestampType, byte attributes) {

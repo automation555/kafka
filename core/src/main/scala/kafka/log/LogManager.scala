@@ -18,17 +18,16 @@
 package kafka.log
 
 import java.io._
-import java.nio.file.Files
+import java.nio.file.{Files, StandardCopyOption}
 import java.util.concurrent._
 
 import com.yammer.metrics.core.Gauge
-import kafka.common.KafkaException
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.server.{BrokerState, RecoveringFromUncleanShutdown, _}
 import kafka.utils._
 import kafka.zk.KafkaZkClient
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.{KafkaStorageException, LogDirNotFoundException}
 
@@ -144,24 +143,40 @@ class LogManager(logDirs: Seq[File],
    * </ol>
    */
   private def createAndValidateLogDirs(dirs: Seq[File], initialOfflineDirs: Seq[File]): ConcurrentLinkedQueue[File] = {
-    if(dirs.map(_.getCanonicalPath).toSet.size < dirs.size)
-      throw new KafkaException("Duplicate log directory found: " + dirs.mkString(", "))
-
     val liveLogDirs = new ConcurrentLinkedQueue[File]()
+    val canonicalPaths = mutable.HashSet.empty[String]
 
     for (dir <- dirs) {
       try {
         if (initialOfflineDirs.contains(dir))
           throw new IOException(s"Failed to load ${dir.getAbsolutePath} during broker startup")
 
-        if (!dir.exists) {
-          info("Log directory '" + dir.getAbsolutePath + "' not found, creating it.")
-          val created = dir.mkdirs()
+        val deleteDir = new File(dir, Log.DeleteDirParent)
+        if (!deleteDir.exists) {
+          if (!dir.exists) {
+            info(s"Log directory ${dir.getAbsolutePath} not found, creating it.")
+            val created = dir.mkdirs()
+            if (!created)
+              throw new IOException(s"Failed to create data directory ${dir.getAbsolutePath}")
+          }
+
+          info(s"Log directory ${dir.getAbsolutePath} not found, creating it.")
+          val created = deleteDir.mkdirs()
           if (!created)
-            throw new IOException("Failed to create data directory " + dir.getAbsolutePath)
+            throw new IOException(s"Failed to create deleted logs directory ${deleteDir.getAbsolutePath}")
         }
+
         if (!dir.isDirectory || !dir.canRead)
-          throw new IOException(dir.getAbsolutePath + " is not a readable log directory.")
+          throw new IOException(s"${dir.getAbsolutePath} is not a readable log directory.")
+        if (!deleteDir.isDirectory || !deleteDir.canRead)
+          throw new IOException(s"${deleteDir.getAbsolutePath} is not a readable log directory.")
+
+        // getCanonicalPath() throws IOException if a file system query fails or if the path is invalid (e.g. contains
+        // the Nul character). Since there's no easy way to distinguish between the two cases, we treat them the same
+        // and mark the log directory as offline.
+        if (!canonicalPaths.add(dir.getCanonicalPath))
+          throw new KafkaException(s"Duplicate log directory found: ${dirs.mkString(", ")}")
+
         liveLogDirs.add(dir)
       } catch {
         case e: IOException =>
@@ -169,7 +184,7 @@ class LogManager(logDirs: Seq[File],
       }
     }
     if (liveLogDirs.isEmpty) {
-      fatal(s"Shutdown broker because none of the specified log dirs from " + dirs.mkString(", ") + " can be created or validated")
+      fatal(s"Shutdown broker because none of the specified log dirs from ${dirs.mkString(", ")} can be created or validated")
       Exit.halt(1)
     }
 
@@ -182,7 +197,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   // dir should be an absolute path
-  def handleLogDirFailure(dir: String): Unit = {
+  def handleLogDirFailure(dir: String) {
     info(s"Stopping serving logs in dir $dir")
     logCreationOrDeletionLock synchronized {
       _liveLogDirs.remove(new File(dir))
@@ -269,9 +284,9 @@ class LogManager(logDirs: Seq[File],
       brokerTopicStats = brokerTopicStats,
       logDirFailureChannel = logDirFailureChannel)
 
-    if (logDir.getName.endsWith(Log.DeleteDirSuffix)) {
+    if (logDir.getName.endsWith(Log.DeleteDirSuffix) || logDir.getParent.equals(Log.DeleteDirParent))
       addLogToBeDeleted(log)
-    } else {
+    else {
       val previous = {
         if (log.isFuture)
           this.futureLogs.put(topicPartition, log)
@@ -331,9 +346,16 @@ class LogManager(logDirs: Seq[File],
             warn("Error occurred while reading log-start-offset-checkpoint file of directory " + dir, e)
         }
 
+        val deleteDir = new File(dir, Log.DeleteDirParent)
         val jobsForDir = for {
-          dirContent <- Option(dir.listFiles).toList
-          logDir <- dirContent if logDir.isDirectory
+          dirContent <-
+            Option(dir.listFiles(
+              new FilenameFilter {
+                override def accept(dir: File, name: String): Boolean =
+                  new File(dir, name).isDirectory && !name.equals(Log.DeleteDirParent)
+                })).toList ++
+              Option(deleteDir.listFiles).toList
+          logDir <- dirContent
         } yield {
           CoreUtils.runnable {
             try {
@@ -382,7 +404,7 @@ class LogManager(logDirs: Seq[File],
   /**
    *  Start the background threads to flush logs and do log cleanup
    */
-  def startup(): Unit = {
+  def startup() {
     /* Schedule the cleanup task to delete old logs */
     if (scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
@@ -419,7 +441,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Close all the logs
    */
-  def shutdown(): Unit = {
+  def shutdown() {
     info("Shutting down.")
 
     removeMetric("OfflineLogDirectoryCount")
@@ -489,7 +511,7 @@ class LogManager(logDirs: Seq[File],
    * @param partitionOffsets Partition logs that need to be truncated
    * @param isFuture True iff the truncation should be performed on the future log of the specified partitions
    */
-  def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean): Unit = {
+  def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean) {
     var truncated = false
     for ((topicPartition, truncateOffset) <- partitionOffsets) {
       val log = {
@@ -527,7 +549,7 @@ class LogManager(logDirs: Seq[File],
    * @param newOffset The new offset to start the log with
    * @param isFuture True iff the truncation should be performed on the future log of the specified partition
    */
-  def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean): Unit = {
+  def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean) {
     val log = {
       if (isFuture)
         futureLogs.get(topicPartition)
@@ -552,7 +574,7 @@ class LogManager(logDirs: Seq[File],
    * Write out the current recovery point for all logs to a text file in the log directory
    * to avoid recovering the whole log on startup.
    */
-  def checkpointLogRecoveryOffsets(): Unit = {
+  def checkpointLogRecoveryOffsets() {
     liveLogDirs.foreach(checkpointLogRecoveryOffsetsInDir)
   }
 
@@ -560,7 +582,7 @@ class LogManager(logDirs: Seq[File],
    * Write out the current log start offset for all logs to a text file in the log directory
    * to avoid exposing data that have been deleted by DeleteRecordsRequest
    */
-  def checkpointLogStartOffsets(): Unit = {
+  def checkpointLogStartOffsets() {
     liveLogDirs.foreach(checkpointLogStartOffsetsInDir)
   }
 
@@ -784,7 +806,7 @@ class LogManager(logDirs: Seq[File],
       }
 
       try {
-        sourceLog.renameDir(Log.logDeleteDirName(topicPartition))
+        sourceLog.markForDeletion()
         // Now that replica in source log directory has been successfully renamed for deletion.
         // Close the log, update checkpoint files, and enqueue this log to be deleted.
         sourceLog.close()
@@ -825,7 +847,8 @@ class LogManager(logDirs: Seq[File],
         cleaner.abortCleaning(topicPartition)
         cleaner.updateCheckpoints(removedLog.dir.getParentFile)
       }
-      removedLog.renameDir(Log.logDeleteDirName(topicPartition))
+
+      removedLog.markForDeletion()
       checkpointLogRecoveryOffsetsInDir(removedLog.dir.getParentFile)
       checkpointLogStartOffsetsInDir(removedLog.dir.getParentFile)
       addLogToBeDeleted(removedLog)
@@ -860,7 +883,7 @@ class LogManager(logDirs: Seq[File],
    * Delete any eligible logs. Return the number of segments deleted.
    * Only consider logs that are not compacted.
    */
-  def cleanupLogs(): Unit = {
+  def cleanupLogs() {
     debug("Beginning log cleanup...")
     var total = 0
     val startMs = time.milliseconds
@@ -878,9 +901,9 @@ class LogManager(logDirs: Seq[File],
   def allLogs: Iterable[Log] = currentLogs.values ++ futureLogs.values
 
   def logsByTopic(topic: String): Seq[Log] = {
-    (currentLogs.toList ++ futureLogs.toList).filter { case (topicPartition, log) =>
+    (currentLogs.toList ++ futureLogs.toList).filter { case (topicPartition, _) =>
       topicPartition.topic() == topic
-    }.map { case (topicPartition, log) => log }
+    }.map { case (_, log) => log }
   }
 
   /**

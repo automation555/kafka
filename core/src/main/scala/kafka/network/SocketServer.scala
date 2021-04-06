@@ -146,7 +146,7 @@ class SocketServer(val config: KafkaConfig, val metrics: Metrics, val time: Time
     info(s"Started processors for ${acceptors.size} acceptors")
   }
 
-  private def endpoints = config.listeners.map(l => l.listenerName -> l).toMap
+  private def endpoints = config.listeners.map(endpoint => endpoint.listenerName -> endpoint).toMap
 
   private def createAcceptorAndProcessors(processorsPerListener: Int,
                                           endpoints: Seq[EndPoint]): Unit = synchronized {
@@ -707,7 +707,7 @@ private[kafka] class Processor(val id: Int,
   }
 
   private def nowNanosSupplier = new Supplier[java.lang.Long] {
-    override def get(): java.lang.Long = time.relativeNanoseconds()
+    override def get(): java.lang.Long = time.nanoseconds()
   }
 
   private def poll() {
@@ -729,7 +729,7 @@ private[kafka] class Processor(val id: Int,
             if (header.apiKey() == ApiKeys.SASL_HANDSHAKE && channel.maybeBeginServerReauthentication(receive, nowNanosSupplier))
               trace(s"Begin re-authentication: $channel")
             else {
-              val nowNanos = time.relativeNanoseconds()
+              val nowNanos = time.nanoseconds()
               if (channel.serverAuthenticationSessionExpired(nowNanos)) {
                 channel.disconnect()
                 debug(s"Disconnected expired channel: $channel : $header")
@@ -879,7 +879,7 @@ private[kafka] class Processor(val id: Int,
   private def dequeueResponse(): RequestChannel.Response = {
     val response = responseQueue.poll()
     if (response != null)
-      response.request.responseDequeueTimeNanos = Time.SYSTEM.relativeNanoseconds
+      response.request.responseDequeueTimeNanos = Time.SYSTEM.nanoseconds
     response
   }
 

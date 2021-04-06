@@ -21,7 +21,6 @@ import kafka.common._
 import kafka.message._
 import kafka.serializer._
 import kafka.utils.{CommandLineUtils, Exit, ToolsUtils}
-import kafka.utils.Implicits._
 import kafka.producer.{NewShinyProducer, OldProducer}
 import java.util.Properties
 import java.io._
@@ -75,13 +74,15 @@ object ConsoleProducer {
   def getReaderProps(config: ProducerConfig): Properties = {
     val props = new Properties
     props.put("topic",config.topic)
-    props ++= config.cmdLineProps
+    props.putAll(config.cmdLineProps)
     props
   }
 
   def getOldProducerProps(config: ProducerConfig): Properties = {
-    val props = producerProps(config)
+    val props = new Properties();
 
+    props.putAll(config.producerProps)
+    props.putAll(config.extraProducerProps)
     props.put("metadata.broker.list", config.brokerList)
     props.put("compression.codec", config.compressionCodec)
     props.put("producer.type", if(config.sync) "sync" else "async")
@@ -97,23 +98,15 @@ object ConsoleProducer {
     props.put("serializer.class", config.valueEncoderClass)
     props.put("send.buffer.bytes", config.socketBuffer.toString)
     props.put("topic.metadata.refresh.interval.ms", config.metadataExpiryMs.toString)
-    props.put("client.id", "console-producer")
 
-    props
-  }
-
-  private def producerProps(config: ProducerConfig): Properties = {
-    val props =
-      if (config.options.has(config.producerConfigOpt))
-        Utils.loadProps(config.options.valueOf(config.producerConfigOpt))
-      else new Properties
-    props ++= config.extraProducerProps
     props
   }
 
   def getNewProducerProps(config: ProducerConfig): Properties = {
-    val props = producerProps(config)
+    val props = new Properties();
 
+    props.putAll(config.producerProps)
+    props.putAll(config.extraProducerProps)
     props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, config.brokerList)
     props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, config.compressionCodec)
     props.put(ProducerConfig.SEND_BUFFER_CONFIG, config.socketBuffer.toString)
@@ -126,7 +119,6 @@ object ConsoleProducer {
     props.put(ProducerConfig.LINGER_MS_CONFIG, config.sendTimeout.toString)
     props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, config.maxMemoryBytes.toString)
     props.put(ProducerConfig.BATCH_SIZE_CONFIG, config.maxPartitionMemoryBytes.toString)
-    props.put(ProducerConfig.CLIENT_ID_CONFIG, "console-producer")
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer")
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer")
 
@@ -135,135 +127,126 @@ object ConsoleProducer {
 
   class ProducerConfig(args: Array[String]) {
     val parser = new OptionParser(false)
-    val topicOpt = parser.accepts("topic", "The topic id to produce messages to.")
+    val topicOpt = parser.accepts("topic", "REQUIRED: The topic id to produce messages to.")
       .withRequiredArg
       .describedAs("topic")
       .ofType(classOf[String])
-      .required
-    val brokerListOpt = parser.accepts("broker-list", "The broker list string in the form host1:port1,host2:port2.")
+    val brokerListOpt = parser.accepts("broker-list", "REQUIRED: The broker list string in the form HOST1:PORT1,HOST2:PORT2.")
       .withRequiredArg
-      .describedAs("server(s) to use for bootstrapping")
+      .describedAs("broker-list")
       .ofType(classOf[String])
-      .required
-    val syncOpt = parser.accepts("sync", "If set, message requests are send to the brokers synchronously, one at a time as they arrive.")
-    val compressionCodecOpt = parser.accepts("compression-codec", "The compression codec is either: 'none', 'gzip', 'snappy', or 'lz4'." +
-                                                                  "If specified without value, then it defaults to 'gzip'.")
+    val syncOpt = parser.accepts("sync", "If set message send requests to the brokers are synchronously, one at a time as they arrive.")
+    val compressionCodecOpt = parser.accepts("compression-codec", "The compression codec: either 'none', 'gzip', 'snappy', or 'lz4'." +
+                                                                  "If specified without value, then it defaults to 'gzip'")
                                     .withOptionalArg()
                                     .describedAs("compression-codec")
                                     .ofType(classOf[String])
     val batchSizeOpt = parser.accepts("batch-size", "Number of messages to send in a single batch if they are not being sent synchronously.")
       .withRequiredArg
-      .describedAs("number of messages in a single batch")
+      .describedAs("size")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(200)
-    val messageSendMaxRetriesOpt = parser.accepts("message-send-max-retries", "Brokers can fail receiving the message for multiple reasons, and being unavailable transiently is just one of them. This property specifies the number of retries before the producer gives up and drops this message.")
+    val messageSendMaxRetriesOpt = parser.accepts("message-send-max-retries", "Brokers can fail receiving the message for multiple reasons, and being unavailable transiently is just one of them. This property specifies the number of retires before the producer give up and drop this message.")
       .withRequiredArg
-      .describedAs("number of retries before dropping this message")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(3)
     val retryBackoffMsOpt = parser.accepts("retry-backoff-ms", "Before each retry, the producer refreshes the metadata of relevant topics. Since leader election takes a bit of time, this property specifies the amount of time that the producer waits before refreshing the metadata.")
       .withRequiredArg
-      .describedAs("wait time before refreshing the metadata")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(100)
     val sendTimeoutOpt = parser.accepts("timeout", "If set and the producer is running in asynchronous mode, this gives the maximum amount of time" +
-      " a message will queue awaiting sufficient batch size. The value is given in milliseconds.")
+      " a message will queue awaiting sufficient batch size. The value is given in ms.")
       .withRequiredArg
       .describedAs("timeout_ms")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(1000)
     val queueSizeOpt = parser.accepts("queue-size", "If set and the producer is running in asynchronous mode, this gives the maximum amount of " +
-      " messages that will queue awaiting sufficient batch size.")
+      " messages will queue awaiting sufficient batch size.")
       .withRequiredArg
-      .describedAs("queue-size")
+      .describedAs("queue_size")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(10000)
-    val queueEnqueueTimeoutMsOpt = parser.accepts("queue-enqueuetimeout-ms", "Timeout for event enqueue in milliseconds.")
+    val queueEnqueueTimeoutMsOpt = parser.accepts("queue-enqueuetimeout-ms", "Timeout for event enqueue")
       .withRequiredArg
-      .describedAs("queue enqueue timeout(in ms)")
+      .describedAs("queue enqueuetimeout ms")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(Int.MaxValue)
-    val requestRequiredAcksOpt = parser.accepts("request-required-acks", "The required acks of the producer requests.")
+    val requestRequiredAcksOpt = parser.accepts("request-required-acks", "The required acks of the producer requests")
       .withRequiredArg
-      .describedAs("required acks of requests")
+      .describedAs("request required acks")
       .ofType(classOf[java.lang.String])
       .defaultsTo("1")
-    val requestTimeoutMsOpt = parser.accepts("request-timeout-ms", "The ack timeout of the producer requests. Value must be non-negative and non-zero.")
+    val requestTimeoutMsOpt = parser.accepts("request-timeout-ms", "The ack timeout of the producer requests. Value must be non-negative and non-zero")
       .withRequiredArg
-      .describedAs("request timeout(in ms)")
+      .describedAs("request timeout ms")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(1500)
     val metadataExpiryMsOpt = parser.accepts("metadata-expiry-ms",
       "The period of time in milliseconds after which we force a refresh of metadata even if we haven't seen any leadership changes.")
       .withRequiredArg
-      .describedAs("metadata expiration interval(in ms)")
+      .describedAs("metadata expiration interval")
       .ofType(classOf[java.lang.Long])
       .defaultsTo(5*60*1000L)
     val maxBlockMsOpt = parser.accepts("max-block-ms",
-      "The max time that the producer will block for during a send request.")
+      "The max time that the producer will block for during a send request")
       .withRequiredArg
-      .describedAs("max block on send(in ms)")
+      .describedAs("max block on send")
       .ofType(classOf[java.lang.Long])
       .defaultsTo(60*1000L)
     val maxMemoryBytesOpt = parser.accepts("max-memory-bytes",
-      "The total memory in bytes used by the producer to buffer records waiting to be sent to the server.")
+      "The total memory used by the producer to buffer records waiting to be sent to the server.")
       .withRequiredArg
-      .describedAs("total memory(in bytes)")
+      .describedAs("total memory in bytes")
       .ofType(classOf[java.lang.Long])
       .defaultsTo(32 * 1024 * 1024L)
     val maxPartitionMemoryBytesOpt = parser.accepts("max-partition-memory-bytes",
-      "The buffer size allocated for a partition. When records are received which are smaller than this size, the producer " +
+      "The buffer size allocated for a partition. When records are received which are smaller than this size the producer " +
         "will attempt to optimistically group them together until this size is reached.")
       .withRequiredArg
-      .describedAs("memory(in bytes) per partition")
+      .describedAs("memory in bytes per partition")
       .ofType(classOf[java.lang.Long])
       .defaultsTo(16 * 1024L)
     val valueEncoderOpt = parser.accepts("value-serializer", "The class name of the message encoder implementation to use for serializing values.")
       .withRequiredArg
-      .describedAs("encoder class for serializing values")
+      .describedAs("encoder_class")
       .ofType(classOf[java.lang.String])
       .defaultsTo(classOf[DefaultEncoder].getName)
     val keyEncoderOpt = parser.accepts("key-serializer", "The class name of the message encoder implementation to use for serializing keys.")
       .withRequiredArg
-      .describedAs("encoder class for serializing keys")
+      .describedAs("encoder_class")
       .ofType(classOf[java.lang.String])
       .defaultsTo(classOf[DefaultEncoder].getName)
-    val messageReaderOpt = parser.accepts("line-reader", "The class name of the class to use for reading lines from standard input. " +
-      "By default, each line is read as a separate message.")
+    val messageReaderOpt = parser.accepts("line-reader", "The class name of the class to use for reading lines from standard in. " +
+      "By default each line is read as a separate message.")
       .withRequiredArg
-      .describedAs("reader class for reading lines from standard input")
+      .describedAs("reader_class")
       .ofType(classOf[java.lang.String])
       .defaultsTo(classOf[LineMessageReader].getName)
     val socketBufferSizeOpt = parser.accepts("socket-buffer-size", "The size of the tcp RECV size.")
       .withRequiredArg
-      .describedAs("buffer size used for socket connections")
+      .describedAs("size")
       .ofType(classOf[java.lang.Integer])
       .defaultsTo(1024*100)
     val propertyOpt = parser.accepts("property", "A mechanism to pass user-defined properties in the form key=value to the message reader. " +
       "This allows custom configuration for a user-defined message reader.")
       .withRequiredArg
-      .describedAs("user-defined properties for the message reader")
+      .describedAs("prop")
       .ofType(classOf[String])
     val producerPropertyOpt = parser.accepts("producer-property", "A mechanism to pass user-defined properties in the form key=value to the producer. ")
             .withRequiredArg
-            .describedAs("user-defined properties for the producer")
+            .describedAs("producer_prop")
             .ofType(classOf[String])
     val producerConfigOpt = parser.accepts("producer.config", s"Producer config properties file. Note that $producerPropertyOpt takes precedence over this config.")
       .withRequiredArg
-      .describedAs("config file for producer")
+      .describedAs("config file")
       .ofType(classOf[String])
     val useOldProducerOpt = parser.accepts("old-producer", "Use the old producer implementation.")
-    val helpOpt = parser.accepts("help", "Print usage information.").forHelp
-    
-    var commandDef: String = "Read data from standard input and publish it to Kafka."
+
+    val options = parser.parse(args : _*)
     if(args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, commandDef)
-    
-    val options = CommandLineUtils.tryParse(parser, args)
-    if (options.has("help")) {
-       CommandLineUtils.printUsageAndDie(parser, commandDef)
-    }
-    
+      CommandLineUtils.printUsageAndDie(parser, "Read data from standard input and publish it to Kafka.")
+    CommandLineUtils.checkRequiredArgs(parser, options, topicOpt, brokerListOpt)
+
     val useOldProducer = options.has(useOldProducerOpt)
     val topic = options.valueOf(topicOpt)
     val brokerList = options.valueOf(brokerListOpt)
@@ -289,10 +272,20 @@ object ConsoleProducer {
     val socketBuffer = options.valueOf(socketBufferSizeOpt)
     val cmdLineProps = CommandLineUtils.parseKeyValueArgs(options.valuesOf(propertyOpt).asScala)
     val extraProducerProps = CommandLineUtils.parseKeyValueArgs(options.valuesOf(producerPropertyOpt).asScala)
+    val producerProps = if (options.has(producerConfigOpt))
+      Utils.loadProps(options.valueOf(producerConfigOpt))
+    else
+      new Properties()
+    /* new producer related configs */
     val maxMemoryBytes = options.valueOf(maxMemoryBytesOpt)
     val maxPartitionMemoryBytes = options.valueOf(maxPartitionMemoryBytesOpt)
     val metadataExpiryMs = options.valueOf(metadataExpiryMsOpt)
     val maxBlockMs = options.valueOf(maxBlockMsOpt)
+
+    // if no client.id is specified, the fixed one is used
+    if (!producerProps.containsKey(ProducerConfig.CLIENT_ID_CONFIG)) {
+      producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "console-producer")
+    }
   }
 
   class LineMessageReader extends MessageReader {

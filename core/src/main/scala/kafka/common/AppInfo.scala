@@ -6,7 +6,7 @@
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,26 +15,40 @@
  * limitations under the License.
  */
 
-package kafka.metrics
+package kafka.common
 
-import com.codahale.metrics.Timer
+import com.codahale.metrics.Gauge
+import kafka.metrics.KafkaMetricsGroup
+import org.apache.kafka.common.utils.AppInfoParser
 
-/**
- * A wrapper around metrics timer object that provides a convenient mechanism
- * to time code blocks. This pattern was borrowed from the metrics-scala_2.9.1
- * package.
- * @param metric The underlying timer object.
- */
-class KafkaTimer(metric: Timer) {
+object AppInfo extends KafkaMetricsGroup {
+  private var isRegistered = false
+  private val lock = new Object()
 
-  def time[A](f: => A): A = {
-    val ctx = metric.time
-    try {
-      f
+  def registerInfo(): Unit = {
+    lock.synchronized {
+      if (isRegistered) {
+        return
+      }
     }
-    finally {
-      ctx.stop()
+
+    newGauge("Version",
+      new Gauge[String] {
+        override def getValue: String = {
+          AppInfoParser.getVersion
+        }
+      })
+
+    newGauge("CommitID",
+      new Gauge[String] {
+        override def getValue: String = {
+          AppInfoParser.getCommitId
+        }
+      })
+
+    lock.synchronized {
+      isRegistered = true
     }
+
   }
 }
-

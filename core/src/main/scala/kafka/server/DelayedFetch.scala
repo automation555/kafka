@@ -21,9 +21,8 @@ import java.util.concurrent.TimeUnit
 
 import kafka.metrics.KafkaMetricsGroup
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.errors.{NotLeaderForPartitionException, UnknownTopicOrPartitionException, KafkaStorageException}
+import org.apache.kafka.common.errors.{NotLeaderForPartitionException, UnknownTopicOrPartitionException}
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
-import org.apache.kafka.common.requests.IsolationLevel
 
 import scala.collection._
 
@@ -46,11 +45,9 @@ case class FetchMetadata(fetchMinBytes: Int,
                          fetchPartitionStatus: Seq[(TopicPartition, FetchPartitionStatus)]) {
 
   override def toString = "[minBytes: " + fetchMinBytes + ", " +
-    "maxBytes:" + fetchMaxBytes + ", " +
-    "onlyLeader:" + fetchOnlyLeader + ", " +
-    "onlyCommitted: " + fetchOnlyCommitted + ", " +
-    "replicaId: " + replicaId + ", " +
-    "partitionStatus: " + fetchPartitionStatus + "]"
+                          "onlyLeader:" + fetchOnlyLeader + ", "
+                          "onlyCommitted: " + fetchOnlyCommitted + ", "
+                          "partitionStatus: " + fetchPartitionStatus + "]"
 }
 /**
  * A delayed fetch operation that can be created by the replica manager and watched
@@ -60,7 +57,6 @@ class DelayedFetch(delayMs: Long,
                    fetchMetadata: FetchMetadata,
                    replicaManager: ReplicaManager,
                    quota: ReplicaQuota,
-                   isolationLevel: IsolationLevel,
                    responseCallback: Seq[(TopicPartition, FetchPartitionData)] => Unit)
   extends DelayedOperation(delayMs) {
 
@@ -71,7 +67,6 @@ class DelayedFetch(delayMs: Long,
    * Case B: This broker does not know of some partitions it tries to fetch
    * Case C: The fetch offset locates not on the last segment of the log
    * Case D: The accumulated bytes from all the fetching partitions exceeds the minimum bytes
-   * Case E: The partition is in an offline log directory on this broker
    *
    * Upon completion, should return whatever data is available for each valid partition
    */
@@ -85,9 +80,7 @@ class DelayedFetch(delayMs: Long,
           if (fetchOffset != LogOffsetMetadata.UnknownOffsetMetadata) {
             val replica = replicaManager.getLeaderReplicaIfLocal(topicPartition)
             val endOffset =
-              if (isolationLevel == IsolationLevel.READ_COMMITTED)
-                replica.lastStableOffset
-              else if (fetchMetadata.fetchOnlyCommitted)
+              if (fetchMetadata.fetchOnlyCommitted)
                 replica.highWatermark
               else
                 replica.logEndOffset
@@ -118,9 +111,6 @@ class DelayedFetch(delayMs: Long,
             }
           }
         } catch {
-          case _: KafkaStorageException => // Case E
-            debug("Partition %s is in an offline log directory, satisfy %s immediately".format(topicPartition, fetchMetadata))
-            return forceComplete()
           case _: UnknownTopicOrPartitionException => // Case B
             debug("Broker no longer know of %s, satisfy %s immediately".format(topicPartition, fetchMetadata))
             return forceComplete()
@@ -138,7 +128,7 @@ class DelayedFetch(delayMs: Long,
       false
   }
 
-  override def onExpiration(): Unit = {
+  override def onExpiration() {
     if (fetchMetadata.isFromFollower)
       DelayedFetchMetrics.followerExpiredRequestMeter.mark()
     else
@@ -148,7 +138,7 @@ class DelayedFetch(delayMs: Long,
   /**
    * Upon completion, read whatever data is available and pass to the complete callback
    */
-  override def onComplete(): Unit = {
+  override def onComplete() {
     val logReadResults = replicaManager.readFromLocalLog(
       replicaId = fetchMetadata.replicaId,
       fetchOnlyFromLeader = fetchMetadata.fetchOnlyLeader,
@@ -156,12 +146,11 @@ class DelayedFetch(delayMs: Long,
       fetchMaxBytes = fetchMetadata.fetchMaxBytes,
       hardMaxBytesLimit = fetchMetadata.hardMaxBytesLimit,
       readPartitionInfo = fetchMetadata.fetchPartitionStatus.map { case (tp, status) => tp -> status.fetchInfo },
-      quota = quota,
-      isolationLevel = isolationLevel)
+      quota = quota
+    )
 
     val fetchPartitionData = logReadResults.map { case (tp, result) =>
-      tp -> FetchPartitionData(result.error, result.highWatermark, result.leaderLogStartOffset, result.info.records,
-        result.lastStableOffset, result.info.abortedTransactions)
+      tp -> FetchPartitionData(result.errorCode, result.hw, result.info.records)
     }
 
     responseCallback(fetchPartitionData)
@@ -170,7 +159,7 @@ class DelayedFetch(delayMs: Long,
 
 object DelayedFetchMetrics extends KafkaMetricsGroup {
   private val FetcherTypeKey = "fetcherType"
-  val followerExpiredRequestMeter = newMeter("ExpiresPerSec", "requests", TimeUnit.SECONDS, tags = Map(FetcherTypeKey -> "follower"))
-  val consumerExpiredRequestMeter = newMeter("ExpiresPerSec", "requests", TimeUnit.SECONDS, tags = Map(FetcherTypeKey -> "consumer"))
+  val followerExpiredRequestMeter = newMeter("ExpiresPerSec", tags = Map(FetcherTypeKey -> "follower"))
+  val consumerExpiredRequestMeter = newMeter("ExpiresPerSec", tags = Map(FetcherTypeKey -> "consumer"))
 }
 

@@ -17,31 +17,30 @@
 
 package kafka.server
 
-import AbstractFetcherThread._
-import com.yammer.metrics.Metrics
 import kafka.cluster.BrokerEndPoint
+import kafka.metrics.{KafkaMetricsGroup, KafkaMetricsName}
 import kafka.server.AbstractFetcherThread.{FetchRequest, PartitionData}
 import kafka.utils.TestUtils
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.{CompressionType, MemoryRecords, SimpleRecord}
-import org.apache.kafka.common.requests.EpochEndOffset
+import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.common.record.{MemoryRecords, Record}
 import org.junit.Assert.{assertFalse, assertTrue}
 import org.junit.{Before, Test}
 
 import scala.collection.JavaConverters._
-import scala.collection.{Map, Set, mutable}
+import scala.collection.{Map, mutable}
 
 class AbstractFetcherThreadTest {
 
   @Before
   def cleanMetricRegistry(): Unit = {
-    for (metricName <- Metrics.defaultRegistry().allMetrics().keySet().asScala)
-      Metrics.defaultRegistry().removeMetric(metricName)
+    for (metricName <- KafkaMetricsGroup.registry.getMetrics.keySet().asScala)
+      KafkaMetricsGroup.registry.remove(metricName)
   }
 
   @Test
-  def testMetricsRemovedOnShutdown(): Unit = {
+  def testMetricsRemovedOnShutdown() {
     val partition = new TopicPartition("topic", 0)
     val fetcherThread = new DummyFetcherThread("dummy", "client", new BrokerEndPoint(0, "localhost", 9092))
 
@@ -58,11 +57,11 @@ class AbstractFetcherThreadTest {
     fetcherThread.shutdown()
 
     // after shutdown, they should be gone
-    assertTrue(Metrics.defaultRegistry().allMetrics().isEmpty)
+    assertTrue(KafkaMetricsGroup.registry.getMetrics.isEmpty)
   }
 
   @Test
-  def testConsumerLagRemovedWithPartition(): Unit = {
+  def testConsumerLagRemovedWithPartition() {
     val partition = new TopicPartition("topic", 0)
     val fetcherThread = new DummyFetcherThread("dummy", "client", new BrokerEndPoint(0, "localhost", 9092))
 
@@ -84,7 +83,9 @@ class AbstractFetcherThreadTest {
     fetcherThread.shutdown()
   }
 
-  private def allMetricsNames = Metrics.defaultRegistry().allMetrics().asScala.keySet.map(_.getName)
+  private def allMetricsNames = KafkaMetricsGroup.registry.getMetrics.asScala.keySet.map( v => {
+    KafkaMetricsName.fromString(v).name
+  })
 
   class DummyFetchRequest(val offsets: collection.Map[TopicPartition, Long]) extends FetchRequest {
     override def isEmpty: Boolean = offsets.isEmpty
@@ -93,7 +94,7 @@ class AbstractFetcherThreadTest {
   }
 
   class TestPartitionData(records: MemoryRecords = MemoryRecords.EMPTY) extends PartitionData {
-    override def error: Errors = Errors.NONE
+    override def errorCode: Short = Errors.NONE.code
 
     override def toRecords: MemoryRecords = records
 
@@ -106,7 +107,7 @@ class AbstractFetcherThreadTest {
                            clientId: String,
                            sourceBroker: BrokerEndPoint,
                            fetchBackOffMs: Int = 0)
-    extends AbstractFetcherThread(name, clientId, sourceBroker, fetchBackOffMs, isInterruptible = true, includeLogTruncation = false) {
+    extends AbstractFetcherThread(name, clientId, sourceBroker, fetchBackOffMs) {
 
     type REQ = DummyFetchRequest
     type PD = PartitionData
@@ -122,23 +123,13 @@ class AbstractFetcherThreadTest {
     override protected def fetch(fetchRequest: DummyFetchRequest): Seq[(TopicPartition, TestPartitionData)] =
       fetchRequest.offsets.mapValues(_ => new TestPartitionData()).toSeq
 
-    override protected def buildFetchRequest(partitionMap: collection.Seq[(TopicPartition, PartitionFetchState)]): ResultWithPartitions[DummyFetchRequest] =
-      ResultWithPartitions(new DummyFetchRequest(partitionMap.map { case (k, v) => (k, v.fetchOffset) }.toMap), Set())
-
-    override def buildLeaderEpochRequest(allPartitions: Seq[(TopicPartition, PartitionFetchState)]): ResultWithPartitions[Map[TopicPartition, Int]] = {
-      ResultWithPartitions(Map(), Set())
-    }
-
-    override def fetchEpochsFromLeader(partitions: Map[TopicPartition, Int]): Map[TopicPartition, EpochEndOffset] = { Map() }
-
-    override def maybeTruncate(fetchedEpochs: Map[TopicPartition, EpochEndOffset]): ResultWithPartitions[Map[TopicPartition, Long]] = {
-      ResultWithPartitions(Map(), Set())
-    }
+    override protected def buildFetchRequest(partitionMap: collection.Seq[(TopicPartition, PartitionFetchState)]): DummyFetchRequest =
+      new DummyFetchRequest(partitionMap.map { case (k, v) => (k, v.offset) }.toMap)
   }
 
 
   @Test
-  def testFetchRequestCorruptedMessageException(): Unit = {
+  def testFetchRequestCorruptedMessageException() {
     val partition = new TopicPartition("topic", 0)
     val fetcherThread = new CorruptingFetcherThread("test", "client", new BrokerEndPoint(0, "localhost", 9092),
       fetchBackOffMs = 1)
@@ -149,7 +140,7 @@ class AbstractFetcherThreadTest {
     fetcherThread.addPartitions(Map(partition -> 0L))
 
     // Wait until fetcherThread finishes the work
-    TestUtils.waitUntilTrue(() => fetcherThread.fetchCount > 3, "Failed waiting for fetcherThread to finish the work")
+    TestUtils.waitUntilTrue(() => fetcherThread.fetchCount > 3, "Failed waiting for fetcherThread tp finish the work")
 
     fetcherThread.shutdown()
 
@@ -167,8 +158,8 @@ class AbstractFetcherThreadTest {
     @volatile var fetchCount = 0
 
     private val normalPartitionDataSet = List(
-      new TestPartitionData(MemoryRecords.withRecords(0L, CompressionType.NONE, new SimpleRecord("hello".getBytes()))),
-      new TestPartitionData(MemoryRecords.withRecords(1L, CompressionType.NONE, new SimpleRecord("hello".getBytes())))
+      new TestPartitionData(MemoryRecords.withRecords(0L, Record.create("hello".getBytes()))),
+      new TestPartitionData(MemoryRecords.withRecords(1L, Record.create("hello".getBytes())))
     )
 
     override def processPartitionData(topicPartition: TopicPartition,
@@ -182,9 +173,9 @@ class AbstractFetcherThreadTest {
 
       // Now check message's crc
       val records = partitionData.toRecords
-      for (batch <- records.batches.asScala) {
-        batch.ensureValid()
-        logEndOffset = batch.nextOffset
+      for (entry <- records.shallowEntries.asScala) {
+        entry.record.ensureValid()
+        logEndOffset = entry.nextOffset
       }
     }
 
@@ -192,28 +183,25 @@ class AbstractFetcherThreadTest {
       fetchCount += 1
       // Set the first fetch to get a corrupted message
       if (fetchCount == 1) {
-        val record = new SimpleRecord("hello".getBytes())
-        val records = MemoryRecords.withRecords(CompressionType.NONE, record)
-        val buffer = records.buffer
-
-        // flip some bits in the message to ensure the crc fails
-        buffer.putInt(15, buffer.getInt(15) ^ 23422)
-        buffer.putInt(30, buffer.getInt(30) ^ 93242)
+        val corruptedRecord = Record.create("hello".getBytes())
+        val badChecksum = (corruptedRecord.checksum + 1 % Int.MaxValue).toInt
+        // Garble checksum
+        Utils.writeUnsignedInt(corruptedRecord.buffer, Record.CRC_OFFSET, badChecksum)
+        val records = MemoryRecords.withRecords(corruptedRecord)
         fetchRequest.offsets.mapValues(_ => new TestPartitionData(records)).toSeq
-      } else {
-        // Then, the following fetches get the normal data
+      } else
+      // Then, the following fetches get the normal data
         fetchRequest.offsets.mapValues(v => normalPartitionDataSet(v.toInt)).toSeq
-      }
     }
 
-    override protected def buildFetchRequest(partitionMap: collection.Seq[(TopicPartition, PartitionFetchState)]): ResultWithPartitions[DummyFetchRequest] = {
+    override protected def buildFetchRequest(partitionMap: collection.Seq[(TopicPartition, PartitionFetchState)]): DummyFetchRequest = {
       val requestMap = new mutable.HashMap[TopicPartition, Long]
       partitionMap.foreach { case (topicPartition, partitionFetchState) =>
         // Add backoff delay check
-        if (partitionFetchState.isReadyForFetch)
-          requestMap.put(topicPartition, partitionFetchState.fetchOffset)
+        if (partitionFetchState.isActive)
+          requestMap.put(topicPartition, partitionFetchState.offset)
       }
-      ResultWithPartitions(new DummyFetchRequest(requestMap), Set())
+      new DummyFetchRequest(requestMap)
     }
 
     override def handlePartitionsWithErrors(partitions: Iterable[TopicPartition]) = delayPartitions(partitions, fetchBackOffMs.toLong)

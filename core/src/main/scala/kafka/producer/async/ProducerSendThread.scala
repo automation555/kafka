@@ -23,7 +23,7 @@ import java.util.concurrent.{BlockingQueue, CountDownLatch, TimeUnit}
 import collection.mutable.ArrayBuffer
 import kafka.producer.KeyedMessage
 import kafka.metrics.KafkaMetricsGroup
-import com.yammer.metrics.core.Gauge
+import com.codahale.metrics.Gauge
 import org.apache.kafka.common.utils.Time
 
 @deprecated("This class has been deprecated and will be removed in a future release.", "0.10.0.0")
@@ -39,11 +39,11 @@ class ProducerSendThread[K,V](val threadName: String,
 
   newGauge("ProducerQueueSize",
           new Gauge[Int] {
-            def value = queue.size
+            override def getValue: Int = queue.size
           },
           Map("clientId" -> clientId))
 
-  override def run: Unit = {
+  override def run {
     try {
       processEvents
     }catch {
@@ -53,14 +53,14 @@ class ProducerSendThread[K,V](val threadName: String,
     }
   }
 
-  def shutdown(): Unit = {
+  def shutdown = {
     info("Begin shutting down ProducerSendThread")
     queue.put(shutdownCommand)
     shutdownLatch.await
     info("Shutdown ProducerSendThread complete")
   }
 
-  private def processEvents(): Unit = {
+  private def processEvents() {
     var lastSend = Time.SYSTEM.milliseconds
     var events = new ArrayBuffer[KeyedMessage[K,V]]
     var full: Boolean = false
@@ -100,7 +100,7 @@ class ProducerSendThread[K,V](val threadName: String,
         .format(queue.size))
   }
 
-  def tryToHandle(events: Seq[KeyedMessage[K,V]]): Unit = {
+  def tryToHandle(events: Seq[KeyedMessage[K,V]]) {
     val size = events.size
     try {
       debug("Handling " + size + " events")

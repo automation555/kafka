@@ -23,7 +23,7 @@ import java.util.concurrent._
 import java.util.concurrent.atomic._
 import java.util.concurrent.locks.ReentrantLock
 
-import com.yammer.metrics.core.Gauge
+import com.codahale.metrics.Gauge
 import kafka.api._
 import kafka.client.ClientUtils
 import kafka.cluster._
@@ -80,12 +80,10 @@ import scala.collection.JavaConverters._
  * Each consumer tracks the offset of the latest message consumed for each partition.
  *
  */
-@deprecated("This object has been deprecated and will be removed in a future release.", "0.11.0.0")
 private[kafka] object ZookeeperConsumerConnector {
   val shutdownCommand: FetchedDataChunk = new FetchedDataChunk(null, null, -1L)
 }
 
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                                                 val enableFetcher: Boolean) // for testing only
         extends ConsumerConnector with Logging with KafkaMetricsGroup {
@@ -111,15 +109,15 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
   private var consumerRebalanceListener: ConsumerRebalanceListener = null
 
   // useful for tracking migration of consumers to store offsets in kafka
-  private val kafkaCommitMeter = newMeter("KafkaCommitsPerSec", "commits", TimeUnit.SECONDS, Map("clientId" -> config.clientId))
-  private val zkCommitMeter = newMeter("ZooKeeperCommitsPerSec", "commits", TimeUnit.SECONDS, Map("clientId" -> config.clientId))
-  private val rebalanceTimer = new KafkaTimer(newTimer("RebalanceRateAndTime", TimeUnit.MILLISECONDS, TimeUnit.SECONDS, Map("clientId" -> config.clientId)))
+  private val kafkaCommitMeter = newMeter("KafkaCommitsPerSec", Map("clientId" -> config.clientId))
+  private val zkCommitMeter = newMeter("ZooKeeperCommitsPerSec", Map("clientId" -> config.clientId))
+  private val rebalanceTimer = new KafkaTimer(newTimer("RebalanceRateAndTime", Map("clientId" -> config.clientId)))
 
   newGauge(
     "yammer-metrics-count",
     new Gauge[Int] {
-      def value = {
-        com.yammer.metrics.Metrics.defaultRegistry().allMetrics().size()
+      override def getValue: Int = {
+        KafkaMetricsGroup.registry.getMetrics.size()
       }
     }
   )
@@ -133,7 +131,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       => val uuid = UUID.randomUUID()
       consumerUuid = "%s-%d-%s".format(
         InetAddress.getLocalHost.getHostName, System.currentTimeMillis,
-        uuid.getMostSignificantBits().toHexString.substring(0,8))
+        uuid.getMostSignificantBits.toHexString.substring(0,8))
     }
     config.groupId + "_" + consumerUuid
   }
@@ -144,10 +142,10 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
   ensureOffsetManagerConnected()
 
   if (config.autoCommitEnable) {
-    scheduler.startup
-    info("Starting auto committer every " + config.autoCommitIntervalMs + " ms")
+    scheduler.startup()
+    info("starting auto committer every " + config.autoCommitIntervalMs + " ms")
     scheduler.schedule("kafka-consumer-autocommit",
-                       autoCommit _,
+                       autoCommit,
                        delay = config.autoCommitIntervalMs,
                        period = config.autoCommitIntervalMs,
                        unit = TimeUnit.MILLISECONDS)
@@ -172,7 +170,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
   def createMessageStreamsByFilter[K,V](topicFilter: TopicFilter,
                                         numStreams: Int,
                                         keyDecoder: Decoder[K] = new DefaultDecoder(),
-                                        valueDecoder: Decoder[V] = new DefaultDecoder()) = {
+                                        valueDecoder: Decoder[V] = new DefaultDecoder()): Seq[KafkaStream[K, V]] = {
     val wildcardStreamsHandler = new WildcardStreamsHandler[K,V](topicFilter, numStreams, keyDecoder, valueDecoder)
     wildcardStreamsHandler.streams
   }
@@ -194,7 +192,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
     zkUtils = ZkUtils(config.zkConnect,
                       config.zkSessionTimeoutMs,
                       config.zkConnectionTimeoutMs,
-                      JaasUtils.isZkSecurityEnabled())
+                      JaasUtils.isZkSecurityEnabled)
   }
 
   // Blocks until the offset manager is located and a channel is established to it.
@@ -219,8 +217,11 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       rebalanceLock synchronized {
         try {
           if (config.autoCommitEnable)
-            scheduler.shutdown()
-          fetcher.foreach(_.stopConnections())
+	        scheduler.shutdown()
+          fetcher match {
+            case Some(f) => f.stopConnections
+            case None =>
+          }
           sendShutdownToAllQueues()
           if (config.autoCommitEnable)
             commitOffsets(true)
@@ -270,7 +271,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
   def getTopicRegistry: Pool[String, Pool[Int, PartitionTopicInfo]] = topicRegistry
 
   private def registerConsumerInZK(dirs: ZKGroupDirs, consumerIdString: String, topicCount: TopicCount) {
-    info("Begin registering consumer " + consumerIdString + " in ZK")
+    info("begin registering consumer " + consumerIdString + " in ZK")
     val timestamp = Time.SYSTEM.milliseconds.toString
     val consumerRegistrationInfo = Json.encode(Map("version" -> 1, "subscription" -> topicCount.getTopicCountMap, "pattern" -> topicCount.pattern,
                                                   "timestamp" -> timestamp))
@@ -281,7 +282,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                                                     false)
     zkWatchedEphemeral.create()
 
-    info("End registering consumer " + consumerIdString + " in ZK")
+    info("end registering consumer " + consumerIdString + " in ZK")
   }
 
   private def sendShutdownToAllQueues() = {
@@ -355,25 +356,25 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
               trace("Offset commit response: %s.".format(offsetCommitResponse))
 
               val (commitFailed, retryableIfFailed, shouldRefreshCoordinator, errorCount) = {
-                offsetCommitResponse.commitStatus.foldLeft(false, false, false, 0) { case (folded, (topicPartition, error)) =>
+                offsetCommitResponse.commitStatus.foldLeft(false, false, false, 0) { case (folded, (topicPartition, errorCode)) =>
 
-                  if (error == Errors.NONE && config.dualCommitEnabled) {
+                  if (errorCode == Errors.NONE.code && config.dualCommitEnabled) {
                     val offset = offsetsToCommit(topicPartition).offset
                     commitOffsetToZooKeeper(topicPartition, offset)
                   }
 
                   (folded._1 || // update commitFailed
-                    error != Errors.NONE,
+                    errorCode != Errors.NONE.code,
 
                     folded._2 || // update retryableIfFailed - (only metadata too large is not retryable)
-                      (error != Errors.NONE && error != Errors.OFFSET_METADATA_TOO_LARGE),
+                      (errorCode != Errors.NONE.code && errorCode != Errors.OFFSET_METADATA_TOO_LARGE.code),
 
                     folded._3 || // update shouldRefreshCoordinator
-                      error == Errors.NOT_COORDINATOR ||
-                      error == Errors.COORDINATOR_NOT_AVAILABLE,
+                      errorCode == Errors.NOT_COORDINATOR_FOR_GROUP.code ||
+                      errorCode == Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code,
 
                     // update error count
-                    folded._4 + (if (error != Errors.NONE) 1 else 0))
+                    folded._4 + (if (errorCode != Errors.NONE.code) 1 else 0))
                 }
               }
               debug(errorCount + " errors in offset commit response.")
@@ -443,8 +444,8 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
 
             val (leaderChanged, loadInProgress) =
               offsetFetchResponse.requestInfo.values.foldLeft(false, false) { case (folded, offsetMetadataAndError) =>
-                (folded._1 || (offsetMetadataAndError.error == Errors.NOT_COORDINATOR),
-                 folded._2 || (offsetMetadataAndError.error == Errors.COORDINATOR_LOAD_IN_PROGRESS))
+                (folded._1 || (offsetMetadataAndError.error == Errors.NOT_COORDINATOR_FOR_GROUP.code),
+                 folded._2 || (offsetMetadataAndError.error == Errors.GROUP_LOAD_IN_PROGRESS.code))
               }
 
             if (leaderChanged) {
@@ -464,7 +465,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                 val mostRecentOffsets = kafkaOffsets.map { case (topicPartition, kafkaOffset) =>
                   val zkOffset = fetchOffsetFromZooKeeper(topicPartition)._2.offset
                   val mostRecentOffset = zkOffset.max(kafkaOffset.offset)
-                  (topicPartition, OffsetMetadataAndError(mostRecentOffset, kafkaOffset.metadata, Errors.NONE))
+                  (topicPartition, OffsetMetadataAndError(mostRecentOffset, kafkaOffset.metadata, Errors.NONE.code))
                 }
                 Some(OffsetFetchResponse(mostRecentOffsets))
               }
@@ -564,7 +565,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
     @volatile private var allTopicsOwnedPartitionsCount = 0
     newGauge("OwnedPartitionsCount",
       new Gauge[Int] {
-        def value() = allTopicsOwnedPartitionsCount
+        override def getValue: Int = allTopicsOwnedPartitionsCount
       },
       Map("clientId" -> config.clientId, "groupId" -> config.groupId))
 
@@ -572,7 +573,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
 
     private val watcherExecutorThread = new Thread(consumerIdString + "_watcher_executor") {
       override def run() {
-        info("Starting watcher executor thread for consumer " + consumerIdString)
+        info("starting watcher executor thread for consumer " + consumerIdString)
         var doRebalance = false
         while (!isShuttingDown.get) {
           try {
@@ -591,7 +592,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
             case t: Throwable => error("error during syncedRebalance", t)
           }
         }
-        info("Stopping watcher executor thread for consumer " + consumerIdString)
+        info("stopping watcher executor thread for consumer " + consumerIdString)
       }
     }
     watcherExecutorThread.start()
@@ -638,7 +639,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
             if(isShuttingDown.get())  {
               return
             }
-            info("Begin rebalancing consumer " + consumerIdString + " try #" + i)
+            info("begin rebalancing consumer " + consumerIdString + " try #" + i)
             var done = false
             var cluster: Cluster = null
             try {
@@ -650,9 +651,9 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                   * For example, a ZK node can disappear between the time we get all children and the time we try to get
                   * the value of a child. Just let this go since another rebalance will be triggered.
                   **/
-                info("Exception during rebalance ", e)
+                info("exception during rebalance ", e)
             }
-            info("End rebalancing consumer " + consumerIdString + " try #" + i)
+            info("end rebalancing consumer " + consumerIdString + " try #" + i)
             if (done) {
               return
             } else {
@@ -676,10 +677,10 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       val brokers = zkUtils.getAllBrokersInCluster()
       if (brokers.size == 0) {
         // This can happen in a rare case when there are no brokers available in the cluster when the consumer is started.
-        // We log a warning and register for child changes on brokers/id so that rebalance can be triggered when the brokers
+        // We log an warning and register for child changes on brokers/id so that rebalance can be triggered when the brokers
         // are up.
         warn("no brokers found when trying to rebalance.")
-        zkUtils.subscribeChildChanges(BrokerIdsPath, loadBalancerListener)
+        zkUtils.zkClient.subscribeChildChanges(BrokerIdsPath, loadBalancerListener)
         true
       }
       else {
@@ -735,7 +736,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                                       .foreach { case (topic, partitionThreadPairs) =>
               newGauge("OwnedPartitionsCount",
                 new Gauge[Int] {
-                  def value() = partitionThreadPairs.size
+                  override def getValue: Int = partitionThreadPairs.size
                 },
                 ownedPartitionsCountMetricTags(topic))
             }
@@ -777,21 +778,23 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
                                        messageStreams: Map[String,List[KafkaStream[_,_]]],
                                        queuesToBeCleared: Iterable[BlockingQueue[FetchedDataChunk]]) {
       val allPartitionInfos = topicRegistry.values.map(p => p.values).flatten
-      fetcher.foreach { f =>
-        f.stopConnections()
-        clearFetcherQueues(allPartitionInfos, cluster, queuesToBeCleared, messageStreams)
-        /**
-        * here, we need to commit offsets before stopping the consumer from returning any more messages
-        * from the current data chunk. Since partition ownership is not yet released, this commit offsets
-        * call will ensure that the offsets committed now will be used by the next consumer thread owning the partition
-        * for the current data chunk. Since the fetchers are already shutdown and this is the last chunk to be iterated
-        * by the consumer, there will be no more messages returned by this iterator until the rebalancing finishes
-        * successfully and the fetchers restart to fetch more data chunks
-        **/
+      fetcher match {
+        case Some(f) =>
+          f.stopConnections
+          clearFetcherQueues(allPartitionInfos, cluster, queuesToBeCleared, messageStreams)
+          /**
+          * here, we need to commit offsets before stopping the consumer from returning any more messages
+          * from the current data chunk. Since partition ownership is not yet released, this commit offsets
+          * call will ensure that the offsets committed now will be used by the next consumer thread owning the partition
+          * for the current data chunk. Since the fetchers are already shutdown and this is the last chunk to be iterated
+          * by the consumer, there will be no more messages returned by this iterator until the rebalancing finishes
+          * successfully and the fetchers restart to fetch more data chunks
+          **/
         if (config.autoCommitEnable) {
           info("Committing all offsets after clearing the fetcher queues")
           commitOffsets(true)
         }
+        case None =>
       }
     }
 
@@ -828,7 +831,11 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       info("Consumer " + consumerIdString + " selected partitions : " +
         allPartitionInfos.sortWith((s,t) => s.partitionId < t.partitionId).map(_.toString).mkString(","))
 
-      fetcher.foreach(_.startConnections(allPartitionInfos, cluster))
+      fetcher match {
+        case Some(f) =>
+          f.startConnections(allPartitionInfos, cluster)
+        case None =>
+      }
     }
 
     private def reflectPartitionOwnershipDecision(partitionAssignment: Map[TopicAndPartition, ConsumerThreadId]): Boolean = {
@@ -846,7 +853,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
         } catch {
           case _: ZkNodeExistsException =>
             // The node hasn't been deleted by the original owner. So wait a bit and retry.
-            info("Waiting for the partition ownership to be deleted: " + partition + " for topic " + topic)
+            info("waiting for the partition ownership to be deleted: " + partition + " for topic " + topic)
             false
         }
       }
@@ -920,9 +927,9 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
         queuesAndStreams
     }
 
-    val topicThreadIds = consumerThreadIdsPerTopic.map { case (topic, threadIds) =>
+    val topicThreadIds = consumerThreadIdsPerTopic.flatMap { case (topic, threadIds) =>
       threadIds.map((topic, _))
-    }.flatten
+    }
 
     require(topicThreadIds.size == allQueuesAndStreams.size,
       "Mismatch between thread ID count (%d) and queue count (%d)"
@@ -937,7 +944,7 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
       newGauge(
         "FetchQueueSize",
         new Gauge[Int] {
-          def value = q.size
+          override def getValue: Int = q.size
         },
         Map("clientId" -> config.clientId,
           "topic" -> topicThreadId._1,
@@ -954,14 +961,14 @@ private[kafka] class ZookeeperConsumerConnector(val config: ConsumerConfig,
     })
 
     // listener to consumer and partition changes
-    zkUtils.subscribeStateChanges(sessionExpirationListener)
+    zkUtils.zkClient.subscribeStateChanges(sessionExpirationListener)
 
-    zkUtils.subscribeChildChanges(dirs.consumerRegistryDir, loadBalancerListener)
+    zkUtils.zkClient.subscribeChildChanges(dirs.consumerRegistryDir, loadBalancerListener)
 
     topicStreamsMap.foreach { topicAndStreams =>
       // register on broker partition path changes
       val topicPath = BrokerTopicsPath + "/" + topicAndStreams._1
-      zkUtils.subscribeDataChanges(topicPath, topicPartitionChangeListener)
+      zkUtils.zkClient.subscribeDataChanges(topicPath, topicPartitionChangeListener)
     }
 
     // explicitly trigger load balancing for this consumer

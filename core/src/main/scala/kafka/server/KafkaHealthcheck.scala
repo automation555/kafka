@@ -26,6 +26,7 @@ import kafka.cluster.EndPoint
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils._
 import org.I0Itec.zkclient.IZkStateListener
+import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.SecurityProtocol
 import org.apache.zookeeper.Watcher.Event.KeeperState
 
@@ -46,7 +47,7 @@ class KafkaHealthcheck(brokerId: Int,
   private[server] val sessionExpireListener = new SessionExpireListener
 
   def startup() {
-    zkUtils.subscribeStateChanges(sessionExpireListener)
+    zkUtils.zkClient.subscribeStateChanges(sessionExpireListener)
     register()
   }
 
@@ -89,7 +90,7 @@ class KafkaHealthcheck(brokerId: Int,
         Expired -> "Expires"
       )
       stateToEventTypeMap.map { case (state, eventType) =>
-        state -> newMeter(s"ZooKeeper${eventType}PerSec", eventType.toLowerCase(Locale.ROOT), TimeUnit.SECONDS)
+        state -> newMeter(s"ZooKeeper${eventType}PerSec", null)
       }
     }
 
@@ -100,9 +101,9 @@ class KafkaHealthcheck(brokerId: Int,
 
     @throws[Exception]
     override def handleNewSession() {
-      info("Re-registering broker info in ZK for broker " + brokerId)
+      info("re-registering broker info in ZK for broker " + brokerId)
       register()
-      info("Done re-registering broker")
+      info("done re-registering broker")
       info("Subscribing to %s path to watch for new topics".format(ZkUtils.BrokerTopicsPath))
     }
 

@@ -23,22 +23,20 @@ import kafka.metrics.KafkaMetricsGroup
 import kafka.common.{ClientIdTopic, ClientIdAllTopics, ClientIdAndTopic}
 
 @threadsafe
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class ConsumerTopicMetrics(metricId: ClientIdTopic) extends KafkaMetricsGroup {
   val tags = metricId match {
     case ClientIdAndTopic(clientId, topic) => Map("clientId" -> clientId, "topic" -> topic)
     case ClientIdAllTopics(clientId) => Map("clientId" -> clientId)
   }
 
-  val messageRate = newMeter("MessagesPerSec", "messages", TimeUnit.SECONDS, tags)
-  val byteRate = newMeter("BytesPerSec", "bytes", TimeUnit.SECONDS, tags)
+  val messageRate = newMeter("MessagesPerSec", tags)
+  val byteRate = newMeter("BytesPerSec", tags)
 }
 
 /**
  * Tracks metrics for each topic the given consumer client has consumed data from.
  * @param clientId The clientId of the given consumer client.
  */
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class ConsumerTopicStats(clientId: String) extends Logging {
   private val valueFactory = (k: ClientIdAndTopic) => new ConsumerTopicMetrics(k)
   private val stats = new Pool[ClientIdAndTopic, ConsumerTopicMetrics](Some(valueFactory))
@@ -54,7 +52,6 @@ class ConsumerTopicStats(clientId: String) extends Logging {
 /**
  * Stores the topic stats information of each consumer client in a (clientId -> ConsumerTopicStats) map.
  */
-@deprecated("This object has been deprecated and will be removed in a future release.", "0.11.0.0")
 object ConsumerTopicStatsRegistry {
   private val valueFactory = (k: String) => new ConsumerTopicStats(k)
   private val globalStats = new Pool[String, ConsumerTopicStats](Some(valueFactory))
@@ -63,7 +60,7 @@ object ConsumerTopicStatsRegistry {
     globalStats.getAndMaybePut(clientId)
   }
 
-  def removeConsumerTopicStat(clientId: String): Unit = {
+  def removeConsumerTopicStat(clientId: String) {
     globalStats.remove(clientId)
   }
 }

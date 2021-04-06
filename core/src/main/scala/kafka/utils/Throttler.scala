@@ -44,12 +44,12 @@ class Throttler(desiredRatePerSec: Double,
                 time: Time = Time.SYSTEM) extends Logging with KafkaMetricsGroup {
   
   private val lock = new Object
-  private val meter = newMeter(metricName, units, TimeUnit.SECONDS)
+  private val meter = newMeter(metricName, null)
   private val checkIntervalNs = TimeUnit.MILLISECONDS.toNanos(checkIntervalMs)
   private var periodStartNs: Long = time.nanoseconds
   private var observedSoFar: Double = 0.0
   
-  def maybeThrottle(observed: Double): Unit = {
+  def maybeThrottle(observed: Double) {
     val msPerSec = TimeUnit.SECONDS.toMillis(1)
     val nsPerSec = TimeUnit.SECONDS.toNanos(1)
 
@@ -83,7 +83,7 @@ class Throttler(desiredRatePerSec: Double,
 
 object Throttler {
   
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     val rand = new Random()
     val throttler = new Throttler(100000, 100, true, time = Time.SYSTEM)
     val interval = 30000

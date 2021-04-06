@@ -23,7 +23,7 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.regex.Pattern
 import java.util.{Collections, Properties}
 
-import com.yammer.metrics.core.Gauge
+import com.codahale.metrics.Gauge
 import joptsimple.OptionParser
 import kafka.consumer.{BaseConsumer, BaseConsumerRecord, Blacklist, ConsumerIterator, ConsumerThreadId, ConsumerTimeoutException, TopicFilter, Whitelist, ZookeeperConsumerConnector, ConsumerConfig => OldConsumerConfig}
 import kafka.javaapi.consumer.ConsumerRebalanceListener
@@ -79,7 +79,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
   // message was not really acked, but was skipped. This metric records the number of skipped offsets.
   newGauge("MirrorMaker-numDroppedMessages",
     new Gauge[Int] {
-      def value = numDroppedMessages.get()
+      override def getValue: Int = numDroppedMessages.get()
     })
 
   def main(args: Array[String]) {
@@ -310,10 +310,6 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     mirrorMakerThreads.foreach(_.awaitShutdown())
   }
 
-  private[tools] def getClientId(consumerConfigProps: Properties) : String = {
-    return consumerConfigProps.getProperty("client.id", consumerConfigProps.getProperty("group.id"))
-  }
-
   private def createOldConsumers(numStreams: Int,
                                  consumerConfigProps: Properties,
                                  customRebalanceListener: Option[ConsumerRebalanceListener],
@@ -324,11 +320,10 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     // Set the consumer timeout so we will not block for low volume pipeline. The timeout is necessary to make sure
     // Offsets are still committed for those low volume pipelines.
     maybeSetDefaultProperty(consumerConfigProps, "consumer.timeout.ms", "10000")
-    // Check the consumerConfigProps for a provided client.id
-    // The default client id is group id, we manually set client id to clientId-index to avoid metric collision
-    val clientIdString = getClientId(consumerConfigProps)
+    // The default client id is group id, we manually set client id to groupId-index to avoid metric collision
+    val groupIdString = consumerConfigProps.getProperty("group.id")
     val connectors = (0 until numStreams) map { i =>
-      consumerConfigProps.setProperty("client.id", clientIdString + "-" + i.toString)
+      consumerConfigProps.setProperty("client.id", groupIdString + "-" + i.toString)
       val consumerConfig = new OldConsumerConfig(consumerConfigProps)
       new ZookeeperConsumerConnector(consumerConfig)
     }
@@ -357,11 +352,10 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     // Hardcode the deserializer to ByteArrayDeserializer
     consumerConfigProps.setProperty("key.deserializer", classOf[ByteArrayDeserializer].getName)
     consumerConfigProps.setProperty("value.deserializer", classOf[ByteArrayDeserializer].getName)
-    // Check the consumerConfigProps for a provided client.id
-    // The default client id is group id, we manually set client id to clientId-index to avoid metric collision
-    val clientIdString = getClientId(consumerConfigProps)
+    // The default client id is group id, we manually set client id to groupId-index to avoid metric collision
+    val groupIdString = consumerConfigProps.getProperty("group.id")
     val consumers = (0 until numStreams) map { i =>
-      consumerConfigProps.setProperty("client.id", clientIdString + "-" + i.toString)
+      consumerConfigProps.setProperty("client.id", groupIdString + "-" + i.toString)
       new KafkaConsumer[Array[Byte], Array[Byte]](consumerConfigProps)
     }
     whitelist.getOrElse(throw new IllegalArgumentException("White list cannot be empty for new consumer"))
@@ -533,7 +527,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
 
     override def requestAndWaitForCommit() {
       this.synchronized {
-        // only wait() if mirrorMakerConsumer has been initialized and it has not been cleaned up.
+        // skip wait() if mirrorMakerConsumer has not been initialized
         if (iter != null) {
           immediateCommitRequested = true
           this.wait()
@@ -572,15 +566,6 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     }
 
     override def cleanup() {
-      // We need to set the iterator to null and notify the rebalance listener thread.
-      // This is to handle the case that the consumer rebalance is triggered when the
-      // mirror maker thread is shutting down and the rebalance listener is waiting for the offset commit.
-      this.synchronized {
-        iter = null
-        if (immediateCommitRequested) {
-          notifyCommit()
-        }
-      }
       connector.shutdown()
     }
 
@@ -623,7 +608,7 @@ object MirrorMaker extends Logging with KafkaMetricsGroup {
     override def notifyCommit() {
       // Do nothing
     }
-
+    
     override def commitRequested(): Boolean = {
       false
     }

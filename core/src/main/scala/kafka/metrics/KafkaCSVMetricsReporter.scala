@@ -20,11 +20,9 @@
 
 package kafka.metrics
 
-import com.yammer.metrics.Metrics
 import java.io.File
-import java.nio.file.Files
 
-import com.yammer.metrics.reporting.CsvReporter
+import com.codahale.metrics.CsvReporter
 import java.util.concurrent.TimeUnit
 
 import kafka.utils.{Logging, VerifiableProperties}
@@ -45,14 +43,15 @@ private class KafkaCSVMetricsReporter extends KafkaMetricsReporter
   override def getMBeanName = "kafka:type=kafka.metrics.KafkaCSVMetricsReporter"
 
 
-  override def init(props: VerifiableProperties): Unit = {
+  override def init(props: VerifiableProperties) {
     synchronized {
       if (!initialized) {
         val metricsConfig = new KafkaMetricsConfig(props)
         csvDir = new File(props.getString("kafka.csv.metrics.dir", "kafka_metrics"))
         Utils.delete(csvDir)
-        Files.createDirectories(csvDir.toPath())
-        underlying = new CsvReporter(Metrics.defaultRegistry(), csvDir)
+        csvDir.mkdirs()
+        underlying = CsvReporter.forRegistry(KafkaMetricsGroup.registry)
+          .build(csvDir)
         if (props.getBoolean("kafka.csv.metrics.reporter.enabled", default = false)) {
           initialized = true
           startReporter(metricsConfig.pollingIntervalSecs)
@@ -62,7 +61,7 @@ private class KafkaCSVMetricsReporter extends KafkaMetricsReporter
   }
 
 
-  override def startReporter(pollingPeriodSecs: Long): Unit = {
+  override def startReporter(pollingPeriodSecs: Long) {
     synchronized {
       if (initialized && !running) {
         underlying.start(pollingPeriodSecs, TimeUnit.SECONDS)
@@ -73,13 +72,14 @@ private class KafkaCSVMetricsReporter extends KafkaMetricsReporter
   }
 
 
-  override def stopReporter(): Unit = {
+  override def stopReporter() {
     synchronized {
       if (initialized && running) {
-        underlying.shutdown()
+        underlying.stop()
         running = false
         info("Stopped Kafka CSV metrics reporter")
-        underlying = new CsvReporter(Metrics.defaultRegistry(), csvDir)
+        underlying = CsvReporter.forRegistry(KafkaMetricsGroup.registry)
+          .build(csvDir)
       }
     }
   }

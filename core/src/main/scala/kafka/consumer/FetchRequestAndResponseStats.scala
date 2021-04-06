@@ -23,7 +23,6 @@ import kafka.common.{ClientIdAllBrokers, ClientIdBroker, ClientIdAndBroker}
 import kafka.metrics.{KafkaMetricsGroup, KafkaTimer}
 import kafka.utils.Pool
 
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class FetchRequestAndResponseMetrics(metricId: ClientIdBroker) extends KafkaMetricsGroup {
   val tags = metricId match {
     case ClientIdAndBroker(clientId, brokerHost, brokerPort) =>
@@ -33,16 +32,15 @@ class FetchRequestAndResponseMetrics(metricId: ClientIdBroker) extends KafkaMetr
       Map("clientId" -> clientId)
   }
 
-  val requestTimer = new KafkaTimer(newTimer("FetchRequestRateAndTimeMs", TimeUnit.MILLISECONDS, TimeUnit.SECONDS, tags))
+  val requestTimer = new KafkaTimer(newTimer("FetchRequestRateAndTimeMs", tags))
   val requestSizeHist = newHistogram("FetchResponseSize", biased = true, tags)
-  val throttleTimeStats = newTimer("FetchRequestThrottleRateAndTimeMs", TimeUnit.MILLISECONDS, TimeUnit.SECONDS, tags)
+  val throttleTimeStats = newTimer("FetchRequestThrottleRateAndTimeMs", tags)
 }
 
 /**
  * Tracks metrics of the requests made by a given consumer client to all brokers, and the responses obtained from the brokers.
  * @param clientId ClientId of the given consumer
  */
-@deprecated("This class has been deprecated and will be removed in a future release.", "0.11.0.0")
 class FetchRequestAndResponseStats(clientId: String) {
   private val valueFactory = (k: ClientIdBroker) => new FetchRequestAndResponseMetrics(k)
   private val stats = new Pool[ClientIdBroker, FetchRequestAndResponseMetrics](Some(valueFactory))
@@ -58,7 +56,6 @@ class FetchRequestAndResponseStats(clientId: String) {
 /**
  * Stores the fetch request and response stats information of each consumer client in a (clientId -> FetchRequestAndResponseStats) map.
  */
-@deprecated("This object has been deprecated and will be removed in a future release.", "0.11.0.0")
 object FetchRequestAndResponseStatsRegistry {
   private val valueFactory = (k: String) => new FetchRequestAndResponseStats(k)
   private val globalStats = new Pool[String, FetchRequestAndResponseStats](Some(valueFactory))
@@ -67,7 +64,7 @@ object FetchRequestAndResponseStatsRegistry {
     globalStats.getAndMaybePut(clientId)
   }
 
-  def removeConsumerFetchRequestAndResponseStats(clientId: String): Unit = {
+  def removeConsumerFetchRequestAndResponseStats(clientId: String) {
     val pattern = (".*" + clientId + ".*").r
     val keys = globalStats.keys
     for (key <- keys) {

@@ -23,7 +23,6 @@ import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.kstream.Aggregator;
-import org.apache.kafka.streams.kstream.Branched;
 import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.Grouped;
 import org.apache.kafka.streams.kstream.Initializer;
@@ -69,7 +68,6 @@ public class StreamsGraphTest {
         final KStream<String, String> streamII = builder.stream("other-topic");
         final ValueJoiner<String, String, String> valueJoiner = (v, v2) -> v + v2;
 
-
         final KStream<String, String> joinedStream = stream.join(streamII, valueJoiner, JoinWindows.of(ofMillis(5000)));
 
         // build step one
@@ -90,7 +88,7 @@ public class StreamsGraphTest {
         final Properties properties = new Properties();
         properties.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "test-application");
         properties.setProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
-        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, StreamsConfig.OPTIMIZE);
+        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION, StreamsConfig.OPTIMIZE);
 
         final StreamsBuilder builder = new StreamsBuilder();
         final KStream<String, String> inputStream = builder.stream("inputTopic");
@@ -112,13 +110,14 @@ public class StreamsGraphTest {
         builder.build(properties);
     }
 
-    @Test
+    @Test 
+    @SuppressWarnings("unchecked")
     // Topology in this test from https://issues.apache.org/jira/browse/KAFKA-9739
     public void shouldNotThrowNPEWithMergeNodes() {
         final Properties properties = new Properties();
         properties.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "test-application");
         properties.setProperty(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
-        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, StreamsConfig.OPTIMIZE);
+        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION, StreamsConfig.OPTIMIZE);
 
         final StreamsBuilder builder = new StreamsBuilder();
         initializer = () -> "";
@@ -165,19 +164,18 @@ public class StreamsGraphTest {
                 .leftJoin(idTable, (v1, v2) -> v1 + v2,
                         Joined.with(Serdes.String(), Serdes.String(), Serdes.String()));
 
+        final KStream<String, String>[] branches = joinStream.branch((k, v) -> v.equals("some-value"), (k, v) -> true);
 
-        joinStream.split()
-                .branch((k, v) -> v.equals("some-value"), Branched.withConsumer(ks -> ks.map(KeyValue::pair)
-                                .peek((recipientId, command) -> System.out.println("printing out"))
-                                .to("external-command", Produced.with(Serdes.String(), Serdes.String()))
-                ))
-                .defaultBranch(Branched.withConsumer(ks -> {
-                    ks.filter((k, v) -> v != null)
-                            .peek((subscriptionId, wrapper) -> System.out.println("Printing output"))
-                            .mapValues((k, v) -> v)
-                            .to("dlq-topic", Produced.with(Serdes.String(), Serdes.String()));
-                    ks.map(KeyValue::pair).to("retryTopic", Produced.with(Serdes.String(), Serdes.String()));
-                }));
+        branches[0].map(KeyValue::pair)
+                .peek((recipientId, command) -> System.out.println("printing out"))
+                .to("external-command", Produced.with(Serdes.String(), Serdes.String()));
+
+        branches[1].filter((k, v) -> v != null)
+                .peek((subscriptionId, wrapper) -> System.out.println("Printing output"))
+                .mapValues((k, v) -> v)
+                .to("dlq-topic", Produced.with(Serdes.String(), Serdes.String()));
+
+        branches[1].map(KeyValue::pair).to("retryTopic", Produced.with(Serdes.String(), Serdes.String()));
 
         final Topology topology = builder.build(properties);
         assertEquals(expectedComplexMergeOptimizeTopology, topology.describe().toString());
@@ -195,9 +193,9 @@ public class StreamsGraphTest {
     }
 
     // no need to optimize as user has already performed the repartitioning manually
-    @Deprecated
     @Test
     public void shouldNotOptimizeWhenAThroughOperationIsDone() {
+
         final Topology attemptedOptimize = getTopologyWithThroughOperation(StreamsConfig.OPTIMIZE);
         final Topology noOptimziation = getTopologyWithThroughOperation(StreamsConfig.NO_OPTIMIZATION);
 
@@ -223,7 +221,7 @@ public class StreamsGraphTest {
             .to("output_topic");
 
         final Properties properties = new Properties();
-        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, StreamsConfig.OPTIMIZE);
+        properties.setProperty(StreamsConfig.TOPOLOGY_OPTIMIZATION, StreamsConfig.OPTIMIZE);
         final Topology topology = streamsBuilder.build(properties);
 
         assertEquals(expectedMergeOptimizedTopology, topology.describe().toString());
@@ -243,7 +241,7 @@ public class StreamsGraphTest {
 
         final StreamsBuilder builder = new StreamsBuilder();
         final Properties properties = new Properties();
-        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, optimizeConfig);
+        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION, optimizeConfig);
 
         final KStream<String, String> inputStream = builder.stream("input");
         final KStream<String, String> mappedKeyStream = inputStream.selectKey((k, v) -> k + v);
@@ -255,12 +253,11 @@ public class StreamsGraphTest {
 
     }
 
-    @Deprecated // specifically testing the deprecated variant
     private Topology getTopologyWithThroughOperation(final String optimizeConfig) {
 
         final StreamsBuilder builder = new StreamsBuilder();
         final Properties properties = new Properties();
-        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, optimizeConfig);
+        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION, optimizeConfig);
 
         final KStream<String, String> inputStream = builder.stream("input");
         final KStream<String, String> mappedKeyStream = inputStream.selectKey((k, v) -> k + v).through("through-topic");
@@ -275,7 +272,7 @@ public class StreamsGraphTest {
     private Topology getTopologyWithRepartitionOperation(final String optimizeConfig) {
         final StreamsBuilder builder = new StreamsBuilder();
         final Properties properties = new Properties();
-        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION_CONFIG, optimizeConfig);
+        properties.put(StreamsConfig.TOPOLOGY_OPTIMIZATION, optimizeConfig);
 
         final KStream<String, String> inputStream = builder.<String, String>stream("input").selectKey((k, v) -> k + v);
 
@@ -306,44 +303,44 @@ public class StreamsGraphTest {
         return repartitionTopicsFound.size();
     }
 
-    private final String expectedJoinedTopology = "Topologies:\n"
+    private String expectedJoinedTopology = "Topologies:\n"
                                             + "   Sub-topology: 0\n"
-                                            + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic])\n"
+                                            + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic], keySerde: null, valueSerde: null)\n"
                                             + "      --> KSTREAM-WINDOWED-0000000002\n"
-                                            + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic])\n"
+                                            + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic], keySerde: null, valueSerde: null)\n"
                                             + "      --> KSTREAM-WINDOWED-0000000003\n"
-                                            + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                            + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                             + "      --> KSTREAM-JOINTHIS-0000000004\n"
                                             + "      <-- KSTREAM-SOURCE-0000000000\n"
-                                            + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                            + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                             + "      --> KSTREAM-JOINOTHER-0000000005\n"
                                             + "      <-- KSTREAM-SOURCE-0000000001\n"
-                                            + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                            + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                             + "      --> KSTREAM-MERGE-0000000006\n"
                                             + "      <-- KSTREAM-WINDOWED-0000000003\n"
-                                            + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                            + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                             + "      --> KSTREAM-MERGE-0000000006\n"
                                             + "      <-- KSTREAM-WINDOWED-0000000002\n"
                                             + "    Processor: KSTREAM-MERGE-0000000006 (stores: [])\n"
                                             + "      --> none\n"
                                             + "      <-- KSTREAM-JOINTHIS-0000000004, KSTREAM-JOINOTHER-0000000005\n\n";
 
-    private final String expectedJoinedFilteredTopology = "Topologies:\n"
+    private String expectedJoinedFilteredTopology = "Topologies:\n"
                                                     + "   Sub-topology: 0\n"
-                                                    + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic])\n"
+                                                    + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic], keySerde: null, valueSerde: null)\n"
                                                     + "      --> KSTREAM-WINDOWED-0000000002\n"
-                                                    + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic])\n"
+                                                    + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic], keySerde: null, valueSerde: null)\n"
                                                     + "      --> KSTREAM-WINDOWED-0000000003\n"
-                                                    + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                                    + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                                     + "      --> KSTREAM-JOINTHIS-0000000004\n"
                                                     + "      <-- KSTREAM-SOURCE-0000000000\n"
-                                                    + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                                    + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                                     + "      --> KSTREAM-JOINOTHER-0000000005\n"
                                                     + "      <-- KSTREAM-SOURCE-0000000001\n"
-                                                    + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                                    + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                                     + "      --> KSTREAM-MERGE-0000000006\n"
                                                     + "      <-- KSTREAM-WINDOWED-0000000003\n"
-                                                    + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                                    + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                                     + "      --> KSTREAM-MERGE-0000000006\n"
                                                     + "      <-- KSTREAM-WINDOWED-0000000002\n"
                                                     + "    Processor: KSTREAM-MERGE-0000000006 (stores: [])\n"
@@ -353,22 +350,22 @@ public class StreamsGraphTest {
                                                     + "      --> none\n"
                                                     + "      <-- KSTREAM-MERGE-0000000006\n\n";
 
-    private final String expectedFullTopology = "Topologies:\n"
+    private String expectedFullTopology = "Topologies:\n"
                                           + "   Sub-topology: 0\n"
-                                          + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic])\n"
+                                          + "    Source: KSTREAM-SOURCE-0000000000 (topics: [topic], keySerde: null, valueSerde: null)\n"
                                           + "      --> KSTREAM-WINDOWED-0000000002\n"
-                                          + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic])\n"
+                                          + "    Source: KSTREAM-SOURCE-0000000001 (topics: [other-topic], keySerde: null, valueSerde: null)\n"
                                           + "      --> KSTREAM-WINDOWED-0000000003\n"
-                                          + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                          + "    Processor: KSTREAM-WINDOWED-0000000002 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                           + "      --> KSTREAM-JOINTHIS-0000000004\n"
                                           + "      <-- KSTREAM-SOURCE-0000000000\n"
-                                          + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                          + "    Processor: KSTREAM-WINDOWED-0000000003 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                           + "      --> KSTREAM-JOINOTHER-0000000005\n"
                                           + "      <-- KSTREAM-SOURCE-0000000001\n"
-                                          + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [KSTREAM-JOINTHIS-0000000004-store])\n"
+                                          + "    Processor: KSTREAM-JOINOTHER-0000000005 (stores: [(KSTREAM-JOINTHIS-0000000004-store, serdes: [null, null])])\n"
                                           + "      --> KSTREAM-MERGE-0000000006\n"
                                           + "      <-- KSTREAM-WINDOWED-0000000003\n"
-                                          + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [KSTREAM-JOINOTHER-0000000005-store])\n"
+                                          + "    Processor: KSTREAM-JOINTHIS-0000000004 (stores: [(KSTREAM-JOINOTHER-0000000005-store, serdes: [null, null])])\n"
                                           + "      --> KSTREAM-MERGE-0000000006\n"
                                           + "      <-- KSTREAM-WINDOWED-0000000002\n"
                                           + "    Processor: KSTREAM-MERGE-0000000006 (stores: [])\n"
@@ -380,11 +377,11 @@ public class StreamsGraphTest {
                                           + "    Processor: KSTREAM-MAPVALUES-0000000008 (stores: [])\n"
                                           + "      --> KSTREAM-SINK-0000000009\n"
                                           + "      <-- KSTREAM-FILTER-0000000007\n"
-                                          + "    Sink: KSTREAM-SINK-0000000009 (topic: output-topic)\n"
+                                          + "    Sink: KSTREAM-SINK-0000000009 (topic: output-topic, keySerde: null, valueSerde: null)\n"
                                           + "      <-- KSTREAM-MAPVALUES-0000000008\n\n";
 
 
-    private final String expectedMergeOptimizedTopology = "Topologies:\n" +
+    private String expectedMergeOptimizedTopology = "Topologies:\n" +
         "   Sub-topology: 0\n" +
         "    Source: KSTREAM-SOURCE-0000000000 (topics: [input_topic])\n" +
         "      --> KSTREAM-KEY-SELECT-0000000001\n" +
@@ -474,42 +471,42 @@ public class StreamsGraphTest {
             "      --> KSTREAM-BRANCH-0000000027\n" +
             "      <-- KSTREAM-SOURCE-0000000025\n" +
             "    Processor: KSTREAM-BRANCH-0000000027 (stores: [])\n" +
-            "      --> KSTREAM-BRANCH-00000000270, KSTREAM-BRANCH-00000000271\n" +
+            "      --> KSTREAM-BRANCHCHILD-0000000029, KSTREAM-BRANCHCHILD-0000000028\n" +
             "      <-- KSTREAM-LEFTJOIN-0000000026\n" +
-            "    Processor: KSTREAM-BRANCH-00000000270 (stores: [])\n" +
+            "    Processor: KSTREAM-BRANCHCHILD-0000000029 (stores: [])\n" +
             "      --> KSTREAM-FILTER-0000000033, KSTREAM-MAP-0000000037\n" +
             "      <-- KSTREAM-BRANCH-0000000027\n" +
-            "    Processor: KSTREAM-BRANCH-00000000271 (stores: [])\n" +
-            "      --> KSTREAM-MAP-0000000029\n" +
+            "    Processor: KSTREAM-BRANCHCHILD-0000000028 (stores: [])\n" +
+            "      --> KSTREAM-MAP-0000000030\n" +
             "      <-- KSTREAM-BRANCH-0000000027\n" +
             "    Processor: KSTREAM-FILTER-0000000033 (stores: [])\n" +
             "      --> KSTREAM-PEEK-0000000034\n" +
-            "      <-- KSTREAM-BRANCH-00000000270\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000029\n" +
             "    Source: KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition-source (topics: [KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition])\n" +
             "      --> KSTREAM-PEEK-0000000013\n" +
-            "    Processor: KSTREAM-MAP-0000000029 (stores: [])\n" +
-            "      --> KSTREAM-PEEK-0000000030\n" +
-            "      <-- KSTREAM-BRANCH-00000000271\n" +
+            "    Processor: KSTREAM-MAP-0000000030 (stores: [])\n" +
+            "      --> KSTREAM-PEEK-0000000031\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000028\n" +
             "    Processor: KSTREAM-PEEK-0000000034 (stores: [])\n" +
             "      --> KSTREAM-MAPVALUES-0000000035\n" +
             "      <-- KSTREAM-FILTER-0000000033\n" +
             "    Processor: KSTREAM-MAP-0000000037 (stores: [])\n" +
             "      --> KSTREAM-SINK-0000000038\n" +
-            "      <-- KSTREAM-BRANCH-00000000270\n" +
+            "      <-- KSTREAM-BRANCHCHILD-0000000029\n" +
             "    Processor: KSTREAM-MAPVALUES-0000000035 (stores: [])\n" +
             "      --> KSTREAM-SINK-0000000036\n" +
             "      <-- KSTREAM-PEEK-0000000034\n" +
             "    Processor: KSTREAM-PEEK-0000000013 (stores: [])\n" +
             "      --> KSTREAM-AGGREGATE-0000000015\n" +
             "      <-- KSTREAM-AGGREGATE-STATE-STORE-0000000014-repartition-source\n" +
-            "    Processor: KSTREAM-PEEK-0000000030 (stores: [])\n" +
-            "      --> KSTREAM-SINK-0000000031\n" +
-            "      <-- KSTREAM-MAP-0000000029\n" +
+            "    Processor: KSTREAM-PEEK-0000000031 (stores: [])\n" +
+            "      --> KSTREAM-SINK-0000000032\n" +
+            "      <-- KSTREAM-MAP-0000000030\n" +
             "    Processor: KSTREAM-AGGREGATE-0000000015 (stores: [KSTREAM-AGGREGATE-STATE-STORE-0000000014])\n" +
             "      --> none\n" +
             "      <-- KSTREAM-PEEK-0000000013\n" +
-            "    Sink: KSTREAM-SINK-0000000031 (topic: external-command)\n" +
-            "      <-- KSTREAM-PEEK-0000000030\n" +
+            "    Sink: KSTREAM-SINK-0000000032 (topic: external-command)\n" +
+            "      <-- KSTREAM-PEEK-0000000031\n" +
             "    Sink: KSTREAM-SINK-0000000036 (topic: dlq-topic)\n" +
             "      <-- KSTREAM-MAPVALUES-0000000035\n" +
             "    Sink: KSTREAM-SINK-0000000038 (topic: retryTopic)\n" +

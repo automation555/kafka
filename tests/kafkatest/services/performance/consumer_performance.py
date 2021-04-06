@@ -18,7 +18,7 @@ import os
 
 from kafkatest.services.performance import PerformanceService
 from kafkatest.services.security.security_config import SecurityConfig
-from kafkatest.version import DEV_BRANCH, V_2_0_0, LATEST_0_10_0
+from kafkatest.version import DEV_BRANCH, V_0_9_0_0, LATEST_0_10_0
 
 
 class ConsumerPerformanceService(PerformanceService):
@@ -70,7 +70,7 @@ class ConsumerPerformanceService(PerformanceService):
             "collect_default": True}
     }
 
-    def __init__(self, context, num_nodes, kafka, topic, messages, version=DEV_BRANCH, new_consumer=True, settings={}):
+    def __init__(self, context, num_nodes, kafka, topic, messages, version=DEV_BRANCH, new_consumer=True, settings={}, consumer_config={}, timeout_sec=None):
         super(ConsumerPerformanceService, self).__init__(context, num_nodes)
         self.kafka = kafka
         self.security_config = kafka.security_config.client_config()
@@ -78,15 +78,14 @@ class ConsumerPerformanceService(PerformanceService):
         self.messages = messages
         self.new_consumer = new_consumer
         self.settings = settings
+        self.consumer_config = consumer_config
+        self.timeout_sec = timeout_sec
 
-        assert version.consumer_supports_bootstrap_server() or (not new_consumer), \
+        assert version >= V_0_9_0_0 or (not new_consumer), \
             "new_consumer is only supported if version >= 0.9.0.0, version %s" % str(version)
 
-        assert version < V_2_0_0 or new_consumer, \
-            "new_consumer==false is only supported if version < 2.0.0, version %s" % str(version)
-
         security_protocol = self.security_config.security_protocol
-        assert version.consumer_supports_bootstrap_server() or security_protocol == SecurityConfig.PLAINTEXT, \
+        assert version >= V_0_9_0_0 or security_protocol == SecurityConfig.PLAINTEXT, \
             "Security protocol %s is only supported if version >= 0.9.0.0, version %s" % (self.security_config, str(version))
 
         # These less-frequently used settings can be updated manually after instantiation
@@ -142,7 +141,7 @@ class ConsumerPerformanceService(PerformanceService):
         for key, value in self.args(node.version).items():
             cmd += " --%s %s" % (key, value)
 
-        if node.version.consumer_supports_bootstrap_server():
+        if node.version >= V_0_9_0_0:
             # This is only used for security settings
             cmd += " --consumer.config %s" % ConsumerPerformanceService.CONFIG_FILE
 
@@ -155,7 +154,7 @@ class ConsumerPerformanceService(PerformanceService):
 
     def parse_results(self, line, version):
         parts = line.split(',')
-        if version.consumer_supports_bootstrap_server():
+        if version >= V_0_9_0_0:
             result = {
                 'total_mb': float(parts[2]),
                 'mbps': float(parts[3]),
@@ -173,14 +172,19 @@ class ConsumerPerformanceService(PerformanceService):
         node.account.ssh("mkdir -p %s" % ConsumerPerformanceService.PERSISTENT_ROOT, allow_fail=False)
 
         log_config = self.render('tools_log4j.properties', log_file=ConsumerPerformanceService.LOG_FILE)
+        consumer_config = str(self.security_config) + "\n"
+        for key, value in self.consumer_config.items():
+            consumer_config += "%s=%s\n" % (key, str(value))
+
         node.account.create_file(ConsumerPerformanceService.LOG4J_CONFIG, log_config)
-        node.account.create_file(ConsumerPerformanceService.CONFIG_FILE, str(self.security_config))
+        node.account.create_file(ConsumerPerformanceService.CONFIG_FILE, consumer_config)
         self.security_config.setup_node(node)
 
         cmd = self.start_cmd(node)
         self.logger.debug("Consumer performance %d command: %s", idx, cmd)
         last = None
-        for line in node.account.ssh_capture(cmd):
+
+        for line in node.account.ssh_capture(cmd, timeout_sec=self.timeout_sec):
             last = line
 
         # Parse and save the last line's information

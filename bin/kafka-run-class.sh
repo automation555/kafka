@@ -52,7 +52,7 @@ if [ -z "$SCALA_VERSION" ]; then
 fi
 
 if [ -z "$SCALA_BINARY_VERSION" ]; then
-  SCALA_BINARY_VERSION=$(echo $SCALA_VERSION | cut -f 1-2 -d '.')
+  SCALA_BINARY_VERSION=2.10
 fi
 
 # run ./gradlew copyDependantLibs to get all dependant jars in a local dir
@@ -202,7 +202,7 @@ fi
 if [ -z "$JAVA_HOME" ]; then
   JAVA="java"
 else
-  JAVA="$JAVA_HOME/bin/java"
+  JAVA="${JAVA_HOME}/bin/java"
 fi
 
 # Memory options
@@ -251,15 +251,9 @@ fi
 # If Cygwin is detected, classpath is converted to Windows format.
 (( CYGWIN )) && CLASSPATH=$(cygpath --path --mixed "${CLASSPATH}")
 
-if [ -z "$DAEMON_NAME" ]; then
-  PROCNAME=""
-else
-  PROCNAME="-Dproc_"$DAEMON_NAME
-fi
-
 # Launch mode
 if [ "x$DAEMON_MODE" = "xtrue" ]; then
-  nohup $JAVA $PROCNAME $KAFKA_HEAP_OPTS $KAFKA_JVM_PERFORMANCE_OPTS $KAFKA_GC_LOG_OPTS $KAFKA_JMX_OPTS $KAFKA_LOG4J_OPTS -cp $CLASSPATH $KAFKA_OPTS "$@" > "$CONSOLE_OUTPUT_FILE" 2>&1 < /dev/null &
+  nohup "${JAVA}" ${KAFKA_HEAP_OPTS} ${KAFKA_JVM_PERFORMANCE_OPTS} ${KAFKA_GC_LOG_OPTS} ${KAFKA_JMX_OPTS} ${KAFKA_LOG4J_OPTS} -cp "${CLASSPATH}" ${KAFKA_OPTS} "$@" > "${CONSOLE_OUTPUT_FILE}" 2>&1 < /dev/null &
 else
-  exec $JAVA $PROCNAME $KAFKA_HEAP_OPTS $KAFKA_JVM_PERFORMANCE_OPTS $KAFKA_GC_LOG_OPTS $KAFKA_JMX_OPTS $KAFKA_LOG4J_OPTS -cp $CLASSPATH $KAFKA_OPTS "$@"
+  exec "${JAVA}" ${KAFKA_HEAP_OPTS} ${KAFKA_JVM_PERFORMANCE_OPTS} ${KAFKA_GC_LOG_OPTS} ${KAFKA_JMX_OPTS} ${KAFKA_LOG4J_OPTS} -cp "${CLASSPATH}" ${KAFKA_OPTS} "$@"
 fi

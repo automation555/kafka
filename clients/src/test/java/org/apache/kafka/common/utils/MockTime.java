@@ -16,12 +16,9 @@
  */
 package org.apache.kafka.common.utils;
 
-import org.apache.kafka.common.errors.TimeoutException;
-
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
 
 /**
  * A clock that you can manually advance by calling sleep
@@ -38,8 +35,6 @@ public class MockTime implements Time {
     private final CopyOnWriteArrayList<MockTimeListener> listeners = new CopyOnWriteArrayList<>();
 
     private final long autoTickMs;
-    // Record the sum of auto ticked milliseconds
-    private AtomicLong autoTickedMs;
 
     // Values from `nanoTime` and `currentTimeMillis` are not comparable, so we store them separately to allow tests
     // using this class to detect bugs where this is incorrectly assumed to be true
@@ -58,7 +53,6 @@ public class MockTime implements Time {
         this.timeMs = new AtomicLong(currentTimeMs);
         this.highResTimeNs = new AtomicLong(currentHighResTimeNs);
         this.autoTickMs = autoTickMs;
-        this.autoTickedMs = new AtomicLong(0);
     }
 
     public void addListener(MockTimeListener listener) {
@@ -77,19 +71,14 @@ public class MockTime implements Time {
         return highResTimeNs.get();
     }
 
+    @Override
+    public long hiResClockMs() {
+        return TimeUnit.NANOSECONDS.toMillis(nanoseconds());
+    }
+
     private void maybeSleep(long ms) {
-        if (ms != 0) {
+        if (ms != 0)
             sleep(ms);
-            autoTickedMs.getAndAdd(ms);
-        }
-    }
-
-    public long autoTickedMs() {
-        return autoTickedMs.get();
-    }
-
-    public void resetAutoTickedCounter() {
-        autoTickedMs.set(0);
     }
 
     @Override
@@ -99,25 +88,8 @@ public class MockTime implements Time {
         tick();
     }
 
-    @Override
-    public void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException {
-        MockTimeListener listener = () -> {
-            synchronized (obj) {
-                obj.notify();
-            }
-        };
-        listeners.add(listener);
-        try {
-            synchronized (obj) {
-                while (milliseconds() < deadlineMs && !condition.get()) {
-                    obj.wait();
-                }
-                if (!condition.get())
-                    throw new TimeoutException("Condition not satisfied before deadline");
-            }
-        } finally {
-            listeners.remove(listener);
-        }
+    public void advanceHighRestTimeNs(long ns) {
+        highResTimeNs.addAndGet(ns);
     }
 
     public void setCurrentTimeMs(long newMs) {

@@ -20,10 +20,11 @@ package kafka.server
 import java.util.concurrent.TimeUnit
 
 import kafka.metrics.KafkaMetricsGroup
+import kafka.utils.Logging
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.errors._
-import org.apache.kafka.common.replica.ClientMetadata
+import org.apache.kafka.common.errors.{KafkaStorageException, NotLeaderForPartitionException, UnknownTopicOrPartitionException}
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
+import org.apache.kafka.common.requests.IsolationLevel
 
 import scala.collection._
 
@@ -40,29 +41,28 @@ case class FetchMetadata(fetchMinBytes: Int,
                          fetchMaxBytes: Int,
                          hardMaxBytesLimit: Boolean,
                          fetchOnlyLeader: Boolean,
-                         fetchIsolation: FetchIsolation,
+                         fetchOnlyCommitted: Boolean,
                          isFromFollower: Boolean,
                          replicaId: Int,
                          fetchPartitionStatus: Seq[(TopicPartition, FetchPartitionStatus)]) {
 
-  override def toString = "FetchMetadata(minBytes=" + fetchMinBytes + ", " +
-    "maxBytes=" + fetchMaxBytes + ", " +
-    "onlyLeader=" + fetchOnlyLeader + ", " +
-    "fetchIsolation=" + fetchIsolation + ", " +
-    "replicaId=" + replicaId + ", " +
-    "partitionStatus=" + fetchPartitionStatus + ")"
+  override def toString = "[minBytes: " + fetchMinBytes + ", " +
+    "maxBytes:" + fetchMaxBytes + ", " +
+    "onlyLeader:" + fetchOnlyLeader + ", " +
+    "onlyCommitted: " + fetchOnlyCommitted + ", " +
+    "replicaId: " + replicaId + ", " +
+    "partitionStatus: " + fetchPartitionStatus + "]"
 }
 /**
  * A delayed fetch operation that can be created by the replica manager and watched
  * in the fetch operation purgatory
  */
-class DelayedFetch(delayMs: Long,
-                   fetchMetadata: FetchMetadata,
-                   replicaManager: ReplicaManager,
-                   quota: ReplicaQuota,
-                   clientMetadata: Option[ClientMetadata],
-                   responseCallback: Seq[(TopicPartition, FetchPartitionData)] => Unit)
-  extends DelayedOperation(delayMs) {
+class DelayableFetch(fetchMetadata: FetchMetadata,
+                     replicaManager: ReplicaManager,
+                     quota: ReplicaQuota,
+                     isolationLevel: IsolationLevel,
+                     responseCallback: Seq[(TopicPartition, FetchPartitionData)] => Unit)
+    extends Delayable with Logging {
 
   /**
    * The operation can be completed if:
@@ -72,27 +72,24 @@ class DelayedFetch(delayMs: Long,
    * Case C: The fetch offset locates not on the last segment of the log
    * Case D: The accumulated bytes from all the fetching partitions exceeds the minimum bytes
    * Case E: The partition is in an offline log directory on this broker
-   * Case F: This broker is the leader, but the requested epoch is now fenced
-   * Case G: The high watermark on this broker has changed within a FetchSession, need to propagate to follower (KIP-392)
+   *
    * Upon completion, should return whatever data is available for each valid partition
    */
-  override def tryComplete(): Boolean = {
+  override def check() : Boolean = {
     var accumulatedSize = 0
     fetchMetadata.fetchPartitionStatus.foreach {
       case (topicPartition, fetchStatus) =>
         val fetchOffset = fetchStatus.startOffsetMetadata
-        val fetchLeaderEpoch = fetchStatus.fetchInfo.currentLeaderEpoch
         try {
           if (fetchOffset != LogOffsetMetadata.UnknownOffsetMetadata) {
-            val partition = replicaManager.getPartitionOrException(topicPartition,
-              expectLeader = fetchMetadata.fetchOnlyLeader)
-            val offsetSnapshot = partition.fetchOffsetSnapshot(fetchLeaderEpoch, fetchMetadata.fetchOnlyLeader)
-
-            val endOffset = fetchMetadata.fetchIsolation match {
-              case FetchLogEnd => offsetSnapshot.logEndOffset
-              case FetchHighWatermark => offsetSnapshot.highWatermark
-              case FetchTxnCommitted => offsetSnapshot.lastStableOffset
-            }
+            val replica = replicaManager.getLeaderReplicaIfLocal(topicPartition)
+            val endOffset =
+              if (isolationLevel == IsolationLevel.READ_COMMITTED)
+                replica.lastStableOffset
+              else if (fetchMetadata.fetchOnlyCommitted)
+                replica.highWatermark
+              else
+                replica.logEndOffset
 
             // Go directly to the check for Case D if the message offsets are the same. If the log segment
             // has just rolled, then the high watermark offset will remain the same but be on the old segment,
@@ -100,15 +97,15 @@ class DelayedFetch(delayMs: Long,
             if (endOffset.messageOffset != fetchOffset.messageOffset) {
               if (endOffset.onOlderSegment(fetchOffset)) {
                 // Case C, this can happen when the new fetch operation is on a truncated leader
-                debug(s"Satisfying fetch $fetchMetadata since it is fetching later segments of partition $topicPartition.")
-                return forceComplete()
+                debug("Satisfying fetch %s since it is fetching later segments of partition %s.".format(fetchMetadata, topicPartition))
+                return true
               } else if (fetchOffset.onOlderSegment(endOffset)) {
                 // Case C, this can happen when the fetch operation is falling behind the current segment
                 // or the partition has just rolled a new segment
-                debug(s"Satisfying fetch $fetchMetadata immediately since it is fetching older segments.")
+                debug("Satisfying fetch %s immediately since it is fetching older segments.".format(fetchMetadata))
                 // We will not force complete the fetch request if a replica should be throttled.
                 if (!replicaManager.shouldLeaderThrottle(quota, topicPartition, fetchMetadata.replicaId))
-                  return forceComplete()
+                  return true
               } else if (fetchOffset.messageOffset < endOffset.messageOffset) {
                 // we take the partition fetch size as upper bound when accumulating the bytes (skip if a throttled partition)
                 val bytesAvailable = math.min(endOffset.positionDiff(fetchOffset), fetchStatus.fetchInfo.maxBytes)
@@ -116,64 +113,47 @@ class DelayedFetch(delayMs: Long,
                   accumulatedSize += bytesAvailable
               }
             }
-
-            if (fetchMetadata.isFromFollower) {
-              // Case G check if the follower has the latest HW from the leader
-              if (partition.getReplica(fetchMetadata.replicaId)
-                .exists(r => offsetSnapshot.highWatermark.messageOffset > r.lastSentHighWatermark)) {
-                return forceComplete()
-              }
-            }
           }
         } catch {
           case _: KafkaStorageException => // Case E
-            debug(s"Partition $topicPartition is in an offline log directory, satisfy $fetchMetadata immediately")
-            return forceComplete()
+            debug("Partition %s is in an offline log directory, satisfy %s immediately".format(topicPartition, fetchMetadata))
+            return true
           case _: UnknownTopicOrPartitionException => // Case B
-            debug(s"Broker no longer knows of partition $topicPartition, satisfy $fetchMetadata immediately")
-            return forceComplete()
-          case _: FencedLeaderEpochException => // Case F
-            debug(s"Broker is the leader of partition $topicPartition, but the requested epoch " +
-              s"$fetchLeaderEpoch is fenced by the latest leader epoch, satisfy $fetchMetadata immediately")
-            return forceComplete()
+            debug("Broker no longer know of %s, satisfy %s immediately".format(topicPartition, fetchMetadata))
+            return true
           case _: NotLeaderForPartitionException =>  // Case A
             debug("Broker is no longer the leader of %s, satisfy %s immediately".format(topicPartition, fetchMetadata))
-            return forceComplete()
+            return true
         }
     }
 
     // Case D
-    if (accumulatedSize >= fetchMetadata.fetchMinBytes)
-       forceComplete()
-    else
-      false
-  }
-
-  override def onExpiration(): Unit = {
-    if (fetchMetadata.isFromFollower)
-      DelayedFetchMetrics.followerExpiredRequestMeter.mark()
-    else
-      DelayedFetchMetrics.consumerExpiredRequestMeter.mark()
+    (accumulatedSize >= fetchMetadata.fetchMinBytes)
   }
 
   /**
-   * Upon completion, read whatever data is available and pass to the complete callback
-   */
-  override def onComplete(): Unit = {
+    * Upon completion, read whatever data is available and pass to the complete callback
+    */
+  override def complete(timedOut: Boolean) {
+    if (timedOut) {
+      if (fetchMetadata.isFromFollower)
+        DelayedFetchMetrics.followerExpiredRequestMeter.mark()
+      else
+        DelayedFetchMetrics.consumerExpiredRequestMeter.mark()
+    }
     val logReadResults = replicaManager.readFromLocalLog(
       replicaId = fetchMetadata.replicaId,
       fetchOnlyFromLeader = fetchMetadata.fetchOnlyLeader,
-      fetchIsolation = fetchMetadata.fetchIsolation,
+      readOnlyCommitted = fetchMetadata.fetchOnlyCommitted,
       fetchMaxBytes = fetchMetadata.fetchMaxBytes,
       hardMaxBytesLimit = fetchMetadata.hardMaxBytesLimit,
       readPartitionInfo = fetchMetadata.fetchPartitionStatus.map { case (tp, status) => tp -> status.fetchInfo },
-      clientMetadata = clientMetadata,
-      quota = quota)
+      quota = quota,
+      isolationLevel = isolationLevel)
 
     val fetchPartitionData = logReadResults.map { case (tp, result) =>
       tp -> FetchPartitionData(result.error, result.highWatermark, result.leaderLogStartOffset, result.info.records,
-        result.lastStableOffset, result.info.abortedTransactions, result.preferredReadReplica,
-        fetchMetadata.isFromFollower && replicaManager.isAddingReplica(tp, fetchMetadata.replicaId), result.info.fetchOffsetMetadata.messageOffset)
+        result.lastStableOffset, result.info.abortedTransactions)
     }
 
     responseCallback(fetchPartitionData)

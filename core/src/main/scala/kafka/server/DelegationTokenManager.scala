@@ -30,8 +30,8 @@ import kafka.utils.{CoreUtils, Json, Logging}
 import kafka.zk.{DelegationTokenChangeNotificationSequenceZNode, DelegationTokenChangeNotificationZNode, DelegationTokensZNode, KafkaZkClient}
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.security.auth.KafkaPrincipal
-import org.apache.kafka.common.security.scram.ScramCredential
 import org.apache.kafka.common.security.scram.internals.{ScramFormatter, ScramMechanism}
+import org.apache.kafka.common.security.scram.ScramCredential
 import org.apache.kafka.common.security.token.delegation.internals.DelegationTokenCache
 import org.apache.kafka.common.security.token.delegation.{DelegationToken, TokenInformation}
 import org.apache.kafka.common.utils.{Sanitizer, SecurityUtils, Time}
@@ -172,7 +172,7 @@ class DelegationTokenManager(val config: KafkaConfig,
 
   val secretKey = {
     val keyBytes =  if (config.tokenAuthEnabled) config.delegationTokenMasterKey.value.getBytes(StandardCharsets.UTF_8) else null
-    if (keyBytes == null || keyBytes.isEmpty) null
+    if (keyBytes == null || keyBytes.length == 0) null
     else
       createSecretKey(keyBytes)
   }
@@ -216,7 +216,7 @@ class DelegationTokenManager(val config: KafkaConfig,
   }
 
   private def getTokenFromZk(tokenId: String): Option[DelegationToken] = {
-    zkClient.getDelegationTokenInfo(tokenId) match {
+    zkClient.getEncryptedDelegationTokenInfo(tokenId, config.delegationTokenMasterKey.value().toCharArray) match {
       case Some(tokenInformation) => {
         val hmac = createHmac(tokenId, secretKey)
         Some(new DelegationToken(tokenInformation, hmac))
@@ -331,7 +331,12 @@ class DelegationTokenManager(val config: KafkaConfig,
    * @param token
    */
   private def updateToken(token: DelegationToken): Unit = {
-    zkClient.setOrCreateDelegationToken(token)
+    if (config.delegationTokenMetadataEncryptionEnable) {
+      zkClient.setOrCreateEncryptedDelegationToken(token, config.delegationTokenMasterKey.value().toCharArray)
+    }
+    else {
+      zkClient.setOrCreateDelegationToken(token)
+    }
     updateCache(token)
     zkClient.createTokenChangeNotification(token.tokenInfo.tokenId())
   }

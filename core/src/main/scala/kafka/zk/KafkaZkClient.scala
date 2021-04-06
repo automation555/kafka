@@ -27,7 +27,7 @@ import kafka.metrics.KafkaMetricsGroup
 import kafka.security.auth.SimpleAclAuthorizer.{NoAcls, VersionedAcls}
 import kafka.security.auth.{Acl, Resource, ResourceType}
 import kafka.server.ConfigType
-import kafka.utils.Logging
+import kafka.utils.{EncryptUtil, Logging}
 import kafka.zookeeper._
 import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.resource.PatternType
@@ -787,7 +787,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * Returns all reassignments.
    * @return the reassignments for each partition.
    */
-  def getPartitionReassignment: collection.Map[TopicPartition, Map[String, Seq[Int]]] = {
+  def getPartitionReassignment: collection.Map[TopicPartition, Seq[Int]] = {
     val getDataRequest = GetDataRequest(ReassignPartitionsZNode.path)
     val getDataResponse = retryRequestUntilConnected(getDataRequest)
     getDataResponse.resultCode match {
@@ -795,7 +795,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
         ReassignPartitionsZNode.decode(getDataResponse.data) match {
           case Left(e) =>
             logger.warn(s"Ignoring partition reassignment due to invalid json: ${e.getMessage}", e)
-            Map.empty[TopicPartition, Map[String, Seq[Int]]]
+            Map.empty[TopicPartition, Seq[Int]]
           case Right(assignments) => assignments
         }
       case Code.NONODE => Map.empty
@@ -811,7 +811,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    * @throws KeeperException if there is an error while setting or creating the znode
    */
-  def setOrCreatePartitionReassignment(reassignment: collection.Map[TopicPartition, Map[String, Seq[Int]]], expectedControllerEpochZkVersion: Int): Unit = {
+  def setOrCreatePartitionReassignment(reassignment: collection.Map[TopicPartition, Seq[Int]], expectedControllerEpochZkVersion: Int): Unit = {
 
     def set(reassignmentData: Array[Byte]): SetDataResponse = {
       val setDataRequest = SetDataRequest(ReassignPartitionsZNode.path, reassignmentData, ZkVersion.MatchAnyVersion)
@@ -839,7 +839,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @param reassignment the reassignment to set on the reassignment znode.
    * @throws KeeperException if there is an error while creating the znode
    */
-  def createPartitionReassignment(reassignment: Map[TopicPartition, Map[String, Seq[Int]]])  = {
+  def createPartitionReassignment(reassignment: Map[TopicPartition, Seq[Int]])  = {
     createRecursive(ReassignPartitionsZNode.path, ReassignPartitionsZNode.encode(reassignment))
   }
 
@@ -857,29 +857,6 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    */
   def reassignPartitionsInProgress(): Boolean = {
     pathExists(ReassignPartitionsZNode.path)
-  }
-
-  /**
-    * Creates the partition reassignment cancel znode.
-    * @throws KeeperException if there is an error while creating the znode
-    */
-  def createReassignCancel()  = {
-    createRecursive(ReassignCancelZNode.path)
-  }
-
-  /**
-    * Deletes the partitio reassignment canel znode.
-    */
-  def deleteReassignCancel(expectedControllerEpochZkVersion: Int): Unit = {
-    deletePath(ReassignCancelZNode.path, expectedControllerEpochZkVersion)
-  }
-
-  /**
-    * Checks if reassign cancellation is in place
-    * @return true if /admin/reassign_cancel is in place , else false
-    */
-  def reassignCancelInPlace(): Boolean = {
-    pathExists(ReassignCancelZNode.path)
   }
 
   /**
@@ -1319,6 +1296,21 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @throws KeeperException if there is an error while setting or creating the znode
    */
   def setOrCreateDelegationToken(token: DelegationToken): Unit = {
+    setOrCreateDelegationToken(token, (token) => DelegationTokenInfoZNode.encode(token))
+  }
+
+  /**
+    * Sets or creates encrypted token info znode with the given token details depending on whether it already
+    * exists or not.
+    *
+    * @param token the token to set on the token znode
+    * @throws KeeperException if there is an error while setting or creating the znode
+    */
+  def setOrCreateEncryptedDelegationToken(token: DelegationToken, secretKey: Array[Char]): Unit = {
+    setOrCreateDelegationToken(token, (token) => encryptThenMacDelegationTokenInfo(token, secretKey))
+  }
+
+  def setOrCreateDelegationToken(token: DelegationToken, tokenEncoder: DelegationToken => Array[Byte]): Unit = {
 
     def set(tokenData: Array[Byte]): SetDataResponse = {
       val setDataRequest = SetDataRequest(DelegationTokenInfoZNode.path(token.tokenInfo().tokenId()), tokenData, ZkVersion.MatchAnyVersion)
@@ -1331,7 +1323,8 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       retryRequestUntilConnected(createRequest)
     }
 
-    val tokenInfo = DelegationTokenInfoZNode.encode(token)
+    val tokenInfo = tokenEncoder(token)
+
     val setDataResponse = set(tokenInfo)
     setDataResponse.resultCode match {
       case Code.NONODE =>
@@ -1341,18 +1334,55 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     }
   }
 
+  def encryptThenMacDelegationTokenInfo(token: DelegationToken, secretKey: Array[Char]): Array[Byte] = {
+    EncryptUtil.encrypt(secretKey, DelegationTokenInfoZNode.encode(token))
+  }
+
+  def decryptDelegationTokenInfo(cipherbytes: Array[Byte], secretKey: Array[Char]): Array[Byte] = {
+    EncryptUtil.decrypt(secretKey, cipherbytes)
+  }
+
   /**
-   * Gets the Delegation Token Info
+   * Gets encrypted Delegation Token Info
    * @return optional TokenInfo that is Some if the token znode exists and can be parsed and None otherwise.
    */
+  def getEncryptedDelegationTokenInfo(delegationTokenId: String, secretKey: Array[Char]): Option[TokenInformation] = {
+    getDelegationTokenInfo(delegationTokenId,  data => DelegationTokenInfoZNode.decode(getDelegationToken(data, secretKey)))
+  }
+
+  /**
+    * Gets the Delegation Token Info
+    * @return optional TokenInfo that is Some if the token znode exists and can be parsed and None otherwise.
+    */
   def getDelegationTokenInfo(delegationTokenId: String): Option[TokenInformation] = {
+    getDelegationTokenInfo(delegationTokenId,  DelegationTokenInfoZNode.decode)
+  }
+
+  def getDelegationTokenInfo(delegationTokenId: String, tokenReader: Array[Byte] => Option[TokenInformation]): Option[TokenInformation] = {
     val getDataRequest = GetDataRequest(DelegationTokenInfoZNode.path(delegationTokenId))
     val getDataResponse = retryRequestUntilConnected(getDataRequest)
     getDataResponse.resultCode match {
-      case Code.OK => DelegationTokenInfoZNode.decode(getDataResponse.data)
+      case Code.OK => tokenReader(getDataResponse.data)
       case Code.NONODE => None
       case _ => throw getDataResponse.resultException.get
     }
+  }
+
+  /**
+    * Extracts and returns Delegation Token Info received from Zookeeper. Attempts to decrypt data, in case of an error it returns
+    * raw response assuming Delegation Token Info was generated by an earlier broker version, without encryption.
+    * @param data byte array received from Zookeeper
+    * @param secretKey key to validate and decrypt encrypted Delegation Token Info
+    * @return byte array representing the delegation token
+    */
+  def getDelegationToken(data: Array[Byte], secretKey: Array[Char]): Array[Byte] = {
+    try {
+      decryptDelegationTokenInfo(data, secretKey)
+    }
+    catch {
+      case _: IllegalArgumentException => data
+    }
+
   }
 
   /**

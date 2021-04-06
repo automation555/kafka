@@ -394,10 +394,10 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
     assertEquals(Map.empty, zkClient.getPartitionReassignment)
 
     val reassignment = Map(
-      new TopicPartition("topic_a", 0) -> Map("replicas" -> Seq(0, 1, 3), "original_replicas" -> Seq(0, 1, 2)),
-      new TopicPartition("topic_a", 1) -> Map("replicas" -> Seq(2, 1, 3), "original_replicas" -> Seq(0, 1, 2)),
-      new TopicPartition("topic_b", 0) -> Map("replicas" -> Seq(4, 5), "original_replicas" -> Seq(3, 4)),
-      new TopicPartition("topic_c", 0) -> Map("replicas" -> Seq(5, 3), "original_replicas" -> Seq(5, 4))
+      new TopicPartition("topic_a", 0) -> Seq(0, 1, 3),
+      new TopicPartition("topic_a", 1) -> Seq(2, 1, 3),
+      new TopicPartition("topic_b", 0) -> Seq(4, 5),
+      new TopicPartition("topic_c", 0) -> Seq(5, 3)
     )
 
     // Should throw ControllerMovedException if the controller epoch zkVersion does not match
@@ -954,15 +954,6 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
   }
 
   @Test
-  def testReassignCancelInPlace(): Unit = {
-    assertFalse(zkClient.reassignCancelInPlace)
-    zkClient.createReassignCancel()
-    assertTrue(zkClient.reassignCancelInPlace)
-    zkClient.deleteReassignCancel(controllerEpochZkVersion)
-    assertFalse(zkClient.reassignCancelInPlace)
-  }
-
-  @Test
   def testGetTopicPartitionStates(): Unit = {
     assertEquals(None, zkClient.getTopicPartitionState(topicPartition10))
     assertEquals(None, zkClient.getLeaderForPartition(topicPartition10))
@@ -1124,26 +1115,40 @@ class KafkaZkClientTest extends ZooKeeperTestHarness {
     Random.nextBytes(bytes)
     val token = new org.apache.kafka.common.security.token.delegation.DelegationToken(tokenInfo, bytes)
 
+    val tokenId2 = "encryptedToken1"
+    val tokenInfo2 = new TokenInformation(tokenId2, owner, renewers.asJava,
+      System.currentTimeMillis(), System.currentTimeMillis(), System.currentTimeMillis())
+    val token2 = new org.apache.kafka.common.security.token.delegation.DelegationToken(tokenInfo2, bytes)
+
     // test non-existent token
     assertTrue(zkClient.getDelegationTokenInfo(tokenId).isEmpty)
     assertFalse(zkClient.deleteDelegationToken(tokenId))
 
+    assertTrue(zkClient.getEncryptedDelegationTokenInfo(tokenId2, "test_secret_key".toCharArray).isEmpty)
+    assertFalse(zkClient.deleteDelegationToken(tokenId2))
+
     // create a token
     zkClient.setOrCreateDelegationToken(token)
+    zkClient.setOrCreateEncryptedDelegationToken(token2, "test_secret_key".toCharArray)
 
     //get created token
     assertEquals(tokenInfo, zkClient.getDelegationTokenInfo(tokenId).get)
+    assertEquals(tokenInfo2, zkClient.getEncryptedDelegationTokenInfo(tokenId2, "test_secret_key".toCharArray).get)
 
     //update expiryTime
     tokenInfo.setExpiryTimestamp(System.currentTimeMillis())
     zkClient.setOrCreateDelegationToken(token)
+    zkClient.setOrCreateEncryptedDelegationToken(token2, "test_secret_key".toCharArray)
 
     //test updated token
     assertEquals(tokenInfo, zkClient.getDelegationTokenInfo(tokenId).get)
+    assertEquals(tokenInfo2, zkClient.getEncryptedDelegationTokenInfo(tokenId2, "test_secret_key".toCharArray).get)
 
     //test deleting token
     assertTrue(zkClient.deleteDelegationToken(tokenId))
     assertEquals(None, zkClient.getDelegationTokenInfo(tokenId))
+    assertTrue(zkClient.deleteDelegationToken(tokenId2))
+    assertEquals(None, zkClient.getEncryptedDelegationTokenInfo(tokenId2, "test_secret_key".toCharArray))
   }
 
   @Test

@@ -368,8 +368,8 @@ private[log] class Cleaner(val id: Int,
     val indexFile = new File(segments.head.index.file.getPath + Log.CleanedFileSuffix)
     indexFile.delete()
     val messages = new FileMessageSet(logFile, fileAlreadyExists = false, initFileSize = log.initFileSize(), preallocate = log.config.preallocate)
-    val index = new OffsetIndex(indexFile, segments.head.baseOffset, segments.head.index.maxIndexSize)
-    val cleaned = new LogSegment(messages, index, segments.head.baseOffset, segments.head.indexIntervalBytes, log.config.randomSegmentJitter, time)
+    val index = new OffsetIndex(log.config, indexFile, segments.head.baseOffset, segments.head.index.maxIndexSize)
+    val cleaned = new LogSegment(log.config, messages, index, segments.head.baseOffset, segments.head.indexIntervalBytes, log.config.randomSegmentJitter, time)
 
     try {
       // clean segments into the new destination segment
@@ -431,7 +431,8 @@ private[log] class Cleaner(val id: Int,
         stats.readMessage(size)
         if (entry.message.compressionCodec == NoCompressionCodec) {
           if (shouldRetainMessage(source, map, retainDeletes, entry)) {
-            ByteBufferMessageSet.writeMessage(writeBuffer, entry.message, entry.offset)
+            val convertedMessage = entry.message.toFormatVersion(messageFormatVersion)
+            ByteBufferMessageSet.writeMessage(writeBuffer, convertedMessage, entry.offset)
             stats.recopyMessage(size)
           }
           messagesRead += 1
@@ -443,15 +444,22 @@ private[log] class Cleaner(val id: Int,
           val retainedMessages = new mutable.ArrayBuffer[MessageAndOffset]
           messages.foreach { messageAndOffset =>
             messagesRead += 1
-            if (shouldRetainMessage(source, map, retainDeletes, messageAndOffset))
-              retainedMessages += messageAndOffset
+            if (shouldRetainMessage(source, map, retainDeletes, messageAndOffset)) {
+              retainedMessages += {
+                if (messageAndOffset.message.magic != messageFormatVersion) {
+                  writeOriginalMessageSet = false
+                  new MessageAndOffset(messageAndOffset.message.toFormatVersion(messageFormatVersion), messageAndOffset.offset)
+                }
+                else messageAndOffset
+              }
+            }
             else writeOriginalMessageSet = false
           }
 
-          // There are no messages compacted out, write the original message set back
+          // There are no messages compacted out and no message format conversion, write the original message set back
           if (writeOriginalMessageSet)
             ByteBufferMessageSet.writeMessage(writeBuffer, entry.message, entry.offset)
-          else
+          else if (retainedMessages.nonEmpty)
             compressMessages(writeBuffer, entry.message.compressionCodec, messageFormatVersion, retainedMessages)
         }
       }
@@ -476,9 +484,14 @@ private[log] class Cleaner(val id: Int,
                                compressionCodec: CompressionCodec,
                                messageFormatVersion: Byte,
                                messageAndOffsets: Seq[MessageAndOffset]) {
-    require(compressionCodec != NoCompressionCodec, s"compressionCodec must not be $NoCompressionCodec")
-    if (messageAndOffsets.nonEmpty) {
-      val messages = messageAndOffsets.map(_.message)
+    val messages = messageAndOffsets.map(_.message)
+    if (messageAndOffsets.isEmpty) {
+      MessageSet.Empty.sizeInBytes
+    } else if (compressionCodec == NoCompressionCodec) {
+      for (messageOffset <- messageAndOffsets)
+        ByteBufferMessageSet.writeMessage(buffer, messageOffset.message, messageOffset.offset)
+      MessageSet.messageSetSize(messages)
+    } else {
       val magicAndTimestamp = MessageSet.magicAndLargestTimestamp(messages)
       val firstMessageOffset = messageAndOffsets.head
       val firstAbsoluteOffset = firstMessageOffset.offset
@@ -536,7 +549,7 @@ private[log] class Cleaner(val id: Int,
     if(readBuffer.capacity >= maxIoBufferSize || writeBuffer.capacity >= maxIoBufferSize)
       throw new IllegalStateException("This log contains a message larger than maximum allowable size of %s.".format(maxIoBufferSize))
     val newSize = math.min(this.readBuffer.capacity * 2, maxIoBufferSize)
-    info("Growing cleaner I/O buffers from " + readBuffer.capacity + " bytes to " + newSize + " bytes.")
+    info("Growing cleaner I/O buffers from " + readBuffer.capacity + "bytes to " + newSize + " bytes.")
     this.readBuffer = ByteBuffer.allocate(newSize)
     this.writeBuffer = ByteBuffer.allocate(newSize)
   }
@@ -595,7 +608,7 @@ private[log] class Cleaner(val id: Int,
    */
   private[log] def buildOffsetMap(log: Log, start: Long, end: Long, map: OffsetMap): Long = {
     map.clear()
-    val dirty = log.logSegments(start, end).toBuffer
+    val dirty = log.logSegments(start, end).toSeq
     info("Building offset map for log %s for %d segments in offset range [%d, %d).".format(log.name, dirty.size, start, end))
     
     // Add all the dirty segments. We must take at least map.slots * load_factor,
@@ -632,7 +645,6 @@ private[log] class Cleaner(val id: Int,
     var position = 0
     var offset = segment.baseOffset
     val maxDesiredMapSize = (map.slots * this.dupBufferLoadFactor).toInt
-    info("Updating offset map for segment %s of partition %s...".format(segment.baseOffset, topicAndPartition))
     while (position < segment.log.sizeInBytes) {
       checkDone(topicAndPartition)
       readBuffer.clear()

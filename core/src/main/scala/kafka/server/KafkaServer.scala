@@ -78,6 +78,7 @@ object KafkaServer {
     logProps.put(LogConfig.MessageFormatVersionProp, kafkaConfig.logMessageFormatVersion.version)
     logProps.put(LogConfig.MessageTimestampTypeProp, kafkaConfig.logMessageTimestampType.name)
     logProps.put(LogConfig.MessageTimestampDifferenceMaxMsProp, kafkaConfig.logMessageTimestampDifferenceMaxMs)
+    logProps.put(LogConfig.MemoryMappedFileUpdatesEnabledProp, kafkaConfig.memoryMappedFileUpdatesEnabled)
     logProps
   }
 }
@@ -131,7 +132,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
   val kafkaScheduler = new KafkaScheduler(config.backgroundThreads)
 
   var kafkaHealthcheck: KafkaHealthcheck = null
-  var metadataCache: MetadataCache = null
+  val metadataCache: MetadataCache = new MetadataCache(config.brokerId)
 
   var zkUtils: ZkUtils = null
   val correlationId: AtomicInteger = new AtomicInteger(0)
@@ -187,8 +188,6 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
         /* generate brokerId */
         config.brokerId =  getBrokerId
         this.logIdent = "[Kafka Server " + config.brokerId + "], "
-
-        metadataCache = new MetadataCache(config.brokerId)
 
         socketServer = new SocketServer(config, metrics, kafkaMetricsTime)
         socketServer.startup()
@@ -610,8 +609,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
                                       maxMessageSize = config.messageMaxBytes,
                                       maxIoBytesPerSecond = config.logCleanerIoMaxBytesPerSecond,
                                       backOffMs = config.logCleanerBackoffMs,
-                                      enableCleaner = config.logCleanerEnable,
-                                      hashAlgorithm = config.logCleanerHashAlgorithm)
+                                      enableCleaner = config.logCleanerEnable)
     new LogManager(logDirs = config.logDirs.map(new File(_)).toArray,
                    topicConfigs = configs,
                    defaultConfig = defaultLogConfig,

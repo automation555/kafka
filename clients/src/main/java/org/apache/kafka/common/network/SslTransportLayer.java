@@ -530,7 +530,7 @@ public class SslTransportLayer implements TransportLayer {
                     readFromNetwork = true;
             }
 
-            if (netReadBuffer.position() > 0) {
+            while (netReadBuffer.position() > 0) {
                 netReadBuffer.flip();
                 SSLEngineResult unwrapResult = sslEngine.unwrap(netReadBuffer, appReadBuffer);
                 netReadBuffer.compact();
@@ -544,6 +544,7 @@ public class SslTransportLayer implements TransportLayer {
 
                 if (unwrapResult.getStatus() == Status.OK) {
                     read += readFromAppBuffer(dst);
+                    break;
                 } else if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
                     int currentApplicationBufferSize = applicationBufferSize();
                     appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize);

@@ -12,20 +12,20 @@
  */
 package kafka.api
 
-import java.util.Properties
-
 import kafka.integration.KafkaServerTestHarness
 import kafka.log.Log
 import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.consumer.OffsetAndMetadata
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.internals.Topic
-import org.apache.kafka.common.record.CompressionType
-import org.junit.Assert._
 import org.junit.Test
+import org.junit.Assert._
 
 import scala.collection.JavaConverters._
+import java.util.Properties
+
+import org.apache.kafka.common.internals.Topic
+import org.apache.kafka.common.record.CompressionType
 
 class GroupCoordinatorIntegrationTest extends KafkaServerTestHarness {
   val offsetsTopicCompressionCodec = CompressionType.GZIP
@@ -59,4 +59,12 @@ class GroupCoordinatorIntegrationTest extends KafkaServerTestHarness {
 
     consumer.close()
   }
+
+  @Test
+  def testOffsetsTopicPartitionCountUpdate(): Unit = {
+    assertEquals(servers.head.groupCoordinator.groupManager.groupMetadataTopicPartitionCountOpt, None)
+    TestUtils.createTopic(zkClient, Topic.GROUP_METADATA_TOPIC_NAME, 10, 1, servers)
+    servers.foreach(server => assertEquals(server.groupCoordinator.groupManager.groupMetadataTopicPartitionCountOpt, Some(10)))
+  }
+
 }

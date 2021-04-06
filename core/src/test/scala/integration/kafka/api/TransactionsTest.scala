@@ -19,8 +19,8 @@ package kafka.api
 
 import java.lang.{Long => JLong}
 import java.time.Duration
-import java.util.concurrent.TimeUnit
 import java.util.{Optional, Properties}
+import java.util.concurrent.TimeUnit
 
 import kafka.integration.KafkaServerTestHarness
 import kafka.server.KafkaConfig
@@ -28,10 +28,13 @@ import kafka.utils.TestUtils
 import kafka.utils.TestUtils.consumeRecords
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer, OffsetAndMetadata}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
-import org.apache.kafka.common.errors.{ProducerFencedException, TimeoutException}
 import org.apache.kafka.common.{KafkaException, TopicPartition}
-import org.junit.Assert._
+import org.apache.kafka.common.errors.{CoordinatorNotAvailableException, ProducerFencedException, TimeoutException}
+import org.apache.kafka.common.internals.Topic
+import org.apache.kafka.common.utils.Utils
 import org.junit.{After, Before, Test}
+import org.junit.Assert._
+import org.scalatest.Assertions.fail
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.Buffer
@@ -240,7 +243,7 @@ class TransactionsTest extends KafkaServerTestHarness {
 
     TestUtils.seedTopicWithNumberedRecords(topic1, numSeedMessages, servers)
 
-    val producer = transactionalProducers.head
+    val producer = transactionalProducers(0)
 
     val consumer = createReadCommittedConsumer(consumerGroupId, maxPollRecords = numSeedMessages / 4)
     consumer.subscribe(List(topic1).asJava)
@@ -280,7 +283,7 @@ class TransactionsTest extends KafkaServerTestHarness {
 
     // In spite of random aborts, we should still have exactly 1000 messages in topic2. I.e. we should not
     // re-copy or miss any messages from topic1, since the consumed offsets were committed transactionally.
-    val verifyingConsumer = transactionalConsumers.head
+    val verifyingConsumer = transactionalConsumers(0)
     verifyingConsumer.subscribe(List(topic2).asJava)
     val valueSeq = TestUtils.pollUntilAtLeastNumRecords(verifyingConsumer, numSeedMessages).map { record =>
       TestUtils.assertCommittedAndGetValue(record).toInt
@@ -292,9 +295,9 @@ class TransactionsTest extends KafkaServerTestHarness {
 
   @Test
   def testFencingOnCommit() = {
-    val producer1 = transactionalProducers.head
+    val producer1 = transactionalProducers(0)
     val producer2 = transactionalProducers(1)
-    val consumer = transactionalConsumers.head
+    val consumer = transactionalConsumers(0)
 
     consumer.subscribe(List(topic1, topic2).asJava)
 
@@ -329,9 +332,9 @@ class TransactionsTest extends KafkaServerTestHarness {
 
   @Test
   def testFencingOnSendOffsets() = {
-    val producer1 = transactionalProducers.head
+    val producer1 = transactionalProducers(0)
     val producer2 = transactionalProducers(1)
-    val consumer = transactionalConsumers.head
+    val consumer = transactionalConsumers(0)
 
     consumer.subscribe(List(topic1, topic2).asJava)
 
@@ -392,9 +395,9 @@ class TransactionsTest extends KafkaServerTestHarness {
 
   @Test
   def testFencingOnSend() {
-    val producer1 = transactionalProducers.head
+    val producer1 = transactionalProducers(0)
     val producer2 = transactionalProducers(1)
-    val consumer = transactionalConsumers.head
+    val consumer = transactionalConsumers(0)
 
     consumer.subscribe(List(topic1, topic2).asJava)
 
@@ -436,9 +439,9 @@ class TransactionsTest extends KafkaServerTestHarness {
 
   @Test
   def testFencingOnAddPartitions(): Unit = {
-    val producer1 = transactionalProducers.head
+    val producer1 = transactionalProducers(0)
     val producer2 = transactionalProducers(1)
-    val consumer = transactionalConsumers.head
+    val consumer = transactionalConsumers(0)
 
     consumer.subscribe(List(topic1, topic2).asJava)
 
@@ -505,7 +508,7 @@ class TransactionsTest extends KafkaServerTestHarness {
     }
 
     // Verify that the first message was aborted and the second one was never written at all.
-    val nonTransactionalConsumer = nonTransactionalConsumers.head
+    val nonTransactionalConsumer = nonTransactionalConsumers(0)
     nonTransactionalConsumer.subscribe(List(topic1).asJava)
     val records = TestUtils.consumeRecordsFor(nonTransactionalConsumer, 1000)
     assertEquals(1, records.size)
@@ -573,7 +576,7 @@ class TransactionsTest extends KafkaServerTestHarness {
     producer.beginTransaction()
     producer.send(new ProducerRecord[Array[Byte], Array[Byte]](topic1, "foobar".getBytes))
 
-    for (i <- servers.indices)
+    for (i <- 0 until servers.size)
       killBroker(i) // pretend all brokers not available
 
     try {
@@ -581,6 +584,22 @@ class TransactionsTest extends KafkaServerTestHarness {
     } finally {
       producer.close(Duration.ZERO)
     }
+  }
+
+  @Test
+  def testTransactionTopicPartitionCountUpdate(): Unit = {
+    val transactionalId = "test-transaction"
+    val numPartitions = 10
+    val targetPartition = Utils.abs(transactionalId.hashCode % numPartitions)
+
+    try {
+      servers.head.transactionCoordinator.partitionFor(transactionalId)
+      fail("Should have thrown CoordinatorNotAvailableException.")
+    } catch {
+      case _: CoordinatorNotAvailableException =>
+    }
+    TestUtils.createTopic(zkClient, Topic.TRANSACTION_STATE_TOPIC_NAME, 10, 1, servers)
+    servers.foreach(server => assertEquals(server.transactionCoordinator.partitionFor(transactionalId), targetPartition))
   }
 
   private def sendTransactionalMessagesWithValueRange(producer: KafkaProducer[Array[Byte], Array[Byte]], topic: String,

@@ -35,7 +35,7 @@ import kafka.utils.{MockTime, TestUtils}
 import kafka.zk.KafkaZkClient
 import org.apache.kafka.common.{IsolationLevel, TopicPartition}
 import org.apache.kafka.common.errors.UnsupportedVersionException
-import org.apache.kafka.common.memory.{BounceBufferPool, MemoryPool}
+import org.apache.kafka.common.memory.MemoryPool
 import org.apache.kafka.common.message.JoinGroupRequestData.JoinGroupRequestProtocol
 import org.apache.kafka.common.message.LeaveGroupRequestData.MemberIdentity
 import org.apache.kafka.common.message.OffsetDeleteRequestData.{OffsetDeleteRequestPartition, OffsetDeleteRequestTopic, OffsetDeleteRequestTopicCollection}
@@ -83,7 +83,6 @@ class KafkaApisTest {
   private val brokerTopicStats = new BrokerTopicStats
   private val clusterId = "clusterId"
   private val time = new MockTime
-  private val fetchBufferPool: BounceBufferPool = EasyMock.createNiceMock(classOf[BounceBufferPool])
 
   @After
   def tearDown(): Unit = {
@@ -113,8 +112,7 @@ class KafkaApisTest {
       brokerTopicStats,
       clusterId,
       time,
-      null,
-      fetchBufferPool
+      null
     )
   }
 
@@ -548,7 +546,7 @@ class KafkaApisTest {
         val records = MemoryRecords.withRecords(CompressionType.NONE,
           new SimpleRecord(timestamp, "foo".getBytes(StandardCharsets.UTF_8)))
         callback(Seq(tp -> FetchPartitionData(Errors.NONE, hw, 0, records,
-          None, None, Option.empty, isReassignmentFetch = false)))
+          None, None, Option.empty, isReassignmentFetch = false, 0)))
       }
     })
 
@@ -805,7 +803,7 @@ class KafkaApisTest {
     expectLastCall[Unit].andAnswer(new IAnswer[Unit] {
       def answer: Unit = {
         val callback = getCurrentArguments.apply(7).asInstanceOf[Seq[(TopicPartition, FetchPartitionData)] => Unit]
-        callback(Seq(tp0 -> FetchPartitionData(Errors.NONE, hw, 0, records, None, None, Option.empty, isReassignmentFetch = isReassigning)))
+        callback(Seq(tp0 -> FetchPartitionData(Errors.NONE, hw, 0, records, None, None, Option.empty, isReassignmentFetch = isReassigning, 0)))
       }
     })
 

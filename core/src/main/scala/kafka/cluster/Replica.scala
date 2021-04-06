@@ -17,63 +17,10 @@
 
 package kafka.cluster
 
-import java.util
-import java.util.concurrent.locks.ReentrantLock
-import java.util.function.BiFunction
-
-import kafka.log.Log
-import kafka.server.{FollowerPendingFetchAvailabilityConfig, LogOffsetMetadata}
-import kafka.utils.{CoreUtils, Logging}
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.utils.Time
-
-class PendingRequests {
-  private val delegate = new util.HashMap[Long, Int]
-  private val lock = new ReentrantLock()
-
-  def add(offset:Long): Int = {
-    CoreUtils.inLock(lock) {
-      delegate.compute(offset, new BiFunction[Long, Int, Int] {
-        override def apply(k: Long, v: Int): Int = Option(v) match {
-          case Some(x) => x+1
-          case _ => 1
-        }
-      })
-    }
-  }
-
-  def remove(offset: Long): Boolean = {
-    CoreUtils.inLock(lock) {
-      Option(delegate.remove(offset)) match {
-        case Some(x) =>
-          if (x <= 0) throw new IllegalStateException("value should not be < 0")
-          else {
-            if (x > 1) delegate.put(offset, x - 1)
-            true
-          }
-        case _ => false
-      }
-    }
-  }
-
-  def contains(offset:Long): Boolean = {
-    CoreUtils.inLock(lock) {
-      delegate.containsKey(offset)
-    }
-  }
-
-  def clear(): Unit = {
-    CoreUtils.inLock(lock) {
-      delegate.clear()
-    }
-  }
-
-  def isEmpty() : Boolean ={
-    CoreUtils.inLock(lock) {
-      delegate.isEmpty
-    }
-  }
-}
+import kafka.log.{Log}
+import kafka.utils.Logging
+import kafka.server.{LogOffsetMetadata}
+import org.apache.kafka.common.{TopicPartition}
 
 class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Logging {
   // the log end offset value, kept in all replicas;
@@ -99,16 +46,6 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
   // used to determine the maximum HW this follower knows about. See KIP-392
   @volatile private[this] var _lastSentHighWatermark = 0L
 
-  // pending fetch request offsets which have not yet been finished processing.
-  private val pendingRequests = new PendingRequests
-
-  def mayBeInSync(reqTime: Long, replicaLagTimeMaxMs:Long): Boolean = {
-    // 1 - if the lastCaughtUpTime is not lagging beyond replicaLagTimeMaxMs
-    // 2 - if there are any pending fetch requests earlier to the lastfetch LEO then this replica can be considered as
-    // insync to avoid making this replica out of sync when fetch request processing takes longer.
-    reqTime - lastCaughtUpTimeMs <= replicaLagTimeMaxMs || !pendingRequests.isEmpty
-  }
-
   def logStartOffset: Long = _logStartOffset
 
   def logEndOffsetMetadata: LogOffsetMetadata = _logEndOffsetMetadata
@@ -118,6 +55,8 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
   def lastCaughtUpTimeMs: Long = _lastCaughtUpTimeMs
 
   def lastSentHighWatermark: Long = _lastSentHighWatermark
+
+  def fetchLag: Long = Math.max(_lastSentHighWatermark - logEndOffset, 0)
 
   /*
    * If the FetchRequest reads up to the log end offset of the leader when the current fetch request is received,
@@ -134,19 +73,9 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
   def updateFetchState(followerFetchOffsetMetadata: LogOffsetMetadata,
                        followerStartOffset: Long,
                        followerFetchTimeMs: Long,
-                       leaderEndOffset: Long,
-                       lastSentHighwatermark: Long,
-                       followerPendingFetchAvailabilityConfig: FollowerPendingFetchAvailabilityConfig = Partition.defaultFollowerPendingFetchAvailabilityConfig,
-                       time: Time = Time.SYSTEM): Unit = {
-
-    val messageOffset = followerFetchOffsetMetadata.messageOffset
-
-    val fetchTimeMs: Long = if (followerPendingFetchAvailabilityConfig.enable && followerFetchTimeMs > 0
-      && pendingRequests.contains(messageOffset)) time.milliseconds()
-    else followerFetchTimeMs
-
+                       leaderEndOffset: Long): Unit = {
     if (followerFetchOffsetMetadata.messageOffset >= leaderEndOffset)
-      _lastCaughtUpTimeMs = math.max(_lastCaughtUpTimeMs, fetchTimeMs)
+      _lastCaughtUpTimeMs = math.max(_lastCaughtUpTimeMs, followerFetchTimeMs)
     else if (followerFetchOffsetMetadata.messageOffset >= lastFetchLeaderLogEndOffset)
       _lastCaughtUpTimeMs = math.max(_lastCaughtUpTimeMs, lastFetchTimeMs)
 
@@ -154,27 +83,7 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
     _logEndOffsetMetadata = followerFetchOffsetMetadata
     lastFetchLeaderLogEndOffset = leaderEndOffset
     lastFetchTimeMs = followerFetchTimeMs
-    updateLastSentHighWatermark(lastSentHighwatermark)
     trace(s"Updated state of replica to $this")
-  }
-
-  def updatePendingFetchMessageOffsetAsProcessed(messageOffset: Long): Unit = {
-    pendingRequests.remove(messageOffset)
-  }
-
-  /**
-   * Update Replica state with pending fetch requests if the requested offset is >= LEO when last fetch request is made.
-   * This replica is considered insync if this fetch request could not be finished with in replica.lag.time.max
-   *
-   * @param fetchOffset
-   */
-  def updateFetchStatePreRead(fetchOffset: Long): Unit = {
-    if(fetchOffset >= lastFetchLeaderLogEndOffset) pendingRequests.add(fetchOffset)
-  }
-
-  def clearPendingFetchRequests() : Unit = {
-    trace(s"Current pending fetch request offsets before they are cleared: $pendingRequests")
-    pendingRequests.clear()
   }
 
   /**
@@ -185,7 +94,7 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
     * When handling fetches, the last sent high watermark for a replica is checked to see if we should return immediately
     * in order to propagate the HW more expeditiously. See KIP-392
     */
-  private def updateLastSentHighWatermark(highWatermark: Long): Unit = {
+  def updateLastSentHighWatermark(highWatermark: Long): Unit = {
     _lastSentHighWatermark = highWatermark
     trace(s"Updated HW of replica to $highWatermark")
   }
@@ -209,7 +118,6 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
     replicaString.append(s", lastFetchLeaderLogEndOffset=$lastFetchLeaderLogEndOffset")
     replicaString.append(s", lastFetchTimeMs=$lastFetchTimeMs")
     replicaString.append(s", lastSentHighWatermark=$lastSentHighWatermark")
-    replicaString.append(s", pendingRequestOffsets=$pendingRequests")
     replicaString.append(")")
     replicaString.toString
   }

@@ -25,7 +25,7 @@ import kafka.common.UnexpectedAppendOffsetException
 import kafka.controller.KafkaController
 import kafka.log._
 import kafka.metrics.KafkaMetricsGroup
-import kafka.server.{Defaults, _}
+import kafka.server._
 import kafka.server.checkpoints.OffsetCheckpoints
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils._
@@ -141,8 +141,7 @@ object Partition extends KafkaMetricsGroup {
       stateStore = zkIsrBackingStore,
       delayedOperations = delayedOperations,
       metadataCache = replicaManager.metadataCache,
-      logManager = replicaManager.logManager,
-      replicaManager.followerFetchAvailabilityConfig)
+      logManager = replicaManager.logManager)
   }
 
   def removeMetrics(topicPartition: TopicPartition): Unit = {
@@ -154,10 +153,6 @@ object Partition extends KafkaMetricsGroup {
     removeMetric("LastStableOffsetLag", tags)
     removeMetric("AtMinIsr", tags)
   }
-
-  val defaultFollowerPendingFetchAvailabilityConfig = FollowerPendingFetchAvailabilityConfig(Defaults.FollowerFetchReadsInSyncEnable,
-    Defaults.ReplicaLagTimeMaxMs)
-
 }
 
 
@@ -188,8 +183,7 @@ class Partition(val topicPartition: TopicPartition,
                 stateStore: PartitionStateStore,
                 delayedOperations: DelayedOperations,
                 metadataCache: MetadataCache,
-                logManager: LogManager,
-                followerFetchAvailabilityConfig: FollowerPendingFetchAvailabilityConfig = Partition.defaultFollowerPendingFetchAvailabilityConfig) extends Logging with KafkaMetricsGroup {
+                logManager: LogManager) extends Logging with KafkaMetricsGroup {
 
   def topic: String = topicPartition.topic
   def partitionId: Int = topicPartition.partition
@@ -293,6 +287,10 @@ class Partition(val topicPartition: TopicPartition,
   def isAddingLocalReplica: Boolean = assignmentState.isAddingReplica(localBrokerId)
 
   def isAddingReplica(replicaId: Int): Boolean = assignmentState.isAddingReplica(replicaId)
+
+  def replicasMaxReassignmentLag: Long = remoteReplicas
+    .filter(rep => assignmentState.isAddingReplica(rep.brokerId))
+    .maxBy(_.fetchLag).fetchLag
 
   /**
     * Create the future replica if 1) the current replica is not in the given log directory and 2) the future replica
@@ -557,8 +555,6 @@ class Partition(val topicPartition: TopicPartition,
       remoteReplicas.foreach { replica =>
         val lastCaughtUpTimeMs = if (inSyncReplicaIds.contains(replica.brokerId)) curTimeMs else 0L
         replica.resetLastCaughtUpTime(curLeaderLogEndOffset, curTimeMs, lastCaughtUpTimeMs)
-        // clear any pending fetch requests if any. Ideally, there should not be any pending fetch requests.
-        if(followerFetchAvailabilityConfig.enable) replica.clearPendingFetchRequests()
       }
 
       if (isNewLeader) {
@@ -570,10 +566,9 @@ class Partition(val topicPartition: TopicPartition,
             followerFetchOffsetMetadata = LogOffsetMetadata.UnknownOffsetMetadata,
             followerStartOffset = Log.UnknownOffset,
             followerFetchTimeMs = 0L,
-            leaderEndOffset = Log.UnknownOffset,
-            lastSentHighwatermark = 0L,
-            followerFetchAvailabilityConfig,
-            time)
+            leaderEndOffset = Log.UnknownOffset
+          )
+          replica.updateLastSentHighWatermark(0L)
         }
       }
       // we may need to increment high watermark since ISR could be down to 1
@@ -633,22 +628,17 @@ class Partition(val topicPartition: TopicPartition,
                                followerFetchOffsetMetadata: LogOffsetMetadata,
                                followerStartOffset: Long,
                                followerFetchTimeMs: Long,
-                               leaderEndOffset: Long,
-                               lastSentHighwatermark: Long): Boolean = {
+                               leaderEndOffset: Long): Boolean = {
     getReplica(followerId) match {
       case Some(followerReplica) =>
         // No need to calculate low watermark if there is no delayed DeleteRecordsRequest
         val oldLeaderLW = if (delayedOperations.numDelayedDelete > 0) lowWatermarkIfLeader else -1L
         val prevFollowerEndOffset = followerReplica.logEndOffset
-
         followerReplica.updateFetchState(
           followerFetchOffsetMetadata,
           followerStartOffset,
           followerFetchTimeMs,
-          leaderEndOffset,
-          lastSentHighwatermark,
-          followerFetchAvailabilityConfig,
-          time)
+          leaderEndOffset)
 
         val newLeaderLW = if (delayedOperations.numDelayedDelete > 0) lowWatermarkIfLeader else -1L
         // check if the LW of the partition has incremented
@@ -821,7 +811,7 @@ class Partition(val topicPartition: TopicPartition,
       var newHighWatermark = leaderLog.logEndOffsetMetadata
       remoteReplicasMap.values.foreach { replica =>
         if (replica.logEndOffsetMetadata.messageOffset < newHighWatermark.messageOffset &&
-          (replica.mayBeInSync(curTime, replicaLagTimeMaxMs) || inSyncReplicaIds.contains(replica.brokerId))) {
+          (curTime - replica.lastCaughtUpTimeMs <= replicaLagTimeMaxMs || inSyncReplicaIds.contains(replica.brokerId))) {
           newHighWatermark = replica.logEndOffsetMetadata
         }
       }
@@ -921,7 +911,7 @@ class Partition(val topicPartition: TopicPartition,
                                   maxLagMs: Long): Boolean = {
     val followerReplica = getReplicaOrException(replicaId)
     followerReplica.logEndOffset != leaderEndOffset &&
-    !followerReplica.mayBeInSync(currentTimeMs, maxLagMs)
+      (currentTimeMs - followerReplica.lastCaughtUpTimeMs) > maxLagMs
   }
 
   def getOutOfSyncReplicas(maxLagMs: Long): Set[Int] = {

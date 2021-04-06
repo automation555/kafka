@@ -27,7 +27,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Iterator;
-import java.util.Objects;
 
 import static org.apache.kafka.common.record.Records.LOG_OVERHEAD;
 import static org.apache.kafka.common.record.Records.HEADER_SIZE_UP_TO_MAGIC;
@@ -65,6 +64,11 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
             return null;
 
         logHeaderBuffer.rewind();
+
+        if (!channel.isOpen()) {
+            channel = FileRecords.open(fileRecords.file()).channel();
+        }
+
         Utils.readFullyOrFail(channel, logHeaderBuffer, position, "log header");
 
         logHeaderBuffer.rewind();
@@ -228,16 +232,21 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
 
             FileChannelRecordBatch that = (FileChannelRecordBatch) o;
 
+            FileChannel channel = fileRecords == null ? null : fileRecords.channel();
+            FileChannel thatChannel = that.fileRecords == null ? null : that.fileRecords.channel();
+
             return offset == that.offset &&
                     position == that.position &&
                     batchSize == that.batchSize &&
-                    Objects.equals(fileRecords, that.fileRecords);
+                    (channel == null ? thatChannel == null : channel.equals(thatChannel));
         }
 
         @Override
         public int hashCode() {
-            int result = Long.hashCode(offset);
-            result = 31 * result + (fileRecords != null ? fileRecords.hashCode() : 0);
+            FileChannel channel = fileRecords == null ? null : fileRecords.channel();
+
+            int result = (int) (offset ^ (offset >>> 32));
+            result = 31 * result + (channel != null ? channel.hashCode() : 0);
             result = 31 * result + position;
             result = 31 * result + batchSize;
             return result;

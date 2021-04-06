@@ -28,6 +28,7 @@ import org.apache.kafka.common.utils.Utils
 import org.apache.kafka.common.resource.{PatternType, ResourcePatternFilter, Resource => JResource, ResourceType => JResourceType}
 
 import scala.collection.JavaConverters._
+import scala.io.StdIn
 
 object AclCommand extends Logging {
 
@@ -157,19 +158,16 @@ object AclCommand extends Logging {
     var resourceToAcls = Map.empty[ResourcePatternFilter, Set[Acl]]
 
     //if none of the --producer or --consumer options are specified , just construct ACLs from CLI options.
-    if (!opts.options.has(opts.producerOpt) && !opts.options.has(opts.consumerOpt) && !opts.options.has(opts.streamsOpt)) {
+    if (!opts.options.has(opts.producerOpt) && !opts.options.has(opts.consumerOpt)) {
       resourceToAcls ++= getCliResourceFilterToAcls(opts)
     }
 
-    //users are allowed to specify both --producer and --consumer in a single command, but --streams is exclusive with --producer or --consumer
+    //users are allowed to specify both --producer and --consumer options in a single command.
     if (opts.options.has(opts.producerOpt))
       resourceToAcls ++= getProducerResourceFilterToAcls(opts)
 
     if (opts.options.has(opts.consumerOpt))
       resourceToAcls ++= getConsumerResourceFilterToAcls(opts).map { case (k, v) => k -> (v ++ resourceToAcls.getOrElse(k, Set.empty[Acl])) }
-
-    if (opts.options.has(opts.streamsOpt))
-      resourceToAcls ++= getStreamsResourceFilterToAcls(opts)
 
     validateOperation(opts, resourceToAcls)
 
@@ -207,44 +205,6 @@ object AclCommand extends Logging {
 
     topics.map(_ -> acls).toMap[ResourcePatternFilter, Set[Acl]] ++
       groups.map(_ -> getAcl(opts, Set(Read))).toMap[ResourcePatternFilter, Set[Acl]]
-  }
-
-  private def getStreamsResourceFilterToAcls(opts: AclCommandOptions): Map[ResourcePatternFilter, Set[Acl]] = {
-    val patternType: PatternType = opts.options.valueOf(opts.resourcePatternType)
-
-    // have to set the following filter logic outside of getResourceFilter since they are mostly inferenced types / resources,
-    // and not directly set by the users
-    val sourceTopics: Set[ResourcePatternFilter] =
-      opts.options.valuesOf(opts.sourceTopicOpt).asScala.toSet.map(topic => new ResourcePatternFilter(JResourceType.TOPIC, topic.trim, patternType))
-
-    val sinkTopics: Set[ResourcePatternFilter] =
-      if (opts.options.has(opts.sinkTopicsOpt))
-        opts.options.valuesOf(opts.sinkTopicsOpt).asScala.toSet.map(topic => new ResourcePatternFilter(JResourceType.TOPIC, topic.trim, patternType))
-      else
-        Set.empty[ResourcePatternFilter]
-
-    // app id will be used directly as group id
-    val groupIds: Set[ResourcePatternFilter] =
-      opts.options.valuesOf(opts.appIdOpt).asScala.toSet.map(appId => new ResourcePatternFilter(JResourceType.GROUP, appId.trim, patternType))
-
-    // app id will be used as transactional id prefix, ignoring user specified pattern type
-    val transactionalIds: Set[ResourcePatternFilter] =
-      opts.options.valuesOf(opts.appIdOpt).asScala.toSet.map(appId => new ResourcePatternFilter(JResourceType.TRANSACTIONAL_ID, appId.trim, PatternType.PREFIXED))
-
-    // app id will be used as internal topic prefix, ignoring user specified pattern type
-    val internalTopics: Set[ResourcePatternFilter] =
-      opts.options.valuesOf(opts.appIdOpt).asScala.toSet.map(appId => new ResourcePatternFilter(JResourceType.TOPIC, appId.trim, PatternType.PREFIXED))
-
-    //Write, Describe permission on source topics
-    sourceTopics.map(_ -> getAcl(opts, Set(Read, Describe))).toMap ++
-      //Read, Describe permission on sink topics
-      sinkTopics.map(_ -> getAcl(opts, Set(Write, Describe))).toMap ++
-      //Read, Describe permission on group ids
-      groupIds.map(_ -> getAcl(opts, Set(Read, Describe))).toMap ++
-      //Read, Describe permission on transaction ids
-      transactionalIds.map(_ -> getAcl(opts, Set(Write, Describe))).toMap ++
-      //All on internal topics
-      internalTopics.map(_ -> getAcl(opts, Set(All))).toMap
   }
 
   private def getCliResourceFilterToAcls(opts: AclCommandOptions): Map[ResourcePatternFilter, Set[Acl]] = {
@@ -333,7 +293,7 @@ object AclCommand extends Logging {
     if (opts.options.has(opts.forceOpt))
         return true
     println(msg)
-    Console.readLine().equalsIgnoreCase("y")
+    StdIn.readLine().equalsIgnoreCase("y")
   }
 
   private def validateOperation(opts: AclCommandOptions, resourceToAcls: Map[ResourcePatternFilter, Set[Acl]]): Unit = {
@@ -444,28 +404,6 @@ object AclCommand extends Logging {
     val consumerOpt = parser.accepts("consumer", "Convenience option to add/remove ACLs for consumer role. " +
       "This will generate ACLs that allows READ,DESCRIBE on topic and READ on group.")
 
-    val streamsOpt = parser.accepts("streams", "Convenience option to add/remove ACLs for streams role. " +
-      "This will generate ACLs that allows READ,DESCRIBE on source topics, IDEMPOTENT-WRITE,WRITE,DESCRIBE on sink topics, " +
-      "READ,DESCRIBE on consumer group, WRITE,DESCRIBE on transactional ids, and ALL on prefixed internal topics")
-
-    val sourceTopicOpt = parser.accepts("source-topic", "Source topic to which ACLs should be added for the streams role. " +
-      "Can only be used with --streams set. No wildcard * is allowed")
-      .withRequiredArg
-      .describedAs("source-topic")
-      .ofType(classOf[String])
-
-    val sinkTopicsOpt = parser.accepts("sink-topics", "Sink topic to which ACLs should be added for the streams role. " +
-      "Can only be used with --streams set. No wildcard * is allowed")
-      .withRequiredArg
-      .describedAs("sink-topic")
-      .ofType(classOf[String])
-
-    val appIdOpt = parser.accepts("application-id", "Application id for the streams role for which ACLs should be added. " +
-      "Can only be used with --streams set. No wildcard * is allowed")
-      .withRequiredArg
-      .describedAs("application-id")
-      .ofType(classOf[String])
-
     val helpOpt = parser.accepts("help", "Print usage information.")
 
     val forceOpt = parser.accepts("force", "Assume Yes to all queries and do not prompt.")
@@ -481,31 +419,15 @@ object AclCommand extends Logging {
 
       CommandLineUtils.checkInvalidArgs(parser, options, listOpt, Set(producerOpt, consumerOpt, allowHostsOpt, allowPrincipalsOpt, denyHostsOpt, denyPrincipalsOpt))
 
-      //when --producer or --consumer or --streams is specified , user should not specify operations as they are inferred and we also disallow --deny-principals and --deny-hosts.
+      //when --producer or --consumer is specified , user should not specify operations as they are inferred and we also disallow --deny-principals and --deny-hosts.
       CommandLineUtils.checkInvalidArgs(parser, options, producerOpt, Set(operationsOpt, denyPrincipalsOpt, denyHostsOpt))
       CommandLineUtils.checkInvalidArgs(parser, options, consumerOpt, Set(operationsOpt, denyPrincipalsOpt, denyHostsOpt))
-      CommandLineUtils.checkInvalidArgs(parser, options, streamsOpt, Set(operationsOpt, denyPrincipalsOpt, denyHostsOpt))
 
       if (options.has(producerOpt) && !options.has(topicOpt))
         CommandLineUtils.printUsageAndDie(parser, "With --producer you must specify a --topic")
 
       if (options.has(idempotentOpt) && !options.has(producerOpt))
         CommandLineUtils.printUsageAndDie(parser, "The --idempotent option is only available if --producer is set")
-
-      if (options.has(sourceTopicOpt) && !options.has(streamsOpt))
-        CommandLineUtils.printUsageAndDie(parser, "The --source-topic option is only available if --streams is set")
-
-      if (options.has(sinkTopicsOpt) && !options.has(streamsOpt))
-        CommandLineUtils.printUsageAndDie(parser, "The --sink-topic option is only available if --streams is set")
-
-      if (options.has(appIdOpt) && !options.has(streamsOpt))
-        CommandLineUtils.printUsageAndDie(parser, "The --application-id option is only available if --streams is set")
-
-      if (options.has(streamsOpt) && (options.has(producerOpt) || options.has(consumerOpt) || options.has(groupOpt) || options.has(topicOpt) || options.has(transactionalIdOpt) || options.has(clusterOpt)))
-        CommandLineUtils.printUsageAndDie(parser, "With --streams you can only set --application-id, --source-topic and --sink-topic, try setting for other operations or roles in a separate command")
-
-      if (options.has(streamsOpt) && (!options.has(appIdOpt) || !options.has(sourceTopicOpt)))
-        CommandLineUtils.printUsageAndDie(parser, "With --streams you must specify a --application-id and at least one --source-topic")
 
       if (options.has(consumerOpt) && (!options.has(topicOpt) || !options.has(groupOpt) || (!options.has(producerOpt) && (options.has(clusterOpt) || options.has(transactionalIdOpt)))))
         CommandLineUtils.printUsageAndDie(parser, "With --consumer you must specify a --topic and a --group and no --cluster or --transactional-id option should be specified.")

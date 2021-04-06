@@ -2,8 +2,6 @@ dist
 *classes
 target/
 build/
-build_eclipse/
-out/
 .gradle/
 lib_managed/
 src_managed/
@@ -13,6 +11,7 @@ patch-process/*
 .idea
 .svn
 .classpath
+/*/**/.gitignore
 /.metadata
 /.recommenders
 *~
@@ -45,6 +44,3 @@ tests/venv
 .cache
 
 docs/generated/
-
-.release-settings.json
-gradle/wrapper/

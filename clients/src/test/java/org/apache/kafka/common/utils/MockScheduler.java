@@ -29,7 +29,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 
-public class MockScheduler implements Scheduler, MockTime.Listener {
+public class MockScheduler implements Scheduler, MockTime.MockTimeListener {
     private static final Logger log = LoggerFactory.getLogger(MockScheduler.class);
 
     /**
@@ -53,8 +53,8 @@ public class MockScheduler implements Scheduler, MockTime.Listener {
     }
 
     @Override
-    public synchronized void onTimeUpdated() {
-        long timeMs = time.milliseconds();
+    public synchronized void tick() {
+        long timeMs = time.absoluteMilliseconds();
         while (true) {
             Map.Entry<Long, List<KafkaFutureImpl<Long>>> entry = waiters.firstEntry();
             if ((entry == null) || (entry.getKey() > timeMs)) {
@@ -68,7 +68,7 @@ public class MockScheduler implements Scheduler, MockTime.Listener {
     }
 
     public synchronized void addWaiter(long delayMs, KafkaFutureImpl<Long> waiter) {
-        long timeMs = time.milliseconds();
+        long timeMs = time.absoluteMilliseconds();
         if (delayMs <= 0) {
             waiter.complete(timeMs);
         } else {

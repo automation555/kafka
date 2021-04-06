@@ -29,10 +29,10 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.trogdor.common.JsonUtil;
 import org.apache.kafka.trogdor.common.Platform;
+import org.apache.kafka.trogdor.common.ThreadUtils;
 import org.apache.kafka.trogdor.common.WorkerUtils;
 import org.apache.kafka.trogdor.task.TaskWorker;
 import org.apache.kafka.trogdor.task.WorkerStatusTracker;
@@ -79,7 +79,7 @@ public class ProduceBenchWorker implements TaskWorker {
 
     @Override
     public void start(Platform platform, WorkerStatusTracker status,
-                      KafkaFutureImpl<String> doneFuture) {
+                      KafkaFutureImpl<String> doneFuture) throws Exception {
         if (!running.compareAndSet(false, true)) {
             throw new IllegalStateException("ProducerBenchWorker is already running.");
         }
@@ -139,7 +139,7 @@ public class ProduceBenchWorker implements TaskWorker {
 
         @Override
         public void onCompletion(RecordMetadata metadata, Exception exception) {
-            long now = Time.SYSTEM.milliseconds();
+            long now = Time.SYSTEM.absoluteMilliseconds();
             long durationMs = now - startMs;
             sendRecords.recordDuration(durationMs);
             if (exception != null) {
@@ -162,9 +162,9 @@ public class ProduceBenchWorker implements TaskWorker {
 
         @Override
         protected synchronized void delay(long amount) throws InterruptedException {
-            long startMs = time().milliseconds();
+            long startMs = time().absoluteMilliseconds();
             producer.flush();
-            long endMs = time().milliseconds();
+            long endMs = time().absoluteMilliseconds();
             long delta = endMs - startMs;
             super.delay(amount - delta);
         }
@@ -195,7 +195,7 @@ public class ProduceBenchWorker implements TaskWorker {
         SendRecords(HashSet<TopicPartition> activePartitions) {
             this.activePartitions = activePartitions;
             this.partitionsIterator = activePartitions.iterator();
-            this.histogram = new Histogram(10000);
+            this.histogram = new Histogram(5000);
 
             this.transactionGenerator = spec.transactionGenerator();
             this.enableTransactions = this.transactionGenerator.isPresent();
@@ -214,22 +214,18 @@ public class ProduceBenchWorker implements TaskWorker {
             this.producer = new KafkaProducer<>(props, new ByteArraySerializer(), new ByteArraySerializer());
             this.keys = new PayloadIterator(spec.keyGenerator());
             this.values = new PayloadIterator(spec.valueGenerator());
-            if (spec.skipFlush()) {
-                this.throttle = new Throttle(perPeriod, THROTTLE_PERIOD_MS);
-            } else {
-                this.throttle = new SendRecordsThrottle(perPeriod, producer);
-            }
+            this.throttle = new SendRecordsThrottle(perPeriod, producer);
         }
 
         @Override
         public Void call() throws Exception {
-            long startTimeMs = Time.SYSTEM.milliseconds();
+            long startTimeMs = Time.SYSTEM.absoluteMilliseconds();
             try {
                 try {
                     if (enableTransactions)
                         producer.initTransactions();
 
-                    long sentMessages = 0;
+                    int sentMessages = 0;
                     while (sentMessages < spec.maxMessages()) {
                         if (enableTransactions) {
                             boolean tookAction = takeTransactionAction();
@@ -247,11 +243,7 @@ public class ProduceBenchWorker implements TaskWorker {
                     throw e;
                 } finally {
                     if (sendFuture != null) {
-                        try {
-                            sendFuture.get();
-                        } catch (Exception e) {
-                            log.error("Exception on final future", e);
-                        }
+                        sendFuture.get();
                     }
                     producer.close();
                 }
@@ -260,7 +252,7 @@ public class ProduceBenchWorker implements TaskWorker {
             } finally {
                 statusUpdaterFuture.cancel(false);
                 StatusData statusData = new StatusUpdater(histogram, transactionsCommitted).update();
-                long curTimeMs = Time.SYSTEM.milliseconds();
+                long curTimeMs = Time.SYSTEM.absoluteMilliseconds();
                 log.info("Sent {} total record(s) in {} ms.  status: {}",
                     histogram.summarize().numSamples(), curTimeMs - startTimeMs, statusData);
             }
@@ -297,16 +289,10 @@ public class ProduceBenchWorker implements TaskWorker {
                 partitionsIterator = activePartitions.iterator();
 
             TopicPartition partition = partitionsIterator.next();
-            ProducerRecord<byte[], byte[]> record;
-            if (spec.useConfiguredPartitioner()) {
-                record = new ProducerRecord<>(
-                    partition.topic(), keys.next(), values.next());
-            } else {
-                record = new ProducerRecord<>(
-                    partition.topic(), partition.partition(), keys.next(), values.next());
-            }
+            ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(
+                partition.topic(), partition.partition(), keys.next(), values.next());
             sendFuture = producer.send(record,
-                new SendRecordsCallback(this, Time.SYSTEM.milliseconds()));
+                new SendRecordsCallback(this, Time.SYSTEM.absoluteMilliseconds()));
             throttle.increment();
         }
 

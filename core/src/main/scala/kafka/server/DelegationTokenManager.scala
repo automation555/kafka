@@ -36,7 +36,7 @@ import org.apache.kafka.common.security.token.delegation.internals.DelegationTok
 import org.apache.kafka.common.security.token.delegation.{DelegationToken, TokenInformation}
 import org.apache.kafka.common.utils.{Sanitizer, SecurityUtils, Time}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 object DelegationTokenManager {
@@ -171,7 +171,7 @@ class DelegationTokenManager(val config: KafkaConfig,
   type DescribeResponseCallback = (Errors, List[DelegationToken]) => Unit
 
   val secretKey = {
-    val keyBytes =  if (config.tokenAuthEnabled) config.delegationTokenSecretKey.value.getBytes(StandardCharsets.UTF_8) else null
+    val keyBytes =  if (config.tokenAuthEnabled) config.delegationTokenMasterKey.value.getBytes(StandardCharsets.UTF_8) else null
     if (keyBytes == null || keyBytes.length == 0) null
     else
       createSecretKey(keyBytes)
@@ -185,10 +185,10 @@ class DelegationTokenManager(val config: KafkaConfig,
 
   def startup() = {
     if (config.tokenAuthEnabled) {
-      zkClient.createDelegationTokenPaths()
-      loadCache()
+      zkClient.createDelegationTokenPaths
+      loadCache
       tokenChangeListener = new ZkNodeChangeNotificationListener(zkClient, DelegationTokenChangeNotificationZNode.path, DelegationTokenChangeNotificationSequenceZNode.SequenceNumberPrefix, TokenChangedNotificationHandler)
-      tokenChangeListener.init()
+      tokenChangeListener.init
     }
   }
 
@@ -198,7 +198,7 @@ class DelegationTokenManager(val config: KafkaConfig,
     }
   }
 
-  private def loadCache(): Unit = {
+  private def loadCache() {
     lock.synchronized {
       val tokens = zkClient.getChildren(DelegationTokensZNode.path)
       info(s"Loading the token cache. Total token count: ${tokens.size}")
@@ -261,15 +261,15 @@ class DelegationTokenManager(val config: KafkaConfig,
   def createToken(owner: KafkaPrincipal,
                   renewers: List[KafkaPrincipal],
                   maxLifeTimeMs: Long,
-                  responseCallback: CreateResponseCallback): Unit = {
+                  responseCallback: CreateResponseCallback) {
 
     if (!config.tokenAuthEnabled) {
       responseCallback(CreateTokenResult(-1, -1, -1, "", Array[Byte](), Errors.DELEGATION_TOKEN_AUTH_DISABLED))
     } else {
       lock.synchronized {
-        val tokenId = CoreUtils.generateUuidAsBase64()
+        val tokenId = CoreUtils.generateUuidAsBase64
 
-        val issueTimeStamp = time.milliseconds
+        val issueTimeStamp = time.absoluteMilliseconds
         val maxLifeTime = if (maxLifeTimeMs <= 0) tokenMaxLifetime else Math.min(maxLifeTimeMs, tokenMaxLifetime)
         val maxLifeTimeStamp = issueTimeStamp + maxLifeTime
         val expiryTimeStamp = Math.min(maxLifeTimeStamp, issueTimeStamp + defaultTokenRenewTime)
@@ -295,7 +295,7 @@ class DelegationTokenManager(val config: KafkaConfig,
   def renewToken(principal: KafkaPrincipal,
                  hmac: ByteBuffer,
                  renewLifeTimeMs: Long,
-                 renewCallback: RenewResponseCallback): Unit = {
+                 renewCallback: RenewResponseCallback) {
 
     if (!config.tokenAuthEnabled) {
       renewCallback(Errors.DELEGATION_TOKEN_AUTH_DISABLED, -1)
@@ -303,7 +303,7 @@ class DelegationTokenManager(val config: KafkaConfig,
       lock.synchronized  {
         getToken(hmac) match {
           case Some(token) => {
-            val now = time.milliseconds
+            val now = time.absoluteMilliseconds
             val tokenInfo =  token.tokenInfo
 
             if (!allowedToRenew(principal, tokenInfo)) {
@@ -395,7 +395,7 @@ class DelegationTokenManager(val config: KafkaConfig,
   def expireToken(principal: KafkaPrincipal,
                   hmac: ByteBuffer,
                   expireLifeTimeMs: Long,
-                  expireResponseCallback: ExpireResponseCallback): Unit = {
+                  expireResponseCallback: ExpireResponseCallback) {
 
     if (!config.tokenAuthEnabled) {
       expireResponseCallback(Errors.DELEGATION_TOKEN_AUTH_DISABLED, -1)
@@ -404,7 +404,7 @@ class DelegationTokenManager(val config: KafkaConfig,
         getToken(hmac) match {
           case Some(token) =>  {
             val tokenInfo =  token.tokenInfo
-            val now = time.milliseconds
+            val now = time.absoluteMilliseconds
 
             if (!allowedToRenew(principal, tokenInfo)) {
               expireResponseCallback(Errors.DELEGATION_TOKEN_OWNER_MISMATCH, -1)
@@ -455,7 +455,7 @@ class DelegationTokenManager(val config: KafkaConfig,
   def expireTokens(): Unit = {
     lock.synchronized {
       for (tokenInfo <- getAllTokenInformation) {
-        val now = time.milliseconds
+        val now = time.absoluteMilliseconds
         if (tokenInfo.maxTimestamp < now || tokenInfo.expiryTimestamp < now) {
           info(s"Delegation token expired for token: ${tokenInfo.tokenId} for owner: ${tokenInfo.owner}")
           removeToken(tokenInfo.tokenId)
@@ -464,14 +464,20 @@ class DelegationTokenManager(val config: KafkaConfig,
     }
   }
 
-  def getAllTokenInformation: List[TokenInformation] = tokenCache.tokens.asScala.toList
+  /**
+   *
+   * @return
+   */
+  def getAllTokenInformation(): List[TokenInformation] = {
+    tokenCache.tokens.asScala.toList
+  }
 
   def getTokens(filterToken: TokenInformation => Boolean): List[DelegationToken] = {
-    getAllTokenInformation.filter(filterToken).map(token => getToken(token))
+    getAllTokenInformation().filter(filterToken).map(token => getToken(token))
   }
 
   object TokenChangedNotificationHandler extends NotificationHandler {
-    override def processNotification(tokenIdBytes: Array[Byte]): Unit = {
+    override def processNotification(tokenIdBytes: Array[Byte]) {
       lock.synchronized {
         val tokenId = new String(tokenIdBytes, StandardCharsets.UTF_8)
         info(s"Processing Token Notification for tokenId: $tokenId")

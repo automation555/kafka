@@ -20,16 +20,17 @@ import kafka.utils.MockTime
 
 import scala.collection.mutable
 
-class MockTimer(val time: MockTime = new MockTime) extends Timer {
+class MockTimer extends Timer {
 
+  val time = new MockTime
   private val taskQueue = mutable.PriorityQueue[TimerTaskEntry]()(Ordering[TimerTaskEntry].reverse)
 
-  def add(timerTask: TimerTask): Unit = {
+  def add(timerTask: TimerTask) {
     if (timerTask.delayMs <= 0)
       timerTask.run()
     else {
       taskQueue synchronized {
-        taskQueue.enqueue(new TimerTaskEntry(timerTask, timerTask.delayMs + time.milliseconds))
+        taskQueue.enqueue(new TimerTaskEntry(timerTask, timerTask.delayMs + time.absoluteMilliseconds))
       }
     }
   }
@@ -38,7 +39,7 @@ class MockTimer(val time: MockTime = new MockTime) extends Timer {
     time.sleep(timeoutMs)
 
     var executed = false
-    val now = time.milliseconds
+    val now = time.absoluteMilliseconds
 
     var hasMore = true
     while (hasMore) {

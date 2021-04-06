@@ -23,9 +23,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.kafka.clients.producer.BufferExhaustedException;
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.metrics.stats.Meter;
@@ -56,7 +55,6 @@ public class BufferPool {
     private final Metrics metrics;
     private final Time time;
     private final Sensor waitTime;
-    private boolean closed;
 
     /**
      * Create a new buffer pool
@@ -83,14 +81,7 @@ public class BufferPool {
         MetricName totalMetricName = metrics.metricName("bufferpool-wait-time-total",
                                                    metricGrpName,
                                                    "The total time an appender waits for space allocation.");
-
-        Sensor bufferExhaustedRecordSensor = metrics.sensor("buffer-exhausted-records");
-        MetricName bufferExhaustedRateMetricName = metrics.metricName("buffer-exhausted-rate", metricGrpName, "The average per-second number of record sends that are dropped due to buffer exhaustion");
-        MetricName bufferExhaustedTotalMetricName = metrics.metricName("buffer-exhausted-total", metricGrpName, "The total number of record sends that are dropped due to buffer exhaustion");
-        bufferExhaustedRecordSensor.add(new Meter(bufferExhaustedRateMetricName, bufferExhaustedTotalMetricName));
-
         this.waitTime.add(new Meter(TimeUnit.NANOSECONDS, rateMetricName, totalMetricName));
-        this.closed = false;
     }
 
     /**
@@ -113,12 +104,6 @@ public class BufferPool {
 
         ByteBuffer buffer = null;
         this.lock.lock();
-
-        if (this.closed) {
-            this.lock.unlock();
-            throw new KafkaException("Producer closed while allocating memory");
-        }
-
         try {
             // check if we have a free buffer of the right size pooled
             if (size == poolableSize && !this.free.isEmpty())
@@ -142,23 +127,19 @@ public class BufferPool {
                     // loop over and over until we have a buffer or have reserved
                     // enough memory to allocate one
                     while (accumulated < size) {
-                        long startWaitNs = time.nanoseconds();
+                        long startWaitNs = time.relativeNanoseconds();
                         long timeNs;
                         boolean waitingTimeElapsed;
                         try {
                             waitingTimeElapsed = !moreMemory.await(remainingTimeToBlockNs, TimeUnit.NANOSECONDS);
                         } finally {
-                            long endWaitNs = time.nanoseconds();
+                            long endWaitNs = time.relativeNanoseconds();
                             timeNs = Math.max(0L, endWaitNs - startWaitNs);
                             recordWaitTime(timeNs);
                         }
 
-                        if (this.closed)
-                            throw new KafkaException("Producer closed while allocating memory");
-
                         if (waitingTimeElapsed) {
-                            this.metrics.sensor("buffer-exhausted-records").record();
-                            throw new BufferExhaustedException("Failed to allocate memory within the configured max blocking time " + maxTimeToBlockMs + " ms.");
+                            throw new TimeoutException("Failed to allocate memory within the configured max blocking time " + maxTimeToBlockMs + " ms.");
                         }
 
                         remainingTimeToBlockNs -= timeNs;
@@ -206,7 +187,7 @@ public class BufferPool {
 
     // Protected for testing
     protected void recordWaitTime(long timeNs) {
-        this.waitTime.record(timeNs, time.milliseconds());
+        this.waitTime.record(timeNs, time.absoluteMilliseconds());
     }
 
     /**
@@ -334,20 +315,5 @@ public class BufferPool {
     // package-private method used only for testing
     Deque<Condition> waiters() {
         return this.waiters;
-    }
-
-    /**
-     * Closes the buffer pool. Memory will be prevented from being allocated, but may be deallocated. All allocations
-     * awaiting available memory will be notified to abort.
-     */
-    public void close() {
-        this.lock.lock();
-        this.closed = true;
-        try {
-            for (Condition waiter : this.waiters)
-                waiter.signal();
-        } finally {
-            this.lock.unlock();
-        }
     }
 }

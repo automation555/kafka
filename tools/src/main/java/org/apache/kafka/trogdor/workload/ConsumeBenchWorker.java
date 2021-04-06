@@ -28,11 +28,11 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.trogdor.common.JsonUtil;
 import org.apache.kafka.trogdor.common.Platform;
+import org.apache.kafka.trogdor.common.ThreadUtils;
 import org.apache.kafka.trogdor.common.WorkerUtils;
 import org.apache.kafka.trogdor.task.WorkerStatusTracker;
 import org.slf4j.Logger;
@@ -47,7 +47,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.HashMap;
 import java.util.concurrent.Callable;
@@ -124,18 +123,18 @@ public class ConsumeBenchWorker implements TaskWorker {
             consumer = consumer(consumerGroup, clientId(0));
             if (toUseGroupPartitionAssignment) {
                 Set<String> topics = partitionsByTopic.keySet();
-                tasks.add(new ConsumeMessages(consumer,  spec.recordProcessor(), topics));
+                tasks.add(new ConsumeMessages(consumer, topics));
 
                 for (int i = 0; i < consumerCount - 1; i++) {
-                    tasks.add(new ConsumeMessages(consumer(consumerGroup(), clientId(i + 1)), spec.recordProcessor(), topics));
+                    tasks.add(new ConsumeMessages(consumer(consumerGroup(), clientId(i + 1)), topics));
                 }
             } else {
                 List<TopicPartition> partitions = populatePartitionsByTopic(consumer.consumer(), partitionsByTopic)
                     .values().stream().flatMap(List::stream).collect(Collectors.toList());
-                tasks.add(new ConsumeMessages(consumer, spec.recordProcessor(), partitions));
+                tasks.add(new ConsumeMessages(consumer, partitions));
 
                 for (int i = 0; i < consumerCount - 1; i++) {
-                    tasks.add(new ConsumeMessages(consumer(consumerGroup(), clientId(i + 1)), spec.recordProcessor(), partitions));
+                    tasks.add(new ConsumeMessages(consumer(consumerGroup(), clientId(i + 1)), partitions));
                 }
             }
 
@@ -199,15 +198,13 @@ public class ConsumeBenchWorker implements TaskWorker {
         private final Throttle throttle;
         private final String clientId;
         private final ThreadSafeConsumer consumer;
-        private final Optional<RecordProcessor> recordProcessor;
 
-        private ConsumeMessages(ThreadSafeConsumer consumer,
-                                Optional<RecordProcessor> recordProcessor) {
-            this.latencyHistogram = new Histogram(10000);
+        private ConsumeMessages(ThreadSafeConsumer consumer) {
+            this.latencyHistogram = new Histogram(5000);
             this.messageSizeHistogram = new Histogram(2 * 1024 * 1024);
             this.clientId = consumer.clientId();
             this.statusUpdaterFuture = executor.scheduleAtFixedRate(
-                new ConsumeStatusUpdater(latencyHistogram, messageSizeHistogram, consumer, recordProcessor), 1, 1, TimeUnit.MINUTES);
+                new ConsumeStatusUpdater(latencyHistogram, messageSizeHistogram, consumer), 1, 1, TimeUnit.MINUTES);
             int perPeriod;
             if (spec.targetMessagesPerSec() <= 0)
                 perPeriod = Integer.MAX_VALUE;
@@ -216,20 +213,16 @@ public class ConsumeBenchWorker implements TaskWorker {
 
             this.throttle = new Throttle(perPeriod, THROTTLE_PERIOD_MS);
             this.consumer = consumer;
-            this.recordProcessor = recordProcessor;
         }
 
-        ConsumeMessages(ThreadSafeConsumer consumer,
-                        Optional<RecordProcessor> recordProcessor,
-                        Set<String> topics) {
-            this(consumer, recordProcessor);
+        ConsumeMessages(ThreadSafeConsumer consumer, Set<String> topics) {
+            this(consumer);
             log.info("Will consume from topics {} via dynamic group assignment.", topics);
             this.consumer.subscribe(topics);
         }
-        ConsumeMessages(ThreadSafeConsumer consumer,
-                        Optional<RecordProcessor> recordProcessor,
-                        List<TopicPartition> partitions) {
-            this(consumer, recordProcessor);
+
+        ConsumeMessages(ThreadSafeConsumer consumer, List<TopicPartition> partitions) {
+            this(consumer);
             log.info("Will consume from topic partitions {} via manual assignment.", partitions);
             this.consumer.assign(partitions);
         }
@@ -238,21 +231,17 @@ public class ConsumeBenchWorker implements TaskWorker {
         public Void call() throws Exception {
             long messagesConsumed = 0;
             long bytesConsumed = 0;
-            long startTimeMs = Time.SYSTEM.milliseconds();
+            long startTimeMs = Time.SYSTEM.absoluteMilliseconds();
             long startBatchMs = startTimeMs;
-            long maxMessages = spec.maxMessages();
+            int maxMessages = spec.maxMessages();
             try {
                 while (messagesConsumed < maxMessages) {
                     ConsumerRecords<byte[], byte[]> records = consumer.poll();
                     if (records.isEmpty()) {
                         continue;
                     }
-                    long endBatchMs = Time.SYSTEM.milliseconds();
+                    long endBatchMs = Time.SYSTEM.absoluteMilliseconds();
                     long elapsedBatchMs = endBatchMs - startBatchMs;
-
-                    // Do the record batch processing immediately to avoid latency skew.
-                    recordProcessor.ifPresent(processor -> processor.processRecords(records));
-
                     for (ConsumerRecord<byte[], byte[]> record : records) {
                         messagesConsumed++;
                         long messageBytes = 0;
@@ -270,15 +259,15 @@ public class ConsumeBenchWorker implements TaskWorker {
 
                         throttle.increment();
                     }
-                    startBatchMs = Time.SYSTEM.milliseconds();
+                    startBatchMs = Time.SYSTEM.absoluteMilliseconds();
                 }
             } catch (Exception e) {
                 WorkerUtils.abort(log, "ConsumeRecords", e, doneFuture);
             } finally {
                 statusUpdaterFuture.cancel(false);
                 StatusData statusData =
-                    new ConsumeStatusUpdater(latencyHistogram, messageSizeHistogram, consumer, spec.recordProcessor()).update();
-                long curTimeMs = Time.SYSTEM.milliseconds();
+                    new ConsumeStatusUpdater(latencyHistogram, messageSizeHistogram, consumer).update();
+                long curTimeMs = Time.SYSTEM.absoluteMilliseconds();
                 log.info("{} Consumed total number of messages={}, bytes={} in {} ms.  status: {}",
                          clientId, messagesConsumed, bytesConsumed, curTimeMs - startTimeMs, statusData);
             }
@@ -342,16 +331,11 @@ public class ConsumeBenchWorker implements TaskWorker {
         private final Histogram latencyHistogram;
         private final Histogram messageSizeHistogram;
         private final ThreadSafeConsumer consumer;
-        private final Optional<RecordProcessor> recordProcessor;
 
-        ConsumeStatusUpdater(Histogram latencyHistogram,
-                             Histogram messageSizeHistogram,
-                             ThreadSafeConsumer consumer,
-                             Optional<RecordProcessor> recordProcessor) {
+        ConsumeStatusUpdater(Histogram latencyHistogram, Histogram messageSizeHistogram, ThreadSafeConsumer consumer) {
             this.latencyHistogram = latencyHistogram;
             this.messageSizeHistogram = messageSizeHistogram;
             this.consumer = consumer;
-            this.recordProcessor = recordProcessor;
         }
 
         @Override
@@ -366,13 +350,6 @@ public class ConsumeBenchWorker implements TaskWorker {
         StatusData update() {
             Histogram.Summary latSummary = latencyHistogram.summarize(StatusData.PERCENTILES);
             Histogram.Summary msgSummary = messageSizeHistogram.summarize(StatusData.PERCENTILES);
-
-            // Parse out the RecordProcessor's status, id specified.
-            Optional<JsonNode> recordProcessorStatus = Optional.empty();
-            if (recordProcessor.isPresent()) {
-                recordProcessorStatus = Optional.of(recordProcessor.get().processorStatus());
-            }
-
             StatusData statusData = new StatusData(
                 consumer.assignedPartitions(),
                 latSummary.numSamples(),
@@ -381,8 +358,7 @@ public class ConsumeBenchWorker implements TaskWorker {
                 latSummary.average(),
                 latSummary.percentiles().get(0).value(),
                 latSummary.percentiles().get(1).value(),
-                latSummary.percentiles().get(2).value(),
-                recordProcessorStatus);
+                latSummary.percentiles().get(2).value());
             statusUpdater.updateConsumeStatus(consumer.clientId(), statusData);
             log.info("Status={}", JsonUtil.toJsonString(statusData));
             return statusData;
@@ -398,7 +374,6 @@ public class ConsumeBenchWorker implements TaskWorker {
         private final int p50LatencyMs;
         private final int p95LatencyMs;
         private final int p99LatencyMs;
-        private final Optional<JsonNode> recordProcessorStatus;
 
         /**
          * The percentiles to use when calculating the histogram data.
@@ -413,8 +388,7 @@ public class ConsumeBenchWorker implements TaskWorker {
                    @JsonProperty("averageLatencyMs") float averageLatencyMs,
                    @JsonProperty("p50LatencyMs") int p50latencyMs,
                    @JsonProperty("p95LatencyMs") int p95latencyMs,
-                   @JsonProperty("p99LatencyMs") int p99latencyMs,
-                   @JsonProperty("recordProcessorStatus") Optional<JsonNode> recordProcessorStatus) {
+                   @JsonProperty("p99LatencyMs") int p99latencyMs) {
             this.assignedPartitions = assignedPartitions;
             this.totalMessagesReceived = totalMessagesReceived;
             this.totalBytesReceived = totalBytesReceived;
@@ -423,7 +397,6 @@ public class ConsumeBenchWorker implements TaskWorker {
             this.p50LatencyMs = p50latencyMs;
             this.p95LatencyMs = p95latencyMs;
             this.p99LatencyMs = p99latencyMs;
-            this.recordProcessorStatus = recordProcessorStatus;
         }
 
         @JsonProperty
@@ -464,11 +437,6 @@ public class ConsumeBenchWorker implements TaskWorker {
         @JsonProperty
         public int p99LatencyMs() {
             return p99LatencyMs;
-        }
-
-        @JsonProperty
-        public JsonNode recordProcessorStatus() {
-            return recordProcessorStatus.orElse(null);
         }
     }
 

@@ -16,26 +16,23 @@
  */
 package org.apache.kafka.common.utils;
 
-import org.apache.kafka.common.errors.TimeoutException;
-
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
 
 /**
  * A clock that you can manually advance by calling sleep
  */
 public class MockTime implements Time {
 
-    public interface Listener {
-        void onTimeUpdated();
+    interface MockTimeListener {
+        void tick();
     }
 
     /**
      * Listeners which are waiting for time changes.
      */
-    private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<MockTimeListener> listeners = new CopyOnWriteArrayList<>();
 
     private final long autoTickMs;
 
@@ -58,18 +55,18 @@ public class MockTime implements Time {
         this.autoTickMs = autoTickMs;
     }
 
-    public void addListener(Listener listener) {
+    public void addListener(MockTimeListener listener) {
         listeners.add(listener);
     }
 
     @Override
-    public long milliseconds() {
+    public long absoluteMilliseconds() {
         maybeSleep(autoTickMs);
         return timeMs.get();
     }
 
     @Override
-    public long nanoseconds() {
+    public long relativeNanoseconds() {
         maybeSleep(autoTickMs);
         return highResTimeNs.get();
     }
@@ -86,27 +83,6 @@ public class MockTime implements Time {
         tick();
     }
 
-    @Override
-    public void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException {
-        Listener listener = () -> {
-            synchronized (obj) {
-                obj.notify();
-            }
-        };
-        listeners.add(listener);
-        try {
-            synchronized (obj) {
-                while (milliseconds() < deadlineMs && !condition.get()) {
-                    obj.wait();
-                }
-                if (!condition.get())
-                    throw new TimeoutException("Condition not satisfied before deadline");
-            }
-        } finally {
-            listeners.remove(listener);
-        }
-    }
-
     public void setCurrentTimeMs(long newMs) {
         long oldMs = timeMs.getAndSet(newMs);
 
@@ -119,8 +95,8 @@ public class MockTime implements Time {
     }
 
     private void tick() {
-        for (Listener listener : listeners) {
-            listener.onTimeUpdated();
+        for (MockTimeListener listener : listeners) {
+            listener.tick();
         }
     }
 }

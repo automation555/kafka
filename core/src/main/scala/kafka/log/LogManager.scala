@@ -249,7 +249,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   private def addLogToBeDeleted(log: Log): Unit = {
-    this.logsToBeDeleted.add((log, time.milliseconds()))
+    this.logsToBeDeleted.add((log, time.absoluteMilliseconds()))
   }
 
   // Only for testing
@@ -300,7 +300,7 @@ class LogManager(logDirs: Seq[File],
    */
   private def loadLogs(): Unit = {
     info("Loading logs.")
-    val startMs = time.milliseconds
+    val startMs = time.absoluteMilliseconds
     val threadPools = ArrayBuffer.empty[ExecutorService]
     val offlineDirs = mutable.Set.empty[(String, IOException)]
     val jobs = mutable.Map.empty[File, Seq[Future[_]]]
@@ -381,7 +381,7 @@ class LogManager(logDirs: Seq[File],
       threadPools.foreach(_.shutdown())
     }
 
-    info(s"Logs loading complete in ${time.milliseconds - startMs} ms.")
+    info(s"Logs loading complete in ${time.absoluteMilliseconds - startMs} ms.")
   }
 
   /**
@@ -689,7 +689,7 @@ class LogManager(logDirs: Seq[File],
           if (preferredLogDir != null)
             preferredLogDir
           else
-            nextLogDir(topicPartition.topic).getAbsolutePath
+            nextLogDir().getAbsolutePath
         }
         if (!isLogDirOnline(logDir))
           throw new KafkaStorageException(s"Can not create log for $topicPartition because log directory $logDir is offline")
@@ -749,7 +749,7 @@ class LogManager(logDirs: Seq[File],
       def nextDeleteDelayMs: Long = {
         if (!logsToBeDeleted.isEmpty) {
           val (_, scheduleTimeMs) = logsToBeDeleted.peek()
-          scheduleTimeMs + currentDefaultConfig.fileDeleteDelayMs - time.milliseconds()
+          scheduleTimeMs + currentDefaultConfig.fileDeleteDelayMs - time.absoluteMilliseconds()
         } else
           currentDefaultConfig.fileDeleteDelayMs
       }
@@ -866,65 +866,23 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
-    * Choose the next directory in which to create a log.
-    * first it is done by calculating the number of topic partitions in each directory
-    * second it is done by calculating the number of partitions in each directory and then choosing the
-    * data directory with the fewest partitions.
-    */
-  private def nextLogDir(topic: String): File = {
+   * Choose the next directory in which to create a log. Currently this is done
+   * by calculating the number of partitions in each directory and then choosing the
+   * data directory with the fewest partitions.
+   */
+  private def nextLogDir(): File = {
     if(_liveLogDirs.size == 1) {
       _liveLogDirs.peek()
     } else {
-      // first count the number of logs in each parent directory (including 0 for empty directories
-      // second count the number of topic logs in each parent directory
-      nextLogDirByTopic(topic)
+      // count the number of logs in each parent directory (including 0 for empty directories
+      val logCounts = allLogs.groupBy(_.dir.getParent).mapValues(_.size)
+      val zeros = _liveLogDirs.asScala.map(dir => (dir.getPath, 0)).toMap
+      val dirCounts = (zeros ++ logCounts).toBuffer
+
+      // choose the directory with the least logs in it
+      val leastLoaded = dirCounts.sortBy(_._2).head
+      new File(leastLoaded._1)
     }
-  }
-
-  /**
-    * calculate the target directory which has fewer target topic's tp,
-    * if equals, choose fewest partitions directory
-    * @param topic
-    * @return target dir file
-    */
-  private def nextLogDirByTopic(topic: String): File = {
-    val logCountByTopic = mutable.Map[String, Int]()
-    allLogs.map { log =>
-      if (topic.equals(log.topicPartition.topic)) {
-        if (logCountByTopic.contains(log.dir.getParent)) {
-          logCountByTopic.put(log.dir.getParent, logCountByTopic(log.dir.getParent) + 1)
-        } else {
-          logCountByTopic.put(log.dir.getParent, 1)
-        }
-      } else {
-        if (!logCountByTopic.contains(log.dir.getParent)) {
-          logCountByTopic.put(log.dir.getParent, 0)
-        }
-      }
-    }
-
-    val logCounts = allLogs.groupBy(_.dir.getParent).mapValues(_.size)
-    val zeros = _liveLogDirs.asScala.map(dir => (dir.getPath, 0)).toMap
-    val dirCountsByTotalLog = (zeros ++ logCounts).toBuffer
-
-    // dirCounts type (dir, (countByTopic, totalCount))
-    val dirCounts = dirCountsByTotalLog.map { dir =>
-      (dir._1, (logCountByTopic.getOrElse(dir._1, 0), dir._2))
-    }
-
-    val sortedDirs = dirCounts.sortWith((dir1, dir2) => {
-      val tuple1 = dir1._2
-      val tuple2 = dir2._2
-      //first sorted by topic count in dir
-      if (tuple1._1 < tuple2._1) true
-      else if (tuple1._1 > tuple2._1) false
-      else {
-        // second sorted by total tps in dir
-        tuple1._2 < tuple2._2
-      }
-    })
-
-    new File(sortedDirs.head._1)
   }
 
   /**
@@ -934,7 +892,7 @@ class LogManager(logDirs: Seq[File],
   def cleanupLogs() {
     debug("Beginning log cleanup...")
     var total = 0
-    val startMs = time.milliseconds
+    val startMs = time.absoluteMilliseconds
 
     // clean current logs.
     val deletableLogs = {
@@ -968,7 +926,7 @@ class LogManager(logDirs: Seq[File],
     }
 
     debug(s"Log cleanup completed. $total files deleted in " +
-                  (time.milliseconds - startMs) / 1000 + " seconds")
+                  (time.absoluteMilliseconds - startMs) / 1000 + " seconds")
   }
 
   /**
@@ -1007,7 +965,7 @@ class LogManager(logDirs: Seq[File],
 
     for ((topicPartition, log) <- currentLogs.toList ++ futureLogs.toList) {
       try {
-        val timeSinceLastFlush = time.milliseconds - log.lastFlushTime
+        val timeSinceLastFlush = time.absoluteMilliseconds - log.lastFlushTime
         debug(s"Checking if flush is needed on ${topicPartition.topic} flush interval ${log.config.flushMs}" +
               s" last flushed ${log.lastFlushTime} time since last flush: $timeSinceLastFlush")
         if(timeSinceLastFlush >= log.config.flushMs)

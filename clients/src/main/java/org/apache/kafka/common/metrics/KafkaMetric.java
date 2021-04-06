@@ -49,9 +49,18 @@ public final class KafkaMetric implements Metric {
         return this.metricName;
     }
 
+    /**
+     * See {@link Metric#value()} for the details on why this is deprecated.
+     */
+    @Override
+    @Deprecated
+    public double value() {
+        return measurableValue(time.absoluteMilliseconds());
+    }
+
     @Override
     public Object metricValue() {
-        long now = time.milliseconds();
+        long now = time.absoluteMilliseconds();
         synchronized (this.lock) {
             if (this.metricValueProvider instanceof Measurable)
                 return ((Measurable) metricValueProvider).measure(config, now);

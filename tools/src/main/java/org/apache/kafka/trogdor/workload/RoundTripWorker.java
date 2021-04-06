@@ -25,9 +25,11 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -35,11 +37,11 @@ import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.trogdor.common.JsonUtil;
 import org.apache.kafka.trogdor.common.Platform;
+import org.apache.kafka.trogdor.common.ThreadUtils;
 import org.apache.kafka.trogdor.common.WorkerUtils;
 import org.apache.kafka.trogdor.task.TaskWorker;
 import org.apache.kafka.trogdor.task.WorkerStatusTracker;
@@ -57,13 +59,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeSet;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class RoundTripWorker implements TaskWorker {
     private static final int THROTTLE_PERIOD_MS = 100;
@@ -84,10 +84,6 @@ public class RoundTripWorker implements TaskWorker {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private final Lock lock = new ReentrantLock();
-
-    private final Condition unackedSendsAreZero = lock.newCondition();
-
     private ScheduledExecutorService executor;
 
     private WorkerStatusTracker status;
@@ -98,7 +94,7 @@ public class RoundTripWorker implements TaskWorker {
 
     private KafkaConsumer<byte[], byte[]> consumer;
 
-    private Long unackedSends;
+    private CountDownLatch unackedSends;
 
     private ToSendTracker toSendTracker;
 
@@ -120,7 +116,7 @@ public class RoundTripWorker implements TaskWorker {
         this.doneFuture = doneFuture;
         this.producer = null;
         this.consumer = null;
-        this.unackedSends = spec.maxMessages();
+        this.unackedSends = new CountDownLatch(spec.maxMessages());
         executor.submit(new Prepare());
     }
 
@@ -147,7 +143,7 @@ public class RoundTripWorker implements TaskWorker {
                 }
                 status.update(new TextNode("Creating " + newTopics.keySet().size() + " topic(s)"));
                 WorkerUtils.createTopics(log, spec.bootstrapServers(), spec.commonClientConf(),
-                    spec.adminClientConf(), newTopics, false);
+                    spec.adminClientConf(), newTopics, true);
                 status.update(new TextNode("Created " + newTopics.keySet().size() + " topic(s)"));
                 toSendTracker = new ToSendTracker(spec.maxMessages());
                 toReceiveTracker = new ToReceiveTracker();
@@ -163,29 +159,29 @@ public class RoundTripWorker implements TaskWorker {
     }
 
     private static class ToSendTrackerResult {
-        final long index;
+        final int index;
         final boolean firstSend;
 
-        ToSendTrackerResult(long index, boolean firstSend) {
+        ToSendTrackerResult(int index, boolean firstSend) {
             this.index = index;
             this.firstSend = firstSend;
         }
     }
 
     private static class ToSendTracker {
-        private final long maxMessages;
-        private final List<Long> failed = new ArrayList<>();
-        private long frontier = 0;
+        private final int maxMessages;
+        private final List<Integer> failed = new ArrayList<>();
+        private int frontier = 0;
 
-        ToSendTracker(long maxMessages) {
+        ToSendTracker(int maxMessages) {
             this.maxMessages = maxMessages;
         }
 
-        synchronized void addFailed(long index) {
+        synchronized void addFailed(int index) {
             failed.add(index);
         }
 
-        synchronized long frontier() {
+        synchronized int frontier() {
             return frontier;
         }
 
@@ -238,7 +234,7 @@ public class RoundTripWorker implements TaskWorker {
                         break;
                     }
                     throttle.increment();
-                    final long messageIndex = result.index;
+                    final int messageIndex = result.index;
                     if (result.firstSend) {
                         toReceiveTracker.addPending(messageIndex);
                         uniqueMessagesSent++;
@@ -252,48 +248,39 @@ public class RoundTripWorker implements TaskWorker {
                     ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(partition.topic(),
                         partition.partition(), KEY_GENERATOR.generate(messageIndex),
                         spec.valueGenerator().generate(messageIndex));
-                    producer.send(record, (metadata, exception) -> {
-                        if (exception == null) {
-                            lock.lock();
-                            try {
-                                unackedSends -= 1;
-                                if (unackedSends <= 0)
-                                    unackedSendsAreZero.signalAll();
-                            } finally {
-                                lock.unlock();
+                    producer.send(record, new Callback() {
+                        @Override
+                        public void onCompletion(RecordMetadata metadata, Exception exception) {
+                            if (exception == null) {
+                                unackedSends.countDown();
+                            } else {
+                                log.info("{}: Got exception when sending message {}: {}",
+                                    id, messageIndex, exception.getMessage());
+                                toSendTracker.addFailed(messageIndex);
                             }
-                        } else {
-                            log.info("{}: Got exception when sending message {}: {}",
-                                id, messageIndex, exception.getMessage());
-                            toSendTracker.addFailed(messageIndex);
                         }
                     });
                 }
             } catch (Throwable e) {
                 WorkerUtils.abort(log, "ProducerRunnable", e, doneFuture);
             } finally {
-                lock.lock();
-                try {
-                    log.info("{}: ProducerRunnable is exiting.  messagesSent={}; uniqueMessagesSent={}; " +
-                                    "ackedSends={}/{}.", id, messagesSent, uniqueMessagesSent,
-                            spec.maxMessages() - unackedSends, spec.maxMessages());
-                } finally {
-                    lock.unlock();
-                }
+                log.info("{}: ProducerRunnable is exiting.  messagesSent={}; uniqueMessagesSent={}; " +
+                        "ackedSends={}.", id, messagesSent, uniqueMessagesSent,
+                        spec.maxMessages() - unackedSends.getCount());
             }
         }
     }
 
     private class ToReceiveTracker {
-        private final TreeSet<Long> pending = new TreeSet<>();
+        private final TreeSet<Integer> pending = new TreeSet<>();
 
-        private long totalReceived = 0;
+        private int totalReceived = 0;
 
-        synchronized void addPending(long messageIndex) {
+        synchronized void addPending(int messageIndex) {
             pending.add(messageIndex);
         }
 
-        synchronized boolean removePending(long messageIndex) {
+        synchronized boolean removePending(int messageIndex) {
             if (pending.remove(messageIndex)) {
                 totalReceived++;
                 return true;
@@ -302,18 +289,18 @@ public class RoundTripWorker implements TaskWorker {
             }
         }
 
-        synchronized long totalReceived() {
+        synchronized int totalReceived() {
             return totalReceived;
         }
 
         void log() {
-            long numToReceive;
-            List<Long> list = new ArrayList<>(LOG_NUM_MESSAGES);
+            int numToReceive;
+            List<Integer> list = new ArrayList<>(LOG_NUM_MESSAGES);
             synchronized (this) {
                 numToReceive = pending.size();
-                for (Iterator<Long> iter = pending.iterator();
+                for (Iterator<Integer> iter = pending.iterator();
                         iter.hasNext() && (list.size() < LOG_NUM_MESSAGES); ) {
-                    Long i = iter.next();
+                    Integer i = iter.next();
                     list.add(i);
                 }
             }
@@ -329,7 +316,7 @@ public class RoundTripWorker implements TaskWorker {
             this.props = new Properties();
             props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, spec.bootstrapServers());
             props.put(ConsumerConfig.CLIENT_ID_CONFIG, "consumer." + id);
-            props.put(ConsumerConfig.GROUP_ID_CONFIG, "round-trip-consumer-group-" + id);
+            props.put(ConsumerConfig.GROUP_ID_CONFIG, "round-trip-consumer-group-1");
             props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
             props.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, 105000);
             props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 100000);
@@ -347,7 +334,7 @@ public class RoundTripWorker implements TaskWorker {
             long pollInvoked = 0;
             log.debug("{}: Starting RoundTripWorker#ConsumerRunnable.", id);
             try {
-                long lastLogTimeMs = Time.SYSTEM.milliseconds();
+                long lastLogTimeMs = Time.SYSTEM.absoluteMilliseconds();
                 while (true) {
                     try {
                         pollInvoked++;
@@ -359,16 +346,9 @@ public class RoundTripWorker implements TaskWorker {
                             if (toReceiveTracker.removePending(messageIndex)) {
                                 uniqueMessagesReceived++;
                                 if (uniqueMessagesReceived >= spec.maxMessages()) {
-                                    lock.lock();
-                                    try {
-                                        log.info("{}: Consumer received the full count of {} unique messages.  " +
-                                            "Waiting for all {} sends to be acked...", id, spec.maxMessages(), unackedSends);
-                                        while (unackedSends > 0)
-                                            unackedSendsAreZero.await();
-                                    } finally {
-                                        lock.unlock();
-                                    }
-
+                                    log.info("{}: Consumer received the full count of {} unique messages.  " +
+                                        "Waiting for all sends to be acked...", id, spec.maxMessages());
+                                    unackedSends.await();
                                     log.info("{}: all sends have been acked.", id);
                                     new StatusUpdater().update();
                                     doneFuture.complete("");
@@ -376,7 +356,7 @@ public class RoundTripWorker implements TaskWorker {
                                 }
                             }
                         }
-                        long curTimeMs = Time.SYSTEM.milliseconds();
+                        long curTimeMs = Time.SYSTEM.absoluteMilliseconds();
                         if (curTimeMs > lastLogTimeMs + LOG_INTERVAL_MS) {
                             toReceiveTracker.log();
                             lastLogTimeMs = curTimeMs;
@@ -440,9 +420,9 @@ public class RoundTripWorker implements TaskWorker {
     @Override
     public void stop(Platform platform) throws Exception {
         if (!running.compareAndSet(true, false)) {
-            throw new IllegalStateException("RoundTripWorker is not running.");
+            throw new IllegalStateException("ProduceBenchWorker is not running.");
         }
-        log.info("{}: Deactivating RoundTripWorker.", id);
+        log.info("{}: Deactivating RoundTripWorkloadWorker.", id);
         doneFuture.complete("");
         executor.shutdownNow();
         executor.awaitTermination(1, TimeUnit.DAYS);
@@ -453,6 +433,5 @@ public class RoundTripWorker implements TaskWorker {
         this.unackedSends = null;
         this.executor = null;
         this.doneFuture = null;
-        log.info("{}: Deactivated RoundTripWorker.", id);
     }
 }

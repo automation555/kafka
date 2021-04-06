@@ -15,15 +15,17 @@
  * limitations under the License.
  */
 
-package kafka.utils
+package unit.kafka.utils
 
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions.{assertTrue, assertEquals}
+import kafka.utils.Throttler
+import org.apache.kafka.common.utils.MockTime
+import org.junit.Test
+import org.junit.Assert.{assertTrue, assertEquals}
 
 
 class ThrottlerTest {
   @Test
-  def testThrottleDesiredRate(): Unit = {
+  def testThrottleDesiredRate() {
     val throttleCheckIntervalMs = 100
     val desiredCountPerSec = 1000.0
     val desiredCountPerInterval = desiredCountPerSec * throttleCheckIntervalMs / 1000.0
@@ -34,24 +36,24 @@ class ThrottlerTest {
                                   time = mockTime)
 
     // Observe desiredCountPerInterval at t1
-    val t1 = mockTime.milliseconds()
+    val t1 = mockTime.absoluteMilliseconds()
     throttler.maybeThrottle(desiredCountPerInterval)
-    assertEquals(t1, mockTime.milliseconds())
+    assertEquals(t1, mockTime.absoluteMilliseconds())
 
     // Observe desiredCountPerInterval at t1 + throttleCheckIntervalMs + 1,
     mockTime.sleep(throttleCheckIntervalMs + 1)
     throttler.maybeThrottle(desiredCountPerInterval)
-    val t2 = mockTime.milliseconds()
+    val t2 = mockTime.absoluteMilliseconds()
     assertTrue(t2 >= t1 + 2 * throttleCheckIntervalMs)
 
     // Observe desiredCountPerInterval at t2
     throttler.maybeThrottle(desiredCountPerInterval)
-    assertEquals(t2, mockTime.milliseconds())
+    assertEquals(t2, mockTime.absoluteMilliseconds())
 
     // Observe desiredCountPerInterval at t2 + throttleCheckIntervalMs + 1
     mockTime.sleep(throttleCheckIntervalMs + 1)
     throttler.maybeThrottle(desiredCountPerInterval)
-    val t3 = mockTime.milliseconds()
+    val t3 = mockTime.absoluteMilliseconds()
     assertTrue(t3 >= t2 + 2 * throttleCheckIntervalMs)
 
     val elapsedTimeMs = t3 - t1

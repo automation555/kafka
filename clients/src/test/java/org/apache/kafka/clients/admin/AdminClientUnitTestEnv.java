@@ -23,8 +23,6 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 
-import java.time.Duration;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,12 +33,8 @@ import java.util.Map;
  * easily create a simple cluster.
  * <p>
  * To use in a test, create an instance and prepare its {@link #kafkaClient() MockClient} with the expected responses
- * for the {@link Admin}. Then, use the {@link #adminClient() AdminClient} in the test, which will then use the MockClient
+ * for the {@link AdminClient}. Then, use the {@link #adminClient() AdminClient} in the test, which will then use the MockClient
  * and receive the responses you provided.
- *
- * Since {@link #kafkaClient() MockClient} is not thread-safe,
- * users should be wary of calling its methods after the {@link #adminClient() AdminClient} is instantiated.
- *
  * <p>
  * When finished, be sure to {@link #close() close} the environment object.
  */
@@ -55,18 +49,14 @@ public class AdminClientUnitTestEnv implements AutoCloseable {
     }
 
     public AdminClientUnitTestEnv(Time time, Cluster cluster, String... vals) {
-        this(time, cluster, clientConfigs(vals));
+        this(time, cluster, newStrMap(vals));
     }
 
     public AdminClientUnitTestEnv(Time time, Cluster cluster) {
-        this(time, cluster, clientConfigs());
+        this(time, cluster, newStrMap());
     }
 
     public AdminClientUnitTestEnv(Time time, Cluster cluster, Map<String, Object> config) {
-        this(time, cluster, config, Collections.emptyMap());
-    }
-
-    public AdminClientUnitTestEnv(Time time, Cluster cluster, Map<String, Object> config, Map<Node, Long> unreachableNodes) {
         this.time = time;
         this.cluster = cluster;
         AdminClientConfig adminClientConfig = new AdminClientConfig(config);
@@ -91,8 +81,7 @@ public class AdminClientUnitTestEnv implements AutoCloseable {
             }
         });
 
-        metadataManager.update(cluster, time.milliseconds());
-        unreachableNodes.forEach(mockClient::setUnreachable);
+        metadataManager.update(cluster, time.absoluteMilliseconds());
         this.adminClient = KafkaAdminClient.createInternal(adminClientConfig, metadataManager, mockClient, time);
     }
 
@@ -104,7 +93,7 @@ public class AdminClientUnitTestEnv implements AutoCloseable {
         return cluster;
     }
 
-    public Admin adminClient() {
+    public AdminClient adminClient() {
         return adminClient;
     }
 
@@ -114,21 +103,18 @@ public class AdminClientUnitTestEnv implements AutoCloseable {
 
     @Override
     public void close() {
-        // tell the admin client to close now
-        this.adminClient.close(Duration.ZERO);
-        // block for up to a minute until the internal threads shut down.
-        this.adminClient.close(Duration.ofMinutes(1));
+        this.adminClient.close();
     }
 
-    static Map<String, Object> clientConfigs(String... overrides) {
+    private static Map<String, Object> newStrMap(String... vals) {
         Map<String, Object> map = new HashMap<>();
         map.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:8121");
         map.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, "1000");
-        if (overrides.length % 2 != 0) {
+        if (vals.length % 2 != 0) {
             throw new IllegalStateException();
         }
-        for (int i = 0; i < overrides.length; i += 2) {
-            map.put(overrides[i], overrides[i + 1]);
+        for (int i = 0; i < vals.length; i += 2) {
+            map.put(vals[i], vals[i + 1]);
         }
         return map;
     }

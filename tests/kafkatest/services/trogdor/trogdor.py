@@ -22,7 +22,7 @@ from requests.packages.urllib3 import Retry
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
 from kafkatest.directory_layout.kafka_path import KafkaPathResolverMixin
-
+from kafkatest.utils.util import listening
 
 class TrogdorService(KafkaPathResolverMixin, Service):
     """
@@ -55,6 +55,7 @@ class TrogdorService(KafkaPathResolverMixin, Service):
     DEFAULT_COORDINATOR_PORT=8889
     REQUEST_TIMEOUT=5
     REQUEST_HEADERS = {"Content-type": "application/json"}
+    AGENT="agent"
 
     logs = {
         "trogdor_coordinator_stdout_stderr": {
@@ -153,7 +154,7 @@ class TrogdorService(KafkaPathResolverMixin, Service):
         node.account.create_file(TrogdorService.AGENT_LOG4J_PROPERTIES,
                                  self.render('log4j.properties',
                                              log_path=TrogdorService.AGENT_LOG))
-        self._start_trogdor_daemon("agent", TrogdorService.AGENT_STDOUT_STDERR,
+        self._start_trogdor_daemon(TrogdorService.AGENT, TrogdorService.AGENT_STDOUT_STDERR,
                                    TrogdorService.AGENT_LOG4J_PROPERTIES,
                                    TrogdorService.AGENT_LOG, node)
         self.logger.info("Started trogdor agent on %s." % node.name)
@@ -170,9 +171,12 @@ class TrogdorService(KafkaPathResolverMixin, Service):
                 stdout_stderr_capture_path,
                 stdout_stderr_capture_path)
         node.account.ssh(cmd)
-        with node.account.monitor_log(log_path) as monitor:
-            monitor.wait_until("Starting %s process." % daemon_name, timeout_sec=60, backoff_sec=.10,
-                               err_msg=("%s on %s didn't finish startup" % (daemon_name, node.name)))
+        if daemon_name == TrogdorService.AGENT:
+            wait_until(lambda: listening(self.logger, node, self.agent_port), timeout_sec=60, backoff_sec=.1,
+                       err_msg="Trogdor agent didn't finish startup")
+        else:
+            wait_until(lambda: listening(self.logger, node, self.coordinator_port), timeout_sec=60, backoff_sec=.1,
+                       err_msg="Trogdor coordinator didn't finish startup")
 
     def wait_node(self, node, timeout_sec=None):
         if self.is_coordinator(node):
@@ -202,7 +206,7 @@ class TrogdorService(KafkaPathResolverMixin, Service):
         """
         session = requests.Session()
         session.mount('http://',
-                      HTTPAdapter(max_retries=Retry(total=5, backoff_factor=0.3)))
+                      HTTPAdapter(max_retries=Retry(total=4, backoff_factor=0.3)))
         return session
 
     def _coordinator_post(self, path, message):
@@ -300,16 +304,6 @@ class TrogdorTask(object):
         self.id = id
         self.trogdor = trogdor
 
-    def task_state_or_error(self):
-        task_state = self.trogdor.tasks()["tasks"][self.id]
-        if task_state is None:
-            raise RuntimeError("Coordinator did not know about %s." % self.id)
-        error = task_state.get("error")
-        if error is None or error == "":
-            return task_state["state"], None
-        else:
-            return None, error
-
     def done(self):
         """
         Check if this task is done.
@@ -318,25 +312,13 @@ class TrogdorTask(object):
         :returns:                   True if the task is in DONE_STATE;
                                     False if it is in a different state.
         """
-        (task_state, error) = self.task_state_or_error()
-        if task_state is not None:
-            return task_state == TrogdorTask.DONE_STATE
-        else:
-            raise RuntimeError("Failed to gracefully stop %s: got task error: %s" % (self.id, error))
-
-    def running(self):
-        """
-        Check if this task is running.
-
-        :raises RuntimeError:       If the task encountered an error.
-        :returns:                   True if the task is in RUNNING_STATE;
-                                    False if it is in a different state.
-        """
-        (task_state, error) = self.task_state_or_error()
-        if task_state is not None:
-            return task_state == TrogdorTask.RUNNING_STATE
-        else:
-            raise RuntimeError("Failed to start %s: got task error: %s" % (self.id, error))
+        task_state = self.trogdor.tasks()["tasks"][self.id]
+        if task_state is None:
+            raise RuntimeError("Coordinator did not know about %s." % self.id)
+        error = task_state.get("error")
+        if error is None or error == "":
+            return task_state["state"] == TrogdorTask.DONE_STATE
+        raise RuntimeError("Failed to gracefully stop %s: got task error: %s" % (self.id, error))
 
     def stop(self):
         """

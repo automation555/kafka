@@ -19,6 +19,7 @@ import os.path
 import re
 import signal
 import time
+from sets import Set
 
 from ducktape.services.service import Service
 from ducktape.utils.util import wait_until
@@ -30,7 +31,8 @@ from kafkatest.services.kafka import config_property
 from kafkatest.services.monitor.jmx import JmxMixin
 from kafkatest.services.security.minikdc import MiniKdc
 from kafkatest.services.security.security_config import SecurityConfig
-from kafkatest.version import DEV_BRANCH, LATEST_0_10_0
+from kafkatest.version import DEV_BRANCH
+from kafkatest.utils.util import listening_any
 
 Port = collections.namedtuple('Port', ['name', 'number', 'open'])
 
@@ -70,8 +72,8 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
     def __init__(self, context, num_nodes, zk, security_protocol=SecurityConfig.PLAINTEXT, interbroker_security_protocol=SecurityConfig.PLAINTEXT,
                  client_sasl_mechanism=SecurityConfig.SASL_MECHANISM_GSSAPI, interbroker_sasl_mechanism=SecurityConfig.SASL_MECHANISM_GSSAPI,
-                 authorizer_class_name=None, topics=None, version=DEV_BRANCH, jmx_object_names=None, jmx_attributes=None,
-                 zk_connect_timeout=5000, zk_session_timeout=6000, server_prop_overides=None, zk_chroot=None, heap_opts=None):
+                 authorizer_class_name=None, topics=None, version=DEV_BRANCH, jmx_object_names=None,
+                 jmx_attributes=None, zk_connect_timeout=5000, zk_session_timeout=6000, server_prop_overides=None, zk_chroot=None):
         """
         :type context
         :type zk: ZookeeperService
@@ -97,7 +99,7 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
             self.server_prop_overides = server_prop_overides
         self.log_level = "DEBUG"
         self.zk_chroot = zk_chroot
-        self.heap_opts = heap_opts
+        self.broker_ports = Set()
 
         #
         # In a heavily loaded and not very fast machine, it is
@@ -146,6 +148,7 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
     def open_port(self, protocol):
         self.port_mappings[protocol] = self.port_mappings[protocol]._replace(open=True)
+        self.broker_ports.add(self.port_mappings[protocol].number)
 
     def close_port(self, protocol):
         self.port_mappings[protocol] = self.port_mappings[protocol]._replace(open=False)
@@ -227,19 +230,10 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
                                  security_config=self.security_config, num_nodes=self.num_nodes)
         return prop_file
 
-    def file_exists(self, node, filename_regex):
-        try:
-            node.account.ssh("test -s %s" % filename_regex, allow_fail=False)
-            return True
-        except RemoteCommandError:
-            return False
-
     def start_cmd(self, node):
         cmd = "export JMX_PORT=%d; " % self.jmx_port
         cmd += "export KAFKA_LOG4J_OPTS=\"-Dlog4j.configuration=file:%s\"; " % self.LOG4J_CONFIG
         cmd += "export KAFKA_OPTS=%s; " % self.security_config.kafka_opts
-        if self.heap_opts is not None:
-            cmd += "export KAFKA_HEAP_OPTS=\"%s\"; " % self.heap_opts
         cmd += "%s %s 1>> %s 2>> %s &" % \
                (self.path.script("kafka-server-start.sh", node),
                 KafkaService.CONFIG_FILE,
@@ -260,10 +254,9 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
 
         cmd = self.start_cmd(node)
         self.logger.debug("Attempting to start KafkaService on %s with command: %s" % (str(node.account), cmd))
-        with node.account.monitor_log(KafkaService.STDOUT_STDERR_CAPTURE) as monitor:
-            node.account.ssh(cmd)
-            # Kafka 1.0.0 and higher don't have a space between "Kafka" and "Server"
-            monitor.wait_until("Kafka\s*Server.*started", timeout_sec=30, backoff_sec=.25, err_msg="Kafka server didn't finish startup")
+        node.account.ssh(cmd)
+        wait_until(lambda: listening_any(self.logger, node, self.broker_ports), timeout_sec=30, backoff_sec=.25,
+                   err_msg="Kafka server didn't finish startup")
 
         # Credentials for inter-broker communication are created before starting Kafka.
         # Client credentials are created after starting Kafka so that both loading of
@@ -594,12 +587,8 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
             command_config = "--command-config " + command_config
 
         if new_consumer:
-            new_consumer_opt = ""
-            if node.version <= LATEST_0_10_0:
-                new_consumer_opt = "--new-consumer"
-            cmd = "%s %s --bootstrap-server %s %s --list" % \
+            cmd = "%s --new-consumer --bootstrap-server %s %s --list" % \
                   (consumer_group_script,
-                   new_consumer_opt,
                    self.bootstrap_servers(self.security_protocol),
                    command_config)
         else:
@@ -625,14 +614,8 @@ class KafkaService(KafkaPathResolverMixin, JmxMixin, Service):
             command_config = "--command-config " + command_config
 
         if new_consumer:
-            new_consumer_opt = ""
-            if node.version <= LATEST_0_10_0:
-                new_consumer_opt = "--new-consumer"
-            cmd = "%s %s --bootstrap-server %s %s --group %s --describe" % \
-                  (consumer_group_script,
-                   new_consumer_opt,
-                   self.bootstrap_servers(self.security_protocol),
-                   command_config, group)
+            cmd = "%s --new-consumer --bootstrap-server %s %s --group %s --describe" % \
+                  (consumer_group_script, self.bootstrap_servers(self.security_protocol), command_config, group)
         else:
             cmd = "%s --zookeeper %s %s --group %s --describe" % \
                   (consumer_group_script, self.zk_connect_setting(), command_config, group)

@@ -17,34 +17,30 @@
 
 package kafka.tools
 
-import java.io.{ByteArrayOutputStream, PrintStream}
-import java.nio.file.Files
-import java.util.{HashMap, Map => JMap}
+import java.io.{FileOutputStream, PrintStream}
 
+import kafka.common.MessageFormatter
 import kafka.tools.ConsoleConsumer.ConsumerWrapper
 import kafka.utils.{Exit, TestUtils}
 import org.apache.kafka.clients.consumer.{ConsumerRecord, MockConsumer, OffsetResetStrategy}
-import org.apache.kafka.common.{MessageFormatter, TopicPartition}
-import org.apache.kafka.common.record.TimestampType
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.test.MockDeserializer
-import org.mockito.Mockito._
-import org.mockito.ArgumentMatchers
-import ArgumentMatchers._
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{BeforeEach, Test}
+import org.easymock.EasyMock
+import org.junit.Assert._
+import org.junit.{Before, Test}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 class ConsoleConsumerTest {
 
-  @BeforeEach
+  @Before
   def setup(): Unit = {
     ConsoleConsumer.messageCount = 0
   }
 
   @Test
-  def shouldResetUnConsumedOffsetsBeforeExit(): Unit = {
+  def shouldResetUnConsumedOffsetsBeforeExit() {
     val topic = "test"
     val maxMessages: Int = 123
     val totalMessages: Int = 700
@@ -64,57 +60,73 @@ class ConsoleConsumerTest {
       mockConsumer.addRecord(new ConsumerRecord[Array[Byte], Array[Byte]](topic, i % 2, i / 2, "key".getBytes, "value".getBytes))
     }
 
-    val formatter = mock(classOf[MessageFormatter])
+    // Mocks
+    val formatter = EasyMock.createNiceMock(classOf[MessageFormatter])
 
+    // Expectations
+    EasyMock.expect(formatter.writeTo(EasyMock.anyObject(), EasyMock.anyObject())).times(maxMessages)
+    EasyMock.replay(formatter)
+
+    // Test
     ConsoleConsumer.process(maxMessages, formatter, consumer, System.out, skipMessageOnError = false)
     assertEquals(totalMessages, mockConsumer.position(tp1) + mockConsumer.position(tp2))
 
     consumer.resetUnconsumedOffsets()
     assertEquals(maxMessages, mockConsumer.position(tp1) + mockConsumer.position(tp2))
 
-    verify(formatter, times(maxMessages)).writeTo(any(), any())
+    EasyMock.verify(formatter)
   }
 
   @Test
-  def shouldLimitReadsToMaxMessageLimit(): Unit = {
-    val consumer = mock(classOf[ConsumerWrapper])
-    val formatter = mock(classOf[MessageFormatter])
+  def shouldLimitReadsToMaxMessageLimit() {
+    //Mocks
+    val consumer = EasyMock.createNiceMock(classOf[ConsumerWrapper])
+    val formatter = EasyMock.createNiceMock(classOf[MessageFormatter])
+
+    //Stubs
     val record = new ConsumerRecord("foo", 1, 1, Array[Byte](), Array[Byte]())
 
+    //Expectations
     val messageLimit: Int = 10
-    when(consumer.receive()).thenReturn(record)
+    EasyMock.expect(formatter.writeTo(EasyMock.anyObject(), EasyMock.anyObject())).times(messageLimit)
+    EasyMock.expect(consumer.receive()).andReturn(record).times(messageLimit)
 
+    EasyMock.replay(consumer)
+    EasyMock.replay(formatter)
+
+    //Test
     ConsoleConsumer.process(messageLimit, formatter, consumer, System.out, true)
-
-    verify(consumer, times(messageLimit)).receive()
-    verify(formatter, times(messageLimit)).writeTo(any(), any())
-
-    consumer.cleanup()
   }
 
   @Test
-  def shouldStopWhenOutputCheckErrorFails(): Unit = {
-    val consumer = mock(classOf[ConsumerWrapper])
-    val formatter = mock(classOf[MessageFormatter])
-    val printStream = mock(classOf[PrintStream])
+  def shouldStopWhenOutputCheckErrorFails() {
+    //Mocks
+    val consumer = EasyMock.createNiceMock(classOf[ConsumerWrapper])
+    val formatter = EasyMock.createNiceMock(classOf[MessageFormatter])
+    val printStream = EasyMock.createNiceMock(classOf[PrintStream])
 
+    //Stubs
     val record = new ConsumerRecord("foo", 1, 1, Array[Byte](), Array[Byte]())
 
-    when(consumer.receive()).thenReturn(record)
+    //Expectations
+    EasyMock.expect(consumer.receive()).andReturn(record)
+    EasyMock.expect(formatter.writeTo(EasyMock.anyObject(), EasyMock.eq(printStream)))
     //Simulate an error on System.out after the first record has been printed
-    when(printStream.checkError()).thenReturn(true)
+    EasyMock.expect(printStream.checkError()).andReturn(true)
 
+    EasyMock.replay(consumer)
+    EasyMock.replay(formatter)
+    EasyMock.replay(printStream)
+
+    //Test
     ConsoleConsumer.process(-1, formatter, consumer, printStream, true)
 
-    verify(formatter).writeTo(any(), ArgumentMatchers.eq(printStream))
-    verify(consumer).receive()
-    verify(printStream).checkError()
-
-    consumer.cleanup()
+    //Verify
+    EasyMock.verify(consumer, formatter, printStream)
   }
 
   @Test
-  def shouldParseValidConsumerValidConfig(): Unit = {
+  def shouldParseValidConsumerValidConfig() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -151,8 +163,8 @@ class ConsoleConsumerTest {
 
   }
 
-  @Test
-  def shouldExitOnUnrecognizedNewConsumerOption(): Unit = {
+  @Test(expected = classOf[IllegalArgumentException])
+  def shouldExitOnUnrecognizedConsumerOption(): Unit = {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
     //Given
@@ -162,12 +174,16 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--from-beginning")
 
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
+    //When
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+    } finally {
+      Exit.resetExitProcedure()
+    }
   }
 
   @Test
-  def shouldParseValidSimpleConsumerValidConfigWithStringOffset(): Unit = {
+  def shouldParseValidSimpleConsumerValidConfigWithStringOffset() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -189,7 +205,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetLatest(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetLatest() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -208,7 +224,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetEarliest(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetEarliest() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -227,7 +243,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithAutoOffsetResetAndMatchingFromBeginning(): Unit = {
+  def shouldParseValidConsumerConfigWithAutoOffsetResetAndMatchingFromBeginning() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -247,7 +263,7 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def shouldParseValidConsumerConfigWithNoOffsetReset(): Unit = {
+  def shouldParseValidConsumerConfigWithNoOffsetReset() {
     //Given
     val args: Array[String] = Array(
       "--bootstrap-server", "localhost:9092",
@@ -264,8 +280,8 @@ class ConsoleConsumerTest {
     assertEquals("latest", consumerProperties.getProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG))
   }
 
-  @Test
-  def shouldExitOnInvalidConfigWithAutoOffsetResetAndConflictingFromBeginning(): Unit = {
+  @Test(expected = classOf[IllegalArgumentException])
+  def shouldExitOnInvalidConfigWithAutoOffsetResetAndConflictingFromBeginning() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
     //Given
@@ -274,17 +290,19 @@ class ConsoleConsumerTest {
       "--topic", "test",
       "--consumer-property", "auto.offset.reset=latest",
       "--from-beginning")
+
     try {
       val config = new ConsoleConsumer.ConsumerConfig(args)
-      assertThrows(classOf[IllegalArgumentException], () => ConsoleConsumer.consumerProps(config))
+      ConsoleConsumer.consumerProps(config)
+    } finally {
+      Exit.resetExitProcedure()
     }
-    finally Exit.resetExitProcedure()
   }
 
   @Test
-  def shouldParseConfigsFromFile(): Unit = {
+  def shouldParseConfigsFromFile() {
     val propsFile = TestUtils.tempFile()
-    val propsStream = Files.newOutputStream(propsFile.toPath)
+    val propsStream = new FileOutputStream(propsFile)
     propsStream.write("request.timeout.ms=1000\n".getBytes())
     propsStream.write("group.id=group1".getBytes())
     propsStream.close()
@@ -301,12 +319,12 @@ class ConsoleConsumerTest {
   }
 
   @Test
-  def groupIdsProvidedInDifferentPlacesMustMatch(): Unit = {
+  def groupIdsProvidedInDifferentPlacesMustMatch() {
     Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
 
     // different in all three places
     var propsFile = TestUtils.tempFile()
-    var propsStream = Files.newOutputStream(propsFile.toPath)
+    var propsStream = new FileOutputStream(propsFile)
     propsStream.write("group.id=group-from-file".getBytes())
     propsStream.close()
     var args: Array[String] = Array(
@@ -317,11 +335,16 @@ class ConsoleConsumerTest {
       "--consumer.config", propsFile.getAbsolutePath
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // the same in all three places
     propsFile = TestUtils.tempFile()
-    propsStream = Files.newOutputStream(propsFile.toPath)
+    propsStream = new FileOutputStream(propsFile)
     propsStream.write("group.id=test-group".getBytes())
     propsStream.close()
     args = Array(
@@ -338,7 +361,7 @@ class ConsoleConsumerTest {
 
     // different via --consumer-property and --consumer.config
     propsFile = TestUtils.tempFile()
-    propsStream = Files.newOutputStream(propsFile.toPath)
+    propsStream = new FileOutputStream(propsFile)
     propsStream.write("group.id=group-from-file".getBytes())
     propsStream.close()
     args = Array(
@@ -348,7 +371,12 @@ class ConsoleConsumerTest {
       "--consumer.config", propsFile.getAbsolutePath
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // different via --consumer-property and --group
     args = Array(
@@ -358,11 +386,16 @@ class ConsoleConsumerTest {
       "--consumer-property", "group.id=group-from-properties"
     )
 
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // different via --group and --consumer.config
     propsFile = TestUtils.tempFile()
-    propsStream = Files.newOutputStream(propsFile.toPath)
+    propsStream = new FileOutputStream(propsFile)
     propsStream.write("group.id=group-from-file".getBytes())
     propsStream.close()
     args = Array(
@@ -371,7 +404,13 @@ class ConsoleConsumerTest {
       "--group", "group-from-arguments",
       "--consumer.config", propsFile.getAbsolutePath
     )
-    assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
+
+    try {
+      new ConsoleConsumer.ConsumerConfig(args)
+      fail("Expected groups ids provided in different places to match")
+    } catch {
+      case e: IllegalArgumentException => //OK
+    }
 
     // via --group only
     args = Array(
@@ -404,133 +443,6 @@ class ConsoleConsumerTest {
     assertEquals(1, formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.size)
     assertEquals("abc", formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].configs.get("my-props"))
     assertTrue(formatter.keyDeserializer.get.asInstanceOf[MockDeserializer].isKey)
-  }
-
-  @Test
-  def shouldParseGroupIdFromBeginningGivenTogether(): Unit = {
-    // Start from earliest
-    var args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--group", "test-group",
-      "--from-beginning")
-
-    var config = new ConsoleConsumer.ConsumerConfig(args)
-    assertEquals("localhost:9092", config.bootstrapServer)
-    assertEquals("test", config.topicArg)
-    assertEquals(-2, config.offsetArg)
-    assertEquals(true, config.fromBeginning)
-
-    // Start from latest
-    args = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--group", "test-group"
-    )
-
-    config = new ConsoleConsumer.ConsumerConfig(args)
-    assertEquals("localhost:9092", config.bootstrapServer)
-    assertEquals("test", config.topicArg)
-    assertEquals(-1, config.offsetArg)
-    assertEquals(false, config.fromBeginning)
-  }
-
-  @Test
-  def shouldExitOnGroupIdAndPartitionGivenTogether(): Unit = {
-    Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
-    //Given
-    val args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--group", "test-group",
-      "--partition", "0")
-
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
-  }
-
-  @Test
-  def shouldExitOnOffsetWithoutPartition(): Unit = {
-    Exit.setExitProcedure((_, message) => throw new IllegalArgumentException(message.orNull))
-    //Given
-    val args: Array[String] = Array(
-      "--bootstrap-server", "localhost:9092",
-      "--topic", "test",
-      "--offset", "10")
-
-    try assertThrows(classOf[IllegalArgumentException], () => new ConsoleConsumer.ConsumerConfig(args))
-    finally Exit.resetExitProcedure()
-  }
-
-  @Test
-  def testDefaultMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new DefaultMessageFormatter()
-    val configs: JMap[String, String] = new HashMap()
-
-    formatter.configure(configs)
-    var out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("value\n", out.toString)
-
-    configs.put("print.key", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("key\tvalue\n", out.toString)
-
-    configs.put("print.partition", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("Partition:0\tkey\tvalue\n", out.toString)
-
-    configs.put("print.timestamp", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("NO_TIMESTAMP\tPartition:0\tkey\tvalue\n", out.toString)
-
-    configs.put("print.offset", "true")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("NO_TIMESTAMP\tPartition:0\tOffset:123\tkey\tvalue\n", out.toString)
-
-    out = new ByteArrayOutputStream()
-    val record2 = new ConsumerRecord("topic", 0, 123, 123L, TimestampType.CREATE_TIME, 321L, -1, -1, "key".getBytes, "value".getBytes)
-    formatter.writeTo(record2, new PrintStream(out))
-    assertEquals("CreateTime:123\tPartition:0\tOffset:123\tkey\tvalue\n", out.toString)
-    formatter.close()
-  }
-
-  @Test
-  def testNoOpMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new NoOpMessageFormatter()
-
-    formatter.configure(new HashMap())
-    val out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("", out.toString)
-  }
-
-  @Test
-  def testChecksumMessageFormatter(): Unit = {
-    val record = new ConsumerRecord("topic", 0, 123, "key".getBytes, "value".getBytes)
-    val formatter = new ChecksumMessageFormatter()
-    val configs: JMap[String, String] = new HashMap()
-
-    formatter.configure(configs)
-    var out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("checksum:-1\n", out.toString)
-
-    configs.put("topic", "topic1")
-    formatter.configure(configs)
-    out = new ByteArrayOutputStream()
-    formatter.writeTo(record, new PrintStream(out))
-    assertEquals("topic1:checksum:-1\n", out.toString)
   }
 
 }

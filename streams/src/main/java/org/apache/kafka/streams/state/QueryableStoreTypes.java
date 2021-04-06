@@ -17,7 +17,6 @@
 package org.apache.kafka.streams.state;
 
 import org.apache.kafka.streams.KafkaStreams;
-import org.apache.kafka.streams.StoreQueryParameters;
 import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.processor.StateStore;
 import org.apache.kafka.streams.state.internals.CompositeReadOnlyKeyValueStore;
@@ -25,18 +24,12 @@ import org.apache.kafka.streams.state.internals.CompositeReadOnlySessionStore;
 import org.apache.kafka.streams.state.internals.CompositeReadOnlyWindowStore;
 import org.apache.kafka.streams.state.internals.StateStoreProvider;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
-
 /**
  * Provides access to the {@link QueryableStoreType}s provided with {@link KafkaStreams}.
- * These can be used with {@link KafkaStreams#store(StoreQueryParameters)}.
+ * These can be used with {@link KafkaStreams#store(String, QueryableStoreType)}.
  * To access and query the {@link StateStore}s that are part of a {@link Topology}.
  */
 public final class QueryableStoreTypes {
-
     /**
      * A {@link QueryableStoreType} that accepts {@link ReadOnlyKeyValueStore}.
      *
@@ -94,28 +87,23 @@ public final class QueryableStoreTypes {
 
     private static abstract class QueryableStoreTypeMatcher<T> implements QueryableStoreType<T> {
 
-        private final Set<Class> matchTo;
+        private final Class matchTo;
 
-        QueryableStoreTypeMatcher(final Set<Class> matchTo) {
+        QueryableStoreTypeMatcher(final Class matchTo) {
             this.matchTo = matchTo;
         }
 
         @SuppressWarnings("unchecked")
         @Override
         public boolean accepts(final StateStore stateStore) {
-            for (final Class matchToClass : matchTo) {
-                if (!matchToClass.isAssignableFrom(stateStore.getClass())) {
-                    return false;
-                }
-            }
-            return true;
+            return matchTo.isAssignableFrom(stateStore.getClass());
         }
     }
 
     public static class KeyValueStoreType<K, V> extends QueryableStoreTypeMatcher<ReadOnlyKeyValueStore<K, V>> {
 
         KeyValueStoreType() {
-            super(Collections.singleton(ReadOnlyKeyValueStore.class));
+            super(ReadOnlyKeyValueStore.class);
         }
 
         @Override
@@ -130,9 +118,7 @@ public final class QueryableStoreTypes {
         extends QueryableStoreTypeMatcher<ReadOnlyKeyValueStore<K, ValueAndTimestamp<V>>> {
 
         TimestampedKeyValueStoreType() {
-            super(new HashSet<>(Arrays.asList(
-                TimestampedKeyValueStore.class,
-                ReadOnlyKeyValueStore.class)));
+            super(ReadOnlyKeyValueStore.class);
         }
 
         @Override
@@ -145,7 +131,7 @@ public final class QueryableStoreTypes {
     public static class WindowStoreType<K, V> extends QueryableStoreTypeMatcher<ReadOnlyWindowStore<K, V>> {
 
         WindowStoreType() {
-            super(Collections.singleton(ReadOnlyWindowStore.class));
+            super(ReadOnlyWindowStore.class);
         }
 
         @Override
@@ -159,9 +145,7 @@ public final class QueryableStoreTypes {
         extends QueryableStoreTypeMatcher<ReadOnlyWindowStore<K, ValueAndTimestamp<V>>> {
 
         TimestampedWindowStoreType() {
-            super(new HashSet<>(Arrays.asList(
-                TimestampedWindowStore.class,
-                ReadOnlyWindowStore.class)));
+            super(ReadOnlyWindowStore.class);
         }
 
         @Override
@@ -174,7 +158,7 @@ public final class QueryableStoreTypes {
     public static class SessionStoreType<K, V> extends QueryableStoreTypeMatcher<ReadOnlySessionStore<K, V>> {
 
         SessionStoreType() {
-            super(Collections.singleton(ReadOnlySessionStore.class));
+            super(ReadOnlySessionStore.class);
         }
 
         @Override

@@ -17,20 +17,18 @@
 
 package org.apache.kafka.trogdor.coordinator;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.errors.InvalidRequestException;
 import org.apache.kafka.common.utils.Scheduler;
-import org.apache.kafka.common.utils.ThreadUtils;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.trogdor.common.JsonUtil;
 import org.apache.kafka.trogdor.common.Node;
 import org.apache.kafka.trogdor.common.Platform;
+import org.apache.kafka.trogdor.common.ThreadUtils;
 import org.apache.kafka.trogdor.rest.RequestConflictException;
 import org.apache.kafka.trogdor.rest.TaskDone;
 import org.apache.kafka.trogdor.rest.TaskPending;
@@ -152,13 +150,7 @@ public final class TaskManager {
         final private String id;
 
         /**
-         * The original task specification as submitted when the task was created.
-         */
-        final private TaskSpec originalSpec;
-
-        /**
-         * The effective task specification.
-         * The start time will be adjusted to reflect the time when the task was submitted.
+         * The task specification.
          */
         final private TaskSpec spec;
 
@@ -203,10 +195,8 @@ public final class TaskManager {
          */
         private String error = "";
 
-        ManagedTask(String id, TaskSpec originalSpec, TaskSpec spec,
-                    TaskController controller, TaskStateType state) {
+        ManagedTask(String id, TaskSpec spec, TaskController controller, TaskStateType state) {
             this.id = id;
-            this.originalSpec = originalSpec;
             this.spec = spec;
             this.controller = controller;
             this.state = state;
@@ -302,13 +292,12 @@ public final class TaskManager {
      *
      * @param id                    The ID of the task to create.
      * @param spec                  The specification of the task to create.
-     * @throws RequestConflictException - if a task with the same ID but different spec exists
      */
     public void createTask(final String id, TaskSpec spec)
             throws Throwable {
         try {
             executor.submit(new CreateTask(id, spec)).get();
-        } catch (ExecutionException | JsonProcessingException e) {
+        } catch (ExecutionException e) {
             log.info("createTask(id={}, spec={}) error", id, spec, e);
             throw e.getCause();
         }
@@ -319,15 +308,11 @@ public final class TaskManager {
      */
     class CreateTask implements Callable<Void> {
         private final String id;
-        private final TaskSpec originalSpec;
         private final TaskSpec spec;
 
-        CreateTask(String id, TaskSpec spec) throws JsonProcessingException {
+        CreateTask(String id, TaskSpec spec) {
             this.id = id;
-            this.originalSpec = spec;
-            ObjectNode node = JsonUtil.JSON_SERDE.valueToTree(originalSpec);
-            node.set("startMs", new LongNode(Math.max(time.milliseconds(), originalSpec.startMs())));
-            this.spec = JsonUtil.JSON_SERDE.treeToValue(node, TaskSpec.class);
+            this.spec = spec;
         }
 
         @Override
@@ -337,11 +322,11 @@ public final class TaskManager {
             }
             ManagedTask task = tasks.get(id);
             if (task != null) {
-                if (!task.originalSpec.equals(originalSpec)) {
+                if (!task.spec.equals(spec)) {
                     throw new RequestConflictException("Task ID " + id + " already " +
-                        "exists, and has a different spec " + task.originalSpec);
+                        "exists, and has a different spec " + task.spec);
                 }
-                log.info("Task {} already exists with spec {}", id, originalSpec);
+                log.info("Task {} already exists with spec {}", id, spec);
                 return null;
             }
             TaskController controller = null;
@@ -354,15 +339,15 @@ public final class TaskManager {
             if (failure != null) {
                 log.info("Failed to create a new task {} with spec {}: {}",
                     id, spec, failure);
-                task = new ManagedTask(id, originalSpec, spec, null, TaskStateType.DONE);
-                task.doneMs = time.milliseconds();
+                task = new ManagedTask(id, spec, null, TaskStateType.DONE);
+                task.doneMs = time.absoluteMilliseconds();
                 task.maybeSetError(failure);
                 tasks.put(id, task);
                 return null;
             }
-            task = new ManagedTask(id, originalSpec, spec, controller, TaskStateType.PENDING);
+            task = new ManagedTask(id, spec, controller, TaskStateType.PENDING);
             tasks.put(id, task);
-            long delayMs = task.startDelayMs(time.milliseconds());
+            long delayMs = task.startDelayMs(time.absoluteMilliseconds());
             task.startFuture = scheduler.schedule(executor, new RunTask(task), delayMs);
             log.info("Created a new task {} with spec {}, scheduled to start {} ms from now.",
                     id, spec, delayMs);
@@ -393,14 +378,14 @@ public final class TaskManager {
                 nodeNames = task.findNodeNames();
             } catch (Exception e) {
                 log.error("Unable to find nodes for task {}", task.id, e);
-                task.doneMs = time.milliseconds();
+                task.doneMs = time.absoluteMilliseconds();
                 task.state = TaskStateType.DONE;
                 task.maybeSetError("Unable to find nodes for task: " + e.getMessage());
                 return null;
             }
             log.info("Running task {} on node(s): {}", task.id, Utils.join(nodeNames, ", "));
             task.state = TaskStateType.RUNNING;
-            task.startedMs = time.milliseconds();
+            task.startedMs = time.absoluteMilliseconds();
             for (String workerName : nodeNames) {
                 long workerId = nextWorkerId++;
                 task.workerIds.put(workerName, workerId);
@@ -449,7 +434,7 @@ public final class TaskManager {
                 case PENDING:
                     task.cancelled = true;
                     task.clearStartFuture();
-                    task.doneMs = time.milliseconds();
+                    task.doneMs = time.absoluteMilliseconds();
                     task.state = TaskStateType.DONE;
                     log.info("Stopped pending task {}.", id);
                     break;
@@ -462,7 +447,7 @@ public final class TaskManager {
                         } else {
                             log.info("Task {} is now complete with error: {}", id, task.error);
                         }
-                        task.doneMs = time.milliseconds();
+                        task.doneMs = time.absoluteMilliseconds();
                         task.state = TaskStateType.DONE;
                     } else {
                         for (Map.Entry<String, Long> entry : activeWorkerIds.entrySet()) {
@@ -594,7 +579,7 @@ public final class TaskManager {
         }
         TreeMap<String, Long> activeWorkerIds = task.activeWorkerIds();
         if (activeWorkerIds.isEmpty()) {
-            task.doneMs = time.milliseconds();
+            task.doneMs = time.absoluteMilliseconds();
             task.state = TaskStateType.DONE;
             log.info("{}: Task {} is now complete on {} with error: {}",
                 nodeName, task.id, Utils.join(task.workerIds.keySet(), ", "),
@@ -671,7 +656,7 @@ public final class TaskManager {
     /**
      * Initiate shutdown, but do not wait for it to complete.
      */
-    public void beginShutdown(boolean stopAgents) {
+    public void beginShutdown(boolean stopAgents) throws ExecutionException, InterruptedException {
         if (shutdown.compareAndSet(false, true)) {
             executor.submit(new Shutdown(stopAgents));
         }
@@ -680,7 +665,7 @@ public final class TaskManager {
     /**
      * Wait for shutdown to complete.  May be called prior to beginShutdown.
      */
-    public void waitForShutdown() throws InterruptedException {
+    public void waitForShutdown() throws ExecutionException, InterruptedException {
         while (!executor.awaitTermination(1, TimeUnit.DAYS)) { }
     }
 

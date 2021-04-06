@@ -22,15 +22,14 @@ import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
 
 public class InFlightRequestsTest {
 
@@ -38,7 +37,7 @@ public class InFlightRequestsTest {
     private int correlationId;
     private String dest = "dest";
 
-    @BeforeEach
+    @Before
     public void setup() {
         inFlightRequests = new InFlightRequests(12);
         correlationId = 0;
@@ -73,18 +72,18 @@ public class InFlightRequestsTest {
     public void testTimedOutNodes() {
         Time time = new MockTime();
 
-        addRequest("A", time.milliseconds(), 50);
-        addRequest("B", time.milliseconds(), 200);
-        addRequest("B", time.milliseconds(), 100);
+        addRequest("A", time.absoluteMilliseconds(), 50);
+        addRequest("B", time.absoluteMilliseconds(), 200);
+        addRequest("B", time.absoluteMilliseconds(), 100);
 
         time.sleep(50);
-        assertEquals(Collections.emptyList(), inFlightRequests.nodesWithTimedOutRequests(time.milliseconds()));
+        assertEquals(Collections.emptyList(), inFlightRequests.nodesWithTimedOutRequests(time.absoluteMilliseconds()));
 
         time.sleep(25);
-        assertEquals(Collections.singletonList("A"), inFlightRequests.nodesWithTimedOutRequests(time.milliseconds()));
+        assertEquals(Collections.singletonList("A"), inFlightRequests.nodesWithTimedOutRequests(time.absoluteMilliseconds()));
 
         time.sleep(50);
-        assertEquals(Arrays.asList("A", "B"), inFlightRequests.nodesWithTimedOutRequests(time.milliseconds()));
+        assertEquals(Arrays.asList("A", "B"), inFlightRequests.nodesWithTimedOutRequests(time.absoluteMilliseconds()));
     }
 
     @Test
@@ -100,14 +99,14 @@ public class InFlightRequestsTest {
         assertEquals(0, inFlightRequests.count());
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void testCompleteNextThrowsIfNoInflights() {
-        assertThrows(IllegalStateException.class, () -> inFlightRequests.completeNext(dest));
+        inFlightRequests.completeNext(dest);
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void testCompleteLastSentThrowsIfNoInFlights() {
-        assertThrows(IllegalStateException.class, () -> inFlightRequests.completeLastSent(dest));
+        inFlightRequests.completeLastSent(dest);
     }
 
     private int addRequest(String destination) {

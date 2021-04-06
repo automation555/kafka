@@ -22,18 +22,18 @@ import org.apache.kafka.common.metrics.CompoundStat.NamedMeasurable;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
+import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
 
 public class FrequenciesTest {
 
@@ -42,34 +42,34 @@ public class FrequenciesTest {
     private Time time;
     private Metrics metrics;
 
-    @BeforeEach
+    @Before
     public void setup() {
         config = new MetricConfig().eventWindow(50).samples(2);
         time = new MockTime();
-        metrics = new Metrics(config, Arrays.asList(new JmxReporter()), time, true);
+        metrics = new Metrics(config, Arrays.asList((MetricsReporter) new JmxReporter()), time, true);
     }
 
-    @AfterEach
+    @After
     public void tearDown() {
         metrics.close();
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void testFrequencyCenterValueAboveMax() {
-        assertThrows(IllegalArgumentException.class,
-            () -> new Frequencies(4, 1.0, 4.0, freq("1", 1.0), freq("2", 20.0)));
+        new Frequencies(4, 1.0, 4.0,
+                        freq("1", 1.0), freq("2", 20.0));
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void testFrequencyCenterValueBelowMin() {
-        assertThrows(IllegalArgumentException.class,
-            () -> new Frequencies(4, 1.0, 4.0, freq("1", 1.0), freq("2", -20.0)));
+        new Frequencies(4, 1.0, 4.0,
+                        freq("1", 1.0), freq("2", -20.0));
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void testMoreFrequencyParametersThanBuckets() {
-        assertThrows(IllegalArgumentException.class,
-            () -> new Frequencies(1, 1.0, 4.0, freq("1", 1.0), freq("2", -20.0)));
+        new Frequencies(1, 1.0, 4.0,
+                        freq("1", 1.0), freq("2", -20.0));
     }
 
     @Test
@@ -82,26 +82,27 @@ public class FrequenciesTest {
 
         // Record 2 windows worth of values
         for (int i = 0; i != 25; ++i) {
-            frequencies.record(config, 0.0, time.milliseconds());
+            frequencies.record(config, 0.0, time.absoluteMilliseconds());
         }
         for (int i = 0; i != 75; ++i) {
-            frequencies.record(config, 1.0, time.milliseconds());
+            frequencies.record(config, 1.0, time.absoluteMilliseconds());
         }
-        assertEquals(0.25, falseMetric.stat().measure(config, time.milliseconds()), DELTA);
-        assertEquals(0.75, trueMetric.stat().measure(config, time.milliseconds()), DELTA);
+        assertEquals(0.25, falseMetric.stat().measure(config, time.absoluteMilliseconds()), DELTA);
+        assertEquals(0.75, trueMetric.stat().measure(config, time.absoluteMilliseconds()), DELTA);
 
         // Record 2 more windows worth of values
         for (int i = 0; i != 40; ++i) {
-            frequencies.record(config, 0.0, time.milliseconds());
+            frequencies.record(config, 0.0, time.absoluteMilliseconds());
         }
         for (int i = 0; i != 60; ++i) {
-            frequencies.record(config, 1.0, time.milliseconds());
+            frequencies.record(config, 1.0, time.absoluteMilliseconds());
         }
-        assertEquals(0.40, falseMetric.stat().measure(config, time.milliseconds()), DELTA);
-        assertEquals(0.60, trueMetric.stat().measure(config, time.milliseconds()), DELTA);
+        assertEquals(0.40, falseMetric.stat().measure(config, time.absoluteMilliseconds()), DELTA);
+        assertEquals(0.60, trueMetric.stat().measure(config, time.absoluteMilliseconds()), DELTA);
     }
 
     @Test
+    @SuppressWarnings("deprecation")
     public void testUseWithMetrics() {
         MetricName name1 = name("1");
         MetricName name2 = name("2");
@@ -121,7 +122,7 @@ public class FrequenciesTest {
 
         // Record 2 windows worth of values
         for (int i = 0; i != 100; ++i) {
-            frequencies.record(config, i % 4 + 1, time.milliseconds());
+            frequencies.record(config, i % 4 + 1, time.absoluteMilliseconds());
         }
         assertEquals(0.25, (Double) metric1.metricValue(), DELTA);
         assertEquals(0.25, (Double) metric2.metricValue(), DELTA);
@@ -130,7 +131,7 @@ public class FrequenciesTest {
 
         // Record 2 windows worth of values
         for (int i = 0; i != 100; ++i) {
-            frequencies.record(config, i % 2 + 1, time.milliseconds());
+            frequencies.record(config, i % 2 + 1, time.absoluteMilliseconds());
         }
         assertEquals(0.50, (Double) metric1.metricValue(), DELTA);
         assertEquals(0.50, (Double) metric2.metricValue(), DELTA);
@@ -140,7 +141,7 @@ public class FrequenciesTest {
         // Record 1 window worth of values to overlap with the last window
         // that is half 1.0 and half 2.0
         for (int i = 0; i != 50; ++i) {
-            frequencies.record(config, 4.0, time.milliseconds());
+            frequencies.record(config, 4.0, time.absoluteMilliseconds());
         }
         assertEquals(0.25, (Double) metric1.metricValue(), DELTA);
         assertEquals(0.25, (Double) metric2.metricValue(), DELTA);

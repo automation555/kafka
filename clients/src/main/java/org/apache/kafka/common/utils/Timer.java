@@ -52,7 +52,6 @@ public class Timer {
     private long startMs;
     private long currentTimeMs;
     private long deadlineMs;
-    private long timeoutMs;
 
     Timer(Time time, long timeoutMs) {
         this.time = time;
@@ -102,7 +101,6 @@ public class Timer {
         if (timeoutMs < 0)
             throw new IllegalArgumentException("Invalid negative timeout " + timeoutMs);
 
-        this.timeoutMs = timeoutMs;
         this.startMs = this.currentTimeMs;
 
         if (currentTimeMs > Long.MAX_VALUE - timeoutMs)
@@ -112,26 +110,12 @@ public class Timer {
     }
 
     /**
-     * Reset the timer's deadline directly.
-     *
-     * @param deadlineMs The new deadline in milliseconds
-     */
-    public void resetDeadline(long deadlineMs) {
-        if (deadlineMs < 0)
-            throw new IllegalArgumentException("Invalid negative deadline " + deadlineMs);
-
-        this.timeoutMs = Math.max(0, deadlineMs - this.currentTimeMs);
-        this.startMs = this.currentTimeMs;
-        this.deadlineMs = deadlineMs;
-    }
-
-    /**
      * Use the underlying {@link Time} implementation to update the current cached time. If
      * the underlying time returns a value which is smaller than the current cached time,
      * the update will be ignored.
      */
     public void update() {
-        update(time.milliseconds());
+        update(time.absoluteMilliseconds());
     }
 
     /**
@@ -180,16 +164,6 @@ public class Timer {
      */
     public long elapsedMs() {
         return currentTimeMs - startMs;
-    }
-
-    /**
-     * Get the current timeout value specified through {@link #reset(long)} or {@link #resetDeadline(long)}.
-     * This value is constant until altered by one of these API calls.
-     *
-     * @return The timeout in milliseconds
-     */
-    public long timeoutMs() {
-        return timeoutMs;
     }
 
     /**

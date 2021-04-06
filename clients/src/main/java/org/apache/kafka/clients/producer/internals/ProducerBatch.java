@@ -17,7 +17,6 @@
 package org.apache.kafka.clients.producer.internals;
 
 import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
@@ -30,7 +29,6 @@ import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.MutableRecordBatch;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
-import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
@@ -268,17 +266,14 @@ public final class ProducerBatch {
             // A newly created batch can always host the first message.
             if (!batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk)) {
                 batches.add(batch);
-                batch.closeForRecordAppends();
                 batch = createBatchOffAccumulatorForRecord(record, splitBatchSize);
                 batch.tryAppendForSplit(record.timestamp(), record.key(), record.value(), record.headers(), thunk);
             }
         }
 
         // Close the last batch and add it to the batch list after split.
-        if (batch != null) {
+        if (batch != null)
             batches.add(batch);
-            batch.closeForRecordAppends();
-        }
 
         produceFuture.set(ProduceResponse.INVALID_OFFSET, NO_TIMESTAMP, new RecordBatchTooLargeException());
         produceFuture.done();
@@ -302,8 +297,7 @@ public final class ProducerBatch {
         // Note that we intentionally do not set producer state (producerId, epoch, sequence, and isTransactional)
         // for the newly created batch. This will be set when the batch is dequeued for sending (which is consistent
         // with how normal batches are handled).
-        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer, magic(), recordsBuilder.compressionType(),
-                TimestampType.CREATE_TIME, 0L);
+        MemoryRecordsBuilder builder = MemoryRecords.builder(buffer).magic(magic()).compressionType(recordsBuilder.compressionType()).build();
         return new ProducerBatch(topicPartition, builder, this.createdMs, true);
     }
 
@@ -392,8 +386,6 @@ public final class ProducerBatch {
     }
 
     public void resetProducerState(ProducerIdAndEpoch producerIdAndEpoch, int baseSequence, boolean isTransactional) {
-        log.info("Resetting sequence number of batch with current sequence {} for partition {} to {}",
-                this.baseSequence(), this.topicPartition, baseSequence);
         reopened = true;
         recordsBuilder.reopenAndRewriteProducerState(producerIdAndEpoch.producerId, producerIdAndEpoch.epoch, baseSequence, isTransactional);
     }
@@ -457,10 +449,6 @@ public final class ProducerBatch {
 
     public int baseSequence() {
         return recordsBuilder.baseSequence();
-    }
-
-    public int lastSequence() {
-        return recordsBuilder.baseSequence() + recordsBuilder.numRecords() - 1;
     }
 
     public boolean hasSequence() {

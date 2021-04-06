@@ -43,7 +43,9 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   }
 
   // Get the bucket's expiration time
-  def getExpiration: Long = expiration.get
+  def getExpiration(): Long = {
+    expiration.get()
+  }
 
   // Apply the supplied function to each of tasks in this list
   def foreach(f: (TimerTask)=>Unit): Unit = {
@@ -103,7 +105,7 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   }
 
   // Remove all task entries and apply the supplied function to each of them
-  def flush(f: TimerTaskEntry => Unit): Unit = {
+  def flush(f: (TimerTaskEntry)=>Unit): Unit = {
     synchronized {
       var head = root.next
       while (head ne root) {
@@ -116,12 +118,16 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   }
 
   def getDelay(unit: TimeUnit): Long = {
-    unit.convert(max(getExpiration - Time.SYSTEM.hiResClockMs, 0), TimeUnit.MILLISECONDS)
+    unit.convert(max(getExpiration - Time.SYSTEM.relativeMilliseconds, 0), TimeUnit.MILLISECONDS)
   }
 
   def compareTo(d: Delayed): Int = {
+
     val other = d.asInstanceOf[TimerTaskList]
-    java.lang.Long.compare(getExpiration, other.getExpiration)
+
+    if(getExpiration < other.getExpiration) -1
+    else if(getExpiration > other.getExpiration) 1
+    else 0
   }
 
 }
@@ -153,7 +159,7 @@ private[timer] class TimerTaskEntry(val timerTask: TimerTask, val expirationMs: 
   }
 
   override def compare(that: TimerTaskEntry): Int = {
-    java.lang.Long.compare(expirationMs, that.expirationMs)
+    this.expirationMs compare that.expirationMs
   }
 }
 

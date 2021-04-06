@@ -20,9 +20,8 @@ import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
-import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.Config;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.TopicListing;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -41,7 +40,6 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.acl.AclBindingFilter;
-import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.SecurityDisabledException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
@@ -87,7 +85,6 @@ public class ClientCompatibilityTest {
         final int numClusterNodes;
         final boolean createTopicsSupported;
         final boolean describeAclsSupported;
-        final boolean describeConfigsSupported;
 
         TestConfig(Namespace res) {
             this.bootstrapServer = res.getString("bootstrapServer");
@@ -98,7 +95,6 @@ public class ClientCompatibilityTest {
             this.numClusterNodes = res.getInt("numClusterNodes");
             this.createTopicsSupported = res.getBoolean("createTopicsSupported");
             this.describeAclsSupported = res.getBoolean("describeAclsSupported");
-            this.describeConfigsSupported = res.getBoolean("describeConfigsSupported");
         }
     }
 
@@ -165,13 +161,6 @@ public class ClientCompatibilityTest {
             .dest("describeAclsSupported")
             .metavar("DESCRIBE_ACLS_SUPPORTED")
             .help("Whether describeAcls is supported in the AdminClient.");
-        parser.addArgument("--describe-configs-supported")
-            .action(store())
-            .required(true)
-            .type(Boolean.class)
-            .dest("describeConfigsSupported")
-            .metavar("DESCRIBE_CONFIGS_SUPPORTED")
-            .help("Whether describeConfigs is supported in the AdminClient.");
 
         Namespace res = null;
         try {
@@ -220,7 +209,7 @@ public class ClientCompatibilityTest {
 
     ClientCompatibilityTest(TestConfig testConfig) {
         this.testConfig = testConfig;
-        long curTime = Time.SYSTEM.milliseconds();
+        long curTime = Time.SYSTEM.absoluteMilliseconds();
 
         ByteBuffer buf = ByteBuffer.allocate(8);
         buf.putLong(curTime);
@@ -234,7 +223,7 @@ public class ClientCompatibilityTest {
     }
 
     void run() throws Throwable {
-        long prodTimeMs = Time.SYSTEM.milliseconds();
+        long prodTimeMs = Time.SYSTEM.absoluteMilliseconds();
         testAdminClient();
         testProduce();
         testConsume(prodTimeMs);
@@ -258,7 +247,7 @@ public class ClientCompatibilityTest {
     void testAdminClient() throws Throwable {
         Properties adminProps = new Properties();
         adminProps.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, testConfig.bootstrapServer);
-        try (final Admin client = Admin.create(adminProps)) {
+        try (final AdminClient client = AdminClient.create(adminProps)) {
             while (true) {
                 Collection<Node> nodes = client.describeCluster().nodes().get();
                 if (nodes.size() == testConfig.numClusterNodes) {
@@ -271,93 +260,64 @@ public class ClientCompatibilityTest {
                 log.info("Saw only {} cluster nodes.  Waiting to see {}.",
                     nodes.size(), testConfig.numClusterNodes);
             }
-
-            testDescribeConfigsMethod(client);
-
             tryFeature("createTopics", testConfig.createTopicsSupported,
-                () -> {
-                    try {
-                        client.createTopics(Collections.singleton(
-                            new NewTopic("newtopic", 1, (short) 1))).all().get();
-                    } catch (ExecutionException e) {
-                        throw e.getCause();
+                new Invoker() {
+                    @Override
+                    public void invoke() throws Throwable {
+                        try {
+                            client.createTopics(Collections.singleton(
+                                new NewTopic("newtopic", 1, (short) 1))).all().get();
+                        } catch (ExecutionException e) {
+                            throw e.getCause();
+                        }
                     }
                 },
-                () ->  createTopicsResultTest(client, Collections.singleton("newtopic"))
-            );
-
+                new ResultTester() {
+                    @Override
+                    public void test() throws Throwable {
+                        while (true) {
+                            try {
+                                client.describeTopics(Collections.singleton("newtopic")).all().get();
+                                break;
+                            } catch (ExecutionException e) {
+                                if (e.getCause() instanceof UnknownTopicOrPartitionException)
+                                    continue;
+                                throw e;
+                            }
+                        }
+                    }
+                });
             while (true) {
                 Collection<TopicListing> listings = client.listTopics().listings().get();
                 if (!testConfig.createTopicsSupported)
                     break;
-
-                if (topicExists(listings, "newtopic"))
+                boolean foundNewTopic = false;
+                for (TopicListing listing : listings) {
+                    if (listing.name().equals("newtopic")) {
+                        if (listing.isInternal())
+                            throw new KafkaException("Did not expect newtopic to be an internal topic.");
+                        foundNewTopic = true;
+                    }
+                }
+                if (foundNewTopic)
                     break;
-
                 Thread.sleep(1);
                 log.info("Did not see newtopic.  Retrying listTopics...");
             }
-
             tryFeature("describeAclsSupported", testConfig.describeAclsSupported,
-                () -> {
-                    try {
-                        client.describeAcls(AclBindingFilter.ANY).values().get();
-                    } catch (ExecutionException e) {
-                        if (e.getCause() instanceof SecurityDisabledException)
-                            return;
-                        throw e.getCause();
+                new Invoker() {
+                    @Override
+                    public void invoke() throws Throwable {
+                        try {
+                            client.describeAcls(AclBindingFilter.ANY).values().get();
+                        } catch (ExecutionException e) {
+                            if (e.getCause() instanceof SecurityDisabledException)
+                                return;
+                            throw e.getCause();
+                        }
                     }
                 });
         }
-    }
-
-    private void testDescribeConfigsMethod(final Admin client) throws Throwable {
-        tryFeature("describeConfigsSupported", testConfig.describeConfigsSupported,
-            () -> {
-                try {
-                    Collection<Node> nodes = client.describeCluster().nodes().get();
-
-                    final ConfigResource configResource = new ConfigResource(
-                        ConfigResource.Type.BROKER,
-                        nodes.iterator().next().idString()
-                    );
-
-                    Map<ConfigResource, Config> brokerConfig =
-                        client.describeConfigs(Collections.singleton(configResource)).all().get();
-
-                    if (brokerConfig.get(configResource).entries().isEmpty()) {
-                        throw new KafkaException("Expected to see config entries, but got zero entries");
-                    }
-                } catch (ExecutionException e) {
-                    throw e.getCause();
-                }
-            });
-    }
-
-    private void createTopicsResultTest(Admin client, Collection<String> topics)
-            throws InterruptedException, ExecutionException {
-        while (true) {
-            try {
-                client.describeTopics(topics).all().get();
-                break;
-            } catch (ExecutionException e) {
-                if (e.getCause() instanceof UnknownTopicOrPartitionException)
-                    continue;
-                throw e;
-            }
-        }
-    }
-
-    private boolean topicExists(Collection<TopicListing> listings, String topicName) {
-        boolean foundTopic = false;
-        for (TopicListing listing : listings) {
-            if (listing.name().equals(topicName)) {
-                if (listing.isInternal())
-                    throw new KafkaException(String.format("Did not expect %s to be an internal topic.", topicName));
-                foundTopic = true;
-            }
-        }
-        return foundTopic;
     }
 
     private static class OffsetsForTime {
@@ -377,8 +337,18 @@ public class ClientCompatibilityTest {
         }
 
         @Override
+        public void configure(Map<String, ?> configs, boolean isKey) {
+            // nothing to do
+        }
+
+        @Override
         public byte[] deserialize(String topic, byte[] data) {
             return data;
+        }
+
+        @Override
+        public void close() {
+            // nothing to do
         }
 
         @Override
@@ -414,8 +384,18 @@ public class ClientCompatibilityTest {
             }
             final OffsetsForTime offsetsForTime = new OffsetsForTime();
             tryFeature("offsetsForTimes", testConfig.offsetsForTimesSupported,
-                () -> offsetsForTime.result = consumer.offsetsForTimes(timestampsToSearch),
-                () -> log.info("offsetsForTime = {}", offsetsForTime.result));
+                    new Invoker() {
+                        @Override
+                        public void invoke() {
+                            offsetsForTime.result = consumer.offsetsForTimes(timestampsToSearch);
+                        }
+                    },
+                    new ResultTester() {
+                        @Override
+                        public void test() {
+                            log.info("offsetsForTime = {}", offsetsForTime.result);
+                        }
+                    });
             // Whether or not offsetsForTimes works, beginningOffsets and endOffsets
             // should work.
             consumer.beginningOffsets(timestampsToSearch.keySet());
@@ -430,7 +410,7 @@ public class ClientCompatibilityTest {
 
                 private byte[] fetchNext() {
                     while (true) {
-                        long curTime = Time.SYSTEM.milliseconds();
+                        long curTime = Time.SYSTEM.absoluteMilliseconds();
                         if (curTime - prodTimeMs > TIMEOUT_MS)
                             throw new RuntimeException("Timed out after " + TIMEOUT_MS + " ms.");
                         if (recordIter == null) {
@@ -506,7 +486,11 @@ public class ClientCompatibilityTest {
     }
 
     private void tryFeature(String featureName, boolean supported, Invoker invoker) throws Throwable {
-        tryFeature(featureName, supported, invoker, () -> { });
+        tryFeature(featureName, supported, invoker, new ResultTester() {
+                @Override
+                public void test() {
+                }
+            });
     }
 
     private void tryFeature(String featureName, boolean supported, Invoker invoker, ResultTester resultTester)

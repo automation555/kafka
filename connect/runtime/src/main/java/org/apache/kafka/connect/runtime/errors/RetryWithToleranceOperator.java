@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -51,11 +50,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * set appropriate error reason in the {@link ProcessingContext} and return null, or (2) if the exception is not tolerated,
  * then it is wrapped into a ConnectException and rethrown to the caller.
  * <p>
- *
- * Instances of this class are thread safe.
- * <p>
  */
-public class RetryWithToleranceOperator implements AutoCloseable {
+public class RetryWithToleranceOperator {
 
     private static final Logger log = LoggerFactory.getLogger(RetryWithToleranceOperator.class);
 
@@ -77,38 +73,14 @@ public class RetryWithToleranceOperator implements AutoCloseable {
     private final Time time;
     private ErrorHandlingMetrics errorHandlingMetrics;
 
-    protected final ProcessingContext context;
+    protected ProcessingContext context = new ProcessingContext();
 
     public RetryWithToleranceOperator(long errorRetryTimeout, long errorMaxDelayInMillis,
                                       ToleranceType toleranceType, Time time) {
-        this(errorRetryTimeout, errorMaxDelayInMillis, toleranceType, time, new ProcessingContext());
-    }
-
-    RetryWithToleranceOperator(long errorRetryTimeout, long errorMaxDelayInMillis,
-                               ToleranceType toleranceType, Time time,
-                               ProcessingContext context) {
         this.errorRetryTimeout = errorRetryTimeout;
         this.errorMaxDelayInMillis = errorMaxDelayInMillis;
         this.errorToleranceType = toleranceType;
         this.time = time;
-        this.context = context;
-    }
-
-    public synchronized Future<Void> executeFailed(Stage stage, Class<?> executingClass,
-                                      ConsumerRecord<byte[], byte[]> consumerRecord,
-                                      Throwable error) {
-
-        markAsFailed();
-        context.consumerRecord(consumerRecord);
-        context.currentContext(stage, executingClass);
-        context.error(error);
-        errorHandlingMetrics.recordFailure();
-        Future<Void> errantRecordFuture = context.report();
-        if (!withinToleranceLimits()) {
-            errorHandlingMetrics.recordError();
-            throw new ConnectException("Tolerance exceeded in error handler", error);
-        }
-        return errantRecordFuture;
     }
 
     /**
@@ -119,7 +91,7 @@ public class RetryWithToleranceOperator implements AutoCloseable {
      * @param <V> return type of the result of the operation.
      * @return result of the operation
      */
-    public synchronized <V> V execute(Operation<V> operation, Stage stage, Class<?> executingClass) {
+    public <V> V execute(Operation<V> operation, Stage stage, Class<?> executingClass) {
         context.currentContext(stage, executingClass);
 
         if (context.failed()) {
@@ -148,7 +120,7 @@ public class RetryWithToleranceOperator implements AutoCloseable {
      */
     protected <V> V execAndRetry(Operation<V> operation) throws Exception {
         int attempt = 0;
-        long startTime = time.milliseconds();
+        long startTime = time.absoluteMilliseconds();
         long deadline = startTime + errorRetryTimeout;
         do {
             try {
@@ -217,8 +189,9 @@ public class RetryWithToleranceOperator implements AutoCloseable {
         totalFailures++;
     }
 
+    // Visible for testing
     @SuppressWarnings("fallthrough")
-    public synchronized boolean withinToleranceLimits() {
+    boolean withinToleranceLimits() {
         switch (errorToleranceType) {
             case NONE:
                 if (totalFailures > 0) return false;
@@ -231,7 +204,7 @@ public class RetryWithToleranceOperator implements AutoCloseable {
 
     // Visible for testing
     boolean checkRetry(long startTime) {
-        return (time.milliseconds() - startTime) < errorRetryTimeout;
+        return (time.absoluteMilliseconds() - startTime) < errorRetryTimeout;
     }
 
     // Visible for testing
@@ -241,14 +214,14 @@ public class RetryWithToleranceOperator implements AutoCloseable {
         if (delay > errorMaxDelayInMillis) {
             delay = ThreadLocalRandom.current().nextLong(errorMaxDelayInMillis);
         }
-        if (delay + time.milliseconds() > deadline) {
-            delay = deadline - time.milliseconds();
+        if (delay + time.absoluteMilliseconds() > deadline) {
+            delay = deadline - time.absoluteMilliseconds();
         }
         log.debug("Sleeping for {} millis", delay);
         time.sleep(delay);
     }
 
-    public synchronized void metrics(ErrorHandlingMetrics errorHandlingMetrics) {
+    public void metrics(ErrorHandlingMetrics errorHandlingMetrics) {
         this.errorHandlingMetrics = errorHandlingMetrics;
     }
 
@@ -269,7 +242,7 @@ public class RetryWithToleranceOperator implements AutoCloseable {
      *
      * @param reporters the error reporters (should not be null).
      */
-    public synchronized void reporters(List<ErrorReporter> reporters) {
+    public void reporters(List<ErrorReporter> reporters) {
         this.context.reporters(reporters);
     }
 
@@ -278,7 +251,7 @@ public class RetryWithToleranceOperator implements AutoCloseable {
      *
      * @param preTransformRecord the source record
      */
-    public synchronized void sourceRecord(SourceRecord preTransformRecord) {
+    public void sourceRecord(SourceRecord preTransformRecord) {
         this.context.sourceRecord(preTransformRecord);
     }
 
@@ -287,28 +260,14 @@ public class RetryWithToleranceOperator implements AutoCloseable {
      *
      * @param consumedMessage the record
      */
-    public synchronized void consumerRecord(ConsumerRecord<byte[], byte[]> consumedMessage) {
+    public void consumerRecord(ConsumerRecord<byte[], byte[]> consumedMessage) {
         this.context.consumerRecord(consumedMessage);
     }
 
     /**
      * @return true, if the last operation encountered an error; false otherwise
      */
-    public synchronized boolean failed() {
+    public boolean failed() {
         return this.context.failed();
-    }
-
-    /**
-     * Returns the error encountered when processing the current stage.
-     *
-     * @return the error encountered when processing the current stage
-     */
-    public synchronized Throwable error() {
-        return this.context.error();
-    }
-
-    @Override
-    public synchronized void close() {
-        this.context.close();
     }
 }

@@ -29,7 +29,7 @@ import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -39,19 +39,18 @@ import java.util.concurrent.ExecutionException;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V0;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V1;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V2;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ProducerBatchTest {
 
     private final long now = 1488748346917L;
 
-    private final MemoryRecordsBuilder memoryRecordsBuilder = MemoryRecords.builder(ByteBuffer.allocate(128),
-            CompressionType.NONE, TimestampType.CREATE_TIME, 128);
+    private final MemoryRecordsBuilder memoryRecordsBuilder = MemoryRecords.builder(ByteBuffer.allocate(128)).baseOffset(128L).build();
 
     @Test
     public void testChecksumNullForMagicV2() {
@@ -141,8 +140,7 @@ public class ProducerBatchTest {
     @Test
     public void testAppendedChecksumMagicV0AndV1() {
         for (byte magic : Arrays.asList(MAGIC_VALUE_V0, MAGIC_VALUE_V1)) {
-            MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(128), magic,
-                    CompressionType.NONE, TimestampType.CREATE_TIME, 0L);
+            MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(128)).magic(magic).build();
             ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), builder, now);
             byte[] key = "hi".getBytes();
             byte[] value = "there".getBytes();
@@ -158,12 +156,7 @@ public class ProducerBatchTest {
     @Test
     public void testSplitPreservesHeaders() {
         for (CompressionType compressionType : CompressionType.values()) {
-            MemoryRecordsBuilder builder = MemoryRecords.builder(
-                    ByteBuffer.allocate(1024),
-                    MAGIC_VALUE_V2,
-                    compressionType,
-                    TimestampType.CREATE_TIME,
-                    0L);
+            MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024)).magic(MAGIC_VALUE_V2).compressionType(compressionType).build();
             ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), builder, now);
             Header header = new RecordHeader("header-key", "header-value".getBytes());
 
@@ -176,14 +169,14 @@ public class ProducerBatchTest {
                 }
             }
             Deque<ProducerBatch> batches = batch.split(200);
-            assertTrue(batches.size() >= 2, "This batch should be split to multiple small batches.");
+            assertTrue("This batch should be split to multiple small batches.", batches.size() >= 2);
 
             for (ProducerBatch splitProducerBatch : batches) {
                 for (RecordBatch splitBatch : splitProducerBatch.records().batches()) {
                     for (Record record : splitBatch) {
-                        assertTrue(record.headers().length == 1, "Header size should be 1.");
-                        assertTrue(record.headers()[0].key().equals("header-key"), "Header key should be 'header-key'.");
-                        assertTrue(new String(record.headers()[0].value()).equals("header-value"), "Header value should be 'header-value'.");
+                        assertTrue("Header size should be 1.", record.headers().length == 1);
+                        assertTrue("Header key should be 'header-key'.", record.headers()[0].key().equals("header-key"));
+                        assertTrue("Header value should be 'header-value'.", new String(record.headers()[0].value()).equals("header-value"));
                     }
                 }
             }
@@ -200,8 +193,7 @@ public class ProducerBatchTest {
                 if (compressionType == CompressionType.ZSTD && magic < MAGIC_VALUE_V2)
                     continue;
 
-                MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024), magic,
-                        compressionType, TimestampType.CREATE_TIME, 0L);
+                MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024)).magic(magic).compressionType(compressionType).build();
 
                 ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), builder, now);
                 while (true) {
@@ -263,7 +255,7 @@ public class ProducerBatchTest {
         assertTrue(memoryRecordsBuilder.hasRoomFor(now, null, new byte[10], Record.EMPTY_HEADERS));
         memoryRecordsBuilder.closeForRecordAppends();
         assertFalse(memoryRecordsBuilder.hasRoomFor(now, null, new byte[10], Record.EMPTY_HEADERS));
-        assertNull(batch.tryAppend(now + 1, null, new byte[10], Record.EMPTY_HEADERS, null, now + 1));
+        assertEquals(null, batch.tryAppend(now + 1, null, new byte[10], Record.EMPTY_HEADERS, null, now + 1));
     }
 
     private static class MockCallback implements Callback {

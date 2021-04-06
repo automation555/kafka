@@ -46,17 +46,17 @@ class Throttler(desiredRatePerSec: Double,
   private val lock = new Object
   private val meter = newMeter(metricName, units, TimeUnit.SECONDS)
   private val checkIntervalNs = TimeUnit.MILLISECONDS.toNanos(checkIntervalMs)
-  private var periodStartNs: Long = time.nanoseconds
+  private var periodStartNs: Long = time.relativeNanoseconds
   private var observedSoFar: Double = 0.0
   
-  def maybeThrottle(observed: Double): Unit = {
+  def maybeThrottle(observed: Double) {
     val msPerSec = TimeUnit.SECONDS.toMillis(1)
     val nsPerSec = TimeUnit.SECONDS.toNanos(1)
 
     meter.mark(observed.toLong)
     lock synchronized {
       observedSoFar += observed
-      val now = time.nanoseconds
+      val now = time.relativeNanoseconds
       val elapsedNs = now - periodStartNs
       // if we have completed an interval AND we have observed something, maybe
       // we should take a little nap
@@ -73,7 +73,7 @@ class Throttler(desiredRatePerSec: Double,
             time.sleep(sleepTime)
           }
         }
-        periodStartNs = time.nanoseconds()
+        periodStartNs = time.relativeNanoseconds()
         observedSoFar = 0
       }
     }
@@ -83,7 +83,7 @@ class Throttler(desiredRatePerSec: Double,
 
 object Throttler {
   
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     val rand = new Random()
     val throttler = new Throttler(100000, 100, true, time = Time.SYSTEM)
     val interval = 30000

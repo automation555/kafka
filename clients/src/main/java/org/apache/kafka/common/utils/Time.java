@@ -18,7 +18,6 @@ package org.apache.kafka.common.utils;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 /**
  * An interface abstracting the clock to use in unit testing classes that make use of clock time.
@@ -30,15 +29,25 @@ public interface Time {
     Time SYSTEM = new SystemTime();
 
     /**
-     * Returns the current time in milliseconds.
+     * Returns the number of milliseconds since midnight UTC on 1/1/1970.
+     *
+     * This value is likely less precise than relative time.
      */
-    long milliseconds();
+    long absoluteMilliseconds();
 
     /**
-     * Returns the value returned by `nanoseconds` converted into milliseconds.
+     * Returns the current value of the running JVM's high-resolution time source, rounded down to milliseconds.
+     *
+     * <p>This method can only be used to measure elapsed time and is
+     * not related to any other notion of system or wall-clock time.
+     * The value returned represents nanoseconds since some fixed but
+     * arbitrary <i>origin</i> time (perhaps in the future, so values
+     * may be negative).  The same origin is used by all invocations of
+     * this method in an instance of a Java virtual machine; other
+     * virtual machine instances are likely to use a different origin.
      */
-    default long hiResClockMs() {
-        return TimeUnit.NANOSECONDS.toMillis(nanoseconds());
+    default long relativeMilliseconds() {
+        return TimeUnit.NANOSECONDS.toMillis(relativeNanoseconds());
     }
 
     /**
@@ -52,25 +61,12 @@ public interface Time {
      * this method in an instance of a Java virtual machine; other
      * virtual machine instances are likely to use a different origin.
      */
-    long nanoseconds();
+    long relativeNanoseconds();
 
     /**
      * Sleep for the given number of milliseconds
      */
     void sleep(long ms);
-
-    /**
-     * Wait for a condition using the monitor of a given object. This avoids the implicit
-     * dependence on system time when calling {@link Object#wait()}.
-     *
-     * @param obj The object that will be waited with {@link Object#wait()}. Note that it is the responsibility
-     *      of the caller to call notify on this object when the condition is satisfied.
-     * @param condition The condition we are awaiting
-     * @param deadlineMs The deadline timestamp at which to raise a timeout error
-     *
-     * @throws org.apache.kafka.common.errors.TimeoutException if the timeout expires before the condition is satisfied
-     */
-    void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException;
 
     /**
      * Get a timer which is bound to this time instance and expires after the given timeout
@@ -85,5 +81,4 @@ public interface Time {
     default Timer timer(Duration timeout) {
         return timer(timeout.toMillis());
     }
-
 }

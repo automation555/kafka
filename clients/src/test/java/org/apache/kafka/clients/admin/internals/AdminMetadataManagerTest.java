@@ -23,16 +23,16 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.HashMap;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class AdminMetadataManagerTest {
     private final MockTime time = new MockTime();
@@ -46,45 +46,51 @@ public class AdminMetadataManagerTest {
     public void testMetadataReady() {
         // Metadata is not ready on initialization
         assertFalse(mgr.isReady());
-        assertEquals(0, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(0, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
         // Metadata is not ready when bootstrap servers are set
         mgr.update(Cluster.bootstrap(Collections.singletonList(new InetSocketAddress("localhost", 9999))),
-                time.milliseconds());
+                time.absoluteMilliseconds());
         assertFalse(mgr.isReady());
-        assertEquals(0, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(0, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
-        mgr.update(mockCluster(), time.milliseconds());
+        mgr.update(mockCluster(), time.absoluteMilliseconds());
         assertTrue(mgr.isReady());
-        assertEquals(metadataExpireMs, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(metadataExpireMs, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
         time.sleep(metadataExpireMs);
-        assertEquals(0, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(0, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
     }
 
     @Test
     public void testMetadataRefreshBackoff() {
-        mgr.transitionToUpdatePending(time.milliseconds());
-        assertEquals(Long.MAX_VALUE, mgr.metadataFetchDelayMs(time.milliseconds()));
+        mgr.transitionToUpdatePending(time.absoluteMilliseconds());
+        assertEquals(Long.MAX_VALUE, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
         mgr.updateFailed(new RuntimeException());
-        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
         // Even if we explicitly request an update, the backoff should be respected
         mgr.requestUpdate();
-        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
 
         time.sleep(refreshBackoffMs);
-        assertEquals(0, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertEquals(0, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
     }
 
     @Test
     public void testAuthenticationFailure() {
-        mgr.transitionToUpdatePending(time.milliseconds());
+        mgr.transitionToUpdatePending(time.absoluteMilliseconds());
         mgr.updateFailed(new AuthenticationException("Authentication failed"));
-        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.milliseconds()));
-        assertThrows(AuthenticationException.class, mgr::isReady);
-        mgr.update(mockCluster(), time.milliseconds());
+        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.absoluteMilliseconds()));
+        try {
+            mgr.isReady();
+            fail("Expected AuthenticationException to be thrown");
+        } catch (AuthenticationException e) {
+            // Expected
+        }
+
+        mgr.update(mockCluster(), time.absoluteMilliseconds());
         assertTrue(mgr.isReady());
     }
 

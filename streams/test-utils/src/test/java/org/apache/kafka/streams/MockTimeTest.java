@@ -16,43 +16,41 @@
  */
 package org.apache.kafka.streams;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
 
 public class MockTimeTest {
 
     @Test
     public void shouldSetStartTime() {
         final TopologyTestDriver.MockTime time = new TopologyTestDriver.MockTime(42L);
-        assertEquals(42L, time.milliseconds());
-        assertEquals(42L * 1000L * 1000L, time.nanoseconds());
+        assertEquals(42L, time.absoluteMilliseconds());
+        assertEquals(42L * 1000L * 1000L, time.relativeNanoseconds());
     }
 
     @Test
     public void shouldGetNanosAsMillis() {
         final TopologyTestDriver.MockTime time = new TopologyTestDriver.MockTime(42L);
-        assertEquals(42L, time.hiResClockMs());
+        assertEquals(42L, time.relativeMilliseconds());
     }
 
-    @Test
+    @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowNegativeSleep() {
-        assertThrows(IllegalArgumentException.class,
-            () -> new TopologyTestDriver.MockTime(42).sleep(-1L));
+        new TopologyTestDriver.MockTime(42).sleep(-1L);
     }
 
     @Test
     public void shouldAdvanceTimeOnSleep() {
         final TopologyTestDriver.MockTime time = new TopologyTestDriver.MockTime(42L);
 
-        assertEquals(42L, time.milliseconds());
+        assertEquals(42L, time.absoluteMilliseconds());
         time.sleep(1L);
-        assertEquals(43L, time.milliseconds());
+        assertEquals(43L, time.absoluteMilliseconds());
         time.sleep(0L);
-        assertEquals(43L, time.milliseconds());
+        assertEquals(43L, time.absoluteMilliseconds());
         time.sleep(3L);
-        assertEquals(46L, time.milliseconds());
+        assertEquals(46L, time.absoluteMilliseconds());
     }
 
 }

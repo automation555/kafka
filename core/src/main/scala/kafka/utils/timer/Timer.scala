@@ -16,9 +16,9 @@
  */
 package kafka.utils.timer
 
+import java.util.concurrent.{DelayQueue, Executors, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantReadWriteLock
-import java.util.concurrent.{DelayQueue, Executors, TimeUnit}
 
 import kafka.utils.threadsafe
 import org.apache.kafka.common.utils.{KafkaThread, Time}
@@ -55,11 +55,13 @@ trait Timer {
 class SystemTimer(executorName: String,
                   tickMs: Long = 1,
                   wheelSize: Int = 20,
-                  startMs: Long = Time.SYSTEM.hiResClockMs) extends Timer {
+                  startMs: Long = Time.SYSTEM.relativeMilliseconds) extends Timer {
 
   // timeout timer
-  private[this] val taskExecutor = Executors.newFixedThreadPool(1,
-    (runnable: Runnable) => KafkaThread.nonDaemon("executor-" + executorName, runnable))
+  private[this] val taskExecutor = Executors.newFixedThreadPool(1, new ThreadFactory() {
+    def newThread(runnable: Runnable): Thread =
+      KafkaThread.nonDaemon("executor-"+executorName, runnable)
+  })
 
   private[this] val delayQueue = new DelayQueue[TimerTaskList]()
   private[this] val taskCounter = new AtomicInteger(0)
@@ -79,7 +81,7 @@ class SystemTimer(executorName: String,
   def add(timerTask: TimerTask): Unit = {
     readLock.lock()
     try {
-      addTimerTaskEntry(new TimerTaskEntry(timerTask, timerTask.delayMs + Time.SYSTEM.hiResClockMs))
+      addTimerTaskEntry(new TimerTaskEntry(timerTask, timerTask.delayMs + Time.SYSTEM.relativeMilliseconds))
     } finally {
       readLock.unlock()
     }
@@ -93,6 +95,8 @@ class SystemTimer(executorName: String,
     }
   }
 
+  private[this] val reinsert = (timerTaskEntry: TimerTaskEntry) => addTimerTaskEntry(timerTaskEntry)
+
   /*
    * Advances the clock if there is an expired bucket. If there isn't any expired bucket when called,
    * waits up to timeoutMs before giving up.
@@ -103,8 +107,8 @@ class SystemTimer(executorName: String,
       writeLock.lock()
       try {
         while (bucket != null) {
-          timingWheel.advanceClock(bucket.getExpiration)
-          bucket.flush(addTimerTaskEntry)
+          timingWheel.advanceClock(bucket.getExpiration())
+          bucket.flush(reinsert)
           bucket = delayQueue.poll()
         }
       } finally {
@@ -118,8 +122,9 @@ class SystemTimer(executorName: String,
 
   def size: Int = taskCounter.get
 
-  override def shutdown(): Unit = {
+  override def shutdown() {
     taskExecutor.shutdown()
   }
 
 }
+

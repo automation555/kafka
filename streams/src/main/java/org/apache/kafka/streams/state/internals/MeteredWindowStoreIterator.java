@@ -41,7 +41,7 @@ class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V> {
         this.sensor = sensor;
         this.metrics = metrics;
         this.serdes = serdes;
-        this.startNs = time.nanoseconds();
+        this.startNs = time.relativeNanoseconds();
         this.time = time;
     }
 
@@ -57,11 +57,16 @@ class MeteredWindowStoreIterator<V> implements WindowStoreIterator<V> {
     }
 
     @Override
+    public void remove() {
+        iter.remove();
+    }
+
+    @Override
     public void close() {
         try {
             iter.close();
         } finally {
-            sensor.record(time.nanoseconds() - startNs);
+            metrics.recordLatency(this.sensor, this.startNs, time.relativeNanoseconds());
         }
     }
 

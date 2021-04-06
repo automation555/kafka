@@ -95,7 +95,6 @@ object Defaults {
   val LogCleanupIntervalMs = 5 * 60 * 1000L
   val Delete = "delete"
   val Compact = "compact"
-  val CompactionPolicy = "useoffset"
   val LogCleanupPolicy = Delete
   val LogCleanerThreads = 1
   val LogCleanerIoMaxBytesPerSecond = Double.MaxValue
@@ -247,6 +246,7 @@ object Defaults {
   val DelegationTokenMaxLifeTimeMsDefault = 7 * 24 * 60 * 60 * 1000L
   val DelegationTokenExpiryTimeMsDefault = 24 * 60 * 60 * 1000L
   val DelegationTokenExpiryCheckIntervalMsDefault = 1 * 60 * 60 * 1000L
+  val DelegationTokenCleanSchedulerEnableDefault = true
 
   /** ********* Password encryption configuration for dynamic configs *********/
   val PasswordEncoderCipherAlgorithm = "AES/CBC/PKCS5Padding"
@@ -259,7 +259,7 @@ object KafkaConfig {
   private val LogConfigPrefix = "log."
 
   def main(args: Array[String]): Unit = {
-    System.out.println(configDef.toHtmlTable(DynamicBrokerConfig.dynamicConfigUpdateModes))
+    System.out.println(configDef.toHtml(DynamicBrokerConfig.dynamicConfigUpdateModes))
   }
 
   /** ********* Zookeeper Configuration ***********/
@@ -332,7 +332,6 @@ object KafkaConfig {
   val LogCleanerDeleteRetentionMsProp = "log.cleaner.delete.retention.ms"
   val LogCleanerMinCompactionLagMsProp = "log.cleaner.min.compaction.lag.ms"
   val LogCleanerMaxCompactionLagMsProp = "log.cleaner.max.compaction.lag.ms"
-  val LogCleanerCompactionPolicy = "log.cleaner.compaction.policy"
   val LogIndexSizeMaxBytesProp = "log.index.size.max.bytes"
   val LogIndexIntervalBytesProp = "log.index.interval.bytes"
   val LogFlushIntervalMessagesProp = "log.flush.interval.messages"
@@ -482,6 +481,7 @@ object KafkaConfig {
   val DelegationTokenMaxLifeTimeProp = "delegation.token.max.lifetime.ms"
   val DelegationTokenExpiryTimeMsProp = "delegation.token.expiry.time.ms"
   val DelegationTokenExpiryCheckIntervalMsProp = "delegation.token.expiry.check.interval.ms"
+  val DelegationTokenCleanSchedulerEnableProp = "delegation.token.clean.scheduler.enable"
 
   /** ********* Password encryption configuration for dynamic configs *********/
   val PasswordEncoderSecretProp = "password.encoder.secret"
@@ -510,7 +510,7 @@ object KafkaConfig {
   "To avoid conflicts between zookeeper generated broker id's and user configured broker id's, generated broker ids " +
   "start from " + MaxReservedBrokerIdProp + " + 1."
   val MessageMaxBytesDoc = TopicConfig.MAX_MESSAGE_BYTES_DOC +
-    s"<p>This can be set per topic with the topic level <code>${TopicConfig.MAX_MESSAGE_BYTES_CONFIG}</code> config.</p>"
+    s"This can be set per topic with the topic level <code>${TopicConfig.MAX_MESSAGE_BYTES_CONFIG}</code> config."
   val NumNetworkThreadsDoc = "The number of threads that the server uses for receiving requests from the network and sending responses to the network"
   val NumIoThreadsDoc = "The number of threads that the server uses for processing requests, which may include disk I/O"
   val NumReplicaAlterLogDirsThreadsDoc = "The number of threads that can move replicas between log directories, which may include disk I/O"
@@ -743,7 +743,7 @@ object KafkaConfig {
   val TransactionsTopicPartitionsDoc = "The number of partitions for the transaction topic (should not change after deployment)."
   val TransactionsTopicSegmentBytesDoc = "The transaction topic segment bytes should be kept relatively small in order to facilitate faster log compaction and cache loads"
   val TransactionsAbortTimedOutTransactionsIntervalMsDoc = "The interval at which to rollback transactions that have timed out"
-  val TransactionsRemoveExpiredTransactionsIntervalMsDoc = "The interval at which to remove transactions that have expired due to <code>transactional.id.expiration.ms<code> passing"
+  val TransactionsRemoveExpiredTransactionsIntervalMsDoc = "The interval at which to remove transactions that have expired due to <code>transactional.id.expiration.ms</code> passing"
 
   /** ********* Fetch Session Configuration **************/
   val MaxIncrementalFetchSessionCacheSlotsDoc = "The maximum number of incremental fetch sessions that we will maintain."
@@ -840,6 +840,7 @@ object KafkaConfig {
   val DelegationTokenMaxLifeTimeDoc = "The token has a maximum lifetime beyond which it cannot be renewed anymore. Default value 7 days."
   val DelegationTokenExpiryTimeMsDoc = "The token validity time in miliseconds before the token needs to be renewed. Default value 1 day."
   val DelegationTokenExpiryCheckIntervalDoc = "Scan interval to remove expired delegation tokens."
+  val DelegationTokenCleanSchedulerEnableDoc = "Enable the token expiry check scheduler to clean up expired tokens"
 
   /** ********* Password encryption configuration for dynamic configs *********/
   val PasswordEncoderSecretDoc = "The secret used for encoding dynamically configured passwords for this broker."
@@ -1086,6 +1087,7 @@ object KafkaConfig {
       .define(DelegationTokenMaxLifeTimeProp, LONG, Defaults.DelegationTokenMaxLifeTimeMsDefault, atLeast(1), MEDIUM, DelegationTokenMaxLifeTimeDoc)
       .define(DelegationTokenExpiryTimeMsProp, LONG, Defaults.DelegationTokenExpiryTimeMsDefault, atLeast(1), MEDIUM, DelegationTokenExpiryTimeMsDoc)
       .define(DelegationTokenExpiryCheckIntervalMsProp, LONG, Defaults.DelegationTokenExpiryCheckIntervalMsDefault, atLeast(1), LOW, DelegationTokenExpiryCheckIntervalDoc)
+      .define(DelegationTokenCleanSchedulerEnableProp, BOOLEAN, Defaults.DelegationTokenCleanSchedulerEnableDefault, LOW, DelegationTokenCleanSchedulerEnableDoc)
 
       /** ********* Password encryption configuration for dynamic configs *********/
       .define(PasswordEncoderSecretProp, PASSWORD, null, MEDIUM, PasswordEncoderSecretDoc)
@@ -1344,6 +1346,7 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   val delegationTokenMaxLifeMs = getLong(KafkaConfig.DelegationTokenMaxLifeTimeProp)
   val delegationTokenExpiryTimeMs = getLong(KafkaConfig.DelegationTokenExpiryTimeMsProp)
   val delegationTokenExpiryCheckIntervalMs = getLong(KafkaConfig.DelegationTokenExpiryCheckIntervalMsProp)
+  val tokenCleanSchedulerEnable = tokenAuthEnabled && getBoolean(KafkaConfig.DelegationTokenCleanSchedulerEnableProp)
 
   /** ********* Password encryption configuration for dynamic configs *********/
   def passwordEncoderSecret = Option(getPassword(KafkaConfig.PasswordEncoderSecretProp))

@@ -32,7 +32,6 @@ import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.CommonFields;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.SchemaException;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.AbstractResponse;
@@ -42,7 +41,6 @@ import org.apache.kafka.common.requests.MetadataRequest;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kafka.common.requests.RequestHeader;
 import org.apache.kafka.common.requests.ResponseHeader;
-import org.apache.kafka.common.security.authenticator.SaslClientAuthenticator;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
@@ -51,7 +49,6 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -61,7 +58,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -85,6 +82,8 @@ public class NetworkClient implements KafkaClient {
     private final Selectable selector;
 
     private final MetadataUpdater metadataUpdater;
+
+    private final Random randOffset;
 
     /* the state of each node's connection */
     private final ClusterConnectionStates connectionStates;
@@ -260,6 +259,7 @@ public class NetworkClient implements KafkaClient {
         this.socketSendBuffer = socketSendBuffer;
         this.socketReceiveBuffer = socketReceiveBuffer;
         this.correlation = 0;
+        this.randOffset = new Random();
         this.defaultRequestTimeoutMs = defaultRequestTimeoutMs;
         this.reconnectBackoffMs = reconnectBackoffMs;
         this.time = time;
@@ -663,7 +663,7 @@ public class NetworkClient implements KafkaClient {
         Node foundCanConnect = null;
         Node foundReady = null;
 
-        int offset = ThreadLocalRandom.current().nextInt(nodes.size());
+        int offset = this.randOffset.nextInt(nodes.size());
         for (int i = 0; i < nodes.size(); i++) {
             int idx = (offset + i) % nodes.size();
             Node node = nodes.get(idx);
@@ -706,13 +706,9 @@ public class NetworkClient implements KafkaClient {
     }
 
     public static AbstractResponse parseResponse(ByteBuffer responseBuffer, RequestHeader requestHeader) {
-        try {
-            Struct responseStruct = parseStructMaybeUpdateThrottleTimeMetrics(responseBuffer, requestHeader, null, 0);
-            return AbstractResponse.parseResponse(requestHeader.apiKey(), responseStruct,
-                    requestHeader.apiVersion());
-        } catch (BufferUnderflowException e) {
-            throw new SchemaException("Buffer underflow while parsing response for request with header " + requestHeader, e);
-        }
+        Struct responseStruct = parseStructMaybeUpdateThrottleTimeMetrics(responseBuffer, requestHeader, null, 0);
+        return AbstractResponse.parseResponse(requestHeader.apiKey(), responseStruct,
+                requestHeader.apiVersion());
     }
 
     private static Struct parseStructMaybeUpdateThrottleTimeMetrics(ByteBuffer responseBuffer, RequestHeader requestHeader,
@@ -856,10 +852,10 @@ public class NetworkClient implements KafkaClient {
     private void handleApiVersionsResponse(List<ClientResponse> responses,
                                            InFlightRequest req, long now, ApiVersionsResponse apiVersionsResponse) {
         final String node = req.destination;
-        if (apiVersionsResponse.data.errorCode() != Errors.NONE.code()) {
-            if (req.request.version() == 0 || apiVersionsResponse.data.errorCode() != Errors.UNSUPPORTED_VERSION.code()) {
+        if (apiVersionsResponse.data.errorCode() != Errors.NONE) {
+            if (req.request.version() == 0 || apiVersionsResponse.data.errorCode() != Errors.UNSUPPORTED_VERSION) {
                 log.warn("Received error {} from node {} when making an ApiVersionsRequest with correlation id {}. Disconnecting.",
-                        Errors.forCode(apiVersionsResponse.data.errorCode()), node, req.header.correlationId());
+                        apiVersionsResponse.data.errorCode(), node, req.header.correlationId());
                 this.selector.close(node);
                 processDisconnection(responses, node, now, ChannelState.LOCAL_CLOSE);
             } else {
@@ -936,15 +932,9 @@ public class NetworkClient implements KafkaClient {
      * Validate that the response corresponds to the request we expect or else explode
      */
     private static void correlate(RequestHeader requestHeader, ResponseHeader responseHeader) {
-        if (requestHeader.correlationId() != responseHeader.correlationId()) {
-            if (SaslClientAuthenticator.isReserved(requestHeader.correlationId())
-                    && !SaslClientAuthenticator.isReserved(responseHeader.correlationId()))
-                throw new SchemaException("the response is unrelated to Sasl request since its correlation id is " + responseHeader.correlationId()
-                    + " and the reserved range for Sasl request is [ "
-                    + SaslClientAuthenticator.MIN_RESERVED_CORRELATION_ID + "," + SaslClientAuthenticator.MAX_RESERVED_CORRELATION_ID + "]");
+        if (requestHeader.correlationId() != responseHeader.correlationId())
             throw new IllegalStateException("Correlation id for response (" + responseHeader.correlationId()
                     + ") does not match request (" + requestHeader.correlationId() + "), request header: " + requestHeader);
-        }
     }
 
     /**
@@ -977,11 +967,11 @@ public class NetworkClient implements KafkaClient {
         private final Metadata metadata;
 
         // Defined if there is a request in progress, null otherwise
-        private InProgressData inProgress;
+        private Integer inProgressRequestVersion;
 
         DefaultMetadataUpdater(Metadata metadata) {
             this.metadata = metadata;
-            this.inProgress = null;
+            this.inProgressRequestVersion = null;
         }
 
         @Override
@@ -995,7 +985,7 @@ public class NetworkClient implements KafkaClient {
         }
 
         private boolean hasFetchInProgress() {
-            return inProgress != null;
+            return inProgressRequestVersion != null;
         }
 
         @Override
@@ -1049,7 +1039,7 @@ public class NetworkClient implements KafkaClient {
         public void handleFailedRequest(long now, Optional<KafkaException> maybeFatalException) {
             maybeFatalException.ifPresent(metadata::fatalError);
             metadata.failedUpdate(now);
-            inProgress = null;
+            inProgressRequestVersion = null;
         }
 
         @Override
@@ -1059,7 +1049,7 @@ public class NetworkClient implements KafkaClient {
             // This could be a transient issue if listeners were added dynamically to brokers.
             List<TopicPartition> missingListenerPartitions = response.topicMetadata().stream().flatMap(topicMetadata ->
                 topicMetadata.partitionMetadata().stream()
-                    .filter(partitionMetadata -> partitionMetadata.error == Errors.LISTENER_NOT_FOUND)
+                    .filter(partitionMetadata -> partitionMetadata.error() == Errors.LISTENER_NOT_FOUND)
                     .map(partitionMetadata -> new TopicPartition(topicMetadata.topic(), partitionMetadata.partition())))
                 .collect(Collectors.toList());
             if (!missingListenerPartitions.isEmpty()) {
@@ -1079,10 +1069,10 @@ public class NetworkClient implements KafkaClient {
                 log.trace("Ignoring empty metadata response with correlation id {}.", requestHeader.correlationId());
                 this.metadata.failedUpdate(now);
             } else {
-                this.metadata.update(inProgress.requestVersion, response, inProgress.isPartialUpdate, now);
+                this.metadata.update(inProgressRequestVersion, response, now);
             }
 
-            inProgress = null;
+            inProgressRequestVersion = null;
         }
 
         @Override
@@ -1109,11 +1099,11 @@ public class NetworkClient implements KafkaClient {
             String nodeConnectionId = node.idString();
 
             if (canSendRequest(nodeConnectionId, now)) {
-                Metadata.MetadataRequestAndVersion requestAndVersion = metadata.newMetadataRequestAndVersion(now);
+                Metadata.MetadataRequestAndVersion requestAndVersion = metadata.newMetadataRequestAndVersion();
                 MetadataRequest.Builder metadataRequest = requestAndVersion.requestBuilder;
                 log.debug("Sending metadata request {} to node {}", metadataRequest, node);
                 sendInternalMetadataRequest(metadataRequest, nodeConnectionId, now);
-                inProgress = new InProgressData(requestAndVersion.requestVersion, requestAndVersion.isPartialUpdate);
+                this.inProgressRequestVersion = requestAndVersion.requestVersion;
                 return defaultRequestTimeoutMs;
             }
 
@@ -1139,16 +1129,6 @@ public class NetworkClient implements KafkaClient {
             return Long.MAX_VALUE;
         }
 
-        public class InProgressData {
-            public final int requestVersion;
-            public final boolean isPartialUpdate;
-
-            private InProgressData(int requestVersion, boolean isPartialUpdate) {
-                this.requestVersion = requestVersion;
-                this.isPartialUpdate = isPartialUpdate;
-            }
-        };
-
     }
 
     @Override
@@ -1159,15 +1139,6 @@ public class NetworkClient implements KafkaClient {
         return newClientRequest(nodeId, requestBuilder, createdTimeMs, expectResponse, defaultRequestTimeoutMs, null);
     }
 
-    // visible for testing
-    int nextCorrelationId() {
-        if (SaslClientAuthenticator.isReserved(correlation)) {
-            // the numeric overflow is fine as negative values is acceptable
-            correlation = SaslClientAuthenticator.MAX_RESERVED_CORRELATION_ID + 1;
-        }
-        return correlation++;
-    }
-
     @Override
     public ClientRequest newClientRequest(String nodeId,
                                           AbstractRequest.Builder<?> requestBuilder,
@@ -1175,7 +1146,7 @@ public class NetworkClient implements KafkaClient {
                                           boolean expectResponse,
                                           int requestTimeoutMs,
                                           RequestCompletionHandler callback) {
-        return new ClientRequest(nodeId, requestBuilder, nextCorrelationId(), clientId, createdTimeMs, expectResponse,
+        return new ClientRequest(nodeId, requestBuilder, correlation++, clientId, createdTimeMs, expectResponse,
                 requestTimeoutMs, callback);
     }
 

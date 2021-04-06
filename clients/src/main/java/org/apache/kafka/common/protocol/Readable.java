@@ -30,11 +30,8 @@ public interface Readable {
     short readShort();
     int readInt();
     long readLong();
-    double readDouble();
     void readArray(byte[] arr);
     int readUnsignedVarint();
-    int readVarint();
-    long readVarlong();
     ByteBuffer readByteBuffer(int length);
 
     default String readString(int length) {
@@ -58,5 +55,9 @@ public interface Readable {
      */
     default UUID readUUID() {
         return new UUID(readLong(), readLong());
+    }
+
+    default Errors readErrors() {
+        return Errors.forCode(readShort());
     }
 }

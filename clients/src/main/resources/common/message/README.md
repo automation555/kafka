@@ -79,11 +79,11 @@ There are several primitive field types available.
 
 * "int64": a 64-bit integer.
 
-* "float64": is a double-precision floating point number (IEEE 754).
-
 * "string": a UTF-8 string.
 
 * "bytes": binary data.
+
+* "error": an org.apache.kafka.common.protocol.Errors encoded as a 16-bit integer.  This takes up 2 bytes on the wire.
 
 In addition to these primitive field types, there is also an array type.  Array
 types start with a "[]" and end with the name of the element type.  For
@@ -95,8 +95,8 @@ Guide](https://kafka.apache.org/protocol.html).
 
 Nullable Fields
 ---------------
-Booleans, ints, and floats can never be null.  However, fields that are strings,
-bytes, or arrays may optionally be "nullable."  When a field is "nullable," that
+Booleans and ints can never be null.  However, fields that are strings, bytes,
+or arrays may optionally be "nullable."  When a field is "nullable," that
 simply means that we are prepared to serialize and deserialize null entries for
 that field.
 
@@ -108,18 +108,6 @@ becomes nullable in a later version.
 If a field is declared as non-nullable, and it is present in the message
 version you are using, you should set it to a non-null value before serializing
 the message.  Otherwise, you will get a runtime error.
-
-Coded Fields
-------------
-
-Integer-typed fields are often used to encode enumerated values rather than to 
-represent quantities. Error codes are a good example. Such coded values
-can be specified directly as a different type of declaration from requests and 
-responses specifications and can then referred to in the message specifications
-via the field "domain".
-
-The field domain must refer to the declaration of the coded values by name,
-and may also list the valid values which may be used on a per-version basis.
 
 Tagged Fields
 -------------
@@ -139,7 +127,7 @@ version.
 You can remove support for a tagged field from a specific version of a message,
 but you can't reuse a tag once it has been used for something else.  Once tags
 have been used for something, they can't be used for anything else, without
-breaking compatibility.
+breaking compatibilty.
 
 Note that tagged fields can only be added to "flexible" message versions.
 
@@ -186,8 +174,6 @@ been set:
 
 * Integer fields default to 0.
 
-* Floats default to 0.
-
 * Booleans default to false.
 
 * Strings default to the empty string.
@@ -202,20 +188,20 @@ versions of the field are nullable.
 
 Custom Default Values
 ---------------------
-You may set a custom default for fields that are integers, booleans, floats, or
-strings.  Just add a "default" entry in the JSON object.  The custom default
-overrides the normal default for the type.  So for example, you could make a
-boolean field default to true rather than false, and so forth.
+You may set a custom default for fields that are integers, booleans, or strings.
+Just add a "default" entry in the JSON object.  The custom default overrides the
+normal default for the type.  So for example, you could make a boolean field
+default to true rather than false, and so forth.
 
 Note that the default must be valid for the field type.  So the default for an
-int16 field must be an integer that fits in 16 bits, and so forth.  You may
+int16 field must by an integer that fits in 16 bits, and so forth.  You may
 specify hex or octal values, as long as they are prefixed with 0x or 0.  It is
-currently not possible to specify a custom default for bytes or array fields.
+currently not possible to specify a custom default for bytes, array or error fields.
 
 Custom defaults are useful when an older message version lacked some
 information.  For example, if an older request lacked a timeout field, you may
 want to specify that the server should assume that the timeout for such a
-request is 5000 ms (or some other arbitrary value).
+request is 5000 ms (or some other arbitrary value.) 
 
 Ignorable Fields
 ----------------
@@ -239,7 +225,7 @@ Hash Sets
 ---------
 One very common pattern in Kafka is to load array elements from a message into
 a Map or Set for easier access.  The message protocol makes this easier with
-the "mapKey" concept.
+the "mapKey" concept.  
 
 If some of the elements of an array are annotated with "mapKey": true, the
 entire array will be treated as a linked hash set rather than a list.  Elements

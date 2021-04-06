@@ -62,6 +62,7 @@ import org.apache.kafka.common.message.SaslHandshakeRequestData;
 import org.apache.kafka.common.network.CertStores;
 import org.apache.kafka.common.network.ChannelBuilder;
 import org.apache.kafka.common.network.ChannelBuilders;
+import org.apache.kafka.common.network.ChannelMetadataRegistry;
 import org.apache.kafka.common.network.ChannelState;
 import org.apache.kafka.common.network.ListenerName;
 import org.apache.kafka.common.network.Mode;
@@ -696,7 +697,7 @@ public class SaslAuthenticatorTest {
         ByteBuffer responseBuffer = waitForResponse();
         ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion((short) 0));
         ApiVersionsResponse response = ApiVersionsResponse.parse(responseBuffer, (short) 0);
-        assertEquals(Errors.UNSUPPORTED_VERSION.code(), response.data.errorCode());
+        assertEquals(Errors.UNSUPPORTED_VERSION, response.data.errorCode());
 
         ApiVersionsResponseKey apiVersion = response.data.apiKeys().find(ApiKeys.API_VERSIONS.id);
         assertNotNull(apiVersion);
@@ -736,7 +737,7 @@ public class SaslAuthenticatorTest {
         ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion(version));
         ApiVersionsResponse response =
             ApiVersionsResponse.parse(responseBuffer, version);
-        assertEquals(Errors.INVALID_REQUEST.code(), response.data.errorCode());
+        assertEquals(Errors.INVALID_REQUEST, response.data.errorCode());
 
         // Send ApiVersionsRequest with a supported version. This should succeed.
         sendVersionRequestReceiveResponse(node);
@@ -767,7 +768,7 @@ public class SaslAuthenticatorTest {
         ByteBuffer responseBuffer = waitForResponse();
         ResponseHeader.parse(responseBuffer, ApiKeys.API_VERSIONS.responseHeaderVersion(version));
         ApiVersionsResponse response = ApiVersionsResponse.parse(responseBuffer, version);
-        assertEquals(Errors.NONE.code(), response.data.errorCode());
+        assertEquals(Errors.NONE, response.data.errorCode());
 
         // Test that client can authenticate successfully
         sendHandshakeRequestReceiveResponse(node, handshakeVersion);
@@ -1747,8 +1748,10 @@ public class SaslAuthenticatorTest {
                                                                        String id,
                                                                        TransportLayer transportLayer,
                                                                        Map<String, Subject> subjects,
-                                                                       Map<String, Long> connectionsMaxReauthMsByMechanism) {
-                return new SaslServerAuthenticator(configs, callbackHandlers, id, subjects, null, listenerName, securityProtocol, transportLayer, connectionsMaxReauthMsByMechanism, time) {
+                                                                       Map<String, Long> connectionsMaxReauthMsByMechanism,
+                                                                       ChannelMetadataRegistry metadataRegistry) {
+                return new SaslServerAuthenticator(configs, callbackHandlers, id, subjects, null, listenerName,
+                    securityProtocol, transportLayer, connectionsMaxReauthMsByMechanism, metadataRegistry, time) {
 
                     @Override
                     protected ApiVersionsResponse apiVersionsResponse() {
@@ -1767,7 +1770,7 @@ public class SaslAuthenticatorTest {
 
                         }
                         ApiVersionsResponseData data = new ApiVersionsResponseData()
-                            .setErrorCode(Errors.NONE.code())
+                            .setErrorCode(Errors.NONE)
                             .setThrottleTimeMs(0)
                             .setApiKeys(apiVersions);
                         return new ApiVersionsResponse(data);
@@ -1890,7 +1893,7 @@ public class SaslAuthenticatorTest {
         String authString = "\u0000" + TestJaasConfig.USERNAME + "\u0000" + TestJaasConfig.PASSWORD;
         ByteBuffer authBuf = ByteBuffer.wrap(authString.getBytes("UTF-8"));
         if (enableSaslAuthenticateHeader) {
-            SaslAuthenticateRequestData data = new SaslAuthenticateRequestData().setAuthBytes(authBuf);
+            SaslAuthenticateRequestData data = new SaslAuthenticateRequestData().setAuthBytes(authBuf.array());
             SaslAuthenticateRequest request = new SaslAuthenticateRequest.Builder(data).build();
             sendKafkaRequestReceiveResponse(node, ApiKeys.SASL_AUTHENTICATE, request);
         } else {
@@ -2033,7 +2036,7 @@ public class SaslAuthenticatorTest {
     private ApiVersionsResponse sendVersionRequestReceiveResponse(String node) throws Exception {
         ApiVersionsRequest handshakeRequest = createApiVersionsRequestV0();
         ApiVersionsResponse response =  (ApiVersionsResponse) sendKafkaRequestReceiveResponse(node, ApiKeys.API_VERSIONS, handshakeRequest);
-        assertEquals(Errors.NONE.code(), response.data.errorCode());
+        assertEquals(Errors.NONE, response.data.errorCode());
         return response;
     }
 

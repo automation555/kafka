@@ -97,13 +97,13 @@ public interface FieldType {
         }
     }
 
-    final class Varint32FieldType implements FieldType {
-        static final Varint32FieldType INSTANCE = new Varint32FieldType();
-        private static final String NAME = "varint32";
+    final class ErrorFieldType implements FieldType {
+        static final ErrorFieldType INSTANCE = new ErrorFieldType();
+        private static final String NAME = "error";
 
         @Override
         public Optional<Integer> fixedLength() {
-            return Optional.empty();
+            return Optional.of(2);
         }
 
         @Override
@@ -111,22 +111,6 @@ public interface FieldType {
             return NAME;
         }
     }
-
-    final class Varint64FieldType implements FieldType {
-        static final Varint64FieldType INSTANCE = new Varint64FieldType();
-        private static final String NAME = "varint64";
-
-        @Override
-        public Optional<Integer> fixedLength() {
-            return Optional.empty();
-        }
-
-        @Override
-        public String toString() {
-            return NAME;
-        }
-    }
-
 
     final class UUIDFieldType implements FieldType {
         static final UUIDFieldType INSTANCE = new UUIDFieldType();
@@ -135,26 +119,6 @@ public interface FieldType {
         @Override
         public Optional<Integer> fixedLength() {
             return Optional.of(16);
-        }
-
-        @Override
-        public String toString() {
-            return NAME;
-        }
-    }
-
-    final class Float64FieldType implements FieldType {
-        static final Float64FieldType INSTANCE = new Float64FieldType();
-        private static final String NAME = "float64";
-
-        @Override
-        public Optional<Integer> fixedLength() {
-            return Optional.of(8);
-        }
-
-        @Override
-        public boolean isFloat() {
-            return true;
         }
 
         @Override
@@ -290,14 +254,10 @@ public interface FieldType {
                 return Int32FieldType.INSTANCE;
             case Int64FieldType.NAME:
                 return Int64FieldType.INSTANCE;
-            case Varint32FieldType.NAME:
-                return Varint32FieldType.INSTANCE;
-            case Varint64FieldType.NAME:
-                return Varint64FieldType.INSTANCE;
+            case ErrorFieldType.NAME:
+                return ErrorFieldType.INSTANCE;
             case UUIDFieldType.NAME:
                 return UUIDFieldType.INSTANCE;
-            case Float64FieldType.NAME:
-                return Float64FieldType.INSTANCE;
             case StringFieldType.NAME:
                 return StringFieldType.INSTANCE;
             case BytesFieldType.NAME:
@@ -355,13 +315,6 @@ public interface FieldType {
      * Returns true if this is a bytes type.
      */
     default boolean isBytes() {
-        return false;
-    }
-
-    /**
-     * Returns true if this is a floating point type.
-     */
-    default boolean isFloat() {
         return false;
     }
 

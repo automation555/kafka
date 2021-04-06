@@ -25,15 +25,16 @@ public interface Writable {
     void writeShort(short val);
     void writeInt(int val);
     void writeLong(long val);
-    void writeDouble(double val);
     void writeByteArray(byte[] arr);
     void writeUnsignedVarint(int i);
-    void writeVarint(int i);
-    void writeVarlong(long i);
     void writeByteBuffer(ByteBuffer buf);
 
     default void writeUUID(UUID uuid) {
         writeLong(uuid.getMostSignificantBits());
         writeLong(uuid.getLeastSignificantBits());
+    }
+
+    default void writeErrors(Errors error) {
+        writeShort(error.code());
     }
 }

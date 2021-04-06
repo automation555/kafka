@@ -254,30 +254,18 @@ final class SchemaGenerator {
                 throw new RuntimeException("Type " + type + " cannot be nullable.");
             }
             return "Type.INT64";
-        } else if (type instanceof FieldType.Varint32FieldType) {
+        } else if (type instanceof FieldType.ErrorFieldType) {
             headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
             if (nullable) {
                 throw new RuntimeException("Type " + type + " cannot be nullable.");
             }
-            return "Type.VARINT";
-        } else if (type instanceof FieldType.Varint64FieldType) {
-            headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
-            if (nullable) {
-                throw new RuntimeException("Type " + type + " cannot be nullable.");
-            }
-            return "Type.VARLONG";
+            return "Type.ERRORS";
         } else if (type instanceof FieldType.UUIDFieldType) {
             headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
             if (nullable) {
                 throw new RuntimeException("Type " + type + " cannot be nullable.");
             }
             return "Type.UUID";
-        } else if (type instanceof FieldType.Float64FieldType) {
-            headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
-            if (nullable) {
-                throw new RuntimeException("Type " + type + " cannot be nullable.");
-            }
-            return "Type.FLOAT64";
         } else if (type instanceof FieldType.StringFieldType) {
             headerGenerator.addImport(MessageGenerator.TYPE_CLASS);
             if (fieldFlexibleVersions.contains(version)) {

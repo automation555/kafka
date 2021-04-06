@@ -61,6 +61,9 @@ public final class MessageGenerator {
 
     static final String ARRAYLIST_CLASS = "java.util.ArrayList";
 
+    static final String IMPLICIT_LINKED_HASH_COLLECTION_CLASS =
+        "org.apache.kafka.common.utils.ImplicitLinkedHashCollection";
+
     static final String IMPLICIT_LINKED_HASH_MULTI_COLLECTION_CLASS =
         "org.apache.kafka.common.utils.ImplicitLinkedHashMultiCollection";
 
@@ -82,6 +85,8 @@ public final class MessageGenerator {
     static final String STRUCT_CLASS = "org.apache.kafka.common.protocol.types.Struct";
 
     static final String BYTES_CLASS = "org.apache.kafka.common.utils.Bytes";
+
+    static final String ERRORS_CLASS = "org.apache.kafka.common.protocol.Errors";
 
     static final String UUID_CLASS = "java.util.UUID";
 
@@ -136,14 +141,13 @@ public final class MessageGenerator {
                     String javaName = spec.generatedClassName() + JAVA_SUFFIX;
                     outputFileNames.add(javaName);
                     Path outputPath = Paths.get(outputDir, javaName);
-                    MessageDataGenerator generator;
                     try (BufferedWriter writer = Files.newBufferedWriter(outputPath)) {
-                        generator = new MessageDataGenerator(packageName);
+                        MessageDataGenerator generator = new MessageDataGenerator(packageName);
                         generator.generate(spec);
                         generator.write(writer);
                     }
                     numProcessed++;
-                    messageTypeGenerator.registerMessageType(spec, generator.containsZeroCopyFields());
+                    messageTypeGenerator.registerMessageType(spec);
                 } catch (Exception e) {
                     throw new RuntimeException("Exception while processing " + inputPath.toString(), e);
                 }

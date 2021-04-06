@@ -29,7 +29,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.ApiVersions;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
@@ -39,7 +38,6 @@ import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.metrics.Measurable;
@@ -354,6 +352,22 @@ public final class RecordAccumulator {
                 insertInSequenceOrder(deque, batch);
             else
                 deque.addFirst(batch);
+        }
+    }
+
+    public void dropRecordsAndReenqueueNewBatch(ProducerBatch batch, Set<Integer> errorRecords, long now) {
+        ProducerBatch batchToKeep = batch.dropRecords(errorRecords);
+
+        incomplete.add(batchToKeep);
+
+        batchToKeep.reenqueued(now);
+        Deque<ProducerBatch> partitionDeque = getOrCreateDeque(batch.topicPartition);
+        synchronized (partitionDeque) {
+            if (transactionManager != null && transactionManager.hasProducerIdAndEpoch(batchToKeep.producerId(), batchToKeep.producerEpoch())) {
+                transactionManager.addInFlightBatch(batchToKeep);
+                insertInSequenceOrder(partitionDeque, batchToKeep);
+            } else
+                partitionDeque.addLast(batchToKeep);
         }
     }
 
@@ -711,25 +725,12 @@ public final class RecordAccumulator {
     }
 
     /**
-     * Mark all partitions as ready to send and block until the send is complete or time expires
+     * Mark all partitions as ready to send and block until the send is complete
      */
-    public void awaitFlushCompletion(long timeoutMs) throws InterruptedException {
+    public void awaitFlushCompletion() throws InterruptedException {
         try {
-            Long expireMs = System.currentTimeMillis() + timeoutMs;
-            int numBatchesFlushed = 0;
-            for (ProducerBatch batch : this.incomplete.copyAll()) {
-                Long currentMs = System.currentTimeMillis();
-                if (currentMs > expireMs) {
-                    throw new TimeoutException(String.format("Failed to flush accumulated records within %d milliseconds,"
-                        + " successfully completed %d batches.", timeoutMs, numBatchesFlushed));
-                }
-                boolean completed = batch.produceFuture.await(Math.max(expireMs - currentMs, 0), TimeUnit.MILLISECONDS);
-                if (!completed) {
-                    throw new TimeoutException(String.format("Failed to flush accumulated records within %d milliseconds,"
-                        + " successfully completed %d batches.", timeoutMs, numBatchesFlushed));
-                }
-                numBatchesFlushed++;
-            }
+            for (ProducerBatch batch : this.incomplete.copyAll())
+                batch.produceFuture.await();
         } finally {
             this.flushesInProgress.decrementAndGet();
         }
@@ -817,7 +818,6 @@ public final class RecordAccumulator {
      */
     public void close() {
         this.closed = true;
-        this.free.close();
     }
 
     /*

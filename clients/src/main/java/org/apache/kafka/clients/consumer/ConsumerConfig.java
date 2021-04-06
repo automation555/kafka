@@ -12,19 +12,14 @@
  */
 package org.apache.kafka.clients.consumer;
 
-import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.serialization.Deserializer;
 
-import java.net.InetSocketAddress;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -117,17 +112,6 @@ public class ConsumerConfig extends AbstractConfig {
     private static final String FETCH_MIN_BYTES_DOC = "The minimum amount of data the server should return for a fetch request. If insufficient data is available the request will wait for that much data to accumulate before answering the request. The default setting of 1 byte means that fetch requests are answered as soon as a single byte of data is available or the fetch request times out waiting for data to arrive. Setting this to something greater than 1 will cause the server to wait for larger amounts of data to accumulate which can improve server throughput a bit at the cost of some additional latency.";
 
     /**
-     * <code>fetch.max.bytes</code>
-     */
-    public static final String FETCH_MAX_BYTES_CONFIG = "fetch.max.bytes";
-    private static final String FETCH_MAX_BYTES_DOC = "The maximum amount of data the server should return for a fetch request. " +
-            "This is not an absolute maximum, if the first message in the first non-empty partition of the fetch is larger than " +
-            "this value, the message will still be returned to ensure that the consumer can make progress. " +
-            "The maximum message size accepted by the broker is defined via <code>message.max.bytes</code> (broker config) or " +
-            "<code>max.message.bytes</code> (topic config). Note that the consumer performs multiple fetches in parallel.";
-    public static final int DEFAULT_FETCH_MAX_BYTES = 50 * 1024 * 1024;
-
-    /**
      * <code>fetch.max.wait.ms</code>
      */
     public static final String FETCH_MAX_WAIT_MS_CONFIG = "fetch.max.wait.ms";
@@ -140,11 +124,7 @@ public class ConsumerConfig extends AbstractConfig {
      * <code>max.partition.fetch.bytes</code>
      */
     public static final String MAX_PARTITION_FETCH_BYTES_CONFIG = "max.partition.fetch.bytes";
-    private static final String MAX_PARTITION_FETCH_BYTES_DOC = "The maximum amount of data per-partition the server " +
-            "will return. If the first message in the first non-empty partition of the fetch is larger than this limit, the " +
-            "message will still be returned to ensure that the consumer can make progress. The maximum message size " +
-            "accepted by the broker is defined via <code>message.max.bytes</code> (broker config) or " +
-            "<code>max.message.bytes</code> (topic config). See " + FETCH_MAX_BYTES_CONFIG + " for limiting the consumer request size.";
+    private static final String MAX_PARTITION_FETCH_BYTES_DOC = "The maximum amount of data per-partition the server will return. The maximum total memory used for a request will be <code>#partitions * max.partition.fetch.bytes</code>. This size must be at least as large as the maximum message size the server allows or else it is possible for the producer to send messages larger than the consumer can fetch. If that happens, the consumer can get stuck trying to fetch a large message on a certain partition.";
     public static final int DEFAULT_MAX_PARTITION_FETCH_BYTES = 1 * 1024 * 1024;
 
     /** <code>send.buffer.bytes</code> */
@@ -216,7 +196,7 @@ public class ConsumerConfig extends AbstractConfig {
     private static final String EXCLUDE_INTERNAL_TOPICS_DOC = "Whether records from internal topics (such as offsets) should be exposed to the consumer. "
                                                             + "If set to <code>true</code> the only way to receive records from an internal topic is subscribing to it.";
     public static final boolean DEFAULT_EXCLUDE_INTERNAL_TOPICS = true;
-
+    
     static {
         CONFIG = new ConfigDef().define(BOOTSTRAP_SERVERS_CONFIG,
                                         Type.LIST,
@@ -235,7 +215,7 @@ public class ConsumerConfig extends AbstractConfig {
                                         HEARTBEAT_INTERVAL_MS_DOC)
                                 .define(PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
                                         Type.LIST,
-                                        Collections.singletonList(RangeAssignor.class),
+                                        RangeAssignor.class.getName(),
                                         Importance.MEDIUM,
                                         PARTITION_ASSIGNMENT_STRATEGY_DOC)
                                 .define(METADATA_MAX_AGE_CONFIG,
@@ -284,12 +264,6 @@ public class ConsumerConfig extends AbstractConfig {
                                         atLeast(0),
                                         Importance.HIGH,
                                         FETCH_MIN_BYTES_DOC)
-                                .define(FETCH_MAX_BYTES_CONFIG,
-                                        Type.INT,
-                                        DEFAULT_FETCH_MAX_BYTES,
-                                        atLeast(0),
-                                        Importance.MEDIUM,
-                                        FETCH_MAX_BYTES_DOC)
                                 .define(FETCH_MAX_WAIT_MS_CONFIG,
                                         Type.INT,
                                         500,
@@ -385,6 +359,11 @@ public class ConsumerConfig extends AbstractConfig {
                                         CommonClientConfigs.DEFAULT_SECURITY_PROTOCOL,
                                         Importance.MEDIUM,
                                         CommonClientConfigs.SECURITY_PROTOCOL_DOC)
+                                .define(CommonClientConfigs.EXECUTABLE_PASSWORD_ENABLE_CONFIG,
+                                        Type.BOOLEAN,
+                                        CommonClientConfigs.DEFAULT_EXECUTABLE_PASSWORD_ENABLE,
+                                        Importance.LOW,
+                                        CommonClientConfigs.EXECUTABLE_PASSWORD_ENABLE_DOC)
                                 .withClientSslSupport()
                                 .withClientSaslSupport();
 
@@ -420,23 +399,6 @@ public class ConsumerConfig extends AbstractConfig {
 
     public static Set<String> configNames() {
         return CONFIG.names();
-    }
-
-    private List<InetSocketAddress> validatedBootstrapServersConfigValue;
-
-    public List<InetSocketAddress> getValidatedBootstrapServersConfigValue() {
-        return validatedBootstrapServersConfigValue;
-    }
-
-    public void validateValues() {
-        int requestTimeoutMs = this.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG);
-        if (requestTimeoutMs <= this.getInt(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG) ||
-            requestTimeoutMs <= this.getInt(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG))
-            throw new ConfigException(
-                ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG + " should be greater than " + ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG +
-                " and " + ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG);
-
-        validatedBootstrapServersConfigValue = ClientUtils.parseAndValidateAddresses(this.getList(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
     }
 
     public static void main(String[] args) {

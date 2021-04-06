@@ -13,8 +13,10 @@
 package org.apache.kafka.common.config;
 
 import org.apache.kafka.common.config.types.Password;
+import org.apache.kafka.common.utils.Shell;
 import org.apache.kafka.common.utils.Utils;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -69,6 +71,7 @@ import java.util.Set;
 public class ConfigDef {
 
     public static final Object NO_DEFAULT_VALUE = new String("");
+    public static final String EXECUTABLE_PASSWORD_ENABLE_CONFIG = "executable.password.enable";
 
     private final Map<String, ConfigKey> configKeys = new HashMap<>();
     private final List<String> groups = new LinkedList<>();
@@ -409,13 +412,17 @@ public class ConfigDef {
             String joined = Utils.join(undefinedConfigKeys, ",");
             throw new ConfigException("Some configurations in are referred in the dependents, but not defined: " + joined);
         }
+
+        // check if passwords are passed as executables
+        boolean isPasswdExecutable = props.containsKey(EXECUTABLE_PASSWORD_ENABLE_CONFIG) && Boolean.parseBoolean((String) props.get(EXECUTABLE_PASSWORD_ENABLE_CONFIG));
+
         // parse all known keys
         Map<String, Object> values = new HashMap<>();
         for (ConfigKey key : configKeys.values()) {
             Object value;
             // props map contains setting - assign ConfigKey value
             if (props.containsKey(key.name)) {
-                value = parseType(key.name, props.get(key.name), key.type);
+                value = parseType(key.name, props.get(key.name), key.type, isPasswdExecutable);
                 // props map doesn't contain setting, the key is required because no default value specified - its an error
             } else if (key.defaultValue == NO_DEFAULT_VALUE) {
                 throw new ConfigException("Missing required configuration \"" + key.name + "\" which has no default value.");
@@ -438,10 +445,6 @@ public class ConfigDef {
      * the current configuration values.
      */
     public List<ConfigValue> validate(Map<String, String> props) {
-        return new ArrayList<>(validateAll(props).values());
-    }
-
-    public Map<String, ConfigValue> validateAll(Map<String, String> props) {
         Map<String, ConfigValue> configValues = new HashMap<>();
         for (String name: configKeys.keySet()) {
             configValues.put(name, new ConfigValue(name));
@@ -470,12 +473,12 @@ public class ConfigDef {
     }
 
 
-    private Map<String, ConfigValue> validate(Map<String, Object> parsed, Map<String, ConfigValue> configValues) {
+    private List<ConfigValue> validate(Map<String, Object> parsed, Map<String, ConfigValue> configValues) {
         Set<String> configsWithNoParent = getConfigsWithNoParent();
         for (String name: configsWithNoParent) {
             validate(name, parsed, configValues);
         }
-        return configValues;
+        return new LinkedList<>(configValues.values());
     }
 
     private List<String> undefinedDependentConfigs() {
@@ -489,7 +492,7 @@ public class ConfigDef {
                 }
             }
         }
-        return new ArrayList<>(undefinedConfigKeys);
+        return new LinkedList<>(undefinedConfigKeys);
     }
 
     private Set<String> getConfigsWithNoParent() {
@@ -585,6 +588,17 @@ public class ConfigDef {
      * @return The parsed object
      */
     private Object parseType(String name, Object value, Type type) {
+        return parseType(name, value, type, false);
+    }
+
+    /**
+     * Parse a value according to its expected type.
+     * @param name  The config name
+     * @param value The config value
+     * @param type  The expected type
+     * @return The parsed object
+     */
+    private Object parseType(String name, Object value, Type type, boolean isPasswordExecutable) {
         try {
             if (value == null) return null;
 
@@ -608,9 +622,16 @@ public class ConfigDef {
                 case PASSWORD:
                     if (value instanceof Password)
                         return value;
-                    else if (value instanceof String)
-                        return new Password(trimmed);
-                    else
+                    else if (value instanceof String) {
+                        String password = trimmed;
+                        if (isPasswordExecutable) {
+                            // Remove beginning and ending ", which is required for passing a value with space in configs
+                            password = Shell.execCommand(password.replaceAll("^\\\"|\\\"$", "").split(" "));
+                            // Get rid of newline character from the result
+                            password = password.substring(0, password.length() - 1);
+                        }
+                        return new Password(password);
+                    } else
                         throw new ConfigException(name, value, "Expected value to be a string, but it was a " + value.getClass().getName());
                 case STRING:
                     if (value instanceof String)
@@ -673,6 +694,10 @@ public class ConfigDef {
             throw new ConfigException(name, value, "Not a number of type " + type);
         } catch (ClassNotFoundException e) {
             throw new ConfigException(name, value, "Class " + value + " could not be found.");
+        } catch (IOException e) {
+            throw new ConfigException(name, value, "Failed to retrieve password for " + name + " by " +
+                    "executing " + value + ". If the password is not an executable, make sure " +
+                    EXECUTABLE_PASSWORD_ENABLE_CONFIG + " is not set to True.");
         }
     }
 
@@ -770,15 +795,10 @@ public class ConfigDef {
     public static class Range implements Validator {
         private final Number min;
         private final Number max;
-        private final boolean allowNulls;
 
         private Range(Number min, Number max) {
-            this(min, max, false);
-        }
-        private Range(Number min, Number max, boolean allowNulls) {
             this.min = min;
             this.max = max;
-            this.allowNulls = allowNulls;
         }
 
         /**
@@ -791,15 +811,6 @@ public class ConfigDef {
         }
 
         /**
-         * A numeric range that checks only the lower bound, but allows null values.
-         *
-         * @param min The minimum acceptable value
-         */
-        public static Range atLeastOrNull(Number min) {
-            return new Range(min, null, true);
-        }
-
-        /**
          * A numeric range that checks both the upper and lower bound
          */
         public static Range between(Number min, Number max) {
@@ -807,10 +818,8 @@ public class ConfigDef {
         }
 
         public void ensureValid(String name, Object o) {
-            if (o == null && !allowNulls)
+            if (o == null)
                 throw new ConfigException(name, o, "Value must be non-null");
-            if (o == null && allowNulls)
-                return;
             Number n = (Number) o;
             if (min != null && n.doubleValue() < min.doubleValue())
                 throw new ConfigException(name, o, "Value must be at least " + min);
@@ -820,36 +829,11 @@ public class ConfigDef {
 
         public String toString() {
             if (min == null)
-                return "range=[...," + max + "], allowNulls=" + allowNulls;
+                return "[...," + max + "]";
             else if (max == null)
-                return "range=[" + min + ",...], allowNulls=" + allowNulls;
+                return "[" + min + ",...]";
             else
-                return "range=[" + min + ",...," + max + "], allowNulls=" + allowNulls;
-        }
-    }
-
-    public static class ValidList implements Validator {
-
-        ValidString validString;
-
-        private ValidList(List<String> validStrings) {
-            this.validString = new ValidString(validStrings);
-        }
-
-        public static ValidList in(String... validStrings) {
-            return new ValidList(Arrays.asList(validStrings));
-        }
-
-        @Override
-        public void ensureValid(final String name, final Object value) {
-            List<String> values = (List<String>) value;
-            for (String string : values) {
-                validString.ensureValid(name, string);
-            }
-        }
-
-        public String toString() {
-            return validString.toString();
+                return "[" + min + ",...," + max + "]";
         }
     }
 
@@ -933,11 +917,10 @@ public class ConfigDef {
                 if (key.hasDefault()) {
                     if (key.defaultValue == null)
                         return "null";
-                    String defaultValueStr = convertToString(key.defaultValue, key.type);
-                    if (defaultValueStr.isEmpty())
+                    else if (key.type == Type.STRING && key.defaultValue.toString().isEmpty())
                         return "\"\"";
                     else
-                        return defaultValueStr;
+                        return key.defaultValue.toString();
                 } else
                     return "";
             case "Valid Values":
@@ -948,7 +931,7 @@ public class ConfigDef {
                 throw new RuntimeException("Can't find value for header '" + headerName + "' in " + key.name);
         }
     }
-
+    
     public String toHtmlTable() {
         List<ConfigKey> configs = sortedConfigs();
         StringBuilder b = new StringBuilder();
@@ -980,73 +963,40 @@ public class ConfigDef {
      * documentation.
      */
     public String toRst() {
-        StringBuilder b = new StringBuilder();
-        for (ConfigKey def : sortedConfigs()) {
-            getConfigKeyRst(def, b);
-            b.append("\n");
-        }
-        return b.toString();
-    }
-
-    /**
-     * Configs with new metadata (group, orderInGroup, dependents) formatted with reStructuredText, suitable for embedding in Sphinx
-     * documentation.
-     */
-    public String toEnrichedRst() {
+        List<ConfigKey> configs = sortedConfigs();
         StringBuilder b = new StringBuilder();
 
-        String lastKeyGroupName = "";
-        for (ConfigKey def : sortedConfigsByGroup()) {
-            if (def.group != null) {
-                if (!lastKeyGroupName.equalsIgnoreCase(def.group)) {
-                    b.append(def.group).append("\n");
-
-                    char[] underLine = new char[def.group.length()];
-                    Arrays.fill(underLine, '^');
-                    b.append(new String(underLine)).append("\n\n");
+        for (ConfigKey def : configs) {
+            b.append("``");
+            b.append(def.name);
+            b.append("``\n");
+            for (String docLine : def.documentation.split("\n")) {
+                if (docLine.length() == 0) {
+                    continue;
                 }
-                lastKeyGroupName = def.group;
+                b.append("  ");
+                b.append(docLine);
+                b.append("\n\n");
             }
-
-            getConfigKeyRst(def, b);
-
-            if (def.dependents != null && def.dependents.size() > 0) {
-                int j = 0;
-                b.append("  * Dependents: ");
-                for (String dependent : def.dependents) {
-                    b.append("``");
-                    b.append(dependent);
-                    if (++j == def.dependents.size())
-                        b.append("``");
-                    else
-                        b.append("``, ");
+            b.append("  * Type: ");
+            b.append(def.type.toString().toLowerCase(Locale.ROOT));
+            b.append("\n");
+            if (def.defaultValue != null) {
+                b.append("  * Default: ");
+                if (def.type == Type.STRING) {
+                    b.append("\"");
+                    b.append(def.defaultValue);
+                    b.append("\"");
+                } else {
+                    b.append(def.defaultValue);
                 }
                 b.append("\n");
             }
-            b.append("\n");
+            b.append("  * Importance: ");
+            b.append(def.importance.toString().toLowerCase(Locale.ROOT));
+            b.append("\n\n");
         }
         return b.toString();
-    }
-
-    /**
-     * Shared content on Rst and Enriched Rst.
-     */
-    private void getConfigKeyRst(ConfigKey def, StringBuilder b) {
-        b.append("``").append(def.name).append("``").append("\n");
-        for (String docLine : def.documentation.split("\n")) {
-            if (docLine.length() == 0) {
-                continue;
-            }
-            b.append("  ").append(docLine).append("\n\n");
-        }
-        b.append("  * Type: ").append(getConfigValue(def, "Type")).append("\n");
-        if (def.hasDefault()) {
-            b.append("  * Default: ").append(getConfigValue(def, "Default")).append("\n");
-        }
-        if (def.validator != null) {
-            b.append("  * Valid Values: ").append(getConfigValue(def, "Valid Values")).append("\n");
-        }
-        b.append("  * Importance: ").append(getConfigValue(def, "Importance")).append("\n");
     }
 
     /**
@@ -1077,34 +1027,4 @@ public class ConfigDef {
         });
         return configs;
     }
-
-    /**
-     * Get a list of configs sorted taking the 'group' and 'orderInGroup' into account.
-     */
-    protected List<ConfigKey> sortedConfigsByGroup() {
-        final Map<String, Integer> groupOrd = new HashMap<>(groups.size());
-        int ord = 0;
-        for (String group: groups) {
-            groupOrd.put(group, ord++);
-        }
-
-        List<ConfigKey> configs = new ArrayList<>(configKeys.values());
-        Collections.sort(configs, new Comparator<ConfigKey>() {
-            @Override
-            public int compare(ConfigKey k1, ConfigKey k2) {
-                int cmp = k1.group == null
-                        ? (k2.group == null ? 0 : -1)
-                        : (k2.group == null ? 1 : Integer.compare(groupOrd.get(k1.group), groupOrd.get(k2.group)));
-                if (cmp == 0) {
-                    cmp = Integer.compare(k1.orderInGroup, k2.orderInGroup);
-                }
-                if (cmp == 0) {
-                    cmp = k1.name.compareTo(k2.name);
-                }
-                return cmp;
-            }
-        });
-        return configs;
-    }
-
 }

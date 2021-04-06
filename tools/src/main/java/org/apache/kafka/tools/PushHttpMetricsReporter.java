@@ -18,6 +18,7 @@ package org.apache.kafka.tools;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.CommonClientConfigDefs;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
@@ -90,9 +91,9 @@ public class PushHttpMetricsReporter implements MetricsReporter {
             .define(METRICS_HOST_CONFIG, ConfigDef.Type.STRING, "", ConfigDef.Importance.LOW,
                     "The hostname to report with each metric; if empty, defaults to the FQDN that can be automatically" +
                             "determined")
-            .define(CLIENT_ID_CONFIG, ConfigDef.Type.STRING, "", ConfigDef.Importance.LOW,
+            .define(CommonClientConfigDefs.clientId(
                     "Client ID to identify the application, generally inherited from the " +
-                            "producer/consumer/streams/connect instance");
+                    "producer/consumer/streams/connect instance"));
 
     public PushHttpMetricsReporter() {
         time = new SystemTime();
@@ -174,7 +175,8 @@ public class PushHttpMetricsReporter implements MetricsReporter {
                 samples = new ArrayList<>(metrics.size());
                 for (KafkaMetric metric : metrics.values()) {
                     MetricName name = metric.metricName();
-                    samples.add(new MetricValue(name.name(), name.group(), name.tags(), metric.metricValue()));
+                    double value = metric.value();
+                    samples.add(new MetricValue(name.name(), name.group(), name.tags(), value));
                 }
             }
 
@@ -211,9 +213,9 @@ public class PushHttpMetricsReporter implements MetricsReporter {
                 } else {
                     log.info("Finished reporting metrics with response code {}", responseCode);
                 }
-            } catch (Throwable t) {
-                log.error("Error reporting metrics", t);
-                throw new KafkaException("Failed to report current metrics", t);
+            } catch (Exception e) {
+                log.error("Error reporting metrics", e);
+                throw new KafkaException("Failed to report current metrics", e);
             } finally {
                 if (connection != null) {
                     connection.disconnect();

@@ -19,32 +19,21 @@ package org.apache.kafka.clients;
 
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.apache.kafka.common.config.ConfigDef.Range.atLeast;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 public class CommonClientConfigsTest {
     private static class TestConfig extends AbstractConfig {
         private static final ConfigDef CONFIG;
         static {
             CONFIG = new ConfigDef()
-                .define(CommonClientConfigs.RECONNECT_BACKOFF_MS_CONFIG,
-                    ConfigDef.Type.LONG,
-                    50L,
-                    atLeast(0L),
-                    ConfigDef.Importance.LOW,
-                    "")
-                .define(CommonClientConfigs.RECONNECT_BACKOFF_MAX_MS_CONFIG,
-                    ConfigDef.Type.LONG,
-                    1000L,
-                    atLeast(0L),
-                    ConfigDef.Importance.LOW,
-                    "");
+                .define(CommonClientConfigDefs.reconnectBackoffMs(50L))
+                .define(CommonClientConfigDefs.reconnectBackoffMaxMs(1000L));
         }
 
         @Override
@@ -58,7 +47,7 @@ public class CommonClientConfigsTest {
     }
 
     @Test
-    public void testExponentialBackoffDefaults() {
+    public void testExponentialBackoffDefaults() throws Exception {
         TestConfig defaultConf = new TestConfig(Collections.emptyMap());
         assertEquals(Long.valueOf(50L),
                 defaultConf.getLong(CommonClientConfigs.RECONNECT_BACKOFF_MS_CONFIG));

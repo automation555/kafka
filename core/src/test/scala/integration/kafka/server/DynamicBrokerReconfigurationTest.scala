@@ -19,49 +19,50 @@
 package kafka.server
 
 import java.io.{Closeable, File, FileWriter}
-import java.lang.management.ManagementFactory
 import java.nio.file.{Files, Paths, StandardCopyOption}
+import java.lang.management.ManagementFactory
 import java.security.KeyStore
 import java.time.Duration
 import java.util
-import java.util.concurrent._
 import java.util.{Collections, Properties}
+import java.util.concurrent._
 
+import javax.management.ObjectName
 import com.yammer.metrics.Metrics
 import com.yammer.metrics.core.MetricName
-import javax.management.ObjectName
 import kafka.admin.ConfigCommand
 import kafka.api.{KafkaSasl, SaslSetup}
 import kafka.log.LogConfig
 import kafka.message.ProducerCompressionCodec
 import kafka.network.{Processor, RequestChannel}
-import kafka.utils.Implicits._
 import kafka.utils._
+import kafka.utils.Implicits._
 import kafka.zk.{ConfigEntityChangeNotificationZNode, ZooKeeperTestHarness}
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.admin.ConfigEntry.{ConfigSource, ConfigSynonym}
 import org.apache.kafka.clients.admin._
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord, ConsumerRecords, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.apache.kafka.common.{ClusterResource, ClusterResourceListener, Reconfigurable, TopicPartition, TopicPartitionInfo}
+import org.apache.kafka.common.config.{ConfigException, ConfigResource}
 import org.apache.kafka.common.config.SslConfigs._
 import org.apache.kafka.common.config.types.Password
-import org.apache.kafka.common.config.{ConfigException, ConfigResource}
 import org.apache.kafka.common.errors.{AuthenticationException, InvalidRequestException}
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.metrics.{KafkaMetric, MetricsReporter}
-import org.apache.kafka.common.network.CertStores.{KEYSTORE_PROPS, TRUSTSTORE_PROPS}
 import org.apache.kafka.common.network.{ListenerName, Mode}
+import org.apache.kafka.common.network.CertStores.{KEYSTORE_PROPS, TRUSTSTORE_PROPS}
 import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
-import org.apache.kafka.common._
 import org.apache.kafka.test.TestSslUtils
 import org.junit.Assert._
 import org.junit.{After, Before, Ignore, Test}
 
-import scala.collection.JavaConverters._
-import scala.collection.{Seq, _}
+import scala.collection._
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.JavaConverters._
+import scala.collection.Seq
 
 object DynamicBrokerReconfigurationTest {
   val SecureInternal = "INTERNAL"
@@ -146,7 +147,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     clientThreads.foreach(_.join(5 * 1000))
     executors.foreach(_.shutdownNow())
     producers.foreach(_.close(Duration.ZERO))
-    consumers.foreach(_.close(Duration.ofMillis(0)))
+    consumers.foreach(_.close(Duration.ZERO))
     adminClients.foreach(_.close())
     TestUtils.shutdownServers(servers)
     super.tearDown()

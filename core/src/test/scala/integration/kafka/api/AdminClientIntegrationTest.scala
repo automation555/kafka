@@ -16,39 +16,45 @@
  */
 package kafka.api
 
-import java.io.File
-import java.lang.{Long => JLong}
-import java.util.Arrays.asList
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
-import java.util.concurrent.{ExecutionException, TimeUnit}
-import java.util.{Collections, Properties}
 import java.{time, util}
+import java.util.{Collections, Properties}
+import java.util.Arrays.asList
+import java.util.concurrent.{ExecutionException, TimeUnit}
+import java.io.File
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
+import org.apache.kafka.clients.admin.KafkaAdminClientTest
+import org.apache.kafka.common.utils.{Time, Utils}
 import kafka.log.LogConfig
-import kafka.security.auth.{Cluster, Group, Topic}
 import kafka.server.{Defaults, KafkaConfig, KafkaServer}
-import kafka.utils.Implicits._
-import kafka.utils.TestUtils._
+import org.apache.kafka.clients.admin._
 import kafka.utils.{Logging, TestUtils}
-import kafka.zk.KafkaZkClient
-import org.apache.kafka.clients.admin.{KafkaAdminClientTest, NewTopic, _}
+import kafka.utils.TestUtils._
+import kafka.utils.Implicits._
+import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
-import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
+import org.apache.kafka.clients.producer.KafkaProducer
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.{ConsumerGroupState, TopicPartition, TopicPartitionReplica}
 import org.apache.kafka.common.acl._
 import org.apache.kafka.common.config.ConfigResource
 import org.apache.kafka.common.errors._
+import org.junit.{After, Before, Rule, Test}
 import org.apache.kafka.common.requests.{DeleteRecordsRequest, MetadataResponse}
 import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
-import org.apache.kafka.common.utils.{Time, Utils}
-import org.apache.kafka.common.{ConsumerGroupState, TopicPartition, TopicPartitionReplica}
-import org.junit.Assert._
 import org.junit.rules.Timeout
-import org.junit.{After, Before, Rule, Test}
+import org.junit.Assert._
 
-import scala.collection.JavaConverters._
-import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, Future}
 import scala.util.Random
+import scala.collection.JavaConverters._
+import kafka.zk.KafkaZkClient
+
+import scala.concurrent.duration.{Duration => SDuration}
+import scala.concurrent.{Await, Future}
+import java.lang.{Long => JLong}
+import java.time.Duration
+
+import kafka.security.auth.{Cluster, Group, Topic}
 
 /**
  * An integration test of the KafkaAdminClient.
@@ -408,7 +414,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
         s"only ${numMessages.get - currentMessagesNum} messages are produced within timeout after replica movement. Producer future ${producerFuture.value}")
     } finally running.set(false)
 
-    val finalNumMessages = Await.result(producerFuture, Duration(20, TimeUnit.SECONDS))
+    val finalNumMessages = Await.result(producerFuture, SDuration(20, TimeUnit.SECONDS))
 
     // Verify that all messages that are produced can be consumed
     val consumerRecords = TestUtils.consumeTopicRecords(servers, topic, finalNumMessages,
@@ -843,7 +849,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
   @Test
   def testReplicaCanFetchFromLogStartOffsetAfterDeleteRecords(): Unit = {
     val leaders = createTopic(topic, numPartitions = 1, replicationFactor = serverCount)
-    val followerIndex = if (leaders(0) != servers.head.config.brokerId) 0 else 1
+    val followerIndex = if (leaders(0) != servers(0).config.brokerId) 0 else 1
 
     def waitForFollowerLog(expectedStartOffset: Long, expectedEndOffset: Long): Unit = {
       TestUtils.waitUntilTrue(() => servers(followerIndex).replicaManager.localReplica(topicPartition) != None,
@@ -1082,6 +1088,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
     val future = client.createTopics(Seq("mytopic", "mytopic2").map(new NewTopic(_, 1, 1)).asJava,
       new CreateTopicsOptions().timeoutMs(900000)).all()
     client.close(time.Duration.ZERO)
+
     assertFutureExceptionTypeEquals(future, classOf[TimeoutException])
   }
 
@@ -1169,7 +1176,7 @@ class AdminClientIntegrationTest extends IntegrationTestHarness with Logging {
           // Test that we can list the new group.
           TestUtils.waitUntilTrue(() => {
             val matching = client.listConsumerGroups.all.get().asScala.filter(_.groupId == testGroupId)
-            matching.nonEmpty
+            !matching.isEmpty
           }, s"Expected to be able to list $testGroupId")
 
           val result = client.describeConsumerGroups(Seq(testGroupId, fakeGroupId).asJava,

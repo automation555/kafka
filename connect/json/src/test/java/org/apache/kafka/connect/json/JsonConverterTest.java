@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.connect.json;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -54,7 +55,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 
-import static org.apache.kafka.connect.storage.ConverterConfig.ACCEPT_OPTIONAL_NULL_CONFIG;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -66,8 +66,11 @@ import static org.junit.Assert.fail;
 public class JsonConverterTest {
     private static final String TOPIC = "topic";
 
-    ObjectMapper objectMapper = new ObjectMapper();
-    JsonConverter converter = new JsonConverter();
+    private final ObjectMapper objectMapper = new ObjectMapper()
+        .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+        .setNodeFactory(JsonNodeFactory.withExactBigDecimals(true));
+
+    private final JsonConverter converter = new JsonConverter();
 
     @Before
     public void setUp() {
@@ -142,6 +145,98 @@ public class JsonConverterTest {
     }
 
     @Test
+    public void stringToConnectOptional() {
+        Schema schema = SchemaBuilder.string().version(1).optional().schema();
+        String msg = "{ \"schema\": { \"type\": \"string\", \"version\": 1, \"optional\": true }, \"payload\": null }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertNull(schemaAndValue.value());
+    }
+
+    @Test
+    public void stringToConnectOptionalWithDefaultValue() {
+        Schema schema = SchemaBuilder.string().version(1).optional().defaultValue("bar").schema();
+        String msg = "{ \"schema\": { \"type\": \"string\", \"version\": 1, \"optional\": true, \"default\": \"bar\" }, \"payload\": null }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertEquals((String) schemaAndValue.value(), "bar");
+    }
+
+    @Test
+    public void structToConnectStringOptionalDefaultNull() {
+        Schema schema = SchemaBuilder.struct().field("foo", SchemaBuilder.string().optional().defaultValue(null).schema()).build();
+        String msg = "{ \"schema\": { \"type\": \"struct\", \"fields\" : [ { \"field\": \"foo\", \"type\": \"string\", \"optional\": true, \"default\": null } ] }, \"payload\": { } }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertNull(((Struct) schemaAndValue.value()).getString("foo"));
+    }
+
+    @Test
+    public void structToJsonStringOptionalDefaultNull() {
+        Schema schema = SchemaBuilder.struct().field("foo", SchemaBuilder.string().optional().defaultValue(null).schema()).build();
+        Struct input = new Struct(schema);
+        JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, input));
+        validateEnvelope(converted);
+        assertEquals(parse("{ \"type\": \"struct\", \"fields\" : [ { \"type\": \"string\", \"optional\": true, \"field\": \"foo\" } ], \"optional\": false }"),
+                converted.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
+        assertEquals(JsonNodeFactory.instance.objectNode()
+                        .putNull("foo"),
+                converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME));
+    }
+
+    @Test
+    public void structToConnectStringOptionalDefaultValue() {
+        Schema schema = SchemaBuilder.struct().field("foo", SchemaBuilder.string().optional().defaultValue("bar").schema()).build();
+        String msg = "{ \"schema\": { \"type\": \"struct\", \"fields\" : [ { \"field\": \"foo\", \"type\": \"string\", \"optional\": true, \"default\": \"bar\" } ] }, \"payload\": { } }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertEquals(((Struct) schemaAndValue.value()).getString("foo"), "bar");
+    }
+
+    @Test
+    public void structToJsonStringOptionalDefaultValue() {
+        Schema schema = SchemaBuilder.struct().field("foo", SchemaBuilder.string().optional().defaultValue("bar").schema()).build();
+        Struct input = new Struct(schema);
+        JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, input));
+        validateEnvelope(converted);
+        assertEquals(parse("{ \"type\": \"struct\", \"fields\" : [ { \"type\": \"string\", \"optional\": true, \"default\": \"bar\", \"field\": \"foo\" } ], \"optional\": false }"),
+                converted.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
+        assertEquals(JsonNodeFactory.instance.objectNode()
+                        .put("foo", "bar"),
+                converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME));
+    }
+
+    @Test
+    public void structToConnectRequiredWithStringOptionalDefaultValue() {
+        Schema schema = SchemaBuilder.struct()
+                .field("foo", SchemaBuilder.string().optional().defaultValue("bar").schema())
+                .field("for", Schema.STRING_SCHEMA)
+                .build();
+        String msg = "{ \"schema\": { \"type\": \"struct\", \"fields\" : [ { \"field\": \"foo\", \"type\": \"string\", \"optional\": true, \"default\": \"bar\" }, { \"field\": \"for\", \"type\": \"string\" } ] }, \"payload\": { \"for\": \"baz\" } }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertEquals(((Struct) schemaAndValue.value()).getString("foo"), "bar");
+        assertEquals(((Struct) schemaAndValue.value()).getString("for"), "baz");
+    }
+
+    @Test
+    public void structToJsonRequiredWithStringOptionalDefaultValue() {
+        Schema schema = SchemaBuilder.struct()
+                .field("foo", SchemaBuilder.string().optional().defaultValue("bar").schema())
+                .field("for", Schema.STRING_SCHEMA)
+                .build();
+        Struct input = new Struct(schema).put("for", "baz");
+        JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, input));
+        validateEnvelope(converted);
+        assertEquals(parse("{ \"type\": \"struct\", \"fields\" : [ { \"type\": \"string\", \"optional\": true, \"default\": \"bar\", \"field\": \"foo\" }, { \"type\": \"string\", \"optional\": false, \"field\": \"for\" } ], \"optional\": false }"),
+                converted.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
+        assertEquals(JsonNodeFactory.instance.objectNode()
+                        .put("foo", "bar")
+                        .put("for", "baz"),
+                converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME));
+    }
+
+    @Test
     public void arrayToConnect() {
         byte[] arrayJson = "{ \"schema\": { \"type\": \"array\", \"items\": { \"type\" : \"int32\" } }, \"payload\": [1, 2, 3] }".getBytes();
         assertEquals(new SchemaAndValue(SchemaBuilder.array(Schema.INT32_SCHEMA).build(), Arrays.asList(1, 2, 3)), converter.toConnectData(TOPIC, arrayJson));
@@ -190,6 +285,36 @@ public class JsonConverterTest {
         // to keep compatibility with the record
         SchemaAndValue converted = converter.toConnectData(TOPIC, null);
         assertEquals(SchemaAndValue.NULL, converted);
+    }
+
+    /**
+     * When schemas are disabled, empty data should be decoded to an empty envelope.
+     * This test verifies the case where `schemas.enable` configuration is set to false, and
+     * {@link JsonConverter} converts empty bytes to {@link SchemaAndValue#NULL}.
+     */
+    @Test
+    public void emptyBytesToConnect() {
+        // This characterizes the messages with empty data when Json schemas is disabled
+        Map<String, Boolean> props = Collections.singletonMap("schemas.enable", false);
+        converter.configure(props, true);
+        SchemaAndValue converted = converter.toConnectData(TOPIC, "".getBytes());
+        assertEquals(SchemaAndValue.NULL, converted);
+    }
+
+    /**
+     * When schemas are disabled, fields are mapped to Connect maps.
+     */
+    @Test
+    public void schemalessWithEmptyFieldValueToConnect() {
+        // This characterizes the messages with empty data when Json schemas is disabled
+        Map<String, Boolean> props = Collections.singletonMap("schemas.enable", false);
+        converter.configure(props, true);
+        String input = "{ \"a\": \"\", \"b\": null}";
+        SchemaAndValue converted = converter.toConnectData(TOPIC, input.getBytes());
+        Map<String, String> expected = new HashMap<>();
+        expected.put("a", "");
+        expected.put("b", null);
+        assertEquals(new SchemaAndValue(null, expected), converted);
     }
 
     @Test
@@ -268,6 +393,16 @@ public class JsonConverterTest {
         BigDecimal reference = new BigDecimal(new BigInteger("156"), 2);
         Schema schema = Decimal.schema(2);
         String msg = "{ \"schema\": { \"type\": \"bytes\", \"name\": \"org.apache.kafka.connect.data.Decimal\", \"version\": 1, \"parameters\": { \"scale\": \"2\" } }, \"payload\": 1.56 }";
+        SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
+        assertEquals(schema, schemaAndValue.schema());
+        assertEquals(reference, schemaAndValue.value());
+    }
+
+    @Test
+    public void numericDecimalWithTrailingZerosToConnect() {
+        BigDecimal reference = new BigDecimal(new BigInteger("15600"), 4);
+        Schema schema = Decimal.schema(4);
+        String msg = "{ \"schema\": { \"type\": \"bytes\", \"name\": \"org.apache.kafka.connect.data.Decimal\", \"version\": 1, \"parameters\": { \"scale\": \"4\" } }, \"payload\": 1.5600 }";
         SchemaAndValue schemaAndValue = converter.toConnectData(TOPIC, msg.getBytes());
         assertEquals(schema, schemaAndValue.schema());
         assertEquals(reference, schemaAndValue.value());
@@ -635,7 +770,18 @@ public class JsonConverterTest {
     }
 
     @Test
-    public void decimalToJsonWithoutSchema() throws IOException {
+    public void decimalWithTrailingZerosToNumericJson() {
+        converter.configure(Collections.singletonMap(JsonConverterConfig.DECIMAL_FORMAT_CONFIG, DecimalFormat.NUMERIC.name()), false);
+        JsonNode converted = parse(converter.fromConnectData(TOPIC, Decimal.schema(4), new BigDecimal(new BigInteger("15600"), 4)));
+        validateEnvelope(converted);
+        assertEquals(parse("{ \"type\": \"bytes\", \"optional\": false, \"name\": \"org.apache.kafka.connect.data.Decimal\", \"version\": 1, \"parameters\": { \"scale\": \"4\" } }"),
+            converted.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
+        assertTrue("expected node to be numeric", converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME).isNumber());
+        assertEquals(new BigDecimal("1.5600"), converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME).decimalValue());
+    }
+
+    @Test
+    public void decimalToJsonWithoutSchema() {
         assertThrows(
             "expected data exception when serializing BigDecimal without schema",
             DataException.class,
@@ -838,41 +984,6 @@ public class JsonConverterTest {
         assertEquals(new SchemaAndValue(Schema.STRING_SCHEMA, "foo-bar-baz"), converter.toConnectHeader(TOPIC, "headerName", "{ \"schema\": { \"type\": \"string\" }, \"payload\": \"foo-bar-baz\" }".getBytes()));
     }
 
-    @Test
-    public void testAcceptOptionalNullToJson() {
-        converter.configure(Collections.singletonMap(ACCEPT_OPTIONAL_NULL_CONFIG, true), false);
-        Schema schema = SchemaBuilder.string().optional().defaultValue("default-string").build();
-        JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, null));
-        JsonNode expected = parse("{\"schema\":{\"type\":\"string\",\"optional\":true,\"default\":\"default-string\"},\"payload\":null}");
-        assertEquals(expected, converted);
-    }
-
-    @Test
-    public void testNotAcceptOptionalNullToJson() {
-        converter.configure(Collections.singletonMap(ACCEPT_OPTIONAL_NULL_CONFIG, false), false);
-        Schema schema = SchemaBuilder.string().optional().defaultValue("default-string").build();
-        JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, null));
-        JsonNode expected = parse("{\"schema\":{\"type\":\"string\",\"optional\":true,\"default\":\"default-string\"},\"payload\":\"default-string\"}");
-        assertEquals(expected, converted);
-    }
-
-    @Test
-    public void testAcceptOptionalNullToConnect() {
-        converter.configure(Collections.singletonMap(ACCEPT_OPTIONAL_NULL_CONFIG, true), false);
-        Schema schema = SchemaBuilder.string().optional().defaultValue("default-string").build();
-        SchemaAndValue converted = converter.toConnectData(TOPIC, "{\"schema\":{\"type\":\"string\",\"optional\":true,\"default\":\"default-string\"},\"payload\":null}".getBytes());
-        SchemaAndValue expected = new SchemaAndValue(schema, null);
-        assertEquals(expected, converted);
-    }
-
-    @Test
-    public void testNotAcceptOptionalNullToConnect() {
-        converter.configure(Collections.singletonMap(ACCEPT_OPTIONAL_NULL_CONFIG, false), false);
-        Schema schema = SchemaBuilder.string().optional().defaultValue("default-string").build();
-        SchemaAndValue converted = converter.toConnectData(TOPIC, "{\"schema\":{\"type\":\"string\",\"optional\":true,\"default\":\"default-string\"},\"payload\":null}".getBytes());
-        SchemaAndValue expected = new SchemaAndValue(schema, "default-string");
-        assertEquals(expected, converted);
-    }
 
     private JsonNode parse(byte[] json) {
         try {

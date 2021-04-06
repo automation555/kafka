@@ -16,10 +16,9 @@
 from ducktape.utils.util import wait_until
 from kafkatest.services.verifiable_consumer import VerifiableConsumer
 from kafkatest.services.verifiable_producer import VerifiableProducer
-from kafkatest.tests.kafka_test import KafkaTest
+from kafkatest.services.streams import StreamsTestBaseService
 
-
-class BaseStreamsTest(KafkaTest):
+class BaseStreamsTest(StreamsTestBaseService):
     """
     Helper class that contains methods for producing and consuming
     messages and verification of results from log files
@@ -95,11 +94,12 @@ class BaseStreamsTest(KafkaTest):
                    timeout_sec=60,
                    err_msg="Did expect to read '%s' from %s" % (message, processor.node.account))
 
-    def verify_from_file(self, processor, message, file):
+    @staticmethod
+    def verify_from_file(processor, message, file):
         result = processor.node.account.ssh_output("grep -E '%s' %s | wc -l" % (message, file), allow_fail=False)
         try:
           return int(result)
         except ValueError:
-          self.logger.warn("Command failed with ValueError: " + str(result, errors='strict'))
+          self.logger.warn("Command failed with ValueError: " + result)
           return 0
 

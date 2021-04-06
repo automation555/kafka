@@ -26,7 +26,6 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.KeyValueTimestamp;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.integration.utils.EmbeddedKafkaCluster;
@@ -44,13 +43,10 @@ import org.apache.kafka.test.IntegrationTest;
 import org.apache.kafka.test.MockMapper;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.junit.rules.TestName;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -58,7 +54,6 @@ import java.util.List;
 import java.util.Properties;
 
 import static java.time.Duration.ofMillis;
-import static org.apache.kafka.streams.integration.utils.IntegrationTestUtils.safeUniqueTestName;
 
 /**
  * Similar to KStreamAggregationIntegrationTest but with dedupping enabled
@@ -69,20 +64,12 @@ public class KStreamAggregationDedupIntegrationTest {
     private static final int NUM_BROKERS = 1;
     private static final long COMMIT_INTERVAL_MS = 300L;
 
-    public static final EmbeddedKafkaCluster CLUSTER = new EmbeddedKafkaCluster(NUM_BROKERS);
-
-    @BeforeClass
-    public static void startCluster() throws IOException {
-        CLUSTER.start();
-    }
-
-    @AfterClass
-    public static void closeCluster() {
-        CLUSTER.stop();
-    }
-
+    @ClassRule
+    public static final EmbeddedKafkaCluster CLUSTER =
+        new EmbeddedKafkaCluster(NUM_BROKERS);
 
     private final MockTime mockTime = CLUSTER.time;
+    private static volatile int testNo = 0;
     private StreamsBuilder builder;
     private Properties streamsConfiguration;
     private KafkaStreams kafkaStreams;
@@ -92,21 +79,20 @@ public class KStreamAggregationDedupIntegrationTest {
     private Reducer<String> reducer;
     private KStream<Integer, String> stream;
 
-    @Rule
-    public TestName testName = new TestName();
-
     @Before
     public void before() throws InterruptedException {
+        testNo++;
         builder = new StreamsBuilder();
         createTopics();
         streamsConfiguration = new Properties();
-        final String safeTestName = safeUniqueTestName(getClass(), testName);
-        streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG, "app-" + safeTestName);
+        final String applicationId = "kgrouped-stream-test-" + testNo;
+        streamsConfiguration.put(StreamsConfig.APPLICATION_ID_CONFIG, applicationId);
         streamsConfiguration.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
         streamsConfiguration.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         streamsConfiguration.put(StreamsConfig.STATE_DIR_CONFIG, TestUtils.tempDirectory().getPath());
         streamsConfiguration.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, COMMIT_INTERVAL_MS);
         streamsConfiguration.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 10 * 1024 * 1024L);
+        streamsConfiguration.put(IntegrationTestUtils.INTERNAL_LEAVE_GROUP_ON_CLOSE, true);
 
         final KeyValueMapper<Integer, String, String> mapper = MockMapper.selectValueMapper();
         stream = builder.stream(streamOneInput, Consumed.with(Serdes.Integer(), Serdes.String()));
@@ -134,18 +120,17 @@ public class KStreamAggregationDedupIntegrationTest {
 
         startStreams();
 
-        final long timestamp = System.currentTimeMillis();
-        produceMessages(timestamp);
+        produceMessages(System.currentTimeMillis());
 
         validateReceivedMessages(
                 new StringDeserializer(),
                 new StringDeserializer(),
                 Arrays.asList(
-                    new KeyValueTimestamp<>("A", "A:A", timestamp),
-                    new KeyValueTimestamp<>("B", "B:B", timestamp),
-                    new KeyValueTimestamp<>("C", "C:C", timestamp),
-                    new KeyValueTimestamp<>("D", "D:D", timestamp),
-                    new KeyValueTimestamp<>("E", "E:E", timestamp)));
+                        KeyValue.pair("A", "A:A"),
+                        KeyValue.pair("B", "B:B"),
+                        KeyValue.pair("C", "C:C"),
+                        KeyValue.pair("D", "D:D"),
+                        KeyValue.pair("E", "E:E")));
     }
 
     @Test
@@ -171,16 +156,16 @@ public class KStreamAggregationDedupIntegrationTest {
                 new StringDeserializer(),
                 new StringDeserializer(),
                 Arrays.asList(
-                    new KeyValueTimestamp<>("A@" + firstBatchWindow, "A", firstBatchTimestamp),
-                    new KeyValueTimestamp<>("A@" + secondBatchWindow, "A:A", secondBatchTimestamp),
-                    new KeyValueTimestamp<>("B@" + firstBatchWindow, "B", firstBatchTimestamp),
-                    new KeyValueTimestamp<>("B@" + secondBatchWindow, "B:B", secondBatchTimestamp),
-                    new KeyValueTimestamp<>("C@" + firstBatchWindow, "C", firstBatchTimestamp),
-                    new KeyValueTimestamp<>("C@" + secondBatchWindow, "C:C", secondBatchTimestamp),
-                    new KeyValueTimestamp<>("D@" + firstBatchWindow, "D", firstBatchTimestamp),
-                    new KeyValueTimestamp<>("D@" + secondBatchWindow, "D:D", secondBatchTimestamp),
-                    new KeyValueTimestamp<>("E@" + firstBatchWindow, "E", firstBatchTimestamp),
-                    new KeyValueTimestamp<>("E@" + secondBatchWindow, "E:E", secondBatchTimestamp)
+                        new KeyValue<>("A@" + firstBatchWindow, "A"),
+                        new KeyValue<>("A@" + secondBatchWindow, "A:A"),
+                        new KeyValue<>("B@" + firstBatchWindow, "B"),
+                        new KeyValue<>("B@" + secondBatchWindow, "B:B"),
+                        new KeyValue<>("C@" + firstBatchWindow, "C"),
+                        new KeyValue<>("C@" + secondBatchWindow, "C:C"),
+                        new KeyValue<>("D@" + firstBatchWindow, "D"),
+                        new KeyValue<>("D@" + secondBatchWindow, "D:D"),
+                        new KeyValue<>("E@" + firstBatchWindow, "E"),
+                        new KeyValue<>("E@" + secondBatchWindow, "E:E")
                 )
         );
     }
@@ -205,11 +190,11 @@ public class KStreamAggregationDedupIntegrationTest {
                 new StringDeserializer(),
                 new LongDeserializer(),
                 Arrays.asList(
-                    new KeyValueTimestamp<>("1@" + window, 2L, timestamp),
-                    new KeyValueTimestamp<>("2@" + window, 2L, timestamp),
-                    new KeyValueTimestamp<>("3@" + window, 2L, timestamp),
-                    new KeyValueTimestamp<>("4@" + window, 2L, timestamp),
-                    new KeyValueTimestamp<>("5@" + window, 2L, timestamp)
+                        KeyValue.pair("1@" + window, 2L),
+                        KeyValue.pair("2@" + window, 2L),
+                        KeyValue.pair("3@" + window, 2L),
+                        KeyValue.pair("4@" + window, 2L),
+                        KeyValue.pair("5@" + window, 2L)
                 )
         );
     }
@@ -234,10 +219,9 @@ public class KStreamAggregationDedupIntegrationTest {
 
 
     private void createTopics() throws InterruptedException {
-        final String safeTestName = safeUniqueTestName(getClass(), testName);
-        streamOneInput = "stream-one-" + safeTestName;
-        outputTopic = "output-" + safeTestName;
-        CLUSTER.createTopic(streamOneInput, 3, 1);
+        streamOneInput = "stream-one-" + testNo;
+        outputTopic = "output-" + testNo;
+        CLUSTER.createTopic(streamOneInput, 3, (short) 1);
         CLUSTER.createTopic(outputTopic);
     }
 
@@ -249,18 +233,20 @@ public class KStreamAggregationDedupIntegrationTest {
 
     private <K, V> void validateReceivedMessages(final Deserializer<K> keyDeserializer,
                                                  final Deserializer<V> valueDeserializer,
-                                                 final List<KeyValueTimestamp<K, V>> expectedRecords)
-            throws Exception {
-
-        final String safeTestName = safeUniqueTestName(getClass(), testName);
+                                                 final List<KeyValue<K, V>> expectedRecords)
+        throws InterruptedException {
         final Properties consumerProperties = new Properties();
-        consumerProperties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
-        consumerProperties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, "group-" + safeTestName);
+        consumerProperties
+            .setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, CLUSTER.bootstrapServers());
+        consumerProperties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, "kgroupedstream-test-" +
+            testNo);
         consumerProperties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        consumerProperties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer.getClass().getName());
-        consumerProperties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer.getClass().getName());
+        consumerProperties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
+            keyDeserializer.getClass().getName());
+        consumerProperties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+            valueDeserializer.getClass().getName());
 
-        IntegrationTestUtils.waitUntilFinalKeyValueTimestampRecordsReceived(
+        IntegrationTestUtils.waitUntilFinalKeyValueRecordsReceived(
             consumerProperties,
             outputTopic,
             expectedRecords);

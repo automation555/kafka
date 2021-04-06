@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
@@ -55,12 +54,6 @@ public interface Producer<K, V> extends Closeable {
                                   String consumerGroupId) throws ProducerFencedException;
 
     /**
-     * See {@link KafkaProducer#sendOffsetsToTransaction(Map, ConsumerGroupMetadata)}
-     */
-    void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
-                                  ConsumerGroupMetadata groupMetadata) throws ProducerFencedException;
-
-    /**
      * See {@link KafkaProducer#commitTransaction()}
      */
     void commitTransaction() throws ProducerFencedException;
@@ -86,6 +79,11 @@ public interface Producer<K, V> extends Closeable {
     void flush();
 
     /**
+     * See {@link KafkaProducer#flush(Duration)}
+     */
+    void flush(Duration timeout);
+
+     /**
      * See {@link KafkaProducer#partitionsFor(String)}
      */
     List<PartitionInfo> partitionsFor(String topic);

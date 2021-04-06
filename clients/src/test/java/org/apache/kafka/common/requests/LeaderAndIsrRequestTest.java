@@ -18,26 +18,22 @@ package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrLiveLeader;
 import org.apache.kafka.common.message.LeaderAndIsrRequestData.LeaderAndIsrPartitionState;
-import org.apache.kafka.common.message.LeaderAndIsrResponseData.LeaderAndIsrPartitionError;
-import org.apache.kafka.common.message.LeaderAndIsrResponseData.LeaderAndIsrTopicError;
 import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.MessageTestUtil;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -45,57 +41,28 @@ import java.util.stream.StreamSupport;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static org.apache.kafka.common.protocol.ApiKeys.LEADER_AND_ISR;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public class LeaderAndIsrRequestTest {
 
     @Test
     public void testUnsupportedVersion() {
-        LeaderAndIsrRequest.Builder builder = new LeaderAndIsrRequest.Builder(
-                (short) (LEADER_AND_ISR.latestVersion() + 1), 0, 0, 0,
-                Collections.emptyList(), Collections.emptyMap(), Collections.emptySet());
-        assertThrows(UnsupportedVersionException.class, builder::build);
+        LeaderAndIsrRequest.Builder builder = new LeaderAndIsrRequest.Builder(0, 0, 0,
+                Collections.emptyList(), Collections.emptySet());
+        assertThrows(UnsupportedVersionException.class, () -> builder.build((short) (LEADER_AND_ISR.latestVersion() + 1)));
     }
 
     @Test
     public void testGetErrorResponse() {
-        Uuid topicId = Uuid.randomUuid();
-        String topicName = "topic";
-        int partition = 0;
-        for (short version : LEADER_AND_ISR.allVersions()) {
-            LeaderAndIsrRequest request = new LeaderAndIsrRequest.Builder(version, 0, 0, 0,
-                Collections.singletonList(new LeaderAndIsrPartitionState()
-                    .setTopicName(topicName)
-                    .setPartitionIndex(partition)),
-                Collections.singletonMap(topicName, topicId),
-                Collections.emptySet()
-            ).build(version);
-
+        for (short version = LEADER_AND_ISR.oldestVersion(); version < LEADER_AND_ISR.latestVersion(); version++) {
+            LeaderAndIsrRequest.Builder builder = new LeaderAndIsrRequest.Builder(0, 0, 0,
+                    Collections.emptyList(), Collections.emptySet());
+            LeaderAndIsrRequest request = builder.build(version);
             LeaderAndIsrResponse response = request.getErrorResponse(0,
-                new ClusterAuthorizationException("Not authorized"));
-
+                    new ClusterAuthorizationException("Not authorized"));
             assertEquals(Errors.CLUSTER_AUTHORIZATION_FAILED, response.error());
-
-            if (version < 5) {
-                assertEquals(
-                    Collections.singletonList(new LeaderAndIsrPartitionError()
-                        .setTopicName(topicName)
-                        .setPartitionIndex(partition)
-                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())),
-                    response.data().partitionErrors());
-                assertEquals(0, response.data().topics().size());
-            } else {
-                LeaderAndIsrTopicError topicState = response.topics().find(topicId);
-                assertEquals(topicId, topicState.topicId());
-                assertEquals(
-                    Collections.singletonList(new LeaderAndIsrPartitionError()
-                        .setPartitionIndex(partition)
-                        .setErrorCode(Errors.CLUSTER_AUTHORIZATION_FAILED.code())),
-                    topicState.partitionErrors());
-                assertEquals(0, response.data().partitionErrors().size());
-            }
         }
     }
 
@@ -107,7 +74,7 @@ public class LeaderAndIsrRequestTest {
      */
     @Test
     public void testVersionLogic() {
-        for (short version : LEADER_AND_ISR.allVersions()) {
+        for (short version = LEADER_AND_ISR.oldestVersion(); version <= LEADER_AND_ISR.latestVersion(); version++) {
             List<LeaderAndIsrPartitionState> partitionStates = asList(
                 new LeaderAndIsrPartitionState()
                     .setTopicName("topic0")
@@ -148,13 +115,8 @@ public class LeaderAndIsrRequestTest {
                 new Node(0, "host0", 9090),
                 new Node(1, "host1", 9091)
             );
-
-            Map<String, Uuid> topicIds = new HashMap<>();
-            topicIds.put("topic0", Uuid.randomUuid());
-            topicIds.put("topic1", Uuid.randomUuid());
-
-            LeaderAndIsrRequest request = new LeaderAndIsrRequest.Builder(version, 1, 2, 3, partitionStates,
-                topicIds, liveNodes).build();
+            LeaderAndIsrRequest request = new LeaderAndIsrRequest.Builder(1, 2, 3, partitionStates,
+                liveNodes).build(version);
 
             List<LeaderAndIsrLiveLeader> liveLeaders = liveNodes.stream().map(n -> new LeaderAndIsrLiveLeader()
                 .setBrokerId(n.id())
@@ -166,7 +128,7 @@ public class LeaderAndIsrRequestTest {
             assertEquals(2, request.controllerEpoch());
             assertEquals(3, request.brokerEpoch());
 
-            ByteBuffer byteBuffer = request.serialize();
+            ByteBuffer byteBuffer = MessageTestUtil.messageToByteBuffer(request.data(), request.version());
             LeaderAndIsrRequest deserializedRequest = new LeaderAndIsrRequest(new LeaderAndIsrRequestData(
                 new ByteBufferAccessor(byteBuffer), version), version);
 
@@ -178,21 +140,7 @@ public class LeaderAndIsrRequestTest {
                     .setRemovingReplicas(emptyList());
             }
 
-            // Prior to version 2, there were no TopicStates, so a map of Topic Ids from a list of
-            // TopicStates is an empty map.
-            if (version < 2) {
-                topicIds = new HashMap<>();
-            }
-
-            //  In versions 2-4 there are TopicStates, but no topicIds, so deserialized requests will have
-            //  Zero Uuids in place.
-            if (version > 1 && version < 5) {
-                topicIds.put("topic0", Uuid.ZERO_UUID);
-                topicIds.put("topic1", Uuid.ZERO_UUID);
-            }
-
             assertEquals(new HashSet<>(partitionStates), iterableToSet(deserializedRequest.partitionStates()));
-            assertEquals(topicIds, deserializedRequest.topicIds());
             assertEquals(liveLeaders, deserializedRequest.liveLeaders());
             assertEquals(1, request.controllerId());
             assertEquals(2, request.controllerEpoch());
@@ -204,19 +152,20 @@ public class LeaderAndIsrRequestTest {
     public void testTopicPartitionGroupingSizeReduction() {
         Set<TopicPartition> tps = TestUtils.generateRandomTopicPartitions(10, 10);
         List<LeaderAndIsrPartitionState> partitionStates = new ArrayList<>();
-        Map<String, Uuid> topicIds = new HashMap<>();
         for (TopicPartition tp : tps) {
             partitionStates.add(new LeaderAndIsrPartitionState()
                 .setTopicName(tp.topic())
                 .setPartitionIndex(tp.partition()));
-            topicIds.put(tp.topic(), Uuid.randomUuid());
         }
-        LeaderAndIsrRequest.Builder builder = new LeaderAndIsrRequest.Builder((short) 2, 0, 0, 0,
-            partitionStates, topicIds, Collections.emptySet());
+        LeaderAndIsrRequest.Builder builder = new LeaderAndIsrRequest.Builder(0, 0, 0,
+            partitionStates, Collections.emptySet());
 
         LeaderAndIsrRequest v2 = builder.build((short) 2);
         LeaderAndIsrRequest v1 = builder.build((short) 1);
-        assertTrue(v2.sizeInBytes() < v1.sizeInBytes(), "Expected v2 < v1: v2=" + v2.sizeInBytes() + ", v1=" + v1.sizeInBytes());
+        int size2 = MessageTestUtil.messageSize(v2.data(), v2.version());
+        int size1 = MessageTestUtil.messageSize(v1.data(), v1.version());
+
+        assertTrue("Expected v2 < v1: v2=" + size2 + ", v1=" + size1, size2 < size1);
     }
 
     private <T> Set<T> iterableToSet(Iterable<T> iterable) {

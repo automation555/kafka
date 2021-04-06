@@ -17,7 +17,6 @@
 package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.UpdateMetadataRequestData;
@@ -27,17 +26,16 @@ import org.apache.kafka.common.message.UpdateMetadataRequestData.UpdateMetadataP
 import org.apache.kafka.common.network.ListenerName;
 import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.MessageTestUtil;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -45,26 +43,25 @@ import java.util.stream.StreamSupport;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static org.apache.kafka.common.protocol.ApiKeys.UPDATE_METADATA;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public class UpdateMetadataRequestTest {
 
     @Test
     public void testUnsupportedVersion() {
-        UpdateMetadataRequest.Builder builder = new UpdateMetadataRequest.Builder(
-                (short) (UPDATE_METADATA.latestVersion() + 1), 0, 0, 0,
-                Collections.emptyList(), Collections.emptyList(), Collections.emptyMap());
-        assertThrows(UnsupportedVersionException.class, builder::build);
+        UpdateMetadataRequest.Builder builder = new UpdateMetadataRequest.Builder(0, 0, 0,
+                Collections.emptyList(), Collections.emptyList());
+        assertThrows(UnsupportedVersionException.class, () -> builder.build((short) (UPDATE_METADATA.latestVersion() + 1)));
     }
 
     @Test
     public void testGetErrorResponse() {
-        for (short version : UPDATE_METADATA.allVersions()) {
+        for (short version = UPDATE_METADATA.oldestVersion(); version < UPDATE_METADATA.latestVersion(); version++) {
             UpdateMetadataRequest.Builder builder = new UpdateMetadataRequest.Builder(
-                    version, 0, 0, 0, Collections.emptyList(), Collections.emptyList(), Collections.emptyMap());
-            UpdateMetadataRequest request = builder.build();
+                    0, 0, 0, Collections.emptyList(), Collections.emptyList());
+            UpdateMetadataRequest request = builder.build(version);
             UpdateMetadataResponse response = request.getErrorResponse(0,
                     new ClusterAuthorizationException("Not authorized"));
             assertEquals(Errors.CLUSTER_AUTHORIZATION_FAILED, response.error());
@@ -79,12 +76,10 @@ public class UpdateMetadataRequestTest {
      */
     @Test
     public void testVersionLogic() {
-        String topic0 = "topic0";
-        String topic1 = "topic1";
-        for (short version : UPDATE_METADATA.allVersions()) {
+        for (short version = UPDATE_METADATA.oldestVersion(); version <= UPDATE_METADATA.latestVersion(); version++) {
             List<UpdateMetadataPartitionState> partitionStates = asList(
                 new UpdateMetadataPartitionState()
-                    .setTopicName(topic0)
+                    .setTopicName("topic0")
                     .setPartitionIndex(0)
                     .setControllerEpoch(2)
                     .setLeader(0)
@@ -94,7 +89,7 @@ public class UpdateMetadataRequestTest {
                     .setReplicas(asList(0, 1, 2))
                     .setOfflineReplicas(asList(2)),
                 new UpdateMetadataPartitionState()
-                    .setTopicName(topic0)
+                    .setTopicName("topic0")
                     .setPartitionIndex(1)
                     .setControllerEpoch(2)
                     .setLeader(1)
@@ -104,7 +99,7 @@ public class UpdateMetadataRequestTest {
                     .setReplicas(asList(1, 2, 3))
                     .setOfflineReplicas(emptyList()),
                 new UpdateMetadataPartitionState()
-                    .setTopicName(topic1)
+                    .setTopicName("topic1")
                     .setPartitionIndex(0)
                     .setControllerEpoch(2)
                     .setLeader(2)
@@ -152,12 +147,8 @@ public class UpdateMetadataRequestTest {
                     ))
             );
 
-            Map<String, Uuid> topicIds = new HashMap<>();
-            topicIds.put(topic0, Uuid.randomUuid());
-            topicIds.put(topic1, Uuid.randomUuid());
-
-            UpdateMetadataRequest request = new UpdateMetadataRequest.Builder(version, 1, 2, 3,
-                partitionStates, liveBrokers, topicIds).build();
+            UpdateMetadataRequest request = new UpdateMetadataRequest.Builder(1, 2, 3,
+                partitionStates, liveBrokers).build(version);
 
             assertEquals(new HashSet<>(partitionStates), iterableToSet(request.partitionStates()));
             assertEquals(liveBrokers, request.liveBrokers());
@@ -165,7 +156,7 @@ public class UpdateMetadataRequestTest {
             assertEquals(2, request.controllerEpoch());
             assertEquals(3, request.brokerEpoch());
 
-            ByteBuffer byteBuffer = request.serialize();
+            ByteBuffer byteBuffer = MessageTestUtil.messageToByteBuffer(request.data(), request.version());
             UpdateMetadataRequest deserializedRequest = new UpdateMetadataRequest(new UpdateMetadataRequestData(
                     new ByteBufferAccessor(byteBuffer), version), version);
 
@@ -193,21 +184,9 @@ public class UpdateMetadataRequestTest {
 
             assertEquals(new HashSet<>(partitionStates), iterableToSet(deserializedRequest.partitionStates()));
             assertEquals(liveBrokers, deserializedRequest.liveBrokers());
-            assertEquals(1, deserializedRequest.controllerId());
-            assertEquals(2, deserializedRequest.controllerEpoch());
-            // Broker epoch is only supported from version 5
-            if (version >= 5)
-                assertEquals(3, deserializedRequest.brokerEpoch());
-            else
-                assertEquals(-1, deserializedRequest.brokerEpoch());
-
-            long topicIdCount = deserializedRequest.data().topicStates().stream()
-                    .map(UpdateMetadataRequestData.UpdateMetadataTopicState::topicId)
-                    .filter(topicId -> topicId != Uuid.ZERO_UUID).count();
-            if (version >= 7)
-                assertEquals(2, topicIdCount);
-            else
-                assertEquals(0, topicIdCount);
+            assertEquals(1, request.controllerId());
+            assertEquals(2, request.controllerEpoch());
+            assertEquals(3, request.brokerEpoch());
         }
     }
 
@@ -220,10 +199,11 @@ public class UpdateMetadataRequestTest {
                 .setTopicName(tp.topic())
                 .setPartitionIndex(tp.partition()));
         }
-        UpdateMetadataRequest.Builder builder = new UpdateMetadataRequest.Builder((short) 5, 0, 0, 0,
-                partitionStates, Collections.emptyList(), Collections.emptyMap());
+        UpdateMetadataRequest.Builder builder = new UpdateMetadataRequest.Builder(0, 0, 0,
+                partitionStates, Collections.emptyList());
 
-        assertTrue(builder.build((short) 5).sizeInBytes() <  builder.build((short) 4).sizeInBytes());
+        assertTrue(MessageTestUtil.messageSize(builder.build((short) 5).data(), (short) 5) <
+            MessageTestUtil.messageSize(builder.build((short) 4).data(), (short) 4));
     }
 
     private <T> Set<T> iterableToSet(Iterable<T> iterable) {

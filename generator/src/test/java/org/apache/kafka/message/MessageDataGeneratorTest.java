@@ -17,17 +17,19 @@
 
 package org.apache.kafka.message;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.util.Arrays;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-@Timeout(120)
 public class MessageDataGeneratorTest {
+    @Rule
+    final public Timeout globalTimeout = Timeout.millis(120000);
 
     @Test
     public void testNullDefaults() throws Exception {
@@ -50,8 +52,8 @@ public class MessageDataGeneratorTest {
     }
 
     private void assertStringContains(String substring, String value) {
-        assertTrue(value.contains(substring),
-                   "Expected string to contain '" + substring + "', but it was " + value);
+        assertTrue("Expected string to contain '" + substring + "', but it was " + value,
+            value.contains(substring));
     }
 
     @Test
@@ -66,6 +68,23 @@ public class MessageDataGeneratorTest {
             "  ]",
             "}")), MessageSpec.class);
         assertStringContains("Invalid default for int32",
+            assertThrows(RuntimeException.class, () -> {
+                new MessageDataGenerator("org.apache.kafka.common.message").generate(testMessageSpec);
+            }).getMessage());
+    }
+
+    @Test
+    public void testInvalidNullDefaultForError() throws Exception {
+        MessageSpec testMessageSpec = MessageGenerator.JSON_SERDE.readValue(String.join("", Arrays.asList(
+            "{",
+            "  \"type\": \"request\",",
+            "  \"name\": \"FooBar\",",
+            "  \"validVersions\": \"0-2\",",
+            "  \"fields\": [",
+            "    { \"name\": \"field1\", \"type\": \"error\", \"versions\": \"0+\", \"default\": \"null\" }",
+            "  ]",
+            "}")), MessageSpec.class);
+        assertStringContains("Invalid default for error",
             assertThrows(RuntimeException.class, () -> {
                 new MessageDataGenerator("org.apache.kafka.common.message").generate(testMessageSpec);
             }).getMessage());

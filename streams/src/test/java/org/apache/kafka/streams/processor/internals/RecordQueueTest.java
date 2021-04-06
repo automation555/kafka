@@ -19,25 +19,25 @@ package org.apache.kafka.streams.processor.internals;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.LogAndContinueExceptionHandler;
 import org.apache.kafka.streams.errors.LogAndFailExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.processor.FailOnInvalidTimestamp;
 import org.apache.kafka.streams.processor.LogAndSkipOnInvalidTimestamp;
 import org.apache.kafka.streams.processor.TimestampExtractor;
-import org.apache.kafka.streams.state.StateSerdes;
-import org.apache.kafka.test.InternalMockProcessorContext;
-import org.apache.kafka.test.MockRecordCollector;
+import org.apache.kafka.test.MockInternalProcessorContext;
 import org.apache.kafka.test.MockSourceNode;
 import org.apache.kafka.test.MockTimestampExtractor;
+import org.apache.kafka.test.StreamsTestUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -45,8 +45,8 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Properties;
 
-import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.core.IsInstanceOf.instanceOf;
@@ -57,35 +57,40 @@ import static org.junit.Assert.assertTrue;
 
 public class RecordQueueTest {
     private final Serializer<Integer> intSerializer = new IntegerSerializer();
-    private final Deserializer<Integer> intDeserializer = new IntegerDeserializer();
-    private final TimestampExtractor timestampExtractor = new MockTimestampExtractor();
 
-    final InternalMockProcessorContext context = new InternalMockProcessorContext(
-        StateSerdes.withBuiltinTypes("anyName", Bytes.class, Bytes.class),
-        new MockRecordCollector()
-    );
-    private final MockSourceNode<Integer, Integer, ?, ?> mockSourceNodeWithMetrics
-        = new MockSourceNode<>(intDeserializer, intDeserializer);
-    private final RecordQueue queue = new RecordQueue(
-        new TopicPartition("topic", 1),
-        mockSourceNodeWithMetrics,
-        timestampExtractor,
-        new LogAndFailExceptionHandler(),
-        context,
-        new LogContext());
-    private final RecordQueue queueThatSkipsDeserializeErrors = new RecordQueue(
-        new TopicPartition("topic", 1),
-        mockSourceNodeWithMetrics,
-        timestampExtractor,
-        new LogAndContinueExceptionHandler(),
-        context,
-        new LogContext());
+    MockInternalProcessorContext context;
+    private MockSourceNode mockSourceNodeWithMetrics;
+    private RecordQueue queue;
+    private RecordQueue queueThatSkipsDeserializeErrors;
 
     private final byte[] recordValue = intSerializer.serialize(null, 10);
     private final byte[] recordKey = intSerializer.serialize(null, 1);
 
     @Before
     public void before() {
+        final Properties properties = StreamsTestUtils.getStreamsConfig();
+        properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.BytesSerde.class);
+        properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.BytesSerde.class);
+        context = new MockInternalProcessorContext(properties, new Metrics());
+        final Deserializer<Integer> intDeserializer = new IntegerDeserializer();
+        mockSourceNodeWithMetrics = new MockSourceNode<>(new String[]{"topic"}, intDeserializer, intDeserializer);
+        final TimestampExtractor timestampExtractor = new MockTimestampExtractor();
+        queue = new RecordQueue(
+                new TopicPartition("topic", 1),
+                mockSourceNodeWithMetrics,
+                timestampExtractor,
+                new LogAndFailExceptionHandler(),
+                context,
+                new LogContext()
+        );
+        queueThatSkipsDeserializeErrors = new RecordQueue(
+                new TopicPartition("topic", 1),
+                mockSourceNodeWithMetrics,
+                timestampExtractor,
+                new LogAndContinueExceptionHandler(),
+                context,
+                new LogContext()
+        );
         mockSourceNodeWithMetrics.init(context);
     }
 
@@ -194,11 +199,11 @@ public class RecordQueueTest {
     }
 
     @Test
-    public void shouldTrackPartitionTimeAsMaxProcessedTimestamp() {
+    public void shouldTrackPartitionTimeAsMaxSeenTimestamp() {
+
         assertTrue(queue.isEmpty());
-        assertThat(queue.size(), is(0));
-        assertThat(queue.headRecordTimestamp(), is(RecordQueue.UNKNOWN));
-        assertThat(queue.partitionTime(), is(RecordQueue.UNKNOWN));
+        assertEquals(0, queue.size());
+        assertEquals(RecordQueue.UNKNOWN, queue.headRecordTimestamp());
 
         // add three 3 out-of-order records with timestamp 2, 1, 3, 4
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
@@ -207,28 +212,25 @@ public class RecordQueueTest {
             new ConsumerRecord<>("topic", 1, 3, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 4, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, recordKey, recordValue));
 
+        assertEquals(queue.partitionTime(), RecordQueue.UNKNOWN);
+
         queue.addRawRecords(list1);
-        assertThat(queue.partitionTime(), is(RecordQueue.UNKNOWN));
+
+        assertEquals(queue.partitionTime(), 2L);
 
         queue.poll();
-        assertThat(queue.partitionTime(), is(2L));
+        assertEquals(queue.partitionTime(), 2L);
 
         queue.poll();
-        assertThat(queue.partitionTime(), is(2L));
-
-        queue.poll();
-        assertThat(queue.partitionTime(), is(3L));
+        assertEquals(queue.partitionTime(), 3L);
     }
 
     @Test
     public void shouldSetTimestampAndRespectMaxTimestampPolicy() {
         assertTrue(queue.isEmpty());
-        assertThat(queue.size(), is(0));
-        assertThat(queue.headRecordTimestamp(), is(RecordQueue.UNKNOWN));
-        assertThat(queue.partitionTime(), is(RecordQueue.UNKNOWN));
-
+        assertEquals(0, queue.size());
+        assertEquals(RecordQueue.UNKNOWN, queue.headRecordTimestamp());
         queue.setPartitionTime(150L);
-        assertThat(queue.partitionTime(), is(150L));
 
         final List<ConsumerRecord<byte[], byte[]>> list1 = Arrays.asList(
             new ConsumerRecord<>("topic", 1, 200, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, recordKey, recordValue),
@@ -236,17 +238,18 @@ public class RecordQueueTest {
             new ConsumerRecord<>("topic", 1, 300, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, recordKey, recordValue),
             new ConsumerRecord<>("topic", 1, 400, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, recordKey, recordValue));
 
-        queue.addRawRecords(list1);
-        assertThat(queue.partitionTime(), is(150L));
+        assertEquals(150L, queue.partitionTime());
 
-        queue.poll();
-        assertThat(queue.partitionTime(), is(200L));
+        queue.addRawRecords(list1);
+
+        assertEquals(200L, queue.partitionTime());
 
         queue.setPartitionTime(500L);
-        assertThat(queue.partitionTime(), is(500L));
+        queue.poll();
+        assertEquals(500L, queue.partitionTime());
 
         queue.poll();
-        assertThat(queue.partitionTime(), is(500L));
+        assertEquals(500L, queue.partitionTime());
     }
 
     @Test
@@ -305,7 +308,7 @@ public class RecordQueueTest {
             mockSourceNodeWithMetrics,
             new FailOnInvalidTimestamp(),
             new LogAndContinueExceptionHandler(),
-            new InternalMockProcessorContext(),
+            new MockInternalProcessorContext(),
             new LogContext());
 
         final StreamsException exception = assertThrows(
@@ -330,7 +333,7 @@ public class RecordQueueTest {
             mockSourceNodeWithMetrics,
             new LogAndSkipOnInvalidTimestamp(),
             new LogAndContinueExceptionHandler(),
-            new InternalMockProcessorContext(),
+            new MockInternalProcessorContext(),
             new LogContext());
         queue.addRawRecords(records);
 

@@ -17,44 +17,28 @@
 
 package kafka.server
 
-import kafka.test.{ClusterConfig, ClusterInstance}
 import org.apache.kafka.common.message.ApiVersionsRequestData
 import org.apache.kafka.common.protocol.{ApiKeys, Errors}
-import org.apache.kafka.common.requests.ApiVersionsRequest
-import kafka.test.annotation.ClusterTest
-import kafka.test.junit.ClusterTestExtensions
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.extension.ExtendWith
+import org.apache.kafka.common.requests.{ApiVersionsRequest, ApiVersionsResponse}
+import org.junit.Assert._
+import org.junit.Test
 
+class ApiVersionsRequestTest extends AbstractApiVersionsRequestTest {
 
-@ExtendWith(value = Array(classOf[ClusterTestExtensions]))
-class ApiVersionsRequestTest(cluster: ClusterInstance) extends AbstractApiVersionsRequestTest(cluster) {
+  override def brokerCount: Int = 1
 
-  @BeforeEach
-  def setup(config: ClusterConfig): Unit = {
-    super.brokerPropertyOverrides(config.serverProperties())
-  }
-
-  @ClusterTest
+  @Test
   def testApiVersionsRequest(): Unit = {
     val request = new ApiVersionsRequest.Builder().build()
-    val apiVersionsResponse = sendApiVersionsRequest(request, cluster.clientListener())
+    val apiVersionsResponse = sendApiVersionsRequest(request)
     validateApiVersionsResponse(apiVersionsResponse)
   }
 
-  @ClusterTest
-  def testApiVersionsRequestThroughControlPlaneListener(): Unit = {
-    val request = new ApiVersionsRequest.Builder().build()
-    val apiVersionsResponse = sendApiVersionsRequest(request, super.controlPlaneListenerName)
-    validateApiVersionsResponse(apiVersionsResponse)
-  }
-
-  @ClusterTest
+  @Test
   def testApiVersionsRequestWithUnsupportedVersion(): Unit = {
     val apiVersionsRequest = new ApiVersionsRequest.Builder().build()
     val apiVersionsResponse = sendUnsupportedApiVersionRequest(apiVersionsRequest)
-    assertEquals(Errors.UNSUPPORTED_VERSION.code(), apiVersionsResponse.data.errorCode())
+    assertEquals(Errors.UNSUPPORTED_VERSION, apiVersionsResponse.data.errorCode())
     assertFalse(apiVersionsResponse.data.apiKeys().isEmpty)
     val apiVersion = apiVersionsResponse.data.apiKeys().find(ApiKeys.API_VERSIONS.id)
     assertEquals(ApiKeys.API_VERSIONS.id, apiVersion.apiKey())
@@ -62,25 +46,23 @@ class ApiVersionsRequestTest(cluster: ClusterInstance) extends AbstractApiVersio
     assertEquals(ApiKeys.API_VERSIONS.latestVersion(), apiVersion.maxVersion())
   }
 
-  @ClusterTest
+  @Test
   def testApiVersionsRequestValidationV0(): Unit = {
     val apiVersionsRequest = new ApiVersionsRequest.Builder().build(0.asInstanceOf[Short])
-    val apiVersionsResponse = sendApiVersionsRequest(apiVersionsRequest, cluster.clientListener())
+    val apiVersionsResponse = sendApiVersionsRequest(apiVersionsRequest)
     validateApiVersionsResponse(apiVersionsResponse)
   }
 
-  @ClusterTest
-  def testApiVersionsRequestValidationV0ThroughControlPlaneListener(): Unit = {
-    val apiVersionsRequest = new ApiVersionsRequest.Builder().build(0.asInstanceOf[Short])
-    val apiVersionsResponse = sendApiVersionsRequest(apiVersionsRequest, super.controlPlaneListenerName)
-    validateApiVersionsResponse(apiVersionsResponse)
-  }
-
-  @ClusterTest
+  @Test
   def testApiVersionsRequestValidationV3(): Unit = {
     // Invalid request because Name and Version are empty by default
     val apiVersionsRequest = new ApiVersionsRequest(new ApiVersionsRequestData(), 3.asInstanceOf[Short])
-    val apiVersionsResponse = sendApiVersionsRequest(apiVersionsRequest, cluster.clientListener())
-    assertEquals(Errors.INVALID_REQUEST.code(), apiVersionsResponse.data.errorCode())
+    val apiVersionsResponse = sendApiVersionsRequest(apiVersionsRequest)
+    assertEquals(Errors.INVALID_REQUEST, apiVersionsResponse.data.errorCode())
   }
+
+  private def sendApiVersionsRequest(request: ApiVersionsRequest): ApiVersionsResponse = {
+    connectAndReceive[ApiVersionsResponse](request)
+  }
+
 }

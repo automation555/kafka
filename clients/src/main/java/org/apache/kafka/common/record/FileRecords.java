@@ -17,7 +17,7 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.network.TransferableChannel;
+import org.apache.kafka.common.network.TransportLayer;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.AbstractIterator;
 import org.apache.kafka.common.utils.Time;
@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.GatheringByteChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.util.Objects;
@@ -48,7 +49,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     // mutable state
     private final AtomicInteger size;
-    private final FileChannel channel;
+    private FileChannel channel;
     private volatile File file;
 
     /**
@@ -117,6 +118,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * possible exceptions
      */
     public void readInto(ByteBuffer buffer, int position) throws IOException {
+        if (!channel.isOpen()) {
+            channel = openChannel(file, false, true, 0, false);
+        }
         Utils.readFully(channel, buffer, position + this.start);
         buffer.flip();
     }
@@ -134,43 +138,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @return A sliced wrapper on this message set limited based on the given position and size
      */
     public FileRecords slice(int position, int size) throws IOException {
-        int availableBytes = availableBytes(position, size);
-        int startPosition = this.start + position;
-        return new FileRecords(file, channel, startPosition, startPosition + availableBytes, true);
-    }
-
-    /**
-     * Return a slice of records from this instance, the difference with {@link FileRecords#slice(int, int)} is
-     * that the position is not necessarily on an offset boundary.
-     *
-     * This method is reserved for cases where offset alignment is not necessary, such as in the replication of raft
-     * snapshots.
-     *
-     * @param position The start position to begin the read from
-     * @param size The number of bytes after the start position to include
-     * @return A unaligned slice of records on this message set limited based on the given position and size
-     */
-    public UnalignedFileRecords sliceUnaligned(int position, int size) {
-        int availableBytes = availableBytes(position, size);
-        return new UnalignedFileRecords(channel, this.start + position, availableBytes);
-    }
-
-    private int availableBytes(int position, int size) {
-        // Cache current size in case concurrent write changes it
-        int currentSizeInBytes = sizeInBytes();
-
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
-        if (position > currentSizeInBytes - start)
+        if (position > sizeInBytes() - start)
             throw new IllegalArgumentException("Slice from position " + position + " exceeds end position of " + this);
         if (size < 0)
             throw new IllegalArgumentException("Invalid size: " + size + " in read from " + this);
 
         int end = this.start + position + size;
-        // Handle integer overflow or if end is beyond the end of the file
-        if (end < 0 || end > start + currentSizeInBytes)
-            end = this.start + currentSizeInBytes;
-        return end - (this.start + position);
+        // handle integer overflow or if end is beyond the end of the file
+        if (end < 0 || end >= start + sizeInBytes())
+            end = start + sizeInBytes();
+        return new FileRecords(file, channel, this.start + position, end, true);
     }
 
     /**
@@ -194,14 +173,10 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
+        if (!channel.isOpen()) {
+            channel = openChannel(file, false, true, 0, false);
+        }
         channel.force(true);
-    }
-
-    /**
-     * Flush the parent directory of a file to the physical disk, which makes sure the file is accessible after crashing.
-     */
-    public void flushParentDir() throws IOException {
-        Utils.flushParentDir(file.toPath());
     }
 
     /**
@@ -239,11 +214,11 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     /**
-     * Update the parent directory (to be used with caution since this does not reopen the file channel)
-     * @param parentDir The new parent directory
+     * Update the file reference (to be used with caution since this does not reopen the file channel)
+     * @param file The new file to use
      */
-    public void updateParentDir(File parentDir) {
-        this.file = new File(parentDir, file.getName());
+    public void setFile(File file) {
+        this.file = file;
     }
 
     /**
@@ -252,7 +227,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      */
     public void renameTo(File f) throws IOException {
         try {
-            Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
+            Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
         } finally {
             this.file = f;
         }
@@ -298,7 +273,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     @Override
-    public long writeTo(TransferableChannel destChannel, long offset, int length) throws IOException {
+    public long writeTo(GatheringByteChannel destChannel, long offset, int length) throws IOException {
         long newSize = Math.min(channel.size(), end) - start;
         int oldSize = sizeInBytes();
         if (newSize < oldSize)
@@ -307,8 +282,15 @@ public class FileRecords extends AbstractRecords implements Closeable {
                     file.getAbsolutePath(), oldSize, newSize));
 
         long position = start + offset;
-        long count = Math.min(length, oldSize - offset);
-        return destChannel.transferFrom(channel, position, count);
+        int count = Math.min(length, oldSize);
+        final long bytesTransferred;
+        if (destChannel instanceof TransportLayer) {
+            TransportLayer tl = (TransportLayer) destChannel;
+            bytesTransferred = tl.transferFrom(channel, position, count);
+        } else {
+            bytesTransferred = channel.transferTo(position, count, destChannel);
+        }
+        return bytesTransferred;
     }
 
     /**
@@ -394,8 +376,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     @Override
     public String toString() {
-        return "FileRecords(size=" + sizeInBytes() +
-                ", file=" + file +
+        return "FileRecords(file= " + file +
                 ", start=" + start +
                 ", end=" + end +
                 ")";
@@ -509,7 +490,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
         @Override
         public int hashCode() {
-            int result = Long.hashCode(offset);
+            int result = (int) (offset ^ (offset >>> 32));
             result = 31 * result + position;
             result = 31 * result + size;
             return result;

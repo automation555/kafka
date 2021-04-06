@@ -20,28 +20,27 @@ import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.ControlledShutdownRequestData;
 import org.apache.kafka.common.protocol.Errors;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import static org.apache.kafka.common.protocol.ApiKeys.CONTROLLED_SHUTDOWN;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 public class ControlledShutdownRequestTest {
 
     @Test
     public void testUnsupportedVersion() {
         ControlledShutdownRequest.Builder builder = new ControlledShutdownRequest.Builder(
-                new ControlledShutdownRequestData().setBrokerId(1),
-                (short) (CONTROLLED_SHUTDOWN.latestVersion() + 1));
-        assertThrows(UnsupportedVersionException.class, builder::build);
+                new ControlledShutdownRequestData().setBrokerId(1));
+        assertThrows(UnsupportedVersionException.class, () -> builder.build((short) (CONTROLLED_SHUTDOWN.latestVersion() + 1)));
     }
 
     @Test
     public void testGetErrorResponse() {
-        for (short version : CONTROLLED_SHUTDOWN.allVersions()) {
+        for (short version = CONTROLLED_SHUTDOWN.oldestVersion(); version < CONTROLLED_SHUTDOWN.latestVersion(); version++) {
             ControlledShutdownRequest.Builder builder = new ControlledShutdownRequest.Builder(
-                    new ControlledShutdownRequestData().setBrokerId(1), version);
-            ControlledShutdownRequest request = builder.build();
+                    new ControlledShutdownRequestData().setBrokerId(1));
+            ControlledShutdownRequest request = builder.build(version);
             ControlledShutdownResponse response = request.getErrorResponse(0,
                     new ClusterAuthorizationException("Not authorized"));
             assertEquals(Errors.CLUSTER_AUTHORIZATION_FAILED, response.error());

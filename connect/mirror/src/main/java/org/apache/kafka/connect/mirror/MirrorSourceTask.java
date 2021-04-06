@@ -68,14 +68,10 @@ public class MirrorSourceTask extends SourceTask {
     public MirrorSourceTask() {}
 
     // for testing
-    MirrorSourceTask(KafkaConsumer<byte[], byte[]> consumer, MirrorMetrics metrics, String sourceClusterAlias,
-                     ReplicationPolicy replicationPolicy, long maxOffsetLag) {
-        this.consumer = consumer;
-        this.metrics = metrics;
+    MirrorSourceTask(String sourceClusterAlias, ReplicationPolicy replicationPolicy, long maxOffsetLag) {
         this.sourceClusterAlias = sourceClusterAlias;
         this.replicationPolicy = replicationPolicy;
         this.maxOffsetLag = maxOffsetLag;
-        consumerAccess = new Semaphore(1);
     }
 
     @Override
@@ -117,6 +113,7 @@ public class MirrorSourceTask extends SourceTask {
             consumerAccess.acquire();
         } catch (InterruptedException e) {
             log.warn("Interrupted waiting for access to consumer. Will try closing anyway."); 
+            Thread.currentThread().interrupt();
         }
         Utils.closeQuietly(consumer, "source consumer");
         Utils.closeQuietly(offsetProducer, "offset producer");
@@ -223,7 +220,7 @@ public class MirrorSourceTask extends SourceTask {
     }
  
     private Map<TopicPartition, Long> loadOffsets(Set<TopicPartition> topicPartitions) {
-        return topicPartitions.stream().collect(Collectors.toMap(x -> x, this::loadOffset));
+        return topicPartitions.stream().collect(Collectors.toMap(x -> x, x -> loadOffset(x)));
     }
 
     private Long loadOffset(TopicPartition topicPartition) {

@@ -138,7 +138,7 @@ public class StreamsUpgradeTest {
                 usedSubscriptionMetadataVersionPeek = new AtomicInteger();
             }
             configs.remove("test.future.metadata");
-            nextScheduledRebalanceMs = new AssignorConfiguration(configs).referenceContainer().nextScheduledRebalanceMs;
+            nextScheduledRebalanceMs = new AssignorConfiguration(configs).nextScheduledRebalanceMs();
 
             super.configure(configs);
         }
@@ -151,17 +151,14 @@ public class StreamsUpgradeTest {
             // 3. Task ids of valid local states on the client's state directory.
             final TaskManager taskManager = taskManager();
             handleRebalanceStart(topics);
-            byte uniqueField = 0;
+
             if (usedSubscriptionMetadataVersion <= LATEST_SUPPORTED_VERSION) {
-                uniqueField++;
                 return new SubscriptionInfo(
                     usedSubscriptionMetadataVersion,
                     LATEST_SUPPORTED_VERSION + 1,
                     taskManager.processId(),
                     userEndPoint(),
-                    taskManager.getTaskOffsetSums(),
-                    uniqueField,
-                    0
+                    taskManager.getTaskOffsetSums()
                 ).encode();
             } else {
                 return new FutureSubscriptionInfo(
@@ -260,10 +257,8 @@ public class StreamsUpgradeTest {
                                 LATEST_SUPPORTED_VERSION,
                                 info.processId(),
                                 info.userEndPoint(),
-                                taskManager().getTaskOffsetSums(),
-                                (byte) 0,
-                                0
-                            ).encode(),
+                                taskManager().getTaskOffsetSums())
+                                .encode(),
                             subscription.ownedPartitions()
                         ));
                 }
@@ -322,9 +317,7 @@ public class StreamsUpgradeTest {
                 16 + // client ID
                 4 + activeTasks.size() * 8 +   // length + active tasks
                 4 + standbyTasks.size() * 8 +  // length + standby tasks
-                4 + endPointBytes.length +      // length + endpoint
-                4 + //uniqueField
-                4 //assignment error code
+                4 + endPointBytes.length       // length + endpoint
             );
 
             buf.putInt(version); // used version
@@ -379,7 +372,6 @@ public class StreamsUpgradeTest {
                 } catch (final BufferUnderflowException expectedWhenAllDataCopied) { }
 
                 out.flush();
-                out.close();
 
                 return ByteBuffer.wrap(baos.toByteArray());
             } catch (final IOException ex) {

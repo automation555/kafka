@@ -50,7 +50,6 @@
 
   <subpackage name="common">
     <allow class="org.apache.kafka.clients.consumer.ConsumerRecord" exact-match="true" />
-    <allow class="org.apache.kafka.common.message.ApiMessageType" exact-match="true" />
     <disallow pkg="org.apache.kafka.clients" />
     <allow pkg="org.apache.kafka.common" exact-match="true" />
     <allow pkg="org.apache.kafka.common.annotation" />
@@ -68,15 +67,6 @@
       <allow pkg="org.apache.kafka.common.config" />
       <!-- for testing -->
       <allow pkg="org.apache.kafka.common.metrics" />
-    </subpackage>
-
-    <!-- Third-party compression libraries should only be references from this package -->
-    <subpackage name="compress">
-      <allow pkg="com.github.luben.zstd" />
-      <allow pkg="net.jpountz.lz4" />
-      <allow pkg="net.jpountz.xxhash" />
-      <allow pkg="org.apache.kafka.common.compress" />
-      <allow pkg="org.xerial.snappy" />
     </subpackage>
 
     <subpackage name="message">
@@ -109,7 +99,6 @@
       <allow pkg="org.apache.kafka.common.config" />
       <allow pkg="org.apache.kafka.common.metrics" />
       <allow pkg="org.apache.kafka.common.security" />
-      <allow class="org.apache.kafka.common.requests.ApiVersionsResponse" />
     </subpackage>
 
     <subpackage name="resource">
@@ -155,7 +144,7 @@
     </subpackage>
 
     <subpackage name="record">
-      <allow pkg="org.apache.kafka.common.compress" />
+      <allow pkg="net.jpountz" />
       <allow pkg="org.apache.kafka.common.header" />
       <allow pkg="org.apache.kafka.common.record" />
       <allow pkg="org.apache.kafka.common.message" />
@@ -163,6 +152,7 @@
       <allow pkg="org.apache.kafka.common.protocol" />
       <allow pkg="org.apache.kafka.common.protocol.types" />
       <allow pkg="org.apache.kafka.common.errors" />
+      <allow pkg="com.github.luben.zstd" />
     </subpackage>
 
     <subpackage name="header">
@@ -189,6 +179,7 @@
     </subpackage>
 
     <subpackage name="serialization">
+      <allow pkg="org.apache.kafka.clients" />
       <allow class="org.apache.kafka.common.errors.SerializationException" />
       <allow class="org.apache.kafka.common.header.Headers" />
     </subpackage>
@@ -203,10 +194,8 @@
   </subpackage>
 
   <subpackage name="controller">
-    <allow pkg="com.yammer.metrics"/>
     <allow pkg="org.apache.kafka.clients" />
     <allow pkg="org.apache.kafka.clients.admin" />
-    <allow pkg="org.apache.kafka.common.annotation" />
     <allow pkg="org.apache.kafka.common.config" />
     <allow pkg="org.apache.kafka.common.feature" />
     <allow pkg="org.apache.kafka.common.internals" />
@@ -244,6 +233,7 @@
   </subpackage>
 
   <subpackage name="clients">
+    <allow pkg="org.slf4j" />
     <allow pkg="org.apache.kafka.common" />
     <allow pkg="org.apache.kafka.clients" exact-match="true"/>
     <allow pkg="org.apache.kafka.test" />
@@ -265,24 +255,9 @@
   </subpackage>
 
   <subpackage name="server">
+    <allow pkg="org.slf4j" />
     <allow pkg="org.apache.kafka.common" />
     <allow pkg="org.apache.kafka.test" />
-  </subpackage>
-
-  <subpackage name="shell">
-    <allow pkg="com.fasterxml.jackson" />
-    <allow pkg="kafka.raft"/>
-    <allow pkg="kafka.server"/>
-    <allow pkg="kafka.tools"/>
-    <allow pkg="net.sourceforge.argparse4j" />
-    <allow pkg="org.apache.kafka.common"/>
-    <allow pkg="org.apache.kafka.metadata"/>
-    <allow pkg="org.apache.kafka.metalog"/>
-    <allow pkg="org.apache.kafka.queue"/>
-    <allow pkg="org.apache.kafka.raft"/>
-    <allow pkg="org.apache.kafka.shell"/>
-    <allow pkg="org.jline"/>
-    <allow pkg="scala.compat"/>
   </subpackage>
 
   <subpackage name="tools">
@@ -307,6 +282,7 @@
     <allow pkg="org.apache.kafka.common" />
     <allow pkg="org.apache.kafka.test"/>
     <allow pkg="org.apache.kafka.trogdor" />
+    <allow pkg="org.apache.log4j" />
     <allow pkg="org.eclipse.jetty" />
     <allow pkg="org.glassfish.jersey" />
   </subpackage>
@@ -369,6 +345,7 @@
         <allow pkg="com.fasterxml.jackson" />
         <allow pkg="kafka.utils" />
         <allow pkg="org.apache.zookeeper" />
+        <allow pkg="org.apache.log4j" />
         <subpackage name="testutil">
           <allow pkg="org.apache.log4j" />
         </subpackage>
@@ -401,10 +378,8 @@
     <allow pkg="org.apache.kafka.common.record" />
     <allow pkg="org.apache.kafka.common.requests" />
     <allow pkg="org.apache.kafka.common.protocol" />
-    <allow pkg="org.apache.kafka.metalog" />
     <allow pkg="org.apache.kafka.test"/>
     <allow pkg="com.fasterxml.jackson" />
-    <allow pkg="net.jqwik"/>
   </subpackage>
 
   <subpackage name="snapshot">

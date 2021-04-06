@@ -65,8 +65,6 @@ public class ActiveTaskCreatorTest {
     private InternalTopologyBuilder builder;
     @Mock(type = MockType.NICE)
     private StateDirectory stateDirectory;
-    @Mock(type = MockType.NICE)
-    private ChangelogReader changeLogReader;
 
     private final MockClientSupplier mockClientSupplier = new MockClientSupplier();
     private final StreamsMetricsImpl streamsMetrics = new StreamsMetricsImpl(new Metrics(), "clientId", StreamsConfig.METRICS_LATEST, new MockTime());
@@ -442,9 +440,9 @@ public class ActiveTaskCreatorTest {
 
         reset(builder, stateDirectory);
         expect(builder.buildSubtopology(0)).andReturn(topology).anyTimes();
-        expect(stateDirectory.getOrCreateDirectoryForTask(task00)).andReturn(mock(File.class));
+        expect(stateDirectory.directoryForTask(task00)).andReturn(mock(File.class));
         expect(stateDirectory.checkpointFileFor(task00)).andReturn(mock(File.class));
-        expect(stateDirectory.getOrCreateDirectoryForTask(task01)).andReturn(mock(File.class));
+        expect(stateDirectory.directoryForTask(task01)).andReturn(mock(File.class));
         expect(stateDirectory.checkpointFileFor(task01)).andReturn(mock(File.class));
         expect(topology.storeToChangelogTopic()).andReturn(Collections.emptyMap()).anyTimes();
         expect(topology.source("topic")).andReturn(sourceNode).anyTimes();
@@ -459,8 +457,7 @@ public class ActiveTaskCreatorTest {
             new StreamsConfig(properties),
             streamsMetrics,
             stateDirectory,
-            changeLogReader,
-            new ThreadCache(new LogContext(), 0L, streamsMetrics),
+                new ThreadCache(new LogContext(), 0L, streamsMetrics),
             new MockTime(),
             mockClientSupplier,
             "clientId-StreamThread-0",
@@ -470,7 +467,7 @@ public class ActiveTaskCreatorTest {
 
         assertThat(
             activeTaskCreator.createTasks(
-                mockClientSupplier.consumer,
+                null,
                 mkMap(
                     mkEntry(task00, Collections.singleton(new TopicPartition("topic", 0))),
                     mkEntry(task01, Collections.singleton(new TopicPartition("topic", 1)))

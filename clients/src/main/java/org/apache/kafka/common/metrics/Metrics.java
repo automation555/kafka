@@ -18,9 +18,9 @@ package org.apache.kafka.common.metrics;
 
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.MetricNameTemplate;
-import org.apache.kafka.common.metrics.internals.MetricsUtils;
 import org.apache.kafka.common.utils.KafkaThread;
 import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,7 +33,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -123,18 +122,6 @@ public class Metrics implements Closeable {
     }
 
     /**
-     * Create a metrics repository with a default config, metric reporters and metric context
-     * Expiration of Sensors is disabled.
-     * @param defaultConfig The default config
-     * @param reporters The metrics reporters
-     * @param time The time instance to use with the metrics
-     * @param metricsContext The metricsContext to initialize metrics reporter with
-     */
-    public Metrics(MetricConfig defaultConfig, List<MetricsReporter> reporters, Time time, MetricsContext metricsContext) {
-        this(defaultConfig, reporters, time, false, metricsContext);
-    }
-
-    /**
      * Create a metrics repository with a default config, given metric reporters and the ability to expire eligible sensors
      * @param defaultConfig The default config
      * @param reporters The metrics reporters
@@ -142,30 +129,14 @@ public class Metrics implements Closeable {
      * @param enableExpiration true if the metrics instance can garbage collect inactive sensors, false otherwise
      */
     public Metrics(MetricConfig defaultConfig, List<MetricsReporter> reporters, Time time, boolean enableExpiration) {
-        this(defaultConfig, reporters, time, enableExpiration, new KafkaMetricsContext(""));
-    }
-
-    /**
-     * Create a metrics repository with a default config, given metric reporters, the ability to expire eligible sensors
-     * and MetricContext
-     * @param defaultConfig The default config
-     * @param reporters The metrics reporters
-     * @param time The time instance to use with the metrics
-     * @param enableExpiration true if the metrics instance can garbage collect inactive sensors, false otherwise
-     * @param metricsContext The metricsContext to initialize metrics reporter with
-     */
-    public Metrics(MetricConfig defaultConfig, List<MetricsReporter> reporters, Time time, boolean enableExpiration,
-                   MetricsContext metricsContext) {
         this.config = defaultConfig;
         this.sensors = new ConcurrentHashMap<>();
         this.metrics = new ConcurrentHashMap<>();
         this.childrenSensors = new ConcurrentHashMap<>();
-        this.reporters = Objects.requireNonNull(reporters);
+        this.reporters = Utils.notNull(reporters);
         this.time = time;
-        for (MetricsReporter reporter : reporters) {
-            reporter.contextChange(metricsContext);
+        for (MetricsReporter reporter : reporters)
             reporter.init(new ArrayList<>());
-        }
 
         // Create the ThreadPoolExecutor only if expiration of Sensors is enabled.
         if (enableExpiration) {
@@ -177,8 +148,7 @@ public class Metrics implements Closeable {
             this.metricsScheduler = null;
         }
 
-        addMetric(metricName("count", "kafka-metrics-count", "total number of registered metrics"),
-            (config, now) -> metrics.size());
+        addMetric(metricName("count", "kafka-metrics-count", "total number of registered metrics"), (config, now) -> metrics.size());
     }
 
     /**
@@ -228,7 +198,7 @@ public class Metrics implements Closeable {
      * @param keyValue      additional key/value attributes of the metric (must come in pairs)
      */
     public MetricName metricName(String name, String group, String description, String... keyValue) {
-        return metricName(name, group, description, MetricsUtils.getTags(keyValue));
+        return metricName(name, group, description, getTags(keyValue));
     }
 
     /**
@@ -241,6 +211,16 @@ public class Metrics implements Closeable {
      */
     public MetricName metricName(String name, String group, Map<String, String> tags) {
         return metricName(name, group, "", tags);
+    }
+
+    private static Map<String, String> getTags(String... keyValue) {
+        if ((keyValue.length % 2) != 0)
+            throw new IllegalArgumentException("keyValue needs to be specified in pairs");
+        Map<String, String> tags = new LinkedHashMap<>();
+
+        for (int i = 0; i < keyValue.length; i += 2)
+            tags.put(keyValue[i], keyValue[i + 1]);
+        return tags;
     }
 
     /**
@@ -322,7 +302,7 @@ public class Metrics implements Closeable {
      * @return Return the sensor or null if no such sensor exists
      */
     public Sensor getSensor(String name) {
-        return this.sensors.get(Objects.requireNonNull(name));
+        return this.sensors.get(Utils.notNull(name));
     }
 
     /**
@@ -418,7 +398,7 @@ public class Metrics implements Closeable {
                     children.add(s);
                 }
             }
-            log.trace("Added sensor with name {}", name);
+            log.debug("Added sensor with name {}", name);
         }
         return s;
     }
@@ -451,7 +431,7 @@ public class Metrics implements Closeable {
                     if (sensors.remove(name, sensor)) {
                         for (KafkaMetric metric : sensor.metrics())
                             removeMetric(metric.metricName());
-                        log.trace("Removed sensor with name {}", name);
+                        log.debug("Removed sensor with name {}", name);
                         childSensors = childrenSensors.remove(sensor);
                         for (final Sensor parent : sensor.parents()) {
                             childrenSensors.getOrDefault(parent, emptyList()).remove(sensor);
@@ -505,8 +485,8 @@ public class Metrics implements Closeable {
      */
     public void addMetric(MetricName metricName, MetricConfig config, MetricValueProvider<?> metricValueProvider) {
         KafkaMetric m = new KafkaMetric(new Object(),
-                                        Objects.requireNonNull(metricName),
-                                        Objects.requireNonNull(metricValueProvider),
+                                        Utils.notNull(metricName),
+                                        Utils.notNull(metricValueProvider),
                                         config == null ? this.config : config,
                                         time);
         registerMetric(m);
@@ -550,7 +530,7 @@ public class Metrics implements Closeable {
      * Add a MetricReporter
      */
     public synchronized void addReporter(MetricsReporter reporter) {
-        Objects.requireNonNull(reporter).init(new ArrayList<>(metrics.values()));
+        Utils.notNull(reporter).init(new ArrayList<>(metrics.values()));
         this.reporters.add(reporter);
     }
 
@@ -598,7 +578,6 @@ public class Metrics implements Closeable {
      * Package private for testing
      */
     class ExpireSensorTask implements Runnable {
-        @Override
         public void run() {
             for (Map.Entry<String, Sensor> sensorEntry : sensors.entrySet()) {
                 // removeSensor also locks the sensor object. This is fine because synchronized is reentrant
@@ -624,7 +603,7 @@ public class Metrics implements Closeable {
     }
 
     public MetricName metricInstance(MetricNameTemplate template, String... keyValue) {
-        return metricInstance(template, MetricsUtils.getTags(keyValue));
+        return metricInstance(template, getTags(keyValue));
     }
 
     public MetricName metricInstance(MetricNameTemplate template, Map<String, String> tags) {
@@ -656,16 +635,14 @@ public class Metrics implements Closeable {
                 Thread.currentThread().interrupt();
             }
         }
-        log.info("Metrics scheduler closed");
 
         for (MetricsReporter reporter : reporters) {
             try {
-                log.info("Closing reporter {}", reporter.getClass().getName());
                 reporter.close();
             } catch (Exception e) {
                 log.error("Error when closing " + reporter.getClass().getName(), e);
             }
         }
-        log.info("Metrics reporters closed");
     }
+
 }

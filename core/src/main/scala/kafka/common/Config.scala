@@ -17,13 +17,14 @@
 
 package kafka.common
 
-import util.matching.Regex
 import kafka.utils.Logging
 import org.apache.kafka.common.errors.InvalidConfigurationException
 
+import scala.util.matching.Regex
+
 trait Config extends Logging {
 
-  def validateChars(prop: String, value: String): Unit = {
+  def validateChars(prop: String, value: String) {
     val legalChars = "[a-zA-Z0-9\\._\\-]"
     val rgx = new Regex(legalChars + "*")
 

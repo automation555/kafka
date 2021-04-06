@@ -46,7 +46,7 @@ Follow instructions in https://kafka.apache.org/quickstart
     ./gradlew clients:test --tests org.apache.kafka.clients.MetadataTest.testMetadataUpdateWaitTime
 
 ### Running a particular unit/integration test with log4j output ###
-Change the log4j setting in either `clients/src/test/resources/log4j.properties` or `core/src/test/resources/log4j.properties`
+Change the log4j setting in either `clients/src/test/resources/log4j2.properties` or `core/src/test/resources/log4j2.properties`
 
     ./gradlew clients:test --tests RequestResponseTest
 
@@ -76,15 +76,6 @@ Sometimes it is only necessary to rebuild the RPC auto-generated message data wh
 fail due to code changes. You can just run:
  
     ./gradlew processMessages processTestMessages
-
-### Running a Kafka broker in ZooKeeper mode
-
-    ./bin/zookeeper-server-start.sh config/zookeeper.properties
-    ./bin/kafka-server-start.sh config/server.properties
-
-### Running a Kafka broker in KRaft (Kafka Raft metadata) mode
-
-See [config/kraft/README.md](https://github.com/apache/kafka/blob/trunk/config/kraft/README.md).
 
 ### Cleaning the build ###
     ./gradlew clean

@@ -19,7 +19,6 @@ package org.apache.kafka.common.network;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -59,10 +58,15 @@ public interface Selectable {
     void close(String id);
 
     /**
+     * Close the connection identified and graceful by the given id
+     */
+    void closeOnGraceful(String id);
+
+    /**
      * Queue the given request for sending in the subsequent {@link #poll(long) poll()} calls
      * @param send The request to send
      */
-    void send(NetworkSend send);
+    void send(Send send);
 
     /**
      * Do I/O. Reads, writes, connection establishment, etc.
@@ -74,12 +78,12 @@ public interface Selectable {
     /**
      * The list of sends that completed on the last {@link #poll(long) poll()} call.
      */
-    List<NetworkSend> completedSends();
+    List<Send> completedSends();
 
     /**
-     * The collection of receives that completed on the last {@link #poll(long) poll()} call.
+     * The list of receives that completed on the last {@link #poll(long) poll()} call.
      */
-    Collection<NetworkReceive> completedReceives();
+    List<NetworkReceive> completedReceives();
 
     /**
      * The connections that finished disconnecting on the last {@link #poll(long) poll()}

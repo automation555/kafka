@@ -17,11 +17,11 @@
 
 package kafka.utils
 
+import java.util.Random
+import java.util.concurrent.TimeUnit
+
 import kafka.metrics.KafkaMetricsGroup
 import org.apache.kafka.common.utils.Time
-
-import java.util.concurrent.TimeUnit
-import java.util.Random
 
 import scala.math._
 
@@ -49,7 +49,7 @@ class Throttler(desiredRatePerSec: Double,
   private var periodStartNs: Long = time.nanoseconds
   private var observedSoFar: Double = 0.0
   
-  def maybeThrottle(observed: Double): Unit = {
+  def maybeThrottle(observed: Double) {
     val msPerSec = TimeUnit.SECONDS.toMillis(1)
     val nsPerSec = TimeUnit.SECONDS.toNanos(1)
 
@@ -83,7 +83,7 @@ class Throttler(desiredRatePerSec: Double,
 
 object Throttler {
   
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]) {
     val rand = new Random()
     val throttler = new Throttler(100000, 100, true, time = Time.SYSTEM)
     val interval = 30000

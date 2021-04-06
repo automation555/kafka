@@ -19,6 +19,7 @@ package org.apache.kafka.common.network;
 import java.nio.channels.SelectionKey;
 
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.common.Configurable;
 import org.apache.kafka.common.memory.MemoryPool;
 
@@ -36,13 +37,14 @@ public interface ChannelBuilder extends AutoCloseable, Configurable {
      * @param  memoryPool memory pool from which to allocate buffers, or null for none
      * @return KafkaChannel
      */
-    KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize,
-                              MemoryPool memoryPool, ChannelMetadataRegistry metadataRegistry) throws KafkaException;
+    KafkaChannel buildChannel(String id, SelectionKey key, int maxReceiveSize, MemoryPool memoryPool) throws KafkaException;
 
     /**
      * Closes ChannelBuilder
      */
     @Override
     void close();
+
+    void setMemoryPoolHelper(MemoryPoolHelper netClient);
 
 }

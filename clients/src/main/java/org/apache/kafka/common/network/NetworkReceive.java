@@ -16,14 +16,13 @@
  */
 package org.apache.kafka.common.network;
 
-import org.apache.kafka.common.memory.MemoryPool;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ScatteringByteChannel;
+import org.apache.kafka.common.memory.MemoryPool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A size delimited Receive that consists of a 4 byte network-ordered size N followed by N bytes of content
@@ -41,6 +40,7 @@ public class NetworkReceive implements Receive {
     private final MemoryPool memoryPool;
     private int requestedBufferSize = -1;
     private ByteBuffer buffer;
+    private Boolean usePool = null;
 
 
     public NetworkReceive(String source, ByteBuffer buffer) {
@@ -89,7 +89,8 @@ public class NetworkReceive implements Receive {
         return !size.hasRemaining() && buffer != null && !buffer.hasRemaining();
     }
 
-    public long readFrom(ScatteringByteChannel channel) throws IOException {
+    public long readFrom(ScatteringByteChannel channel, boolean usePool) throws IOException {
+        this.usePool = usePool;
         int read = 0;
         if (size.hasRemaining()) {
             int bytesRead = channel.read(size);
@@ -147,18 +148,18 @@ public class NetworkReceive implements Receive {
         return this.buffer;
     }
 
-    public int bytesRead() {
-        if (buffer == null)
-            return size.position();
-        return buffer.position() + size.position();
-    }
-
     /**
      * Returns the total size of the receive including payload and size buffer
      * for use in metrics. This is consistent with {@link NetworkSend#size()}
      */
     public int size() {
         return payload().limit() + size.limit();
+    }
+
+    @Override
+    public boolean usePool() {
+        // TODO Auto-generated method stub
+        return usePool;
     }
 
 }

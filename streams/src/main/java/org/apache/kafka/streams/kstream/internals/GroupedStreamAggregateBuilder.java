@@ -22,7 +22,8 @@ import org.apache.kafka.streams.kstream.Initializer;
 import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.internals.graph.ProcessorParameters;
 import org.apache.kafka.streams.kstream.internals.graph.StatefulProcessorNode;
-import org.apache.kafka.streams.kstream.internals.graph.GraphNode;
+import org.apache.kafka.streams.kstream.internals.graph.StreamSinkNode;
+import org.apache.kafka.streams.kstream.internals.graph.StreamsGraphNode;
 import org.apache.kafka.streams.state.StoreBuilder;
 
 import java.util.Collections;
@@ -40,8 +41,8 @@ class GroupedStreamAggregateBuilder<K, V> {
     private final String userProvidedRepartitionTopicName;
     private final Set<String> subTopologySourceNodes;
     private final String name;
-    private final GraphNode graphNode;
-    private GraphNode repartitionNode;
+    private final StreamsGraphNode streamsGraphNode;
+    private StreamsGraphNode repartitionNode;
 
     final Initializer<Long> countInitializer = () -> 0L;
 
@@ -54,7 +55,7 @@ class GroupedStreamAggregateBuilder<K, V> {
                                   final boolean repartitionRequired,
                                   final Set<String> subTopologySourceNodes,
                                   final String name,
-                                  final GraphNode graphNode) {
+                                  final StreamsGraphNode streamsGraphNode) {
 
         this.builder = builder;
         this.keySerde = groupedInternal.keySerde();
@@ -62,7 +63,7 @@ class GroupedStreamAggregateBuilder<K, V> {
         this.repartitionRequired = repartitionRequired;
         this.subTopologySourceNodes = subTopologySourceNodes;
         this.name = name;
-        this.graphNode = graphNode;
+        this.streamsGraphNode = streamsGraphNode;
         this.userProvidedRepartitionTopicName = groupedInternal.name();
     }
 
@@ -72,12 +73,21 @@ class GroupedStreamAggregateBuilder<K, V> {
                                   final String queryableStoreName,
                                   final Serde<KR> keySerde,
                                   final Serde<VR> valueSerde) {
+        return build(functionName, storeBuilder, aggregateSupplier, queryableStoreName, keySerde, valueSerde, null);
+    }
+    <KR, VR> KTable<KR, VR> build(final NamedInternal functionName,
+                                  final StoreBuilder<?> storeBuilder,
+                                  final KStreamAggProcessorSupplier<K, KR, V, VR> aggregateSupplier,
+                                  final String queryableStoreName,
+                                  final Serde<KR> keySerde,
+                                  final Serde<VR> valueSerde,
+                                  final StreamSinkNode<K, V> lateMessagesSinkNode) {
         assert queryableStoreName == null || queryableStoreName.equals(storeBuilder.name());
 
         final String aggFunctionName = functionName.name();
 
         String sourceName = this.name;
-        GraphNode parentNode = graphNode;
+        StreamsGraphNode parentNode = streamsGraphNode;
 
         if (repartitionRequired) {
             final OptimizableRepartitionNodeBuilder<K, V> repartitionNodeBuilder = optimizableRepartitionNodeBuilder();
@@ -104,6 +114,10 @@ class GroupedStreamAggregateBuilder<K, V> {
             );
 
         builder.addGraphNode(parentNode, statefulProcessorNode);
+
+        if (lateMessagesSinkNode != null) {
+            builder.addGraphNode(statefulProcessorNode, lateMessagesSinkNode);
+        }
 
         return new KTableImpl<>(aggFunctionName,
                                 keySerde,

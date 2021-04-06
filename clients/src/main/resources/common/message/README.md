@@ -75,23 +75,15 @@ There are several primitive field types available.
 
 * "int16": a 16-bit integer.
 
-* "uint16": a 16-bit unsigned integer.
-
 * "int32": a 32-bit integer.
-
-* "uint32": a 32-bit unsigned integer.
 
 * "int64": a 64-bit integer.
 
-* "float64": is a double-precision floating point number (IEEE 754).
-
 * "string": a UTF-8 string.
-
-* "uuid": a type 4 immutable universally unique identifier.
 
 * "bytes": binary data.
 
-* "records": recordset such as memory recordset.
+* "error": an org.apache.kafka.common.protocol.Errors encoded as a 16-bit integer.  This takes up 2 bytes on the wire.
 
 In addition to these primitive field types, there is also an array type.  Array
 types start with a "[]" and end with the name of the element type.  For
@@ -103,13 +95,13 @@ Guide](https://kafka.apache.org/protocol.html).
 
 Nullable Fields
 ---------------
-Booleans, ints, and floats can never be null.  However, fields that are strings,
-bytes, uuid, records, or arrays may optionally be "nullable".  When a field is 
-"nullable", that simply means that we are prepared to serialize and deserialize
-null entries for that field.
+Booleans and ints can never be null.  However, fields that are strings, bytes,
+or arrays may optionally be "nullable."  When a field is "nullable," that
+simply means that we are prepared to serialize and deserialize null entries for
+that field.
 
 If you want to declare a field as nullable, you set "nullableVersions" for that
-field.  Nullability is implemented as a version range in order to accommodate a
+field.  Nullability is implemented as a version range in order to accomodate a
 very common pattern in Kafka where a field that was originally not nullable
 becomes nullable in a later version.
 
@@ -165,10 +157,16 @@ meaning of the request, such as a "validateOnly" boolean, should not be ignored.
 It's often useful to know how much space a message will take up before writing
 it out to a buffer.  You can find this out by calling the Message#size method.
 
+You can also convert a message to a Struct by calling Message#toStruct.  This
+allows you to use the functions that serialize Structs to buffers.
+
 Deserializing Messages
 ----------------------
 Message objects may be deserialized using the Message#read method.  This method
 overwrites all the data currently in the message object with new data.
+
+You can also deserialize a message from a Struct by calling Message#fromStruct.
+The Struct will not be modified.
 
 Any fields in the message object that are not present in the version that you
 are deserializing will be reset to default values.  Unless a custom default has
@@ -176,17 +174,11 @@ been set:
 
 * Integer fields default to 0.
 
-* Floats default to 0.
-
 * Booleans default to false.
 
 * Strings default to the empty string.
 
 * Bytes fields default to the empty byte array.
-
-* Uuid fields default to zero uuid.
-
-* Records fields default to null.
 
 * Array fields default to empty.
 
@@ -196,20 +188,20 @@ versions of the field are nullable.
 
 Custom Default Values
 ---------------------
-You may set a custom default for fields that are integers, booleans, floats, or
-strings.  Just add a "default" entry in the JSON object.  The custom default
-overrides the normal default for the type.  So for example, you could make a
-boolean field default to true rather than false, and so forth.
+You may set a custom default for fields that are integers, booleans, or strings.
+Just add a "default" entry in the JSON object.  The custom default overrides the
+normal default for the type.  So for example, you could make a boolean field
+default to true rather than false, and so forth.
 
 Note that the default must be valid for the field type.  So the default for an
-int16 field must be an integer that fits in 16 bits, and so forth.  You may
+int16 field must by an integer that fits in 16 bits, and so forth.  You may
 specify hex or octal values, as long as they are prefixed with 0x or 0.  It is
-currently not possible to specify a custom default for bytes or array fields.
+currently not possible to specify a custom default for bytes, array or error fields.
 
 Custom defaults are useful when an older message version lacked some
 information.  For example, if an older request lacked a timeout field, you may
 want to specify that the server should assume that the timeout for such a
-request is 5000 ms (or some other arbitrary value).
+request is 5000 ms (or some other arbitrary value.) 
 
 Ignorable Fields
 ----------------
@@ -233,7 +225,7 @@ Hash Sets
 ---------
 One very common pattern in Kafka is to load array elements from a message into
 a Map or Set for easier access.  The message protocol makes this easier with
-the "mapKey" concept.
+the "mapKey" concept.  
 
 If some of the elements of an array are annotated with "mapKey": true, the
 entire array will be treated as a linked hash set rather than a list.  Elements

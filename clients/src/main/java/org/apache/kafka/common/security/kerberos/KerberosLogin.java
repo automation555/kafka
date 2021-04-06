@@ -194,6 +194,7 @@ public class KerberosLogin extends AbstractLogin {
                         Thread.sleep(nextRefresh - now);
                     } catch (InterruptedException ie) {
                         log.warn("[Principal={}]: TGT renewal thread has been interrupted and will exit.", principal);
+                        Thread.currentThread().interrupt();
                         return;
                     }
                 } else {
@@ -213,13 +214,13 @@ public class KerberosLogin extends AbstractLogin {
                             break;
                         } catch (Exception e) {
                             if (retry > 0) {
-                                log.warn("[Principal={}]: Error when trying to renew with TicketCache, but will retry ", principal, e);
                                 --retry;
                                 // sleep for 10 seconds
                                 try {
                                     Thread.sleep(10 * 1000);
                                 } catch (InterruptedException ie) {
                                     log.error("[Principal={}]: Interrupted while renewing TGT, exiting Login thread", principal);
+                                    Thread.currentThread().interrupt();
                                     return;
                                 }
                             } else {
@@ -238,13 +239,13 @@ public class KerberosLogin extends AbstractLogin {
                             break;
                         } catch (LoginException le) {
                             if (retry > 0) {
-                                log.warn("[Principal={}]: Error when trying to re-Login, but will retry ", principal, le);
                                 --retry;
                                 // sleep for 10 seconds.
                                 try {
                                     Thread.sleep(10 * 1000);
                                 } catch (InterruptedException e) {
                                     log.error("[Principal={}]: Interrupted during login retry after LoginException:", principal, le);
+                                    Thread.currentThread().interrupt();
                                     throw le;
                                 }
                             } else {
@@ -264,7 +265,7 @@ public class KerberosLogin extends AbstractLogin {
 
     @Override
     public void close() {
-        if ((t != null) && (t.isAlive())) {
+        if (t != null) {
             t.interrupt();
             try {
                 t.join();
@@ -346,7 +347,7 @@ public class KerberosLogin extends AbstractLogin {
      * Re-login a principal. This method assumes that {@link #login()} has happened already.
      * @throws javax.security.auth.login.LoginException on a failure
      */
-    protected void reLogin() throws LoginException {
+    private void reLogin() throws LoginException {
         if (!isKrbTicket) {
             return;
         }
@@ -363,18 +364,13 @@ public class KerberosLogin extends AbstractLogin {
             //clear up the kerberos state. But the tokens are not cleared! As per
             //the Java kerberos login module code, only the kerberos credentials
             //are cleared
-            logout();
+            loginContext.logout();
             //login and also update the subject field of this instance to
             //have the new credentials (pass it to the LoginContext constructor)
             loginContext = new LoginContext(contextName(), subject, null, configuration());
             log.info("Initiating re-login for {}", principal);
             loginContext.login();
         }
-    }
-
-    // Visibility to override for testing
-    protected void logout() throws LoginException {
-        loginContext.logout();
     }
 
     private long currentElapsedTime() {

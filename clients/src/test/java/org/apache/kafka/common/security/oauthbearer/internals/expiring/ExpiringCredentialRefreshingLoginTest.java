@@ -16,9 +16,9 @@
  */
 package org.apache.kafka.common.security.oauthbearer.internals.expiring;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -45,7 +45,7 @@ import org.apache.kafka.common.security.oauthbearer.internals.expiring.ExpiringC
 import org.apache.kafka.common.utils.MockScheduler;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
 
@@ -348,7 +348,7 @@ public class ExpiringCredentialRefreshingLoginTest {
                 for (int i = 0; i < numExpectedRefreshes; ++i) {
                     KafkaFutureImpl<Long> waiter = waiters.get(i);
                     assertTrue(waiter.isDone());
-                    assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get().longValue() - startMs);
+                    assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get() - startMs);
                 }
                 assertFalse(waiters.get(numExpectedRefreshes).isDone());
 
@@ -368,7 +368,6 @@ public class ExpiringCredentialRefreshingLoginTest {
                         inOrder.verify(mockLoginContext).login();
                     }
                 }
-                testExpiringCredentialRefreshingLogin.close();
             }
         }
     }
@@ -439,7 +438,7 @@ public class ExpiringCredentialRefreshingLoginTest {
         for (int i = 0; i < numExpectedRefreshes; ++i) {
             KafkaFutureImpl<Long> waiter = waiters.get(i);
             assertTrue(waiter.isDone());
-            assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get().longValue() - startMs);
+            assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get() - startMs);
         }
         assertFalse(waiters.get(numExpectedRefreshes).isDone());
 
@@ -523,7 +522,7 @@ public class ExpiringCredentialRefreshingLoginTest {
         for (int i = 0; i < numExpectedRefreshes; ++i) {
             KafkaFutureImpl<Long> waiter = waiters.get(i);
             assertTrue(waiter.isDone());
-            assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get().longValue() - startMs);
+            assertEquals((i + 1) * 1000 * 60 * refreshEveryMinutes, waiter.get() - startMs);
         }
         assertFalse(waiters.get(numExpectedRefreshes).isDone());
 
@@ -604,7 +603,7 @@ public class ExpiringCredentialRefreshingLoginTest {
             KafkaFutureImpl<Long> waiter = waiters.get(i);
             assertTrue(waiter.isDone());
             assertEquals((i + 1) * 1000 * (60 * refreshEveryMinutes + bufferIntrusionSeconds),
-                    waiter.get().longValue() - startMs);
+                    waiter.get() - startMs);
         }
         assertFalse(waiters.get(numExpectedRefreshes).isDone());
 
@@ -684,7 +683,7 @@ public class ExpiringCredentialRefreshingLoginTest {
             KafkaFutureImpl<Long> waiter = waiters.get(i);
             assertTrue(waiter.isDone());
             assertEquals((i + 1) * 1000 * (60 * refreshEveryMinutes - bufferIntrusionSeconds),
-                    waiter.get().longValue() - startMs);
+                    waiter.get() - startMs);
         }
         assertFalse(waiters.get(numExpectedRefreshes).isDone());
 
@@ -754,7 +753,7 @@ public class ExpiringCredentialRefreshingLoginTest {
             int numWaiters) {
         List<KafkaFutureImpl<Long>> retvalWaiters = new ArrayList<>(numWaiters);
         for (int i = 1; i <= numWaiters; ++i) {
-            KafkaFutureImpl<Long> waiter = new KafkaFutureImpl<Long>();
+            KafkaFutureImpl<Long> waiter = new KafkaFutureImpl<>();
             mockScheduler.addWaiter(i * refreshEveryMillis, waiter);
             retvalWaiters.add(waiter);
         }

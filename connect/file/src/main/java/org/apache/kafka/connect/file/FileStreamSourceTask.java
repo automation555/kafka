@@ -48,21 +48,15 @@ public class FileStreamSourceTask extends SourceTask {
     private String filename;
     private InputStream stream;
     private BufferedReader reader = null;
-    private char[] buffer;
+    private char[] buffer = new char[1024];
     private int offset = 0;
     private String topic = null;
     private int batchSize = FileStreamSourceConnector.DEFAULT_TASK_BATCH_SIZE;
 
     private Long streamOffset;
-
-    public FileStreamSourceTask() {
-        this(1024);
-    }
-
-    /* visible for testing */
-    FileStreamSourceTask(int initialBufferSize) {
-        buffer = new char[initialBufferSize];
-    }
+    private boolean needExtendBuffer;
+    private int nread = 0;
+    private static int maxBufferSize = Integer.MAX_VALUE;
 
     @Override
     public String version() {
@@ -139,39 +133,21 @@ public class FileStreamSourceTask extends SourceTask {
 
             ArrayList<SourceRecord> records = null;
 
-            int nread = 0;
-            while (readerCopy.ready()) {
-                nread = readerCopy.read(buffer, offset, buffer.length - offset);
-                log.trace("Read {} bytes from {}", nread, logFilename());
+            String line;
+            do {
+                line = extractLine();
+                if (line != null) {
+                    log.trace("Read a line from {}", logFilename());
+                    if (records == null)
+                        records = new ArrayList<>();
+                    records.add(new SourceRecord(offsetKey(filename), offsetValue(streamOffset), topic, null,
+                            null, null, VALUE_SCHEMA, line, System.currentTimeMillis()));
 
-                if (nread > 0) {
-                    offset += nread;
-                    String line;
-                    boolean foundOneLine = false;
-                    do {
-                        line = extractLine();
-                        if (line != null) {
-                            foundOneLine = true;
-                            log.trace("Read a line from {}", logFilename());
-                            if (records == null)
-                                records = new ArrayList<>();
-                            records.add(new SourceRecord(offsetKey(filename), offsetValue(streamOffset), topic, null,
-                                    null, null, VALUE_SCHEMA, line, System.currentTimeMillis()));
-
-                            if (records.size() >= batchSize) {
-                                return records;
-                            }
-                        }
-                    } while (line != null);
-
-                    if (!foundOneLine && offset == buffer.length) {
-                        char[] newbuf = new char[buffer.length * 2];
-                        System.arraycopy(buffer, 0, newbuf, 0, buffer.length);
-                        log.info("Increased buffer from {} to {}", buffer.length, newbuf.length);
-                        buffer = newbuf;
+                    if (records.size() >= batchSize) {
+                        return records;
                     }
                 }
-            }
+            } while (line != null);
 
             if (nread <= 0)
                 synchronized (this) {
@@ -186,8 +162,30 @@ public class FileStreamSourceTask extends SourceTask {
         return null;
     }
 
-    private String extractLine() {
+    /**
+     * Extract a line from the character buffer, looking for \n and \r\n for line separator.
+     * If found, shift buffer leftward.
+     * If not found and the buffer is full expand the buffer until next read.
+     */
+    String extractLine() throws IOException {
         int until = -1, newStart = -1;
+
+        if (needExtendBuffer) {
+            expandBuffer();
+            needExtendBuffer = false;
+        }
+
+        nread = 0;
+        if (offset < buffer.length && reader.ready()) {
+
+            nread = reader.read(buffer, offset, buffer.length - offset);
+            log.trace("Read {} bytes from {}", nread, logFilename());
+            if (nread > 0) {
+                offset += nread;
+            }
+        }
+
+        log.trace("offset {}", offset);
         for (int i = 0; i < offset; i++) {
             if (buffer[i] == '\n') {
                 until = i;
@@ -212,8 +210,22 @@ public class FileStreamSourceTask extends SourceTask {
                 streamOffset += newStart;
             return result;
         } else {
+            if (offset == buffer.length &&  buffer.length  < maxBufferSize) {
+                needExtendBuffer = true;
+            }
             return null;
         }
+    }
+
+    /**
+     * Expand the internal character buffer, double the size if less than maximum value, otherwise use the maximum value.
+     */
+    private void expandBuffer()  {
+        int newSize = (buffer.length > maxBufferSize / 2) ? maxBufferSize :  buffer.length * 2;
+        char[] newBuf = new char[newSize];
+        System.arraycopy(buffer, 0, newBuf, 0, buffer.length);
+        buffer = newBuf;
+        log.debug("internal buffer size expanded to {} ", buffer.length);
     }
 
     @Override
@@ -242,10 +254,5 @@ public class FileStreamSourceTask extends SourceTask {
 
     private String logFilename() {
         return filename == null ? "stdin" : filename;
-    }
-
-    /* visible for testing */
-    int bufferSize() {
-        return buffer.length;
     }
 }

@@ -61,6 +61,7 @@ public class ProducerPerformance {
             String payloadFilePath = res.getString("payloadFile");
             String transactionalId = res.getString("transactionalId");
             boolean shouldPrintMetrics = res.getBoolean("printMetrics");
+            final boolean withRdma = res.getBoolean("withRdma");
             long transactionDurationMs = res.getLong("transactionDurationMs");
             boolean transactionsEnabled =  0 < transactionDurationMs;
 
@@ -79,7 +80,7 @@ public class ProducerPerformance {
                     throw new  IllegalArgumentException("File does not exist or empty file provided.");
                 }
 
-                String[] payloadList = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).split(payloadDelimiter);
+                String[] payloadList = new String(Files.readAllBytes(path), "UTF-8").split(payloadDelimiter);
 
                 System.out.println("Number of messages read: " + payloadList.length);
 
@@ -139,8 +140,12 @@ public class ProducerPerformance {
                 record = new ProducerRecord<>(topicName, payload);
 
                 long sendStartMs = System.currentTimeMillis();
-                Callback cb = stats.nextCompletion(sendStartMs, payload.length, stats);
-                producer.send(record, cb);
+                Callback cb = stats.nextCompletion(sendStartMs, System.nanoTime(), payload.length, stats);
+
+                if (withRdma)
+                    producer.RDMAsend(record, cb); // RDMAsend
+                else
+                    producer.send(record, cb);
 
                 currentTransactionSize++;
                 if (transactionsEnabled && transactionDurationMs <= (sendStartMs - transactionStartTime)) {
@@ -247,7 +252,7 @@ public class ProducerPerformance {
                 .required(true)
                 .type(Integer.class)
                 .metavar("THROUGHPUT")
-                .help("throttle maximum message throughput to *approximately* THROUGHPUT messages/sec. Set this to -1 to disable throttling.");
+                .help("throttle maximum message throughput to *approximately* THROUGHPUT messages/sec");
 
         parser.addArgument("--producer-props")
                  .nargs("+")
@@ -272,6 +277,14 @@ public class ProducerPerformance {
                 .metavar("PRINT-METRICS")
                 .dest("printMetrics")
                 .help("print out metrics at the end of the test.");
+
+        parser.addArgument("--with-rdma")
+                .action(storeTrue())
+                .type(Boolean.class)
+                .metavar("WITH-RDMA")
+                .dest("withRdma")
+                .help("use rdma for producing");
+
 
         parser.addArgument("--transactional-id")
                .action(store())
@@ -329,7 +342,7 @@ public class ProducerPerformance {
             this.reportingInterval = reportingInterval;
         }
 
-        public void record(int iter, int latency, int bytes, long time) {
+        public void record(int iter, int latency, int latencyNano, int bytes, long time) {
             this.count++;
             this.bytes += bytes;
             this.totalLatency += latency;
@@ -339,7 +352,7 @@ public class ProducerPerformance {
             this.windowTotalLatency += latency;
             this.windowMaxLatency = Math.max(windowMaxLatency, latency);
             if (iter % this.sampling == 0) {
-                this.latencies[index] = latency;
+                this.latencies[index] = latencyNano;
                 this.index++;
             }
             /* maybe report the recent perf */
@@ -349,16 +362,16 @@ public class ProducerPerformance {
             }
         }
 
-        public Callback nextCompletion(long start, int bytes, Stats stats) {
-            Callback cb = new PerfCallback(this.iteration, start, bytes, stats);
+        public Callback nextCompletion(long start, long startNano, int bytes, Stats stats) {
+            Callback cb = new PerfCallback(this.iteration, start, startNano, bytes, stats);
             this.iteration++;
             return cb;
         }
 
         public void printWindow() {
-            long elapsed = System.currentTimeMillis() - windowStart;
-            double recsPerSec = 1000.0 * windowCount / (double) elapsed;
-            double mbPerSec = 1000.0 * this.windowBytes / (double) elapsed / (1024.0 * 1024.0);
+            long ellapsed = System.currentTimeMillis() - windowStart;
+            double recsPerSec = 1000.0 * windowCount / (double) ellapsed;
+            double mbPerSec = 1000.0 * this.windowBytes / (double) ellapsed / (1024.0 * 1024.0);
             System.out.printf("%d records sent, %.1f records/sec (%.2f MB/sec), %.1f ms avg latency, %.1f ms max latency.%n",
                               windowCount,
                               recsPerSec,
@@ -380,16 +393,16 @@ public class ProducerPerformance {
             double recsPerSec = 1000.0 * count / (double) elapsed;
             double mbPerSec = 1000.0 * this.bytes / (double) elapsed / (1024.0 * 1024.0);
             int[] percs = percentiles(this.latencies, index, 0.5, 0.95, 0.99, 0.999);
-            System.out.printf("%d records sent, %f records/sec (%.2f MB/sec), %.2f ms avg latency, %.2f ms max latency, %d ms 50th, %d ms 95th, %d ms 99th, %d ms 99.9th.%n",
+            System.out.printf("%d records sent, %f records/sec (%.2f MB/sec), %.2f ms avg latency, %.2f ms max latency, %.2f us 50th, %.2f us 95th, %.2f us 99th, %.2f us 99.9th.%n",
                               count,
                               recsPerSec,
                               mbPerSec,
                               totalLatency / (double) count,
                               (double) maxLatency,
-                              percs[0],
-                              percs[1],
-                              percs[2],
-                              percs[3]);
+                              percs[0] / 1000.0,
+                              percs[1] / 1000.0,
+                              percs[2] / 1000.0,
+                              percs[3] / 1000.0);
         }
 
         private static int[] percentiles(int[] latencies, int count, double... percentiles) {
@@ -406,21 +419,25 @@ public class ProducerPerformance {
 
     private static final class PerfCallback implements Callback {
         private final long start;
+        private final long startNano;
         private final int iteration;
         private final int bytes;
         private final Stats stats;
 
-        public PerfCallback(int iter, long start, int bytes, Stats stats) {
+        public PerfCallback(int iter, long start, long startNano, int bytes, Stats stats) {
             this.start = start;
+            this.startNano = startNano;
             this.stats = stats;
             this.iteration = iter;
             this.bytes = bytes;
         }
 
         public void onCompletion(RecordMetadata metadata, Exception exception) {
+            long nowNano = System.nanoTime();
             long now = System.currentTimeMillis();
             int latency = (int) (now - start);
-            this.stats.record(iteration, latency, bytes, now);
+            int latencyNano = (int) (nowNano - startNano);
+            this.stats.record(iteration, latency, latencyNano, bytes, now);
             if (exception != null)
                 exception.printStackTrace();
         }

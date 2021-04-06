@@ -28,13 +28,13 @@ import java.util.concurrent.ExecutionException;
 /**
  * The result of the {@link KafkaAdminClient#describeTopics(Collection)} call.
  *
- * The API of this class is evolving, see {@link Admin} for details.
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
 @InterfaceStability.Evolving
 public class DescribeTopicsResult {
     private final Map<String, KafkaFuture<TopicDescription>> futures;
 
-    protected DescribeTopicsResult(Map<String, KafkaFuture<TopicDescription>> futures) {
+    DescribeTopicsResult(Map<String, KafkaFuture<TopicDescription>> futures) {
         this.futures = futures;
     }
 

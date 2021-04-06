@@ -27,15 +27,12 @@ import org.apache.kafka.common.annotation.InterfaceStability;
 
 /**
  * The result of the {@link AdminClient#listOffsets(Map)} call.
- *
- * The API of this class is evolving, see {@link AdminClient} for details.
  */
-@InterfaceStability.Evolving
 public class ListOffsetsResult {
 
     private final Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures;
 
-    public ListOffsetsResult(Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures) {
+    ListOffsetsResult(Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures) {
         this.futures = futures;
     }
 
@@ -80,7 +77,7 @@ public class ListOffsetsResult {
         private final long timestamp;
         private final Optional<Integer> leaderEpoch;
 
-        public ListOffsetsResultInfo(long offset, long timestamp, Optional<Integer> leaderEpoch) {
+        ListOffsetsResultInfo(long offset, long timestamp, Optional<Integer> leaderEpoch) {
             this.offset = offset;
             this.timestamp = timestamp;
             this.leaderEpoch = leaderEpoch;

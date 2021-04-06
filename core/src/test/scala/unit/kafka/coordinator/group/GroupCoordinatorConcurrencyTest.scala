@@ -34,8 +34,8 @@ import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{JoinGroupRequest, OffsetFetchResponse}
 import org.apache.kafka.common.utils.Time
 import org.easymock.EasyMock
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
 
 import scala.collection._
 import scala.concurrent.duration.Duration
@@ -65,7 +65,7 @@ class GroupCoordinatorConcurrencyTest extends AbstractCoordinatorConcurrencyTest
   var joinPurgatory: DelayedOperationPurgatory[DelayedJoin] = _
   var groupCoordinator: GroupCoordinator = _
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
 
@@ -83,12 +83,11 @@ class GroupCoordinatorConcurrencyTest extends AbstractCoordinatorConcurrencyTest
     heartbeatPurgatory = new DelayedOperationPurgatory[DelayedHeartbeat]("Heartbeat", timer, config.brokerId, reaperEnabled = false)
     joinPurgatory = new DelayedOperationPurgatory[DelayedJoin]("Rebalance", timer, config.brokerId, reaperEnabled = false)
 
-    groupCoordinator = GroupCoordinator(config, replicaManager, heartbeatPurgatory, joinPurgatory, timer.time, new Metrics())
-    groupCoordinator.startup(() => zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicPartitions),
-      false)
+    groupCoordinator = GroupCoordinator(config, zkClient, replicaManager, heartbeatPurgatory, joinPurgatory, timer.time, new Metrics())
+    groupCoordinator.startup(false)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     try {
       if (groupCoordinator != null)
@@ -149,10 +148,9 @@ class GroupCoordinatorConcurrencyTest extends AbstractCoordinatorConcurrencyTest
 
     if (groupCoordinator != null)
       groupCoordinator.shutdown()
-    groupCoordinator = GroupCoordinator(config, replicaManager, heartbeatPurgatory,
+    groupCoordinator = GroupCoordinator(config, zkClient, replicaManager, heartbeatPurgatory,
       joinPurgatory, timer.time, new Metrics())
-    groupCoordinator.startup(() => zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicPartitions),
-      false)
+    groupCoordinator.startup(false)
 
     val members = new Group(s"group", nMembersPerGroup, groupCoordinator, replicaManager)
       .members
@@ -288,12 +286,12 @@ class GroupCoordinatorConcurrencyTest extends AbstractCoordinatorConcurrencyTest
       val tp = new TopicPartition("topic", 0)
       val offsets = immutable.Map(tp -> OffsetAndMetadata(1, "", Time.SYSTEM.milliseconds()))
       groupCoordinator.handleCommitOffsets(member.groupId, member.memberId,
-        member.groupInstanceId, member.generationId, offsets, responseCallback)
+        member.groupInstanceId, member.generationId, offsets, alsoHeartbeat = false, responseCallback)
       replicaManager.tryCompleteActions()
     }
     override def awaitAndVerify(member: GroupMember): Unit = {
-       val offsets = await(member, 500)
-       offsets.foreach { case (_, error) => assertEquals(Errors.NONE, error) }
+       val offsetsAndHeartbeat = await(member, 500)
+       offsetsAndHeartbeat._1.foreach { case (_, error) => assertEquals(Errors.NONE, error) }
     }
   }
 
@@ -310,7 +308,7 @@ class GroupCoordinatorConcurrencyTest extends AbstractCoordinatorConcurrencyTest
         val offsetsPartitions = (0 to numPartitions).map(new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, _))
         groupCoordinator.groupManager.scheduleHandleTxnCompletion(producerId,
           offsetsPartitions.map(_.partition).toSet, isCommit = random.nextBoolean)
-        responseCallback(errors)
+        responseCallback((errors ,false))
       }
       lock.foreach(_.lock())
       try {
@@ -375,8 +373,8 @@ object GroupCoordinatorConcurrencyTest {
   type HeartbeatCallback = Errors => Unit
   type OffsetFetchCallbackParams = (Errors, Map[TopicPartition, OffsetFetchResponse.PartitionData])
   type OffsetFetchCallback = (Errors, Map[TopicPartition, OffsetFetchResponse.PartitionData]) => Unit
-  type CommitOffsetCallbackParams = Map[TopicPartition, Errors]
-  type CommitOffsetCallback = Map[TopicPartition, Errors] => Unit
+  type CommitOffsetCallbackParams = (Map[TopicPartition, Errors], Boolean)
+  type CommitOffsetCallback = ((Map[TopicPartition, Errors], Boolean)) => Unit
   type LeaveGroupCallbackParams = LeaveGroupResult
   type LeaveGroupCallback = LeaveGroupResult => Unit
   type CompleteTxnCallbackParams = Errors

@@ -19,18 +19,20 @@ package kafka.api
 import java.util
 import java.util.Properties
 import java.util.concurrent.ExecutionException
+
 import kafka.security.authorizer.AclEntry
 import kafka.server.KafkaConfig
 import kafka.utils.Logging
 import kafka.utils.TestUtils._
 import org.apache.kafka.clients.admin.{Admin, AdminClientConfig, CreateTopicsOptions, CreateTopicsResult, DescribeClusterOptions, DescribeTopicsOptions, NewTopic, TopicDescription}
-import org.apache.kafka.common.Uuid
 import org.apache.kafka.common.acl.AclOperation
+import org.apache.kafka.common.config.TopicConfig
 import org.apache.kafka.common.errors.{TopicExistsException, UnknownTopicOrPartitionException}
 import org.apache.kafka.common.resource.ResourceType
 import org.apache.kafka.common.utils.Utils
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, Timeout}
+import org.junit.Assert._
+import org.junit.rules.Timeout
+import org.junit.{After, Before, Rule, Test}
 
 import scala.jdk.CollectionConverters._
 import scala.collection.Seq
@@ -43,20 +45,22 @@ import scala.compat.java8.OptionConverters._
  * time to the build. However, if an admin API involves differing interactions with
  * authentication/authorization layers, we may add the test case here.
  */
-@Timeout(120)
 abstract class BaseAdminIntegrationTest extends IntegrationTestHarness with Logging {
   def brokerCount = 3
   override def logDirCount = 2
 
   var client: Admin = _
 
-  @BeforeEach
+  @Rule
+  def globalTimeout: Timeout = Timeout.millis(120000)
+
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     waitUntilBrokerMetadataIsPropagated(servers)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     if (client != null)
       Utils.closeQuietly(client, "AdminClient")
@@ -69,7 +73,7 @@ abstract class BaseAdminIntegrationTest extends IntegrationTestHarness with Logg
     val topics = Seq("mytopic", "mytopic2", "mytopic3")
     val newTopics = Seq(
       new NewTopic("mytopic", Map((0: Integer) -> Seq[Integer](1, 2).asJava, (1: Integer) -> Seq[Integer](2, 0).asJava).asJava),
-      new NewTopic("mytopic2", 3, 3.toShort),
+      new NewTopic("mytopic2", 3, 3.toShort).configs(Map(TopicConfig.CLEANUP_POLICY_CONFIG -> "delete,compact,delete").asJava),
       new NewTopic("mytopic3", Option.empty[Integer].asJava, Option.empty[java.lang.Short].asJava)
     )
     val validateResult = client.createTopics(newTopics.asJava, new CreateTopicsOptions().validateOnly(true))
@@ -81,6 +85,7 @@ abstract class BaseAdminIntegrationTest extends IntegrationTestHarness with Logg
       assertEquals(2, result.replicationFactor("mytopic").get())
       assertEquals(3, result.numPartitions("mytopic2").get())
       assertEquals(3, result.replicationFactor("mytopic2").get())
+      assertEquals("delete,compact", result.config("mytopic2").get.get(TopicConfig.CLEANUP_POLICY_CONFIG).value)
       assertEquals(configs.head.numPartitions, result.numPartitions("mytopic3").get())
       assertEquals(configs.head.defaultReplicationFactor, result.replicationFactor("mytopic3").get())
       assertFalse(result.config("mytopic").get().entries.isEmpty)
@@ -91,12 +96,6 @@ abstract class BaseAdminIntegrationTest extends IntegrationTestHarness with Logg
     createResult.all.get()
     waitForTopics(client, topics, List())
     validateMetadataAndConfigs(createResult)
-    val topicIds = getTopicIds()
-    topics.foreach { topic =>
-      assertNotEquals(Uuid.ZERO_UUID, createResult.topicId(topic).get())
-      assertEquals(topicIds(topic), createResult.topicId(topic).get())
-    }
-    
 
     val failedCreateResult = client.createTopics(newTopics.asJava)
     val results = failedCreateResult.values()
@@ -140,7 +139,7 @@ abstract class BaseAdminIntegrationTest extends IntegrationTestHarness with Logg
         assertTrue(replica.id >= 0)
         assertTrue(replica.id < brokerCount)
       }
-      assertEquals(partition.replicas.size, partition.replicas.asScala.map(_.id).distinct.size, "No duplicate replica ids")
+      assertEquals("No duplicate replica ids", partition.replicas.size, partition.replicas.asScala.map(_.id).distinct.size)
 
       assertEquals(3, partition.isr.size)
       assertEquals(partition.replicas, partition.isr)

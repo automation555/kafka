@@ -17,8 +17,8 @@
 
 package kafka.utils
 
-import org.apache.log4j.{AppenderSkeleton, Level, Logger}
 import org.apache.log4j.spi.LoggingEvent
+import org.apache.log4j.{AppenderSkeleton, Level, Logger}
 
 import scala.collection.mutable.ListBuffer
 
@@ -37,7 +37,7 @@ class LogCaptureAppender extends AppenderSkeleton {
     }
   }
 
-  override def close(): Unit = {
+  override def close(): Unit =  {
     events.synchronized {
       events.clear()
     }

@@ -17,9 +17,9 @@
 package org.apache.kafka.streams;
 
 import org.apache.kafka.streams.processor.TopicNameExtractor;
-import org.apache.kafka.streams.processor.api.ProcessorSupplier;
 import org.apache.kafka.streams.processor.internals.StreamTask;
 
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -38,8 +38,8 @@ public interface TopologyDescription {
     /**
      * A connected sub-graph of a {@link Topology}.
      * <p>
-     * Nodes of a {@code Subtopology} are connected
-     * {@link Topology#addProcessor(String, ProcessorSupplier, String...) directly} or indirectly via
+     * Nodes of a {@code Subtopology} are connected {@link Topology#addProcessor(String,
+     * org.apache.kafka.streams.processor.ProcessorSupplier, String...) directly} or indirectly via
      * {@link Topology#connectProcessorAndStateStores(String, String...) state stores}
      * (i.e., if multiple processors share the same state).
      */
@@ -60,7 +60,7 @@ public interface TopologyDescription {
     /**
      * Represents a {@link Topology#addGlobalStore(org.apache.kafka.streams.state.StoreBuilder, String,
      * org.apache.kafka.common.serialization.Deserializer, org.apache.kafka.common.serialization.Deserializer, String,
-     * String, org.apache.kafka.streams.processor.api.ProcessorSupplier) global store}.
+     * String, org.apache.kafka.streams.processor.ProcessorSupplier) global store}.
      * Adding a global store results in adding a source node and one stateful processor node.
      * Note, that all added global stores form a single unit (similar to a {@link Subtopology}) even if different
      * global stores are not connected to each other.
@@ -92,6 +92,7 @@ public interface TopologyDescription {
          * @return the name of the node
          */
         String name();
+
         /**
          * The predecessors of this node within a sub-topology.
          * Note, sources do not have any predecessors.
@@ -99,6 +100,7 @@ public interface TopologyDescription {
          * @return set of all predecessors
          */
         Set<Node> predecessors();
+
         /**
          * The successor of this node within a sub-topology.
          * Note, sinks do not have any successors.
@@ -132,6 +134,16 @@ public interface TopologyDescription {
          * @return the pattern used to match topic names
          */
         Pattern topicPattern();
+
+        /**
+         * Names of key serde class used for this source node
+         */
+        String keySerdeName();
+
+        /**
+         * Names of value serde class used for this source node
+         */
+        String valueSerdeName();
     }
 
     /**
@@ -142,7 +154,30 @@ public interface TopologyDescription {
          * The names of all connected stores.
          * @return set of store names
          */
+        @Deprecated
         Set<String> stores();
+
+        /**
+         * The names of all connected stores.
+         * @return set of stores
+         */
+        Set<Store> storeSet();
+    }
+
+    /**
+     * A state store of a topology
+     */
+    interface Store {
+        /**
+         * Name of the stat store
+         */
+        String name();
+
+
+        /**
+         * Names of serde classes that are associated with the store
+         */
+        List<String> serdeNames();
     }
 
     /**
@@ -162,6 +197,16 @@ public interface TopologyDescription {
          * @return the {@link TopicNameExtractor} class used get the topic name
          */
         TopicNameExtractor topicNameExtractor();
+
+        /**
+         * Names of key serde class used for this source node
+         */
+        String keySerdeName();
+
+        /**
+         * Names of value serde class used for this source node
+         */
+        String valueSerdeName();
     }
 
     /**

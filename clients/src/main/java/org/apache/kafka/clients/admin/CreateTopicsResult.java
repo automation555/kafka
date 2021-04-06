@@ -17,7 +17,6 @@
 package org.apache.kafka.clients.admin;
 
 import org.apache.kafka.common.KafkaFuture;
-import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.annotation.InterfaceStability;
 import org.apache.kafka.common.errors.ApiException;
 
@@ -27,16 +26,13 @@ import java.util.stream.Collectors;
 
 /**
  * The result of {@link Admin#createTopics(Collection)}.
- *
- * The API of this class is evolving, see {@link Admin} for details.
  */
-@InterfaceStability.Evolving
 public class CreateTopicsResult {
     final static int UNKNOWN = -1;
 
     private final Map<String, KafkaFuture<TopicMetadataAndConfig>> futures;
 
-    protected CreateTopicsResult(Map<String, KafkaFuture<TopicMetadataAndConfig>> futures) {
+    CreateTopicsResult(Map<String, KafkaFuture<TopicMetadataAndConfig>> futures) {
         this.futures = futures;
     }
 
@@ -70,19 +66,6 @@ public class CreateTopicsResult {
     }
 
     /**
-     * Returns a future that provides topic ID for the topic when the request completes.
-     * <p>
-     * If broker version doesn't support replication factor in the response, throw
-     * {@link org.apache.kafka.common.errors.UnsupportedVersionException}.
-     * If broker returned an error for topic configs, throw appropriate exception. For example,
-     * {@link org.apache.kafka.common.errors.TopicAuthorizationException} is thrown if user does not
-     * have permission to describe topic configs.
-     */
-    public KafkaFuture<Uuid> topicId(String topic) {
-        return futures.get(topic).thenApply(TopicMetadataAndConfig::topicId);
-    }
-    
-    /**
      * Returns a future that provides number of partitions in the topic when the request completes.
      * <p>
      * If broker version doesn't support replication factor in the response, throw
@@ -108,32 +91,24 @@ public class CreateTopicsResult {
         return futures.get(topic).thenApply(TopicMetadataAndConfig::replicationFactor);
     }
 
-    public static class TopicMetadataAndConfig {
+    static class TopicMetadataAndConfig {
         private final ApiException exception;
-        private final Uuid topicId;
         private final int numPartitions;
         private final int replicationFactor;
         private final Config config;
 
-        public TopicMetadataAndConfig(Uuid topicId, int numPartitions, int replicationFactor, Config config) {
+        TopicMetadataAndConfig(int numPartitions, int replicationFactor, Config config) {
             this.exception = null;
-            this.topicId = topicId;
             this.numPartitions = numPartitions;
             this.replicationFactor = replicationFactor;
             this.config = config;
         }
 
-        public TopicMetadataAndConfig(ApiException exception) {
+        TopicMetadataAndConfig(ApiException exception) {
             this.exception = exception;
-            this.topicId = Uuid.ZERO_UUID;
             this.numPartitions = UNKNOWN;
             this.replicationFactor = UNKNOWN;
             this.config = null;
-        }
-        
-        public Uuid topicId() {
-            ensureSuccess();
-            return topicId;
         }
 
         public int numPartitions() {

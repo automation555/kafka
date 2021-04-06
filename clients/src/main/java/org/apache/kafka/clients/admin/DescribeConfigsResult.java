@@ -29,14 +29,14 @@ import java.util.concurrent.ExecutionException;
 /**
  * The result of the {@link KafkaAdminClient#describeConfigs(Collection)} call.
  *
- * The API of this class is evolving, see {@link Admin} for details.
+ * The API of this class is evolving, see {@link AdminClient} for details.
  */
 @InterfaceStability.Evolving
 public class DescribeConfigsResult {
 
     private final Map<ConfigResource, KafkaFuture<Config>> futures;
 
-    protected DescribeConfigsResult(Map<ConfigResource, KafkaFuture<Config>> futures) {
+    DescribeConfigsResult(Map<ConfigResource, KafkaFuture<Config>> futures) {
         this.futures = futures;
     }
 
@@ -53,21 +53,18 @@ public class DescribeConfigsResult {
      */
     public KafkaFuture<Map<ConfigResource, Config>> all() {
         return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0])).
-                thenApply(new KafkaFuture.BaseFunction<Void, Map<ConfigResource, Config>>() {
-                    @Override
-                    public Map<ConfigResource, Config> apply(Void v) {
-                        Map<ConfigResource, Config> configs = new HashMap<>(futures.size());
-                        for (Map.Entry<ConfigResource, KafkaFuture<Config>> entry : futures.entrySet()) {
-                            try {
-                                configs.put(entry.getKey(), entry.getValue().get());
-                            } catch (InterruptedException | ExecutionException e) {
-                                // This should be unreachable, because allOf ensured that all the futures
-                                // completed successfully.
-                                throw new RuntimeException(e);
-                            }
+                thenApply(v -> {
+                    Map<ConfigResource, Config> configs = new HashMap<>(futures.size());
+                    for (Map.Entry<ConfigResource, KafkaFuture<Config>> entry : futures.entrySet()) {
+                        try {
+                            configs.put(entry.getKey(), entry.getValue().get());
+                        } catch (InterruptedException | ExecutionException e) {
+                            // This should be unreachable, because allOf ensured that all the futures
+                            // completed successfully.
+                            throw new RuntimeException(e);
                         }
-                        return configs;
                     }
+                    return configs;
                 });
     }
 }

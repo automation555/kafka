@@ -204,12 +204,20 @@ public class ProducerRecord<K, V> {
 
         ProducerRecord<?, ?> that = (ProducerRecord<?, ?>) o;
 
-        return Objects.equals(key, that.key) &&
-            Objects.equals(partition, that.partition) &&
-            Objects.equals(topic, that.topic) &&
-            Objects.equals(headers, that.headers) &&
-            Objects.equals(value, that.value) &&
-            Objects.equals(timestamp, that.timestamp);
+        if (!Objects.equals(key, that.key))
+            return false;
+        else if (!Objects.equals(partition, that.partition))
+            return false;
+        else if (!Objects.equals(topic, that.topic))
+            return false;
+        else if (!Objects.equals(headers, that.headers))
+            return false;
+        else if (!Objects.equals(value, that.value))
+            return false;
+        else if (!Objects.equals(timestamp, that.timestamp))
+            return false;
+
+        return true;
     }
 
     @Override

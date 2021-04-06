@@ -47,6 +47,10 @@ public class TopicConfig {
         "maps offsets to file positions. We preallocate this index file and shrink it only after log " +
         "rolls. You generally should not need to change this setting.";
 
+    public static final String SEGMENT_BACKUP_ON_TRUNCATE_TO_ZERO_CONFIG = "segment.backup.on.truncate.to.zero";
+    public static final String SEGMENT_BACKUP_ON_TRUNCATE_TO_ZERO_DOC = "This configuration controls whether or not a segment file should be backed up " +
+        "instead of truncated when a truncate to 0 offset is requested.";
+
     public static final String FLUSH_MESSAGES_INTERVAL_CONFIG = "flush.messages";
     public static final String FLUSH_MESSAGES_INTERVAL_DOC = "This setting allows specifying an interval at " +
         "which we will force an fsync of data written to the log. For example if this was set to 1 " +
@@ -76,13 +80,12 @@ public class TopicConfig {
         "their data. If set to -1, no time limit is applied.";
 
     public static final String MAX_MESSAGE_BYTES_CONFIG = "max.message.bytes";
-    public static final String MAX_MESSAGE_BYTES_DOC =
-        "The largest record batch size allowed by Kafka (after compression if compression is enabled). " +
-        "If this is increased and there are consumers older than 0.10.2, the consumers' fetch " +
-        "size must also be increased so that they can fetch record batches this large. " +
-        "In the latest message format version, records are always grouped into batches for efficiency. " +
-        "In previous message format versions, uncompressed records are not grouped into batches and this " +
-        "limit only applies to a single record in that case.";
+    public static final String MAX_MESSAGE_BYTES_DOC = "<p>The largest record batch size allowed by Kafka. If this " +
+        "is increased and there are consumers older than 0.10.2, the consumers' fetch size must also be increased so that " +
+        "the they can fetch record batches this large.</p>" +
+        "<p>In the latest message format version, records are always grouped into batches for efficiency. In previous " +
+        "message format versions, uncompressed records are not grouped into batches and this limit only applies to a " +
+        "single record in that case.</p>";
 
     public static final String INDEX_INTERVAL_BYTES_CONFIG = "index.interval.bytes";
     public static final String INDEX_INTERVAL_BYTES_DOCS = "This setting controls how frequently " +
@@ -117,7 +120,7 @@ public class TopicConfig {
         "the log by duplicates (at 50% at most 50% of the log could be duplicates). A " +
         "higher ratio will mean fewer, more efficient cleanings but will mean more wasted " +
         "space in the log. If the " + MAX_COMPACTION_LAG_MS_CONFIG + " or the " + MIN_COMPACTION_LAG_MS_CONFIG +
-        " configurations are also specified, then the log compactor considers the log to be eligible for compaction " +
+        " configurations are also specified, then the log compactor considers the log eligible for compaction " +
         "as soon as either: (i) the dirty ratio threshold has been met and the log has had dirty (uncompacted) " +
         "records for at least the " + MIN_COMPACTION_LAG_MS_CONFIG + " duration, or (ii) if the log has had " +
         "dirty (uncompacted) records for at most the " + MAX_COMPACTION_LAG_MS_CONFIG + " period.";

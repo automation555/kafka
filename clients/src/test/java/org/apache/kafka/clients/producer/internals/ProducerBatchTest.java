@@ -29,7 +29,7 @@ import org.apache.kafka.common.record.MemoryRecordsBuilder;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.RecordBatch;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -39,12 +39,12 @@ import java.util.concurrent.ExecutionException;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V0;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V1;
 import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V2;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ProducerBatchTest {
 
@@ -56,7 +56,7 @@ public class ProducerBatchTest {
     @Test
     public void testChecksumNullForMagicV2() {
         ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), memoryRecordsBuilder, now);
-        FutureRecordMetadata future = batch.tryAppend(now, null, new byte[10], Record.EMPTY_HEADERS, null, now);
+        FutureRecordMetadata future = batch.tryAppend(now, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, null, now);
         assertNotNull(future);
         assertNull(future.checksumOrNull());
     }
@@ -65,7 +65,7 @@ public class ProducerBatchTest {
     public void testBatchAbort() throws Exception {
         ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), memoryRecordsBuilder, now);
         MockCallback callback = new MockCallback();
-        FutureRecordMetadata future = batch.tryAppend(now, null, new byte[10], Record.EMPTY_HEADERS, callback, now);
+        FutureRecordMetadata future = batch.tryAppend(now, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, callback, now);
 
         KafkaException exception = new KafkaException();
         batch.abort(exception);
@@ -92,7 +92,7 @@ public class ProducerBatchTest {
     public void testBatchCannotAbortTwice() throws Exception {
         ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), memoryRecordsBuilder, now);
         MockCallback callback = new MockCallback();
-        FutureRecordMetadata future = batch.tryAppend(now, null, new byte[10], Record.EMPTY_HEADERS, callback, now);
+        FutureRecordMetadata future = batch.tryAppend(now, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, callback, now);
         KafkaException exception = new KafkaException();
         batch.abort(exception);
         assertEquals(1, callback.invocations);
@@ -120,7 +120,7 @@ public class ProducerBatchTest {
     public void testBatchCannotCompleteTwice() throws Exception {
         ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), memoryRecordsBuilder, now);
         MockCallback callback = new MockCallback();
-        FutureRecordMetadata future = batch.tryAppend(now, null, new byte[10], Record.EMPTY_HEADERS, callback, now);
+        FutureRecordMetadata future = batch.tryAppend(now, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, callback, now);
         batch.done(500L, 10L, null);
         assertEquals(1, callback.invocations);
         assertNull(callback.exception);
@@ -144,8 +144,8 @@ public class ProducerBatchTest {
             MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(128), magic,
                     CompressionType.NONE, TimestampType.CREATE_TIME, 0L);
             ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), builder, now);
-            byte[] key = "hi".getBytes();
-            byte[] value = "there".getBytes();
+            ByteBuffer key = ByteBuffer.wrap("hi".getBytes());
+            ByteBuffer value = ByteBuffer.wrap("there".getBytes());
 
             FutureRecordMetadata future = batch.tryAppend(now, key, value, Record.EMPTY_HEADERS, null, now);
             assertNotNull(future);
@@ -169,21 +169,21 @@ public class ProducerBatchTest {
 
             while (true) {
                 FutureRecordMetadata future = batch.tryAppend(
-                        now, "hi".getBytes(), "there".getBytes(),
+                        now, ByteBuffer.wrap("hi".getBytes()), ByteBuffer.wrap("there".getBytes()),
                         new Header[]{header}, null, now);
                 if (future == null) {
                     break;
                 }
             }
             Deque<ProducerBatch> batches = batch.split(200);
-            assertTrue(batches.size() >= 2, "This batch should be split to multiple small batches.");
+            assertTrue("This batch should be split to multiple small batches.", batches.size() >= 2);
 
             for (ProducerBatch splitProducerBatch : batches) {
                 for (RecordBatch splitBatch : splitProducerBatch.records().batches()) {
                     for (Record record : splitBatch) {
-                        assertTrue(record.headers().length == 1, "Header size should be 1.");
-                        assertTrue(record.headers()[0].key().equals("header-key"), "Header key should be 'header-key'.");
-                        assertTrue(new String(record.headers()[0].value()).equals("header-value"), "Header value should be 'header-value'.");
+                        assertTrue("Header size should be 1.", record.headers().length == 1);
+                        assertTrue("Header key should be 'header-key'.", record.headers()[0].key().equals("header-key"));
+                        assertTrue("Header value should be 'header-value'.", new String(record.headers()[0].value()).equals("header-value"));
                     }
                 }
             }
@@ -205,8 +205,8 @@ public class ProducerBatchTest {
 
                 ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), builder, now);
                 while (true) {
-                    FutureRecordMetadata future = batch.tryAppend(now, "hi".getBytes(), "there".getBytes(),
-                            Record.EMPTY_HEADERS, null, now);
+                    FutureRecordMetadata future = batch.tryAppend(now, ByteBuffer.wrap("hi".getBytes()),
+                            ByteBuffer.wrap("there".getBytes()), Record.EMPTY_HEADERS, null, now);
                     if (future == null)
                         break;
                 }
@@ -258,12 +258,12 @@ public class ProducerBatchTest {
     @Test
     public void testShouldNotAttemptAppendOnceRecordsBuilderIsClosedForAppends() {
         ProducerBatch batch = new ProducerBatch(new TopicPartition("topic", 1), memoryRecordsBuilder, now);
-        FutureRecordMetadata result0 = batch.tryAppend(now, null, new byte[10], Record.EMPTY_HEADERS, null, now);
+        FutureRecordMetadata result0 = batch.tryAppend(now, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, null, now);
         assertNotNull(result0);
         assertTrue(memoryRecordsBuilder.hasRoomFor(now, null, new byte[10], Record.EMPTY_HEADERS));
         memoryRecordsBuilder.closeForRecordAppends();
         assertFalse(memoryRecordsBuilder.hasRoomFor(now, null, new byte[10], Record.EMPTY_HEADERS));
-        assertNull(batch.tryAppend(now + 1, null, new byte[10], Record.EMPTY_HEADERS, null, now + 1));
+        assertEquals(null, batch.tryAppend(now + 1, null, ByteBuffer.allocate(10), Record.EMPTY_HEADERS, null, now + 1));
     }
 
     private static class MockCallback implements Callback {

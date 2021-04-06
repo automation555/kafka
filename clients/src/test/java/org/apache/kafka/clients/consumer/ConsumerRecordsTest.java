@@ -16,7 +16,7 @@
  */
 package org.apache.kafka.clients.consumer;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,7 +26,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.record.TimestampType;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class ConsumerRecordsTest {
 
@@ -36,11 +36,11 @@ public class ConsumerRecordsTest {
         Map<TopicPartition, List<ConsumerRecord<Integer, String>>> records = new LinkedHashMap<>();
 
         String topic = "topic";
-        records.put(new TopicPartition(topic, 0), new ArrayList<ConsumerRecord<Integer, String>>());
+        records.put(new TopicPartition(topic, 0), new ArrayList<>());
         ConsumerRecord<Integer, String> record1 = new ConsumerRecord<>(topic, 1, 0, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, 1, "value1");
         ConsumerRecord<Integer, String> record2 = new ConsumerRecord<>(topic, 1, 1, 0L, TimestampType.CREATE_TIME, 0L, 0, 0, 2, "value2");
         records.put(new TopicPartition(topic, 1), Arrays.asList(record1, record2));
-        records.put(new TopicPartition(topic, 2), new ArrayList<ConsumerRecord<Integer, String>>());
+        records.put(new TopicPartition(topic, 2), new ArrayList<>());
 
         ConsumerRecords<Integer, String> consumerRecords = new ConsumerRecords<>(records);
         Iterator<ConsumerRecord<Integer, String>> iter = consumerRecords.iterator();

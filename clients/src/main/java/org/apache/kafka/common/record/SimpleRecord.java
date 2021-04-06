@@ -61,10 +61,6 @@ public class SimpleRecord {
         this(RecordBatch.NO_TIMESTAMP, null, value);
     }
 
-    public SimpleRecord(ByteBuffer value) {
-        this(RecordBatch.NO_TIMESTAMP, null, value);
-    }
-
     public SimpleRecord(byte[] key, byte[] value) {
         this(RecordBatch.NO_TIMESTAMP, key, value);
     }
@@ -98,8 +94,8 @@ public class SimpleRecord {
 
         SimpleRecord that = (SimpleRecord) o;
         return timestamp == that.timestamp &&
-                Objects.equals(key, that.key) &&
-                Objects.equals(value, that.value) &&
+                (Objects.equals(key, that.key)) &&
+                (Objects.equals(value, that.value)) &&
                 Arrays.equals(headers, that.headers);
     }
 
@@ -107,7 +103,7 @@ public class SimpleRecord {
     public int hashCode() {
         int result = key != null ? key.hashCode() : 0;
         result = 31 * result + (value != null ? value.hashCode() : 0);
-        result = 31 * result + Long.hashCode(timestamp);
+        result = 31 * result + (int) (timestamp ^ (timestamp >>> 32));
         result = 31 * result + Arrays.hashCode(headers);
         return result;
     }

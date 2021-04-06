@@ -16,6 +16,8 @@
  */
 package org.apache.kafka.common.protocol.types;
 
+import org.apache.kafka.common.protocol.Errors;
+
 public class Field {
     public final String name;
     public final String docString;
@@ -85,25 +87,19 @@ public class Field {
         }
     }
 
+    public static class Errors extends Field {
+        public Errors(String name, String docString) {
+            super(name, Type.ERRORS, docString, false, null);
+        }
+
+        public Errors(String name, String docString, org.apache.kafka.common.protocol.Errors defaultValue) {
+            super(name, Type.ERRORS, docString, true, defaultValue);
+        }
+    }
+
     public static class Int16 extends Field {
         public Int16(String name, String docString) {
             super(name, Type.INT16, docString, false, null);
-        }
-    }
-
-    public static class Uint16 extends Field {
-        public Uint16(String name, String docString) {
-            super(name, Type.UINT16, docString, false, null);
-        }
-    }
-
-    public static class Float64 extends Field {
-        public Float64(String name, String docString) {
-            super(name, Type.FLOAT64, docString, false, null);
-        }
-
-        public Float64(String name, String docString, double defaultValue) {
-            super(name, Type.FLOAT64, docString, true, defaultValue);
         }
     }
 

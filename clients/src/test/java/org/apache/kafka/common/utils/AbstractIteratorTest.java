@@ -16,10 +16,9 @@
  */
 package org.apache.kafka.common.utils;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,17 +26,17 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class AbstractIteratorTest {
 
     @Test
     public void testIterator() {
         int max = 10;
-        List<Integer> l = new ArrayList<Integer>();
+        List<Integer> l = new ArrayList<>();
         for (int i = 0; i < max; i++)
             l.add(i);
-        ListIterator<Integer> iter = new ListIterator<Integer>(l);
+        ListIterator<Integer> iter = new ListIterator<>(l);
         for (int i = 0; i < max; i++) {
             Integer value = i;
             assertEquals(value, iter.peek());
@@ -47,10 +46,10 @@ public class AbstractIteratorTest {
         assertFalse(iter.hasNext());
     }
 
-    @Test
+    @Test(expected = NoSuchElementException.class)
     public void testEmptyIterator() {
         Iterator<Object> iter = new ListIterator<>(Collections.emptyList());
-        assertThrows(NoSuchElementException.class, iter::next);
+        iter.next();
     }
 
     static class ListIterator<T> extends AbstractIterator<T> {

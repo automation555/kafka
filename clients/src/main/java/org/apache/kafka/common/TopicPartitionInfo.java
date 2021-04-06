@@ -91,10 +91,10 @@ public class TopicPartitionInfo {
 
         TopicPartitionInfo that = (TopicPartitionInfo) o;
 
-        return partition == that.partition &&
-            Objects.equals(leader, that.leader) &&
-            Objects.equals(replicas, that.replicas) &&
-            Objects.equals(isr, that.isr);
+        if (partition != that.partition) return false;
+        if (!Objects.equals(leader, that.leader)) return false;
+        if (!Objects.equals(replicas, that.replicas)) return false;
+        return Objects.equals(isr, that.isr);
     }
 
     @Override

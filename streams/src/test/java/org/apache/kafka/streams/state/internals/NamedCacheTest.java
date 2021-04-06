@@ -23,7 +23,7 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.KeyValue;
-import org.apache.kafka.streams.processor.internals.MockStreamsMetrics;
+import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
 import org.junit.Before;
 import org.junit.Test;
@@ -37,7 +37,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThrows;
 
 public class NamedCacheTest {
 
@@ -51,7 +50,7 @@ public class NamedCacheTest {
     @Before
     public void setUp() {
         innerMetrics = new Metrics();
-        metrics = new MockStreamsMetrics(innerMetrics);
+        metrics = new StreamsMetricsImpl(innerMetrics, "test", StreamsConfig.METRICS_LATEST);
         cache = new NamedCache(taskIDString + "-" + underlyingStoreName, metrics);
     }
 
@@ -181,11 +180,10 @@ public class NamedCacheTest {
         cache.evict();
     }
 
-    @Test
+    @Test(expected = IllegalStateException.class)
     public void shouldThrowIllegalStateExceptionWhenTryingToOverwriteDirtyEntryWithCleanEntry() {
         cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, headers, true, 0, 0, 0, ""));
-        assertThrows(IllegalStateException.class, () -> cache.put(Bytes.wrap(new byte[]{0}),
-            new LRUCacheEntry(new byte[]{10}, null, false, 0, 0, 0, "")));
+        cache.put(Bytes.wrap(new byte[]{0}), new LRUCacheEntry(new byte[]{10}, null, false, 0, 0, 0, ""));
     }
 
     @Test

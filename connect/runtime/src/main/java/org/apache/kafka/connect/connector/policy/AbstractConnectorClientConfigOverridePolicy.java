@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@SuppressWarnings("try")
 public abstract class AbstractConnectorClientConfigOverridePolicy implements ConnectorClientConfigOverridePolicy {
 
     @Override
@@ -39,7 +40,7 @@ public abstract class AbstractConnectorClientConfigOverridePolicy implements Con
 
     protected ConfigValue configValue(Map.Entry<String, Object> configEntry) {
         ConfigValue configValue =
-            new ConfigValue(configEntry.getKey(), configEntry.getValue(), new ArrayList<>(), new ArrayList<>());
+            new ConfigValue(configEntry.getKey(), configEntry.getValue(), new ArrayList<>(), new ArrayList<String>());
         validate(configValue);
         return configValue;
     }

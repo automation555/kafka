@@ -18,7 +18,7 @@ import os
 
 from kafkatest.services.performance import PerformanceService
 from kafkatest.services.security.security_config import SecurityConfig
-from kafkatest.version import DEV_BRANCH, V_2_0_0, LATEST_0_10_0
+from kafkatest.version import DEV_BRANCH, V_0_9_0_0, V_2_0_0, LATEST_0_10_0
 
 
 class ConsumerPerformanceService(PerformanceService):
@@ -36,7 +36,7 @@ class ConsumerPerformanceService(PerformanceService):
 
         "fetch-size", "The amount of data to fetch in a single request."
 
-        "from-latest", "If the consumer does not already have an establishedoffset to consume from,
+        "from-latest", "If the consumer does not already have an established offset to consume from,
                         start with the latest message present in the log rather than the earliest message."
 
         "socket-buffer-size", "The size of the tcp RECV size."
@@ -46,6 +46,9 @@ class ConsumerPerformanceService(PerformanceService):
         "num-fetch-threads", "Number of fetcher threads. Defaults to 1"
 
         "new-consumer", "Use the new consumer implementation."
+
+        "paused-partitions-percent", "The percentage [0-1] of subscribed partitions to pause each poll."
+
         "consumer.config", "Consumer config properties file."
     """
 
@@ -70,23 +73,25 @@ class ConsumerPerformanceService(PerformanceService):
             "collect_default": True}
     }
 
-    def __init__(self, context, num_nodes, kafka, topic, messages, version=DEV_BRANCH, new_consumer=True, settings={}):
+    def __init__(self, context, num_nodes, paused_partitions_percent, kafka, topic, messages, version=DEV_BRANCH,
+                 new_consumer=True, settings={}):
         super(ConsumerPerformanceService, self).__init__(context, num_nodes)
         self.kafka = kafka
         self.security_config = kafka.security_config.client_config()
         self.topic = topic
         self.messages = messages
         self.new_consumer = new_consumer
+        self.paused_partitions_percent = paused_partitions_percent
         self.settings = settings
 
-        assert version.consumer_supports_bootstrap_server() or (not new_consumer), \
+        assert version >= V_0_9_0_0 or (not new_consumer), \
             "new_consumer is only supported if version >= 0.9.0.0, version %s" % str(version)
 
         assert version < V_2_0_0 or new_consumer, \
             "new_consumer==false is only supported if version < 2.0.0, version %s" % str(version)
 
         security_protocol = self.security_config.security_protocol
-        assert version.consumer_supports_bootstrap_server() or security_protocol == SecurityConfig.PLAINTEXT, \
+        assert version >= V_0_9_0_0 or security_protocol == SecurityConfig.PLAINTEXT, \
             "Security protocol %s is only supported if version >= 0.9.0.0, version %s" % (self.security_config, str(version))
 
         # These less-frequently used settings can be updated manually after instantiation
@@ -132,6 +137,9 @@ class ConsumerPerformanceService(PerformanceService):
         if self.from_latest:
             args['from-latest'] = ""
 
+        if self.paused_partitions_percent is not None:
+            args['paused-partitions-percent'] = self.paused_partitions_percent
+
         return args
 
     def start_cmd(self, node):
@@ -142,7 +150,7 @@ class ConsumerPerformanceService(PerformanceService):
         for key, value in self.args(node.version).items():
             cmd += " --%s %s" % (key, value)
 
-        if node.version.consumer_supports_bootstrap_server():
+        if node.version >= V_0_9_0_0:
             # This is only used for security settings
             cmd += " --consumer.config %s" % ConsumerPerformanceService.CONFIG_FILE
 
@@ -155,7 +163,7 @@ class ConsumerPerformanceService(PerformanceService):
 
     def parse_results(self, line, version):
         parts = line.split(',')
-        if version.consumer_supports_bootstrap_server():
+        if version >= V_0_9_0_0:
             result = {
                 'total_mb': float(parts[2]),
                 'mbps': float(parts[3]),

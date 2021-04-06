@@ -19,37 +19,22 @@ package org.apache.kafka.clients.admin;
 import org.apache.kafka.common.annotation.InterfaceStability;
 
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
 /**
  * Options for {@link AdminClient#removeMembersFromConsumerGroup(String, RemoveMembersFromConsumerGroupOptions)}.
  * It carries the members to be removed from the consumer group.
- *
- * The API of this class is evolving, see {@link AdminClient} for details.
  */
-@InterfaceStability.Evolving
 public class RemoveMembersFromConsumerGroupOptions extends AbstractOptions<RemoveMembersFromConsumerGroupOptions> {
 
     private Set<MemberToRemove> members;
 
     public RemoveMembersFromConsumerGroupOptions(Collection<MemberToRemove> members) {
-        if (members.isEmpty()) {
-            throw new IllegalArgumentException("Invalid empty members has been provided");
-        }
         this.members = new HashSet<>(members);
-    }
-
-    public RemoveMembersFromConsumerGroupOptions() {
-        this.members = Collections.emptySet();
     }
 
     public Set<MemberToRemove> members() {
         return members;
-    }
-
-    public boolean removeAll() {
-        return members.isEmpty();
     }
 }

@@ -16,13 +16,13 @@
  */
 package kafka.controller
 
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{Before, Test}
 
 class PartitionLeaderElectionAlgorithmsTest {
   private var controllerContext: ControllerContext = null
 
-  @BeforeEach
+  @Before
   def setUp(): Unit = {
     controllerContext = new ControllerContext
     controllerContext.stats.removeMetric("UncleanLeaderElectionsPerSec")
@@ -52,7 +52,7 @@ class PartitionLeaderElectionAlgorithmsTest {
       uncleanLeaderElectionEnabled = false,
       controllerContext)
     assertEquals(None, leaderOpt)
-    assertEquals(0, controllerContext.stats.uncleanLeaderElectionRate.count())
+    assertEquals(0, controllerContext.stats.uncleanLeaderElectionRate.getCount)
   }
 
   @Test
@@ -66,7 +66,7 @@ class PartitionLeaderElectionAlgorithmsTest {
       uncleanLeaderElectionEnabled = true,
       controllerContext)
     assertEquals(Option(4), leaderOpt)
-    assertEquals(1, controllerContext.stats.uncleanLeaderElectionRate.count())
+    assertEquals(1, controllerContext.stats.uncleanLeaderElectionRate.getCount)
   }
 
   @Test

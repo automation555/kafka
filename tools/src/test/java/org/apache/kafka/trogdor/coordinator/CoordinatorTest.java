@@ -49,9 +49,9 @@ import org.apache.kafka.trogdor.rest.WorkerDone;
 import org.apache.kafka.trogdor.rest.WorkerRunning;
 import org.apache.kafka.trogdor.task.NoOpTaskSpec;
 import org.apache.kafka.trogdor.task.SampleTaskSpec;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,20 +62,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
-@Tag("integration")
-@Timeout(value = 120000, unit = MILLISECONDS)
 public class CoordinatorTest {
-
     private static final Logger log = LoggerFactory.getLogger(CoordinatorTest.class);
 
+    @Rule
+    final public Timeout globalTimeout = Timeout.millis(120000);
+
     @Test
+    @SuppressWarnings("try")
     public void testCoordinatorStatus() throws Exception {
         try (MiniTrogdorCluster cluster = new MiniTrogdorCluster.Builder().
                 addCoordinator("node01").
@@ -86,6 +86,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testCoordinatorUptime() throws Exception {
         MockTime time = new MockTime(0, 200, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -102,6 +103,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testCreateTask() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -126,10 +128,14 @@ public class CoordinatorTest {
                 new CreateTaskRequest("foo", fooSpec));
 
             // Re-creating a task with different arguments gives a RequestConflictException.
-            NoOpTaskSpec barSpec = new NoOpTaskSpec(1000, 2000);
-            assertThrows(RequestConflictException.class, () -> cluster.coordinatorClient().createTask(
-                new CreateTaskRequest("foo", barSpec)),
-                "Recreating task with different task spec is not allowed");
+            try {
+                NoOpTaskSpec barSpec = new NoOpTaskSpec(1000, 2000);
+                cluster.coordinatorClient().createTask(
+                    new CreateTaskRequest("foo", barSpec));
+                fail("Expected to get an exception when re-creating a task with a " +
+                    "different task spec.");
+            } catch (RequestConflictException exception) {
+            }
 
             time.sleep(2);
             new ExpectedTasks().
@@ -150,6 +156,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskDistribution() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -207,6 +214,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskCancellation() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -271,6 +279,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskDestruction() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -375,6 +384,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testNetworkPartitionFault() throws Exception {
         CapturingCommandRunner runner = new CapturingCommandRunner();
         MockTime time = new MockTime(0, 0, 0);
@@ -458,6 +468,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTasksRequest() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -518,6 +529,7 @@ public class CoordinatorTest {
      * we want the task to be marked as DONE and not re-sent should a second failure happen.
      */
     @Test
+    @SuppressWarnings("try")
     public void testAgentFailureAndTaskExpiry() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -569,6 +581,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequestWithOldStartMsGetsUpdated() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -594,6 +607,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequestWithFutureStartMsDoesNotGetRun() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -618,6 +632,7 @@ public class CoordinatorTest {
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testTaskRequest() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);
@@ -644,11 +659,15 @@ public class CoordinatorTest {
                 waitFor(coordinatorClient).
                 waitFor(cluster.agentClient("node02"));
 
-            assertThrows(NotFoundException.class, () -> coordinatorClient.task(new TaskRequest("non-existent-foo")));
+            try {
+                coordinatorClient.task(new TaskRequest("non-existent-foo"));
+                fail("Non existent task request should have raised a NotFoundException");
+            } catch (NotFoundException ignored) { }
         }
     }
 
     @Test
+    @SuppressWarnings("try")
     public void testWorkersExitingAtDifferentTimes() throws Exception {
         MockTime time = new MockTime(0, 0, 0);
         Scheduler scheduler = new MockScheduler(time);

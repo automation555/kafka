@@ -21,7 +21,6 @@ import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.MockClient;
 import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.common.Cluster;
-import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.DisconnectException;
@@ -30,28 +29,24 @@ import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
-import org.apache.kafka.common.message.HeartbeatRequestData;
-import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.HeartbeatRequest;
 import org.apache.kafka.common.requests.HeartbeatResponse;
 import org.apache.kafka.common.requests.MetadataResponse;
-import org.apache.kafka.common.requests.RequestTestUtils;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.test.TestUtils;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -88,21 +83,21 @@ public class ConsumerNetworkClientTest {
     }
 
     @Test
-    public void sendWithinBackoffPeriodAfterAuthenticationFailure() {
+    public void sendWithinBlackoutPeriodAfterAuthenticationFailure() {
         client.authenticationFailed(node, 300);
         client.prepareResponse(heartbeatResponse(Errors.NONE));
         final RequestFuture<ClientResponse> future = consumerClient.send(node, heartbeat());
         consumerClient.poll(future);
         assertTrue(future.failed());
-        assertTrue(future.exception() instanceof AuthenticationException, "Expected only an authentication error.");
+        assertTrue("Expected only an authentication error.", future.exception() instanceof AuthenticationException);
 
-        time.sleep(30); // wait less than the backoff period
+        time.sleep(30); // wait less than the blackout period
         assertTrue(client.connectionFailed(node));
 
         final RequestFuture<ClientResponse> future2 = consumerClient.send(node, heartbeat());
         consumerClient.poll(future2);
         assertTrue(future2.failed());
-        assertTrue(future2.exception() instanceof AuthenticationException, "Expected only an authentication error.");
+        assertTrue("Expected only an authentication error.", future2.exception() instanceof AuthenticationException);
     }
 
     @Test
@@ -221,12 +216,7 @@ public class ConsumerNetworkClientTest {
         final RequestFuture<ClientResponse> future = consumerClient.send(node, heartbeat());
 
         client.enableBlockingUntilWakeup(1);
-        Thread t = new Thread() {
-            @Override
-            public void run() {
-                consumerClient.poll(future);
-            }
-        };
+        Thread t = new Thread(() -> consumerClient.poll(future));
         t.start();
 
         consumerClient.disconnectAsync(node);
@@ -237,42 +227,30 @@ public class ConsumerNetworkClientTest {
 
     @Test
     public void testAuthenticationExceptionPropagatedFromMetadata() {
-        metadata.fatalError(new AuthenticationException("Authentication failed"));
+        metadata.failedUpdate(time.milliseconds(), new AuthenticationException("Authentication failed"));
         try {
             consumerClient.poll(time.timer(Duration.ZERO));
             fail("Expected authentication error thrown");
         } catch (AuthenticationException e) {
             // After the exception is raised, it should have been cleared
-            metadata.maybeThrowAnyException();
+            assertNull(metadata.getAndClearAuthenticationException());
         }
     }
 
-    @Test
+    @Test(expected = InvalidTopicException.class)
     public void testInvalidTopicExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.INVALID_TOPIC_EXCEPTION), Collections.emptyMap());
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
-        assertThrows(InvalidTopicException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
+        metadata.update(metadataResponse, time.milliseconds());
+        consumerClient.poll(time.timer(Duration.ZERO));
     }
 
-    @Test
+    @Test(expected = TopicAuthorizationException.class)
     public void testTopicAuthorizationExceptionPropagatedFromMetadata() {
-        MetadataResponse metadataResponse = RequestTestUtils.metadataUpdateWith("clusterId", 1,
+        MetadataResponse metadataResponse = TestUtils.metadataUpdateWith("clusterId", 1,
                 Collections.singletonMap("topic", Errors.TOPIC_AUTHORIZATION_FAILED), Collections.emptyMap());
-        metadata.updateWithCurrentRequestVersion(metadataResponse, false, time.milliseconds());
-        assertThrows(TopicAuthorizationException.class, () -> consumerClient.poll(time.timer(Duration.ZERO)));
-    }
-
-    @Test
-    public void testMetadataFailurePropagated() {
-        KafkaException metadataException = new KafkaException();
-        metadata.fatalError(metadataException);
-        try {
-            consumerClient.poll(time.timer(Duration.ZERO));
-            fail("Expected poll to throw exception");
-        } catch (Exception e) {
-            assertEquals(metadataException, e);
-        }
+        metadata.update(metadataResponse, time.milliseconds());
+        consumerClient.poll(time.timer(Duration.ZERO));
     }
 
     @Test
@@ -284,23 +262,13 @@ public class ConsumerNetworkClientTest {
         consumerClient.pollNoWakeup(); // dequeue and send the request
 
         client.enableBlockingUntilWakeup(2);
-        Thread t1 = new Thread() {
-            @Override
-            public void run() {
-                consumerClient.pollNoWakeup();
-            }
-        };
+        Thread t1 = new Thread(() -> consumerClient.pollNoWakeup());
         t1.start();
 
         // Sleep a little so that t1 is blocking in poll
         Thread.sleep(50);
 
-        Thread t2 = new Thread() {
-            @Override
-            public void run() {
-                consumerClient.poll(future);
-            }
-        };
+        Thread t2 = new Thread(() -> consumerClient.poll(future));
         t2.start();
 
         // Sleep a little so that t2 is awaiting the network client lock
@@ -381,49 +349,12 @@ public class ConsumerNetworkClientTest {
         assertEquals(0, consumerClient.pendingRequestCount(node));
     }
 
-    @Test
-    public void testTrySend() {
-        final AtomicBoolean isReady = new AtomicBoolean();
-        final AtomicInteger checkCount = new AtomicInteger();
-        client = new MockClient(time, metadata) {
-            @Override
-            public boolean ready(Node node, long now) {
-                checkCount.incrementAndGet();
-                if (isReady.get())
-                    return super.ready(node, now);
-                else
-                    return false;
-            }
-        };
-        consumerClient = new ConsumerNetworkClient(new LogContext(), client, metadata, time, 100, 10, Integer.MAX_VALUE);
-        consumerClient.send(node, heartbeat());
-        consumerClient.send(node, heartbeat());
-        assertEquals(2, consumerClient.pendingRequestCount(node));
-        assertEquals(0, client.inFlightRequestCount(node.idString()));
-
-        consumerClient.trySend(time.milliseconds());
-        // only check one time when the node doesn't ready
-        assertEquals(1, checkCount.getAndSet(0));
-        assertEquals(2, consumerClient.pendingRequestCount(node));
-        assertEquals(0, client.inFlightRequestCount(node.idString()));
-
-        isReady.set(true);
-        consumerClient.trySend(time.milliseconds());
-        // check node ready or not for every request
-        assertEquals(2, checkCount.getAndSet(0));
-        assertEquals(2, consumerClient.pendingRequestCount(node));
-        assertEquals(2, client.inFlightRequestCount(node.idString()));
-    }
-
     private HeartbeatRequest.Builder heartbeat() {
-        return new HeartbeatRequest.Builder(new HeartbeatRequestData()
-                .setGroupId("group")
-                .setGenerationId(1)
-                .setMemberId("memberId"));
+        return new HeartbeatRequest.Builder("group", 1, "memberId");
     }
 
     private HeartbeatResponse heartbeatResponse(Errors error) {
-        return new HeartbeatResponse(new HeartbeatResponseData().setErrorCode(error.code()));
+        return new HeartbeatResponse(error);
     }
 
 }

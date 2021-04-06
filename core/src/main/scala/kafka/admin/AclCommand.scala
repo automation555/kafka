@@ -34,7 +34,8 @@ import org.apache.kafka.common.security.auth.KafkaPrincipal
 import org.apache.kafka.common.utils.{Utils, SecurityUtils => JSecurityUtils}
 import org.apache.kafka.server.authorizer.Authorizer
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
+import scala.compat.java8.OptionConverters._
 import scala.collection.mutable
 import scala.io.StdIn
 
@@ -112,7 +113,7 @@ object AclCommand extends Logging {
           adminClient.createAcls(aclBindings).all().get()
         }
 
-        listAcls(adminClient)
+        listAcls()
       }
     }
 
@@ -130,37 +131,30 @@ object AclCommand extends Logging {
           }
         }
 
-        listAcls(adminClient)
+        listAcls()
       }
     }
 
     def listAcls(): Unit = {
       withAdminClient(opts) { adminClient =>
-        listAcls(adminClient)
-      }
-    }
+        val filters = getResourceFilter(opts, dieIfNoResourceFound = false)
+        val listPrincipals = getPrincipals(opts, opts.listPrincipalsOpt)
+        val resourceToAcls = getAcls(adminClient, filters)
 
-    private def listAcls(adminClient: Admin): Unit = {
-      val filters = getResourceFilter(opts, dieIfNoResourceFound = false)
-      val listPrincipals = getPrincipals(opts, opts.listPrincipalsOpt)
-      val resourceToAcls = getAcls(adminClient, filters)
+        if (listPrincipals.isEmpty) {
+          for ((resource, acls) <- resourceToAcls)
+            println(s"Current ACLs for resource `$resource`: $Newline ${acls.map("\t" + _).mkString(Newline)} $Newline")
+        } else {
+          listPrincipals.foreach(principal => {
+            println(s"ACLs for principal `$principal`")
+            val filteredResourceToAcls =  resourceToAcls.mapValues(acls =>
+              acls.filter(acl => principal.toString.equals(acl.principal))).filter(entry => entry._2.nonEmpty)
 
-      if (listPrincipals.isEmpty) {
-        printResourceAcls(resourceToAcls)
-      } else {
-        listPrincipals.foreach{principal =>
-          println(s"ACLs for principal `$principal`")
-          val filteredResourceToAcls = resourceToAcls.map { case (resource, acls) =>
-            resource -> acls.filter(acl => principal.toString.equals(acl.principal))
-          }.filter { case (_, acls) => acls.nonEmpty }
-          printResourceAcls(filteredResourceToAcls)
+            for ((resource, acls) <- filteredResourceToAcls)
+              println(s"Current ACLs for resource `$resource`: $Newline ${acls.map("\t" + _).mkString(Newline)} $Newline")
+          })
         }
       }
-    }
-
-    private def printResourceAcls(resourceToAcls: Map[ResourcePattern, Set[AccessControlEntry]]): Unit = {
-      for ((resource, acls) <- resourceToAcls)
-        println(s"Current ACLs for resource `$resource`: $Newline ${acls.map("\t" + _).mkString(Newline)} $Newline")
     }
 
     private def removeAcls(adminClient: Admin, acls: Set[AccessControlEntry], filter: ResourcePatternFilter): Unit = {
@@ -204,7 +198,7 @@ object AclCommand extends Logging {
         } else {
           defaultProps
         }
-      val authorizerProperties =
+      var authorizerProperties =
         if (opts.options.has(opts.zkTlsConfigFile)) {
           // load in TLS configs both with and without the "authorizer." prefix
           val validKeys = (KafkaConfig.ZkSslConfigToSystemPropertyMap.keys.toList ++ KafkaConfig.ZkSslConfigToSystemPropertyMap.keys.map("authorizer." + _).toList).asJava
@@ -212,6 +206,13 @@ object AclCommand extends Logging {
         }
         else
           authorizerPropertiesWithoutTls
+
+      val resourcePatternFilters: Set[ResourcePatternFilter]= getResourceFilter(opts, dieIfNoResourceFound = false)
+      resourcePatternFilters.foreach(r => {
+        if (r.patternType == PatternType.LITERAL) {
+          authorizerProperties += (r.resourceType.name -> r.name)
+        }
+      })
 
       val authZ = AuthorizerUtils.createAuthorizer(authorizerClassName)
       try {
@@ -228,7 +229,7 @@ object AclCommand extends Logging {
           println(s"Adding ACLs for resource `$resource`: $Newline ${acls.map("\t" + _).mkString(Newline)} $Newline")
           val aclBindings = acls.map(acl => new AclBinding(resource, acl))
           authorizer.createAcls(null,aclBindings.toList.asJava).asScala.map(_.toCompletableFuture.get).foreach { result =>
-            result.exception.ifPresent { exception =>
+            result.exception.asScala.foreach { exception =>
               println(s"Error while adding ACLs: ${exception.getMessage}")
               println(Utils.stackTrace(exception))
             }
@@ -269,9 +270,8 @@ object AclCommand extends Logging {
         } else {
           listPrincipals.foreach(principal => {
             println(s"ACLs for principal `$principal`")
-            val filteredResourceToAcls =  resourceToAcls.map { case (resource, acls) =>
-              resource -> acls.filter(acl => principal.toString.equals(acl.principal))
-            }.filter { case (_, acls) => acls.nonEmpty }
+            val filteredResourceToAcls =  resourceToAcls.mapValues(acls =>
+              acls.filter(acl => principal.toString.equals(acl.principal))).filter(entry => entry._2.nonEmpty)
 
             for ((resource, acls) <- filteredResourceToAcls)
               println(s"Current ACLs for resource `$resource`: $Newline ${acls.map("\t" + _).mkString(Newline)} $Newline")
@@ -288,12 +288,12 @@ object AclCommand extends Logging {
         authorizer.deleteAcls(null, aclBindingFilters)
       }
       result.asScala.map(_.toCompletableFuture.get).foreach { result =>
-        result.exception.ifPresent { exception =>
+        result.exception.asScala.foreach { exception =>
           println(s"Error while removing ACLs: ${exception.getMessage}")
           println(Utils.stackTrace(exception))
         }
-        result.aclBindingDeleteResults.forEach { deleteResult =>
-          deleteResult.exception.ifPresent { exception =>
+        result.aclBindingDeleteResults.asScala.foreach { deleteResult =>
+          deleteResult.exception.asScala.foreach { exception =>
             println(s"Error while removing ACLs: ${exception.getMessage}")
             println(Utils.stackTrace(exception))
           }
@@ -319,7 +319,7 @@ object AclCommand extends Logging {
   }
 
   private def getResourceToAcls(opts: AclCommandOptions): Map[ResourcePattern, Set[AccessControlEntry]] = {
-    val patternType = opts.options.valueOf(opts.resourcePatternType)
+    val patternType: PatternType = opts.options.valueOf(opts.resourcePatternType)
     if (!patternType.isSpecific)
       CommandLineUtils.printUsageAndDie(opts.parser, s"A '--resource-pattern-type' value of '$patternType' is not valid when adding acls.")
 
@@ -357,8 +357,8 @@ object AclCommand extends Logging {
   private def getProducerResourceFilterToAcls(opts: AclCommandOptions): Map[ResourcePatternFilter, Set[AccessControlEntry]] = {
     val filters = getResourceFilter(opts)
 
-    val topics = filters.filter(_.resourceType == JResourceType.TOPIC)
-    val transactionalIds = filters.filter(_.resourceType == JResourceType.TRANSACTIONAL_ID)
+    val topics: Set[ResourcePatternFilter] = filters.filter(_.resourceType == JResourceType.TOPIC)
+    val transactionalIds: Set[ResourcePatternFilter] = filters.filter(_.resourceType == JResourceType.TRANSACTIONAL_ID)
     val enableIdempotence = opts.options.has(opts.idempotentOpt)
 
     val topicAcls = getAcl(opts, Set(WRITE, DESCRIBE, CREATE))
@@ -376,8 +376,8 @@ object AclCommand extends Logging {
   private def getConsumerResourceFilterToAcls(opts: AclCommandOptions): Map[ResourcePatternFilter, Set[AccessControlEntry]] = {
     val filters = getResourceFilter(opts)
 
-    val topics = filters.filter(_.resourceType == JResourceType.TOPIC)
-    val groups = filters.filter(_.resourceType == JResourceType.GROUP)
+    val topics: Set[ResourcePatternFilter] = filters.filter(_.resourceType == JResourceType.TOPIC)
+    val groups: Set[ResourcePatternFilter] = filters.filter(_.resourceType == JResourceType.GROUP)
 
     //Read, Describe on topic, Read on consumerGroup
 
@@ -445,24 +445,24 @@ object AclCommand extends Logging {
   }
 
   private def getResourceFilter(opts: AclCommandOptions, dieIfNoResourceFound: Boolean = true): Set[ResourcePatternFilter] = {
-    val patternType = opts.options.valueOf(opts.resourcePatternType)
+    val patternType: PatternType = opts.options.valueOf(opts.resourcePatternType)
 
     var resourceFilters = Set.empty[ResourcePatternFilter]
     if (opts.options.has(opts.topicOpt))
-      opts.options.valuesOf(opts.topicOpt).forEach(topic => resourceFilters += new ResourcePatternFilter(JResourceType.TOPIC, topic.trim, patternType))
+      opts.options.valuesOf(opts.topicOpt).asScala.foreach(topic => resourceFilters += new ResourcePatternFilter(JResourceType.TOPIC, topic.trim, patternType))
 
     if (patternType == PatternType.LITERAL && (opts.options.has(opts.clusterOpt) || opts.options.has(opts.idempotentOpt)))
       resourceFilters += ClusterResourceFilter
 
     if (opts.options.has(opts.groupOpt))
-      opts.options.valuesOf(opts.groupOpt).forEach(group => resourceFilters += new ResourcePatternFilter(JResourceType.GROUP, group.trim, patternType))
+      opts.options.valuesOf(opts.groupOpt).asScala.foreach(group => resourceFilters += new ResourcePatternFilter(JResourceType.GROUP, group.trim, patternType))
 
     if (opts.options.has(opts.transactionalIdOpt))
-      opts.options.valuesOf(opts.transactionalIdOpt).forEach(transactionalId =>
+      opts.options.valuesOf(opts.transactionalIdOpt).asScala.foreach(transactionalId =>
         resourceFilters += new ResourcePatternFilter(JResourceType.TRANSACTIONAL_ID, transactionalId, patternType))
 
     if (opts.options.has(opts.delegationTokenOpt))
-      opts.options.valuesOf(opts.delegationTokenOpt).forEach(token => resourceFilters += new ResourcePatternFilter(JResourceType.DELEGATION_TOKEN, token.trim, patternType))
+      opts.options.valuesOf(opts.delegationTokenOpt).asScala.foreach(token => resourceFilters += new ResourcePatternFilter(JResourceType.DELEGATION_TOKEN, token.trim, patternType))
 
     if (resourceFilters.isEmpty && dieIfNoResourceFound)
       CommandLineUtils.printUsageAndDie(opts.parser, "You must provide at least one resource: --topic <topic> or --cluster or --group <group> or --delegation-token <Delegation Token ID>")

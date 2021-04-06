@@ -19,13 +19,13 @@ package kafka.integration
 
 import java.util.Properties
 
+import com.yammer.metrics.Metrics
+import com.yammer.metrics.core.Gauge
 import kafka.server.KafkaConfig
 import kafka.utils.{Logging, TestUtils}
+import org.junit.{Before, Test}
 
-import scala.jdk.CollectionConverters._
-import org.junit.jupiter.api.{BeforeEach, Test}
-import com.yammer.metrics.core.Gauge
-import kafka.metrics.KafkaYammerMetrics
+import scala.collection.JavaConverters.mapAsScalaMapConverter
 
 class MetricsDuringTopicCreationDeletionTest extends KafkaServerTestHarness with Logging {
 
@@ -51,24 +51,24 @@ class MetricsDuringTopicCreationDeletionTest extends KafkaServerTestHarness with
   override def generateConfigs = TestUtils.createBrokerConfigs(nodesNum, zkConnect)
     .map(KafkaConfig.fromProps(_, overridingProps))
 
-  @BeforeEach
-  override def setUp(): Unit = {
+  @Before
+  override def setUp {
     // Do some Metrics Registry cleanup by removing the metrics that this test checks.
     // This is a test workaround to the issue that prior harness runs may have left a populated registry.
     // see https://issues.apache.org/jira/browse/KAFKA-4605
     for (m <- testedMetrics) {
-        val metricName = KafkaYammerMetrics.defaultRegistry.allMetrics.asScala.keys.find(_.getName.endsWith(m))
-        metricName.foreach(KafkaYammerMetrics.defaultRegistry.removeMetric)
+        val metricName = Metrics.defaultRegistry.allMetrics.asScala.keys.find(_.getName.endsWith(m))
+        metricName.foreach(Metrics.defaultRegistry.removeMetric)
     }
 
-    super.setUp()
+    super.setUp
   }
 
   /*
    * checking all metrics we care in a single test is faster though it would be more elegant to have 3 @Test methods
    */
   @Test
-  def testMetricsDuringTopicCreateDelete(): Unit = {
+  def testMetricsDuringTopicCreateDelete() {
 
     // For UnderReplicatedPartitions, because of https://issues.apache.org/jira/browse/KAFKA-4605
     // we can't access the metrics value of each server. So instead we directly invoke the method
@@ -87,23 +87,25 @@ class MetricsDuringTopicCreationDeletionTest extends KafkaServerTestHarness with
 
     // Thread checking the metric continuously
     running = true
-    val thread = new Thread(() => {
-      while (running) {
-        for (s <- servers if running) {
-          underReplicatedPartitionCount = s.replicaManager.underReplicatedPartitionCount
-          if (underReplicatedPartitionCount > 0) {
-            running = false
+    val thread = new Thread(new Runnable {
+      def run() {
+        while (running) {
+          for ( s <- servers if running) {
+            underReplicatedPartitionCount = s.replicaManager.underReplicatedPartitionCount
+            if (underReplicatedPartitionCount > 0) {
+              running = false
+            }
           }
-        }
 
-        preferredReplicaImbalanceCount = preferredReplicaImbalanceCountGauge.value
-        if (preferredReplicaImbalanceCount > 0) {
-          running = false
-        }
+          preferredReplicaImbalanceCount = preferredReplicaImbalanceCountGauge.value
+          if (preferredReplicaImbalanceCount > 0) {
+             running = false
+          }
 
-        offlinePartitionsCount = offlinePartitionsCountGauge.value
-        if (offlinePartitionsCount > 0) {
-          running = false
+          offlinePartitionsCount = offlinePartitionsCountGauge.value
+          if (offlinePartitionsCount > 0) {
+             running = false
+          }
         }
       }
     })
@@ -122,13 +124,14 @@ class MetricsDuringTopicCreationDeletionTest extends KafkaServerTestHarness with
   }
 
   private def getGauge(metricName: String) = {
-    KafkaYammerMetrics.defaultRegistry.allMetrics.asScala
-      .find { case (k, _) => k.getName.endsWith(metricName) }
-      .getOrElse(throw new AssertionError( "Unable to find metric " + metricName))
-      ._2.asInstanceOf[Gauge[Int]]
+    Metrics.defaultRegistry.allMetrics.asScala
+           .filterKeys(k => k.getName.endsWith(metricName))
+           .headOption
+           .getOrElse { fail( "Unable to find metric " + metricName ) }
+           ._2.asInstanceOf[Gauge[Int]]
   }
 
-  private def createDeleteTopics(): Unit = {
+  private def createDeleteTopics() {
     for (l <- 1 to createDeleteIterations if running) {
       // Create topics
       for (t <- topics if running) {

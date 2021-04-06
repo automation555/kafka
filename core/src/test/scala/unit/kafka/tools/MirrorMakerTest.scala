@@ -19,18 +19,15 @@ package kafka.tools
 
 import kafka.consumer.BaseConsumerRecord
 import org.apache.kafka.common.record.{RecordBatch, TimestampType}
+import org.junit.Assert._
+import org.junit.Test
 
-import scala.jdk.CollectionConverters._
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import scala.collection.JavaConverters._
 
-import scala.annotation.nowarn
-
-@nowarn("cat=deprecation")
 class MirrorMakerTest {
 
   @Test
-  def testDefaultMirrorMakerMessageHandler(): Unit = {
+  def testDefaultMirrorMakerMessageHandler() {
     val now = 12345L
     val consumerRecord = BaseConsumerRecord("topic", 0, 1L, now, TimestampType.CREATE_TIME, "key".getBytes, "value".getBytes)
 
@@ -46,7 +43,7 @@ class MirrorMakerTest {
   }
 
   @Test
-  def testDefaultMirrorMakerMessageHandlerWithNoTimestampInSourceMessage(): Unit = {
+  def testDefaultMirrorMakerMessageHandlerWithNoTimestampInSourceMessage() {
     val consumerRecord = BaseConsumerRecord("topic", 0, 1L, RecordBatch.NO_TIMESTAMP, TimestampType.CREATE_TIME,
       "key".getBytes, "value".getBytes)
 
@@ -62,7 +59,7 @@ class MirrorMakerTest {
   }
 
   @Test
-  def testDefaultMirrorMakerMessageHandlerWithHeaders(): Unit = {
+  def testDefaultMirrorMakerMessageHandlerWithHeaders() {
     val now = 12345L
     val consumerRecord = BaseConsumerRecord("topic", 0, 1L, now, TimestampType.CREATE_TIME, "key".getBytes,
       "value".getBytes)

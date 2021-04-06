@@ -16,25 +16,28 @@
  */
 package org.apache.kafka.connect.transforms;
 
+import java.util.Map;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 
 public class ValueToKeyTest {
+
+    private static final String INCLUDED_TOPIC_NAME = "includedTopic";
     private final ValueToKey<SinkRecord> xform = new ValueToKey<>();
 
-    @AfterEach
+    @After
     public void teardown() {
         xform.close();
     }
@@ -91,6 +94,48 @@ public class ValueToKeyTest {
     }
 
     @Test
+    public void withIncludedTopics() {
+        final Map<String, String> config = new HashMap<>();
+        config.put("fields", "a,b");
+        config.put("topics", INCLUDED_TOPIC_NAME);
+        xform.configure(config);
+
+        final HashMap<String, Integer> value = new HashMap<>();
+        value.put("a", 1);
+        value.put("b", 2);
+        value.put("c", 3);
+
+        final SinkRecord record = new SinkRecord(INCLUDED_TOPIC_NAME, 0, null, null, null, value, 0);
+        final SinkRecord transformedRecord = xform.apply(record);
+
+        final HashMap<String, Integer> expectedKey = new HashMap<>();
+        expectedKey.put("a", 1);
+        expectedKey.put("b", 2);
+
+        assertNull(transformedRecord.keySchema());
+        assertEquals(expectedKey, transformedRecord.key());
+    }
+
+    @Test
+    public void withExcludedTopics() {
+        final Map<String, String> config = new HashMap<>();
+        config.put("fields", "a,b");
+        config.put("topics", "excludedTopic");
+        xform.configure(config);
+
+        final HashMap<String, Integer> value = new HashMap<>();
+        value.put("a", 1);
+        value.put("b", 2);
+        value.put("c", 3);
+
+        final Object originalKey = "ORIGINAL_KEY";
+        final SinkRecord record = new SinkRecord(INCLUDED_TOPIC_NAME, 0, null, originalKey, null, value, 0);
+        final SinkRecord transformedRecord = xform.apply(record);
+
+        assertNull(transformedRecord.keySchema());
+        assertEquals(originalKey, transformedRecord.key());
+    }
+
     public void nonExistingField() {
         xform.configure(Collections.singletonMap("fields", "not_exist"));
 

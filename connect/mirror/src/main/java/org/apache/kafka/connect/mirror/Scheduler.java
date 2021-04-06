@@ -39,7 +39,7 @@ class Scheduler implements AutoCloseable {
         this.timeout = timeout;
     }
 
-    Scheduler(Class<?> clazz, Duration timeout) {
+    Scheduler(Class clazz, Duration timeout) {
         this("Scheduler for " + clazz.getSimpleName(), timeout);
     }
 
@@ -63,6 +63,7 @@ class Scheduler implements AutoCloseable {
             executor.submit(() -> executeThread(task, description)).get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             log.warn("{} was interrupted running task: {}", name, description);
+            Thread.currentThread().interrupt();
         } catch (TimeoutException e) {
             log.error("{} timed out running task: {}", name, description);
         } catch (Throwable e) {
@@ -80,6 +81,7 @@ class Scheduler implements AutoCloseable {
             }
         } catch (InterruptedException e) {
             log.warn("{} was interrupted during shutdown of internal scheduler.", name);
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -98,13 +100,14 @@ class Scheduler implements AutoCloseable {
             }
         } catch (InterruptedException e) {
             log.warn("{} was interrupted running task: {}", name, description);
+            Thread.currentThread().interrupt();
         } catch (Throwable e) {
             log.error("{} caught exception in scheduled task: {}", name, description, e);
         }
     }
 
     private void executeThread(Task task, String description) {
-        Thread.currentThread().setName(name + "-" + description);
+        Thread.currentThread().setName(description);
         if (closed) {
             log.info("{} skipping task due to shutdown: {}", name, description);
             return;

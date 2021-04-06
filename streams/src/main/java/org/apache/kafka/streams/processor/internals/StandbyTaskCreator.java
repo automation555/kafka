@@ -66,9 +66,7 @@ class StandbyTaskCreator {
         );
     }
 
-    // TODO: change return type to `StandbyTask`
     Collection<Task> createTasks(final Map<TaskId, Set<TopicPartition>> tasksToBeCreated) {
-        // TODO: change type to `StandbyTask`
         final List<Task> createdTasks = new ArrayList<>();
         for (final Map.Entry<TaskId, Set<TopicPartition>> newTaskAndPartitions : tasksToBeCreated.entrySet()) {
             final TaskId taskId = newTaskAndPartitions.getKey();
@@ -96,7 +94,7 @@ class StandbyTaskCreator {
                     dummyCache
                 );
 
-                createdTasks.add(createStandbyTask(taskId, partitions, topology, stateManager, context));
+                createdTasks.add(createStandbyTask(taskId, topology, stateManager, partitions, context));
             } else {
                 log.trace(
                     "Skipped standby task {} with assigned partitions {} " +
@@ -110,40 +108,40 @@ class StandbyTaskCreator {
     }
 
     StandbyTask createStandbyTaskFromActive(final StreamTask streamTask,
-                                            final Set<TopicPartition> inputPartitions) {
+                                            final Set<TopicPartition> partitions) {
         final InternalProcessorContext context = streamTask.processorContext();
         final ProcessorStateManager stateManager = streamTask.stateMgr;
 
-        streamTask.closeCleanAndRecycleState();
+        streamTask.closeAndRecycleState();
         stateManager.transitionTaskType(TaskType.STANDBY, getLogContext(streamTask.id()));
 
         return createStandbyTask(
             streamTask.id(),
-            inputPartitions,
             builder.buildSubtopology(streamTask.id.topicGroupId),
             stateManager,
+            partitions,
             context
         );
     }
 
     StandbyTask createStandbyTask(final TaskId taskId,
-                                  final Set<TopicPartition> inputPartitions,
                                   final ProcessorTopology topology,
                                   final ProcessorStateManager stateManager,
+                                  final Set<TopicPartition> partitions,
                                   final InternalProcessorContext context) {
         final StandbyTask task = new StandbyTask(
             taskId,
-            inputPartitions,
             topology,
-            config,
-            streamsMetrics,
-            stateManager,
             stateDirectory,
+            stateManager,
+            partitions,
+            config,
+            context,
             dummyCache,
-            context
+            streamsMetrics
         );
 
-        log.trace("Created task {} with assigned partitions {}", taskId, inputPartitions);
+        log.trace("Created task {} with assigned partitions {}", taskId, partitions);
         createTaskSensor.record();
         return task;
     }

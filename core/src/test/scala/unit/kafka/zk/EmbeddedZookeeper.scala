@@ -17,12 +17,11 @@
 
 package kafka.zk
 
-import org.apache.zookeeper.server.ZooKeeperServer
-import org.apache.zookeeper.server.NIOServerCnxnFactory
-import kafka.utils.{CoreUtils, Logging, TestUtils}
 import java.net.InetSocketAddress
 
+import kafka.utils.{CoreUtils, Logging, TestUtils}
 import org.apache.kafka.common.utils.Utils
+import org.apache.zookeeper.server.{NIOServerCnxnFactory, ZooKeeperServer}
 
 /**
  * ZooKeeperServer wrapper that starts the server with temporary directories during construction and deletes
@@ -48,8 +47,8 @@ class EmbeddedZookeeper() extends Logging {
   factory.startup(zookeeper)
   val port = zookeeper.getClientPort
 
-  def shutdown(): Unit = {
-    // Also shuts down ZooKeeperServer
+  def shutdown() {
+    CoreUtils.swallow(zookeeper.shutdown(), this)
     CoreUtils.swallow(factory.shutdown(), this)
 
     def isDown(): Boolean = {
@@ -60,7 +59,6 @@ class EmbeddedZookeeper() extends Logging {
     }
 
     Iterator.continually(isDown()).exists(identity)
-    CoreUtils.swallow(zookeeper.getZKDatabase().close(), this)
 
     Utils.delete(logDir)
     Utils.delete(snapshotDir)

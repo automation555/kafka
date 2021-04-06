@@ -34,7 +34,6 @@ import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
-import org.apache.kafka.common.requests.CreateTopicsRequest;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
@@ -104,37 +103,39 @@ public final class WorkerUtils {
         }
     }
 
+    public static final int DEFAULT_TOPIC_VERIFY_BACKOFF = 2500;
+    public static final int DEFAULT_TOPIC_VERIFY_RETRIES = 3;
     private static final int ADMIN_REQUEST_TIMEOUT = 25000;
     private static final int CREATE_TOPICS_CALL_TIMEOUT = 180000;
     private static final int MAX_CREATE_TOPICS_BATCH_SIZE = 10;
 
-            //Map<String, Map<Integer, List<Integer>>> topics) throws Throwable {
-
     /**
      * Create some Kafka topics.
      *
-     * @param log               The logger to use.
-     * @param bootstrapServers  The bootstrap server list.
-     * @param commonClientConf  Common client config
-     * @param adminClientConf   AdminClient config. This config has precedence over fields in
-     *                          common client config.
-     * @param topics            Maps topic names to partition assignments.
-     * @param failOnExisting    If true, the method will throw TopicExistsException if one or
-     *                          more topics already exist. Otherwise, the existing topics are
-     *                          verified for number of partitions. In this case, if number of
-     *                          partitions of an existing topic does not match the requested
-     *                          number of partitions, the method throws RuntimeException.
+     * @param log                  The logger to use.
+     * @param bootstrapServers     The bootstrap server list.
+     * @param commonClientConf     Common client config
+     * @param adminClientConf      AdminClient config. This config has precedence over fields in
+     *                             common client config.
+     * @param topics               Maps topic names to partition assignments.
+     * @param failOnExisting       If true, the method will throw TopicExistsException if one or
+     *                             more topics already exist. Otherwise, the existing topics are
+     *                             verified for number of partitions. In this case, if number of
+     *                             partitions of an existing topic does not match the requested
+     *                             number of partitions, the method throws RuntimeException.
+     * @param verifyRetryCount     The number of times to retry verifying the topic.
+     * @param verifyRetryBackoffMs The amount of time to wait between verify retries.
      */
     public static void createTopics(
         Logger log, String bootstrapServers, Map<String, String> commonClientConf,
-        Map<String, String> adminClientConf,
-        Map<String, NewTopic> topics, boolean failOnExisting) throws Throwable {
+        Map<String, String> adminClientConf, Map<String, NewTopic> topics,
+        boolean failOnExisting, int verifyRetryCount, long verifyRetryBackoffMs) throws Throwable {
         // this method wraps the call to createTopics() that takes admin client, so that we can
         // unit test the functionality with MockAdminClient. The exception is caught and
         // re-thrown so that admin client is closed when the method returns.
         try (Admin adminClient
                  = createAdminClient(bootstrapServers, commonClientConf, adminClientConf)) {
-            createTopics(log, adminClient, topics, failOnExisting);
+            createTopics(log, adminClient, topics, failOnExisting, verifyRetryCount, verifyRetryBackoffMs);
         } catch (Exception e) {
             log.warn("Failed to create or verify topics {}", topics, e);
             throw e;
@@ -150,7 +151,8 @@ public final class WorkerUtils {
      */
     static void createTopics(
         Logger log, Admin adminClient,
-        Map<String, NewTopic> topics, boolean failOnExisting) throws Throwable {
+        Map<String, NewTopic> topics, boolean failOnExisting,
+        int verifyRetryCount, long verifyRetryBackoffMs) throws Throwable {
         if (topics.isEmpty()) {
             log.warn("Request to create topics has an empty topic list.");
             return;
@@ -162,7 +164,7 @@ public final class WorkerUtils {
                 log.warn("Topic(s) {} already exist.", topicsExists);
                 throw new TopicExistsException("One or more topics already exist.");
             } else {
-                verifyTopics(log, adminClient, topicsExists, topics, 3, 2500);
+                verifyTopics(log, adminClient, topicsExists, topics, verifyRetryCount, verifyRetryBackoffMs);
             }
         }
     }
@@ -260,7 +262,7 @@ public final class WorkerUtils {
             // map will always contain the topic since all topics in 'topicsExists' are in given
             // 'topics' map
             int partitions = topicsInfo.get(desc.name()).numPartitions();
-            if (partitions != CreateTopicsRequest.NO_NUM_PARTITIONS && desc.partitions().size() != partitions) {
+            if (desc.partitions().size() != partitions) {
                 String str = "Topic '" + desc.name() + "' exists, but has "
                              + desc.partitions().size() + " partitions, while requested "
                              + " number of partitions is " + partitions;

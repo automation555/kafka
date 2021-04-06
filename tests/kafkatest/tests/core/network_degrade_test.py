@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import re
+import time
 
 from ducktape.mark import parametrize
 from ducktape.mark.resource import cluster
@@ -102,6 +103,8 @@ class NetworkDegradeTest(Test):
                    timeout_sec=10,
                    err_msg="%s failed to start within 10 seconds." % rate_limit)
 
+        # rate_limt doesn't take effect immediately after starting. Wait a few seconds
+        time.sleep(15)
         # Run iperf server on zk1, iperf client on zk0
         iperf_server = zk1.account.ssh_capture("iperf -s")
 
@@ -129,7 +132,7 @@ class NetworkDegradeTest(Test):
         self.logger.info("Measured rates: %s" % measured_rates)
 
         # We expect to see measured rates within an order of magnitude of our target rate
-        low_kbps = rate_limit_kbit // 10
+        low_kbps = rate_limit_kbit / 10
         high_kbps = rate_limit_kbit * 10
         acceptable_rates = [r for r in measured_rates if low_kbps < r < high_kbps]
 

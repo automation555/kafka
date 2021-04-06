@@ -17,9 +17,14 @@ from ducktape.mark import parametrize, matrix
 from ducktape.mark.resource import cluster
 from ducktape.utils.util import wait_until
 
+from kafkatest.services.console_consumer import ConsoleConsumer
+from kafkatest.services.kafka import KafkaService
 from kafkatest.services.kafka import config_property
+from kafkatest.services.verifiable_producer import VerifiableProducer
+from kafkatest.services.zookeeper import ZookeeperService
 from kafkatest.tests.end_to_end import EndToEndTest
-from kafkatest.version import LATEST_1_1, LATEST_2_0, LATEST_2_1, LATEST_2_2, LATEST_2_3, LATEST_2_4, LATEST_2_5, DEV_BRANCH, KafkaVersion
+from kafkatest.utils import is_int
+from kafkatest.version import LATEST_0_9, LATEST_0_10, LATEST_0_10_0, LATEST_0_10_1, LATEST_0_10_2, LATEST_0_11_0, LATEST_1_0, LATEST_1_1, LATEST_2_0, LATEST_2_1, LATEST_2_2, LATEST_2_3, LATEST_2_4, LATEST_2_5, V_0_9_0_0, V_0_11_0_0, DEV_BRANCH, KafkaVersion
 
 class TestDowngrade(EndToEndTest):
     PARTITIONS = 3
@@ -41,7 +46,7 @@ class TestDowngrade(EndToEndTest):
             node.config[config_property.INTER_BROKER_PROTOCOL_VERSION] = str(kafka_version)
             node.config[config_property.MESSAGE_FORMAT_VERSION] = str(kafka_version)
             self.kafka.start_node(node)
-            self.wait_until_rejoin()
+            self.kafka.wait_until_rejoin_isr(self.topic, range(0, self.PARTITIONS), self.REPLICATION_FACTOR)
 
     def downgrade_to(self, kafka_version):
         for node in self.kafka.nodes:
@@ -50,10 +55,10 @@ class TestDowngrade(EndToEndTest):
             del node.config[config_property.INTER_BROKER_PROTOCOL_VERSION]
             del node.config[config_property.MESSAGE_FORMAT_VERSION]
             self.kafka.start_node(node)
-            self.wait_until_rejoin()
+            self.kafka.wait_until_rejoin_isr(self.topic, range(0, self.PARTITIONS), self.REPLICATION_FACTOR)
 
     def setup_services(self, kafka_version, compression_types, security_protocol, static_membership):
-        self.create_zookeeper_if_necessary()
+        self.create_zookeeper()
         self.zk.start()
 
         self.create_kafka(num_nodes=3,
@@ -72,11 +77,6 @@ class TestDowngrade(EndToEndTest):
                              static_membership=static_membership)
 
         self.consumer.start()
-
-    def wait_until_rejoin(self):
-        for partition in range(0, self.PARTITIONS):
-            wait_until(lambda: len(self.kafka.isr_idx_list(self.topic, partition)) == self.REPLICATION_FACTOR, 
-                    timeout_sec=60, backoff_sec=1, err_msg="Replicas did not rejoin the ISR in a reasonable amount of time")
 
     @cluster(num_nodes=7)
     @matrix(version=[str(LATEST_2_5)], compression_types=[["none"]], static_membership=[False, True])
@@ -120,19 +120,15 @@ class TestDowngrade(EndToEndTest):
         self.setup_services(kafka_version, compression_types, security_protocol, static_membership)
         self.await_startup()
 
-        start_topic_id = self.kafka.topic_id(self.topic)
-
         self.logger.info("First pass bounce - rolling upgrade")
         self.upgrade_from(kafka_version)
         self.run_validation()
 
-        upgrade_topic_id = self.kafka.topic_id(self.topic)
-        assert start_topic_id == upgrade_topic_id
-
         self.logger.info("Second pass bounce - rolling downgrade")
         self.downgrade_to(kafka_version)
         self.run_validation()
-
-        downgrade_topic_id = self.kafka.topic_id(self.topic)
-        assert upgrade_topic_id == downgrade_topic_id
         assert self.kafka.check_protocol_errors(self)
+
+        # epoch checks aren't supported with SASL_SSL
+        if security_protocol != "SASL_SSL" and kafka_version >= LATEST_2_2:
+            self.kafka.replica_leader_epochs_match(self.topic, range(0, self.PARTITIONS))

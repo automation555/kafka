@@ -61,23 +61,16 @@ class LogConfigTest {
       case LogConfig.MinCleanableDirtyRatioProp => assertPropertyInvalid(name, "not_a_number", "-0.1", "1.2")
       case LogConfig.MinInSyncReplicasProp => assertPropertyInvalid(name, "not_a_number", "0", "-1")
       case LogConfig.MessageFormatVersionProp => assertPropertyInvalid(name, "")
+      case LogConfig.DeprecatedSegmentJitterMsProp => // validated by replacing config
+      case LogConfig.DeprecatedMinCleanableDirtyRatioProp => // validated by replacing config
+      case LogConfig.DeprecatedSegmentMsProp => // validated by replacing config
+      case LogConfig.DeprecatedFlushMsProp => // validated by replacing config
+      case LogConfig.DeprecatedFlushMessagesProp => // validated by replacing config
+      case LogConfig.DeprecatedDeleteRetentionMsProp => // validated by replacing config
+      case LogConfig.DeprecatedSegmentIndexBytesProp => // validated by replacing config
+      case LogConfig.DeprecatedFileDeleteDelayMsProp => // validated by replacing config
       case positiveIntProperty => assertPropertyInvalid(name, "not_a_number", "-1")
     })
-  }
-
-  @Test
-  def testMaxIndexSize() {
-    val kafkaProps = TestUtils.createBrokerConfig(nodeId = 0, zkConnect = "")
-    kafkaProps.put(LogConfig.SegmentBytesProp, "1024")
-    kafkaProps.put(LogConfig.IndexIntervalBytesProp, "256")
-
-    kafkaProps.put(LogConfig.SegmentIndexBytesProp, "4096")
-    val logConfig1 = new LogConfig(kafkaProps)
-    assertEquals("The max offset index size should be 40.", logConfig1.maxIndexSize, 40)
-
-    kafkaProps.put(LogConfig.SegmentIndexBytesProp, "16")
-    val logConfig2 = new LogConfig(kafkaProps)
-    assertEquals("The max offset index size should be 16.", logConfig2.maxIndexSize, 16)
   }
 
   private def assertPropertyInvalid(name: String, values: AnyRef*) {

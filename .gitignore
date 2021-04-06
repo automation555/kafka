@@ -11,7 +11,6 @@ patch-process/*
 .idea
 .svn
 .classpath
-/*/**/.gitignore
 /.metadata
 /.recommenders
 *~
@@ -22,25 +21,25 @@ TAGS
 *.iml
 .project
 .settings
+.gradle
 kafka.ipr
 kafka.iws
 .vagrant
 Vagrantfile.local
 /logs
-.DS_Store
 
 config/server-*
 config/zookeeper-*
 core/data/*
 gradle/wrapper/*
-gradlew
-gradlew.bat
 
 results
 tests/results
 .ducktape
 tests/.ducktape
-tests/venv
-.cache
 
-docs/generated/
+docs/producer_config.html
+docs/consumer_config.html
+docs/topic_config.html
+docs/kafka_config.html
+docs/connect_config.html

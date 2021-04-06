@@ -76,13 +76,12 @@ public class TopicConfig {
         "their data. If set to -1, no time limit is applied.";
 
     public static final String MAX_MESSAGE_BYTES_CONFIG = "max.message.bytes";
-    public static final String MAX_MESSAGE_BYTES_DOC =
-        "The largest record batch size allowed by Kafka (after compression if compression is enabled). " +
-        "If this is increased and there are consumers older than 0.10.2, the consumers' fetch " +
-        "size must also be increased so that the they can fetch record batches this large. " +
-        "In the latest message format version, records are always grouped into batches for efficiency. " +
-        "In previous message format versions, uncompressed records are not grouped into batches and this " +
-        "limit only applies to a single record in that case.";
+    public static final String MAX_MESSAGE_BYTES_DOC = "<p>The largest record batch size allowed by Kafka. If this " +
+        "is increased and there are consumers older than 0.10.2, the consumers' fetch size must also be increased so that " +
+        "the they can fetch record batches this large.</p>" +
+        "<p>In the latest message format version, records are always grouped into batches for efficiency. In previous " +
+        "message format versions, uncompressed records are not grouped into batches and this limit only applies to a " +
+        "single record in that case.</p>";
 
     public static final String INDEX_INTERVAL_BYTES_CONFIG = "index.interval.bytes";
     public static final String INDEX_INTERVAL_BYTES_DOCS = "This setting controls how frequently " +
@@ -109,19 +108,6 @@ public class TopicConfig {
     public static final String MAX_COMPACTION_LAG_MS_DOC = "The maximum time a message will remain " +
         "ineligible for compaction in the log. Only applicable for logs that are being compacted.";
 
-    public static final String COMPACTION_STRATEGY_CONFIG = "compaction.strategy";
-    public static final String COMPACTION_STRATEGY_DOC = "The retention strategy to use when compacting the log. " +
-    	"Only applicable for logs that are being compacted. " + 
-    	"By default the compaction strategy is set to \"offset\" where the latest offset for the key is retained. " + 
-    	"For \"header\" strategy, the value provided by the producer in the record header will be used to determine " +
-    	"the latest record for the key. For \"timestamp\" strategy, the record tiemstamp will be used to determine the " +
-    	"latest record for the key. So setting the strategy to anything other than \"offset\" will replace the offset " +
-    	"when calculating which records to retain for the value (i.e. provided by the producer) matching " + 
-    	"the given strategy name (case-insensitive). The valid strategies are \"offset\", \"timestamp\" and \"header\".";
-
-    public static final String COMPACTION_STRATEGY_HEADER_KEY_CONFIG = "compaction.strategy.header";
-    public static final String COMPACTION_STRATEGY_HEADER_KEY_DOC = "The header key for the compaction. Only applicable for \"header\" compaction strategy.";
-
     public static final String MIN_CLEANABLE_DIRTY_RATIO_CONFIG = "min.cleanable.dirty.ratio";
     public static final String MIN_CLEANABLE_DIRTY_RATIO_DOC = "This configuration controls how frequently " +
         "the log compactor will attempt to clean the log (assuming <a href=\"#compaction\">log " +
@@ -138,11 +124,20 @@ public class TopicConfig {
     public static final String CLEANUP_POLICY_CONFIG = "cleanup.policy";
     public static final String CLEANUP_POLICY_COMPACT = "compact";
     public static final String CLEANUP_POLICY_DELETE = "delete";
+
     public static final String CLEANUP_POLICY_DOC = "A string that is either \"" + CLEANUP_POLICY_DELETE +
         "\" or \"" + CLEANUP_POLICY_COMPACT + "\" or both. This string designates the retention policy to use on " +
         "old log segments. The default policy (\"delete\") will discard old segments when their retention " +
         "time or size limit has been reached. The \"compact\" setting will enable <a href=\"#compaction\">log " +
         "compaction</a> on the topic.";
+
+    public static final String COMPACTION_POLICY_CONFIG = "compaction.policy";
+    public static final String COMPACTION_POLICY_OFFSET = "offset";
+    public static final String COMPACTION_POLICY_SEQUENCE = "sequence";
+    public static final String COMPACTION_POLICY_TIMESTAMP = "timestamp";
+    public static final String COMPACTION_POLICY_DOC = "This configuration enables the advanced log compaction" +
+            "The default compaction strategy should be useoffset, one additional compaction strategy is supported: " +
+            "usesequence ";
 
     public static final String UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG = "unclean.leader.election.enable";
     public static final String UNCLEAN_LEADER_ELECTION_ENABLE_DOC = "Indicates whether to enable replicas " +

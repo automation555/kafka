@@ -1,11 +1,19 @@
 /**
+
  * Licensed to the Apache Software Foundation (ASF) under one or more
+
  * contributor license agreements.  See the NOTICE file distributed with
+
  * this work for additional information regarding copyright ownership.
+
  * The ASF licenses this file to You under the Apache License, Version 2.0
+
  * (the "License"); you may not use this file except in compliance with
+
  * the License.  You may obtain a copy of the License at
+
  *
+
  * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -15,27 +23,50 @@
  * limitations under the License.
  */
 
-package kafka.log
+
+package unit.kafka.log
 
 import java.lang.{Long => JLong}
+
 import java.nio.ByteBuffer
 
-import kafka.utils.TestUtils
+
+
 import org.apache.kafka.common.header.Header
+
 import org.apache.kafka.common.header.internals.RecordHeader
+
 import org.apache.kafka.common.record.{Record, TimestampType}
 
-class FakeRecord(fakeKey: ByteBuffer, fakeOffset: Number, fakeSequence: Long = -1L, fakeTimestamp: Long = -1L) extends Record {
+import org.apache.kafka.common.utils.ByteUtils
+
+
+
+class FakeRecord(fakeKey: ByteBuffer, fakeOffset: Number, fakeVersion: Long = -1, fakeTimestamp: Long = -1) extends Record {
+
   private var fakeHeaders: Array[Header] = _
 
   init()
 
   private def init(): Unit = {
-    if (Option(fakeSequence).isEmpty || fakeSequence <= 0)
+    if (Option(fakeVersion).isEmpty || fakeVersion <= 0)
       fakeHeaders = new Array[Header](0)
     else
-      fakeHeaders = Array[Header](new RecordHeader("sequence", TestUtils.longToByte(fakeSequence)))
+      fakeHeaders = Array[Header](
+        new RecordHeader("version", longToByte(fakeVersion))
+      )
   }
+
+
+  private def longToByte(value: Long): Array[Byte] = {
+
+    var buffer = ByteBuffer.allocate(16)
+    ByteUtils.writeVarlong(value, buffer)
+    buffer.flip
+    buffer.array
+
+  }
+
 
   override def offset: Long = if (fakeOffset != null) fakeOffset.longValue else -1
 
@@ -43,9 +74,9 @@ class FakeRecord(fakeKey: ByteBuffer, fakeOffset: Number, fakeSequence: Long = -
 
   override def sizeInBytes = 0
 
-  override def timestamp: Long = fakeTimestamp
-
   override def checksumOrNull: JLong = null
+
+  override def timestamp: Long = fakeTimestamp
 
   override def isValid = true
 
@@ -71,4 +102,5 @@ class FakeRecord(fakeKey: ByteBuffer, fakeOffset: Number, fakeSequence: Long = -
   override def hasTimestampType(timestampType: TimestampType) = false
 
   override def headers: Array[Header] = fakeHeaders
+
 }

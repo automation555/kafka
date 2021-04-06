@@ -31,6 +31,7 @@ import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.MetricNameTemplate;
@@ -38,6 +39,7 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.InvalidTopicException;
+import org.apache.kafka.common.errors.RecordDeserializationException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -70,7 +72,6 @@ import org.apache.kafka.common.requests.ApiVersionsResponse;
 import org.apache.kafka.common.requests.EpochEndOffset;
 import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.FetchResponse;
-import org.apache.kafka.common.requests.IsolationLevel;
 import org.apache.kafka.common.requests.ListOffsetRequest;
 import org.apache.kafka.common.requests.ListOffsetResponse;
 import org.apache.kafka.common.requests.MetadataRequest;
@@ -114,6 +115,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -134,6 +136,7 @@ import static org.junit.Assert.fail;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
+@SuppressWarnings("deprecation")
 public class FetcherTest {
     private static final double EPSILON = 0.0001;
 
@@ -446,8 +449,15 @@ public class FetcherTest {
                 fetcher.fetchedRecords();
                 fail("fetchedRecords should have raised");
             } catch (SerializationException e) {
+                // catch SerializationException to assert backwards compatibility
+                if (!(e instanceof RecordDeserializationException))
+                    fail("fetchedRecords should have raised " + RecordDeserializationException.class.getName());
+
                 // the position should not advance since no data has been returned
                 assertEquals(1, subscriptions.position(tp0).offset);
+                RecordDeserializationException error = (RecordDeserializationException) e;
+                assertEquals(error.partition(), tp0);
+                assertEquals(error.offset(), subscriptions.position(tp0).offset);
             }
         }
     }
@@ -461,12 +471,12 @@ public class FetcherTest {
         DataOutputStream out = new DataOutputStream(new ByteBufferOutputStream(buffer));
 
         byte magic = RecordBatch.MAGIC_VALUE_V1;
-        ByteBuffer key = ByteBuffer.wrap("foo".getBytes());
-        ByteBuffer value = ByteBuffer.wrap("baz".getBytes());
+        byte[] key = "foo".getBytes();
+        byte[] value = "baz".getBytes();
         long offset = 0;
         long timestamp = 500L;
 
-        int size = LegacyRecord.recordSize(magic, key.remaining(), value.remaining());
+        int size = LegacyRecord.recordSize(magic, key.length, value.length);
         byte attributes = LegacyRecord.computeAttributes(magic, CompressionType.NONE, TimestampType.CREATE_TIME);
         long crc = LegacyRecord.computeChecksum(magic, attributes, timestamp, key, value);
 
@@ -507,26 +517,29 @@ public class FetcherTest {
         assertEquals(1, fetcher.fetchedRecords().get(tp0).size());
         assertEquals(1, subscriptions.position(tp0).offset);
 
-        ensureBlockOnRecord(1L);
+        ensureBlockOnRecord(tp0, 1L);
         seekAndConsumeRecord(buffer, 2L);
-        ensureBlockOnRecord(3L);
+        ensureBlockOnRecord(tp0, 3L);
         try {
             // For a record that cannot be retrieved from the iterator, we cannot seek over it within the batch.
             seekAndConsumeRecord(buffer, 4L);
             fail("Should have thrown exception when fail to retrieve a record from iterator.");
-        } catch (KafkaException ke) {
-           // let it go
+        } catch (RecordDeserializationException rde) {
+            assertEquals(rde.partition(), tp0);
+            assertEquals(rde.offset(), 4L);
         }
-        ensureBlockOnRecord(4L);
+        ensureBlockOnRecord(tp0, 4L);
     }
 
-    private void ensureBlockOnRecord(long blockedOffset) {
+    private void ensureBlockOnRecord(TopicPartition partition, long blockedOffset) {
         // the fetchedRecords() should always throw exception due to the invalid message at the starting offset.
         for (int i = 0; i < 2; i++) {
             try {
                 fetcher.fetchedRecords();
                 fail("fetchedRecords should have raised KafkaException");
-            } catch (KafkaException e) {
+            } catch (RecordDeserializationException e) {
+                assertEquals(partition, e.partition());
+                assertEquals(blockedOffset, e.offset());
                 assertEquals(blockedOffset, subscriptions.position(tp0).offset);
             }
         }
@@ -555,11 +568,14 @@ public class FetcherTest {
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         ByteBufferOutputStream out = new ByteBufferOutputStream(buffer);
 
+        long batchEndOffset = 2;
         MemoryRecordsBuilder builder = new MemoryRecordsBuilder(out,
                                                                 DefaultRecordBatch.CURRENT_MAGIC_VALUE,
                                                                 CompressionType.NONE,
                                                                 TimestampType.CREATE_TIME,
                                                                 0L, 10L, 0L, (short) 0, 0, false, false, 0, 1024);
+        builder.append(10L, "key".getBytes(), "value".getBytes());
+        builder.append(10L, "key".getBytes(), "value".getBytes());
         builder.append(10L, "key".getBytes(), "value".getBytes());
         builder.close();
         buffer.flip();
@@ -583,13 +599,21 @@ public class FetcherTest {
                 fetcher.fetchedRecords();
                 fail("fetchedRecords should have raised KafkaException");
             } catch (KafkaException e) {
+                // check KafkaException to assert backwards compatibility
+                if (!(e instanceof RecordDeserializationException))
+                    fail("Error should be of type " + RecordDeserializationException.class.getName());
+
                 assertEquals(0, subscriptions.position(tp0).offset);
+                RecordDeserializationException err = (RecordDeserializationException) e;
+                assertEquals(err.partition(), tp0);
+                assertEquals(batchEndOffset, err.offset());
             }
         }
     }
 
     @Test
     public void testParseInvalidRecordBatch() {
+        long batchEndOffset = 2;
         buildFetcher();
         MemoryRecords records = MemoryRecords.withRecords(RecordBatch.MAGIC_VALUE_V2, 0L,
                 CompressionType.NONE, TimestampType.CREATE_TIME,
@@ -612,8 +636,15 @@ public class FetcherTest {
             fetcher.fetchedRecords();
             fail("fetchedRecords should have raised");
         } catch (KafkaException e) {
+            // check KafkaException to ensure backwards compatibility
+            if (!(e instanceof RecordDeserializationException))
+                fail("Error should be of type " + RecordDeserializationException.class.getName());
+
             // the position should not advance since no data has been returned
             assertEquals(0, subscriptions.position(tp0).offset);
+            RecordDeserializationException err = (RecordDeserializationException) e;
+            assertEquals(err.partition(), tp0);
+            assertEquals(batchEndOffset, err.offset());
         }
     }
 
@@ -1997,7 +2028,7 @@ public class FetcherTest {
 
         ByteBuffer buffer = ApiVersionsResponse.
             createApiVersionsResponse(400, RecordBatch.CURRENT_MAGIC_VALUE).
-                serialize(ApiKeys.API_VERSIONS, 0);
+                serialize(ApiKeys.API_VERSIONS, ApiKeys.API_VERSIONS.latestVersion(), 0);
         selector.delayedReceive(new DelayedReceive(node.idString(), new NetworkReceive(node.idString(), buffer)));
         while (!client.ready(node, time.milliseconds())) {
             client.poll(1, time.milliseconds());
@@ -2014,7 +2045,9 @@ public class FetcherTest {
             client.send(request, time.milliseconds());
             client.poll(1, time.milliseconds());
             FetchResponse response = fullFetchResponse(tp0, nextRecords, Errors.NONE, i, throttleTimeMs);
-            buffer = response.serialize(ApiKeys.FETCH, request.correlationId());
+            buffer = response.serialize(ApiKeys.FETCH,
+                    ApiKeys.FETCH.latestVersion(),
+                    request.correlationId());
             selector.completeReceive(new NetworkReceive(node.idString(), buffer));
             client.poll(1, time.milliseconds());
             // If a throttled response is received, advance the time to ensure progress.
@@ -3334,7 +3367,7 @@ public class FetcherTest {
         TopicPartition t2p0 = new TopicPartition(topicName2, 0);
         // Expect a metadata refresh.
         metadata.bootstrap(ClientUtils.parseAndValidateAddresses(Collections.singletonList("1.1.1.1:1111"),
-                ClientDnsLookup.DEFAULT), time.milliseconds());
+                ClientDnsLookup.DEFAULT));
 
         Map<String, Integer> partitionNumByTopic = new HashMap<>();
         partitionNumByTopic.put(topicName, 2);
@@ -3769,6 +3802,33 @@ public class FetcherTest {
 
         selected = fetcher.selectReadReplica(tp0, Node.noNode(), time.milliseconds());
         assertEquals(selected.id(), -1);
+    }
+
+    @Test
+    public void testFetchCompletedBeforeHandlerAdded() {
+        buildFetcher();
+        assignFromUser(singleton(tp0));
+        subscriptions.seek(tp0, 0);
+        fetcher.sendFetches();
+        client.prepareResponse(fullFetchResponse(tp0, buildRecords(1L, 1, 1), Errors.NONE, 100L, 0));
+        consumerClient.poll(time.timer(0));
+        fetchedRecords();
+        Node node = fetcher.selectReadReplica(tp0, subscriptions.position(tp0).currentLeader.leader, time.milliseconds());
+
+        AtomicBoolean wokenUp = new AtomicBoolean(false);
+        client.setWakeupHook(() -> {
+            if (!wokenUp.getAndSet(true)) {
+                consumerClient.disconnectAsync(node);
+                consumerClient.poll(time.timer(0));
+            }
+        });
+
+        assertEquals(1, fetcher.sendFetches());
+
+        consumerClient.disconnectAsync(node);
+        consumerClient.poll(time.timer(0));
+
+        assertEquals(1, fetcher.sendFetches());
     }
 
     private MockClient.RequestMatcher listOffsetRequestMatcher(final long timestamp) {

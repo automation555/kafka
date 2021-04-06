@@ -16,35 +16,38 @@
  */
 package org.apache.kafka.common.errors;
 
-import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.TopicPartition;
 
 /**
- *  Any exception during serialization in the producer or deserialization in the consumer
+ *  Any exception encountered on an invalid record (deserialization error, corrupt record, etc...)
  */
-public class SerializationException extends KafkaException {
+public class RecordDeserializationException extends SerializationException {
 
     private static final long serialVersionUID = 1L;
+    private TopicPartition partition;
+    private long offset;
 
-    public SerializationException(String message, Throwable cause) {
+    public RecordDeserializationException(TopicPartition partition, long offset, String message) {
+        this(partition, offset, message, null);
+    }
+
+    public RecordDeserializationException(TopicPartition partition, long offset, String message, Throwable cause) {
         super(message, cause);
+        this.partition = partition;
+        this.offset = offset;
     }
 
-    public SerializationException(String message) {
-        super(message);
+    public TopicPartition partition() {
+        return partition;
     }
 
-    public SerializationException(Throwable cause) {
-        super(cause);
+    public long offset() {
+        return offset;
     }
 
-    public SerializationException() {
-        super();
-    }
-
-    /* avoid the expensive and useless stack trace for serialization exceptions */
+    /* avoid the expensive and useless stack trace for deserialization exceptions */
     @Override
     public Throwable fillInStackTrace() {
         return this;
     }
-
 }

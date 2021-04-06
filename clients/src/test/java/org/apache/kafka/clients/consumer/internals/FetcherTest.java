@@ -112,6 +112,8 @@ import static org.junit.Assert.fail;
 public class FetcherTest {
     private ConsumerRebalanceListener listener = new NoOpConsumerRebalanceListener();
     private String topicName = "test";
+    private String groupId = "test-group";
+    private final String metricGroup = "consumer" + groupId + "-fetch-manager-metrics";
     private TopicPartition tp0 = new TopicPartition(topicName, 0);
     private TopicPartition tp1 = new TopicPartition(topicName, 1);
     private int minBytes = 1;
@@ -125,7 +127,7 @@ public class FetcherTest {
     private Cluster cluster = TestUtils.singletonCluster(topicName, 2);
     private Node node = cluster.nodes().get(0);
     private Metrics metrics = new Metrics(time);
-    private FetcherMetricsRegistry metricsRegistry = new FetcherMetricsRegistry(metrics);
+    FetcherMetricsRegistry metricsRegistry = new FetcherMetricsRegistry("consumer" + groupId);
 
     private SubscriptionState subscriptions = new SubscriptionState(OffsetResetStrategy.EARLIEST);
     private SubscriptionState subscriptionsNoAutoReset = new SubscriptionState(OffsetResetStrategy.NONE);
@@ -1124,7 +1126,7 @@ public class FetcherTest {
     @Test
     public void testQuotaMetrics() throws Exception {
         MockSelector selector = new MockSelector(time);
-        Sensor throttleTimeSensor = Fetcher.throttleTimeSensor(metricsRegistry);
+        Sensor throttleTimeSensor = Fetcher.throttleTimeSensor(metrics, metricsRegistry);
         Cluster cluster = TestUtils.singletonCluster("test", 1);
         Node node = cluster.nodes().get(0);
         NetworkClient client = new NetworkClient(selector, metadata, "mock", Integer.MAX_VALUE,
@@ -1151,8 +1153,8 @@ public class FetcherTest {
             selector.clear();
         }
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
-        KafkaMetric avgMetric = allMetrics.get(metricsRegistry.fetchThrottleTimeAvg);
-        KafkaMetric maxMetric = allMetrics.get(metricsRegistry.fetchThrottleTimeMax);
+        KafkaMetric avgMetric = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchThrottleTimeAvg));
+        KafkaMetric maxMetric = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchThrottleTimeMax));
         // Throttle times are ApiVersions=400, Fetch=(100, 200, 300)
         assertEquals(250, avgMetric.value(), EPSILON);
         assertEquals(400, maxMetric.value(), EPSILON);
@@ -1167,8 +1169,8 @@ public class FetcherTest {
         subscriptions.assignFromUser(singleton(tp0));
         subscriptions.seek(tp0, 0);
 
-        MetricName maxLagMetric = metricsRegistry.recordsLagMax;
-        MetricName partitionLagMetric = metricsRegistry.partitionRecordsLag(tp0 + ".records-lag");
+        MetricName maxLagMetric = metrics.metricInstance(metricsRegistry.recordsLagMax);
+        MetricName partitionLagMetric = metrics.metricName(tp0 + ".records-lag", metricGroup);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
         KafkaMetric recordsFetchLagMax = allMetrics.get(maxLagMetric);
@@ -1206,8 +1208,8 @@ public class FetcherTest {
         subscriptions.assignFromUser(singleton(tp0));
         subscriptions.seek(tp0, 0);
 
-        MetricName maxLagMetric = metricsRegistry.recordsLagMax;
-        MetricName partitionLagMetric = metricsRegistry.partitionRecordsLag(tp0 + ".records-lag");
+        MetricName maxLagMetric = metrics.metricInstance(metricsRegistry.recordsLagMax);
+        MetricName partitionLagMetric = metrics.metricName(tp0 + ".records-lag", metricGroup);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
         KafkaMetric recordsFetchLagMax = allMetrics.get(maxLagMetric);
@@ -1242,8 +1244,8 @@ public class FetcherTest {
         subscriptions.seek(tp0, 0);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
-        KafkaMetric fetchSizeAverage = allMetrics.get(metricsRegistry.fetchSizeAvg);
-        KafkaMetric recordsCountAverage = allMetrics.get(metricsRegistry.recordsPerRequestAvg);
+        KafkaMetric fetchSizeAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchSizeAvg));
+        KafkaMetric recordsCountAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.recordsPerRequestAvg));
 
         MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024), CompressionType.NONE,
                 TimestampType.CREATE_TIME, 0L);
@@ -1266,8 +1268,8 @@ public class FetcherTest {
         subscriptions.seek(tp0, 1);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
-        KafkaMetric fetchSizeAverage = allMetrics.get(metricsRegistry.fetchSizeAvg);
-        KafkaMetric recordsCountAverage = allMetrics.get(metricsRegistry.recordsPerRequestAvg);
+        KafkaMetric fetchSizeAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchSizeAvg));
+        KafkaMetric recordsCountAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.recordsPerRequestAvg));
 
         MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024), CompressionType.NONE,
                 TimestampType.CREATE_TIME, 0L);
@@ -1293,8 +1295,8 @@ public class FetcherTest {
         subscriptions.seek(tp1, 0);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
-        KafkaMetric fetchSizeAverage = allMetrics.get(metricsRegistry.fetchSizeAvg);
-        KafkaMetric recordsCountAverage = allMetrics.get(metricsRegistry.recordsPerRequestAvg);
+        KafkaMetric fetchSizeAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchSizeAvg));
+        KafkaMetric recordsCountAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.recordsPerRequestAvg));
 
         MemoryRecordsBuilder builder = MemoryRecords.builder(ByteBuffer.allocate(1024), CompressionType.NONE,
                 TimestampType.CREATE_TIME, 0L);
@@ -1328,8 +1330,8 @@ public class FetcherTest {
         subscriptions.seek(tp1, 0);
 
         Map<MetricName, KafkaMetric> allMetrics = metrics.metrics();
-        KafkaMetric fetchSizeAverage = allMetrics.get(metricsRegistry.fetchSizeAvg);
-        KafkaMetric recordsCountAverage = allMetrics.get(metricsRegistry.recordsPerRequestAvg);
+        KafkaMetric fetchSizeAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.fetchSizeAvg));
+        KafkaMetric recordsCountAverage = allMetrics.get(metrics.metricInstance(metricsRegistry.recordsPerRequestAvg));
 
         // send the fetch and then seek to a new offset
         assertEquals(1, fetcher.sendFetches());
@@ -1366,7 +1368,7 @@ public class FetcherTest {
         metrics.close();
         Map<String, String> clientTags = Collections.singletonMap("client-id", "clientA");
         metrics = new Metrics(new MetricConfig().tags(clientTags));
-        metricsRegistry = new FetcherMetricsRegistry(metrics);
+        metricsRegistry = new FetcherMetricsRegistry(clientTags.keySet(), "consumer" + groupId);
         fetcher.close();
         fetcher = createFetcher(subscriptions, metrics);
 
@@ -1381,7 +1383,7 @@ public class FetcherTest {
         assertTrue(partitionRecords.containsKey(tp0));
 
         // Create throttle metrics
-        Fetcher.throttleTimeSensor(metricsRegistry);
+        Fetcher.throttleTimeSensor(metrics, metricsRegistry);
 
         // Verify that all metrics except metrics-count have registered templates
         Set<MetricNameTemplate> allMetrics = new HashSet<>();
@@ -1390,7 +1392,7 @@ public class FetcherTest {
             if (!n.group().equals("kafka-metrics-count"))
                 allMetrics.add(new MetricNameTemplate(name, n.group(), "", n.tags().keySet()));
         }
-        TestUtils.checkEquals(allMetrics, new HashSet<>(metricsRegistry.allTemplates()), "metrics", "templates");
+        TestUtils.checkEquals(allMetrics, new HashSet<>(metricsRegistry.getAllTemplates()), "metrics", "templates");
     }
 
     private Map<TopicPartition, List<ConsumerRecord<byte[], byte[]>>> fetchRecords(
@@ -2043,7 +2045,8 @@ public class FetcherTest {
             }
         }
 
-        MetadataResponse.TopicMetadata topicMetadata = new MetadataResponse.TopicMetadata(error, topic, false, partitionsMetadata);
+        MetadataResponse.TopicMetadata topicMetadata = new MetadataResponse.TopicMetadata(error, topic, false,
+                MetadataResponse.UNKNOWN_TOPIC_MESSAGE_FORMAT_VERSION, MetadataResponse.UNKNOWN_TOPIC_MESSAGE_MAX_BYTES, partitionsMetadata);
         return new MetadataResponse(cluster.nodes(), null, MetadataResponse.NO_CONTROLLER_ID, Arrays.asList(topicMetadata));
     }
 
@@ -2085,7 +2088,8 @@ public class FetcherTest {
                 valueDeserializer,
                 metadata,
                 subscriptions,
-                new FetcherMetricsRegistry(metrics),
+                metrics,
+                metricsRegistry,
                 time,
                 retryBackoffMs,
                 isolationLevel);

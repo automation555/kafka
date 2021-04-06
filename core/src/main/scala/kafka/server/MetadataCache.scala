@@ -17,19 +17,19 @@
 
 package kafka.server
 
-import java.util.Collections
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
-import scala.collection.{Seq, Set, mutable}
+import scala.collection.{Seq, Set, mutable, Map}
 import scala.collection.JavaConverters._
 import kafka.cluster.{Broker, EndPoint}
 import kafka.api._
-import kafka.common.TopicAndPartition
+import kafka.common.{BrokerEndPointNotAvailableException, TopicAndPartition}
 import kafka.controller.StateChangeLogger
+import kafka.log.LogConfig
 import kafka.utils.CoreUtils._
 import kafka.utils.Logging
 import org.apache.kafka.common.internals.Topic
-import org.apache.kafka.common.{Cluster, Node, PartitionInfo, TopicPartition}
+import org.apache.kafka.common.{Node, TopicPartition}
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.Errors
 import org.apache.kafka.common.requests.{MetadataResponse, UpdateMetadataRequest}
@@ -38,16 +38,25 @@ import org.apache.kafka.common.requests.{MetadataResponse, UpdateMetadataRequest
  *  A cache for the state (e.g., current leader) of each partition. This cache is updated through
  *  UpdateMetadataRequest from the controller. Every broker maintains the same cache, asynchronously.
  */
-class MetadataCache(brokerId: Int) extends Logging {
+class MetadataCache(brokerId: Int, private val topicConfigs: Map[String, LogConfig]) extends Logging {
+
+  case class TopicInfo(messageFormatVersion: Byte, messageMaxBytes: Int)
 
   private val cache = mutable.Map[String, mutable.Map[Int, UpdateMetadataRequest.PartitionState]]()
-  @volatile private var controllerId: Option[Int] = None
+  private val topicCache = mutable.Map[String, TopicInfo]()
+  private var controllerId: Option[Int] = None
   private val aliveBrokers = mutable.Map[Int, Broker]()
   private val aliveNodes = mutable.Map[Int, collection.Map[ListenerName, Node]]()
   private val partitionMetadataLock = new ReentrantReadWriteLock()
 
   this.logIdent = s"[MetadataCache brokerId=$brokerId] "
   private val stateChangeLogger = new StateChangeLogger(brokerId, inControllerContext = false, None)
+
+  inWriteLock(partitionMetadataLock) {
+    topicConfigs.map { case (topic, config) =>
+      topicCache.put(topic, TopicInfo(config.messageFormatVersion.messageFormatVersion, config.maxMessageSize))
+    }
+  }
 
   // This method is the main hotspot when it comes to the performance of metadata requests,
   // we should be careful about adding additional logic here.
@@ -104,19 +113,19 @@ class MetadataCache(brokerId: Int) extends Logging {
     }
   }
 
-  private def getAliveEndpoint(brokerId: Int, listenerName: ListenerName): Option[Node] =
-    inReadLock(partitionMetadataLock) {
-      // Returns None if broker is not alive or if the broker does not have a listener named `listenerName`.
-      // Since listeners can be added dynamically, a broker with a missing listener could be a transient error.
-      aliveNodes.get(brokerId).flatMap(_.get(listenerName))
+  def getAliveEndpoint(brokerId: Int, listenerName: ListenerName): Option[Node] =
+    aliveNodes.get(brokerId).map { nodeMap =>
+      nodeMap.getOrElse(listenerName,
+        throw new BrokerEndPointNotAvailableException(s"Broker `$brokerId` does not have listener with name `$listenerName`"))
     }
 
   // errorUnavailableEndpoints exists to support v0 MetadataResponses
   def getTopicMetadata(topics: Set[String], listenerName: ListenerName, errorUnavailableEndpoints: Boolean = false): Seq[MetadataResponse.TopicMetadata] = {
     inReadLock(partitionMetadataLock) {
       topics.toSeq.flatMap { topic =>
+        val topicInfo = topicCache.getOrElse(topic, TopicInfo(MetadataResponse.UNKNOWN_TOPIC_MESSAGE_FORMAT_VERSION, MetadataResponse.UNKNOWN_TOPIC_MESSAGE_MAX_BYTES))
         getPartitionMetadata(topic, listenerName, errorUnavailableEndpoints).map { partitionMetadata =>
-          new MetadataResponse.TopicMetadata(Errors.NONE, topic, Topic.isInternal(topic), partitionMetadata.toBuffer.asJava)
+          new MetadataResponse.TopicMetadata(Errors.NONE, topic, Topic.isInternal(topic), topicInfo.messageFormatVersion, topicInfo.messageMaxBytes, partitionMetadata.toBuffer.asJava)
         }
       }
     }
@@ -125,14 +134,6 @@ class MetadataCache(brokerId: Int) extends Logging {
   def getAllTopics(): Set[String] = {
     inReadLock(partitionMetadataLock) {
       cache.keySet.toSet
-    }
-  }
-
-  def getAllPartitions(): Map[TopicPartition, UpdateMetadataRequest.PartitionState] = {
-    inReadLock(partitionMetadataLock) {
-      cache.flatMap { case (topic, partitionStates) =>
-        partitionStates.map { case (partition, state ) => (new TopicPartition(topic, partition), state) }
-      }.toMap
     }
   }
 
@@ -156,7 +157,7 @@ class MetadataCache(brokerId: Int) extends Logging {
 
   private def addOrUpdatePartitionInfo(topic: String,
                                        partitionId: Int,
-                                       stateInfo: UpdateMetadataRequest.PartitionState): Unit = {
+                                       stateInfo: UpdateMetadataRequest.PartitionState) {
     inWriteLock(partitionMetadataLock) {
       val infos = cache.getOrElseUpdate(topic, mutable.Map())
       infos(partitionId) = stateInfo
@@ -189,27 +190,6 @@ class MetadataCache(brokerId: Int) extends Logging {
 
   def getControllerId: Option[Int] = controllerId
 
-  def getClusterMetadata(clusterId: String, listenerName: ListenerName): Cluster = {
-    inReadLock(partitionMetadataLock) {
-      val nodes = aliveNodes.map { case (id, nodes) => (id, nodes.get(listenerName).orNull) }
-      def node(id: Integer): Node = nodes.get(id).orNull
-      val partitions = getAllPartitions()
-        .filter { case (_, state) => state.basePartitionState.leader != LeaderAndIsr.LeaderDuringDelete }
-        .map { case (tp, state) =>
-          new PartitionInfo(tp.topic, tp.partition, node(state.basePartitionState.leader),
-            state.basePartitionState.replicas.asScala.map(node).toArray,
-            state.basePartitionState.isr.asScala.map(node).toArray,
-            state.offlineReplicas.asScala.map(node).toArray)
-        }
-      val unauthorizedTopics = Collections.emptySet[String]
-      val internalTopics = getAllTopics().filter(Topic.isInternal).asJava
-      new Cluster(clusterId, nodes.values.filter(_ != null).toList.asJava,
-        partitions.toList.asJava,
-        unauthorizedTopics, internalTopics,
-        getControllerId.map(id => node(id)).orNull)
-    }
-  }
-
   // This method returns the deleted TopicPartitions received from UpdateMetadataRequest
   def updateCache(correlationId: Int, updateMetadataRequest: UpdateMetadataRequest): Seq[TopicPartition] = {
     inWriteLock(partitionMetadataLock) {
@@ -232,11 +212,6 @@ class MetadataCache(brokerId: Int) extends Logging {
         aliveBrokers(broker.id) = Broker(broker.id, endPoints, Option(broker.rack))
         aliveNodes(broker.id) = nodes.asScala
       }
-      aliveNodes.get(brokerId).foreach { listenerMap =>
-        val listeners = listenerMap.keySet
-        if (!aliveNodes.values.forall(_.keySet == listeners))
-          error(s"Listeners are not identical across brokers: $aliveNodes")
-      }
 
       val deletedPartitions = new mutable.ArrayBuffer[TopicPartition]
       updateMetadataRequest.partitionStates.asScala.foreach { case (tp, info) =>
@@ -257,6 +232,12 @@ class MetadataCache(brokerId: Int) extends Logging {
     }
   }
 
+  def updateTopicMetadata(topic: String, topicConfig: LogConfig) = {
+    inWriteLock(partitionMetadataLock) {
+      topicCache.put(topic, TopicInfo(topicConfig.messageFormatVersion.messageFormatVersion, topicConfig.maxMessageSize))
+    }
+  }
+
   def contains(topic: String): Boolean = {
     inReadLock(partitionMetadataLock) {
       cache.contains(topic)
@@ -268,7 +249,10 @@ class MetadataCache(brokerId: Int) extends Logging {
   private def removePartitionInfo(topic: String, partitionId: Int): Boolean = {
     cache.get(topic).exists { infos =>
       infos.remove(partitionId)
-      if (infos.isEmpty) cache.remove(topic)
+      if (infos.isEmpty) {
+        cache.remove(topic)
+        topicCache.remove(topic)
+      }
       true
     }
   }

@@ -21,7 +21,7 @@ import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
 import kafka.cluster.{Partition, Replica}
-import kafka.log.Log
+import kafka.log.{Log, LogConfig}
 import kafka.server.epoch.LeaderEpochCache
 import kafka.utils._
 import org.apache.kafka.common.TopicPartition
@@ -53,18 +53,19 @@ class IsrExpirationTest {
   var replicaManager: ReplicaManager = null
 
   @Before
-  def setUp(): Unit = {
+  def setUp() {
     val logManager = EasyMock.createMock(classOf[kafka.log.LogManager])
     EasyMock.expect(logManager.liveLogDirs).andReturn(Array.empty[File]).anyTimes()
+    EasyMock.expect(logManager.topicConfigs).andReturn(Map.empty[String, LogConfig]).anyTimes()
     EasyMock.replay(logManager)
 
     replicaManager = new ReplicaManager(configs.head, metrics, time, null, null, logManager, new AtomicBoolean(false),
-      QuotaFactory.instantiate(configs.head, metrics, time, ""), new BrokerTopicStats, new MetadataCache(configs.head.brokerId),
+      QuotaFactory.instantiate(configs.head, metrics, time).follower, new BrokerTopicStats, new MetadataCache(configs.head.brokerId, logManager.topicConfigs),
       new LogDirFailureChannel(configs.head.logDirs.size))
   }
 
   @After
-  def tearDown(): Unit = {
+  def tearDown() {
     replicaManager.shutdown(false)
     metrics.close()
   }
@@ -73,7 +74,7 @@ class IsrExpirationTest {
    * Test the case where a follower is caught up but stops making requests to the leader. Once beyond the configured time limit, it should fall out of ISR
    */
   @Test
-  def testIsrExpirationForStuckFollowers(): Unit = {
+  def testIsrExpirationForStuckFollowers() {
     val log = logMock
 
     // create one partition and all replicas
@@ -107,7 +108,7 @@ class IsrExpirationTest {
    * Test the case where a follower never makes a fetch request. It should fall out of ISR because it will be declared stuck
    */
   @Test
-  def testIsrExpirationIfNoFetchRequestMade(): Unit = {
+  def testIsrExpirationIfNoFetchRequestMade() {
     val log = logMock
 
     // create one partition and all replicas
@@ -128,7 +129,7 @@ class IsrExpirationTest {
    * However, any time it makes a request to the LogEndOffset it should be back in the ISR
    */
   @Test
-  def testIsrExpirationForSlowFollowers(): Unit = {
+  def testIsrExpirationForSlowFollowers() {
     // create leader replica
     val log = logMock
     // add one partition

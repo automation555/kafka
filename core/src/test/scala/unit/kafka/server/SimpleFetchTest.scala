@@ -21,9 +21,8 @@ import java.io.File
 import kafka.api._
 import kafka.utils._
 import kafka.cluster.Replica
-import kafka.log.Log
+import kafka.log.{Log, LogConfig}
 import kafka.server.QuotaFactory.UnboundedQuota
-import kafka.zk.KafkaZkClient
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
 import org.junit.{After, Before, Test}
@@ -68,10 +67,10 @@ class SimpleFetchTest {
   var replicaManager: ReplicaManager = _
 
   @Before
-  def setUp(): Unit = {
+  def setUp() {
     // create nice mock since we don't particularly care about zkclient calls
-    val kafkaZkClient = EasyMock.createNiceMock(classOf[KafkaZkClient])
-    EasyMock.replay(kafkaZkClient)
+    val zkUtils = EasyMock.createNiceMock(classOf[ZkUtils])
+    EasyMock.replay(zkUtils)
 
     // create nice mock since we don't particularly care about scheduler calls
     val scheduler = EasyMock.createNiceMock(classOf[KafkaScheduler])
@@ -107,14 +106,15 @@ class SimpleFetchTest {
 
     // create the log manager that is aware of this mock log
     val logManager = EasyMock.createMock(classOf[kafka.log.LogManager])
-    EasyMock.expect(logManager.getLog(topicPartition, false)).andReturn(Some(log)).anyTimes()
+    EasyMock.expect(logManager.getLog(topicPartition)).andReturn(Some(log)).anyTimes()
     EasyMock.expect(logManager.liveLogDirs).andReturn(Array.empty[File]).anyTimes()
+    EasyMock.expect(logManager.topicConfigs).andReturn(Map.empty[String, LogConfig]).anyTimes()
     EasyMock.replay(logManager)
 
     // create the replica manager
-    replicaManager = new ReplicaManager(configs.head, metrics, time, kafkaZkClient, scheduler, logManager,
-      new AtomicBoolean(false), QuotaFactory.instantiate(configs.head, metrics, time, ""), new BrokerTopicStats,
-      new MetadataCache(configs.head.brokerId), new LogDirFailureChannel(configs.head.logDirs.size))
+    replicaManager = new ReplicaManager(configs.head, metrics, time, zkUtils, scheduler, logManager,
+      new AtomicBoolean(false), QuotaFactory.instantiate(configs.head, metrics, time).follower, new BrokerTopicStats,
+      new MetadataCache(configs.head.brokerId, logManager.topicConfigs), new LogDirFailureChannel(configs.head.logDirs.size))
 
     // add the partition with two replicas, both in ISR
     val partition = replicaManager.getOrCreatePartition(new TopicPartition(topic, partitionId))
@@ -143,7 +143,7 @@ class SimpleFetchTest {
   }
 
   @After
-  def tearDown(): Unit = {
+  def tearDown() {
     replicaManager.shutdown(false)
     metrics.close()
   }
@@ -165,7 +165,7 @@ class SimpleFetchTest {
    * This test also verifies counts of fetch requests recorded by the ReplicaManager
    */
   @Test
-  def testReadFromLog(): Unit = {
+  def testReadFromLog() {
     val brokerTopicStats = new BrokerTopicStats
     val initialTopicCount = brokerTopicStats.topicStats(topic).totalFetchRequestRate.count()
     val initialAllTopicsCount = brokerTopicStats.allTopicsStats.totalFetchRequestRate.count()

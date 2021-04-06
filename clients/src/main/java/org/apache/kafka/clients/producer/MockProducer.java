@@ -229,7 +229,7 @@ public class MockProducer<K, V> implements Producer<K, V> {
 
     /**
      * Adds the record to the list of sent records. The {@link RecordMetadata} returned will be immediately satisfied.
-     *
+     * 
      * @see #history()
      */
     @Override
@@ -255,11 +255,11 @@ public class MockProducer<K, V> implements Producer<K, V> {
             partition = partition(record, this.cluster);
         TopicPartition topicPartition = new TopicPartition(record.topic(), partition);
         ProduceRequestResult result = new ProduceRequestResult(topicPartition);
-        FutureRecordMetadata future = new FutureRecordMetadata(result, 0, RecordBatch.NO_TIMESTAMP,
+        FutureRecordMetadata future = new FutureRecordMetadata(result, 0, (record.timestamp() == null || record.timestamp() == 0) ? RecordBatch.NO_TIMESTAMP : record.timestamp(),
                 0L, 0, 0, Time.SYSTEM);
         long offset = nextOffset(topicPartition);
         Completion completion = new Completion(offset, new RecordMetadata(topicPartition, 0, offset,
-                RecordBatch.NO_TIMESTAMP, Long.valueOf(0L), 0, 0), result, callback);
+                (record.timestamp() == null || record.timestamp() == 0) ? RecordBatch.NO_TIMESTAMP : record.timestamp(), Long.valueOf(0L), 0, 0), result, callback);
 
         if (!this.transactionInFlight)
             this.sent.add(record);
@@ -289,14 +289,10 @@ public class MockProducer<K, V> implements Producer<K, V> {
         }
     }
 
-    public synchronized void flush(Duration timeout) {
+    public synchronized void flush() {
         verifyProducerState();
         while (!this.completions.isEmpty())
             completeNext();
-    }
-
-    public synchronized void flush() {
-        flush(Duration.ofMillis(Long.MAX_VALUE));
     }
 
     public List<PartitionInfo> partitionsFor(String topic) {

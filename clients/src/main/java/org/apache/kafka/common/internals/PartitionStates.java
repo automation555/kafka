@@ -19,14 +19,13 @@ package org.apache.kafka.common.internals;
 import org.apache.kafka.common.TopicPartition;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.BiConsumer;
+import java.util.stream.Stream;
 
 /**
  * This class is a useful building block for doing fetch requests where topic partitions have to be rotated via
@@ -45,7 +44,6 @@ import java.util.function.BiConsumer;
 public class PartitionStates<S> {
 
     private final LinkedHashMap<TopicPartition, S> map = new LinkedHashMap<>();
-    private final Set<TopicPartition> partitionSetView = Collections.unmodifiableSet(map.keySet());
 
     /* the number of partitions that are currently assigned available in a thread safe manner */
     private volatile int size = 0;
@@ -70,11 +68,10 @@ public class PartitionStates<S> {
     }
 
     /**
-     * Returns an unmodifiable view of the partitions in random order.
-     * changes to this PartitionStates instance will be reflected in this view.
+     * Returns the partitions in random order.
      */
     public Set<TopicPartition> partitionSet() {
-        return partitionSetView;
+        return new HashSet<>(map.keySet());
     }
 
     public void clear() {
@@ -86,16 +83,19 @@ public class PartitionStates<S> {
         return map.containsKey(topicPartition);
     }
 
-    public Iterator<S> stateIterator() {
-        return map.values().iterator();
+    /**
+     * Returns the partition states in order.
+     */
+    public List<PartitionState<S>> partitionStates() {
+        List<PartitionState<S>> result = new ArrayList<>();
+        for (Map.Entry<TopicPartition, S> entry : map.entrySet()) {
+            result.add(new PartitionState<>(entry.getKey(), entry.getValue()));
+        }
+        return result;
     }
 
-    public void forEach(BiConsumer<TopicPartition, S> biConsumer) {
-        map.forEach(biConsumer);
-    }
-
-    public Map<TopicPartition, S> partitionStateMap() {
-        return Collections.unmodifiableMap(map);
+    public Stream<PartitionState<S>> stream() {
+        return map.entrySet().stream().map(entry -> new PartitionState<>(entry.getKey(), entry.getValue()));
     }
 
     /**
@@ -135,7 +135,11 @@ public class PartitionStates<S> {
     private void update(Map<TopicPartition, S> partitionToState) {
         LinkedHashMap<String, List<TopicPartition>> topicToPartitions = new LinkedHashMap<>();
         for (TopicPartition tp : partitionToState.keySet()) {
-            List<TopicPartition> partitions = topicToPartitions.computeIfAbsent(tp.topic(), k -> new ArrayList<>());
+            List<TopicPartition> partitions = topicToPartitions.get(tp.topic());
+            if (partitions == null) {
+                partitions = new ArrayList<>();
+                topicToPartitions.put(tp.topic(), partitions);
+            }
             partitions.add(tp);
         }
         for (Map.Entry<String, List<TopicPartition>> entry : topicToPartitions.entrySet()) {

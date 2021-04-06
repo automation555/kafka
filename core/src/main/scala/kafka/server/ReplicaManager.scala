@@ -17,7 +17,6 @@
 package kafka.server
 
 import java.io.File
-import java.util.Optional
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
 import java.util.concurrent.locks.Lock
@@ -26,26 +25,26 @@ import com.yammer.metrics.core.Gauge
 import kafka.api._
 import kafka.cluster.{BrokerEndPoint, Partition, Replica}
 import kafka.controller.{KafkaController, StateChangeLogger}
-import kafka.log._
+import kafka.log.{Log, LogAppendInfo, LogConfig, LogManager}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.QuotaFactory.{QuotaManagers, UnboundedQuota}
 import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.utils._
 import kafka.zk.KafkaZkClient
-import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors._
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.metrics.Metrics
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.FileRecords.TimestampAndOffset
+import org.apache.kafka.common.protocol.Errors.{KAFKA_STORAGE_ERROR, UNKNOWN_TOPIC_OR_PARTITION}
 import org.apache.kafka.common.record._
+import org.apache.kafka.common.requests.FetchResponse.AbortedTransaction
 import org.apache.kafka.common.requests.DescribeLogDirsResponse.{LogDirInfo, ReplicaInfo}
 import org.apache.kafka.common.requests.EpochEndOffset._
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
-import org.apache.kafka.common.requests.FetchResponse.AbortedTransaction
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.apache.kafka.common.requests._
 import org.apache.kafka.common.utils.Time
+import org.apache.kafka.common.TopicPartition
 
 import scala.collection.JavaConverters._
 import scala.collection._
@@ -96,7 +95,7 @@ case class LogReadResult(info: FetchDataInfo,
 
   override def toString =
     s"Fetch Data: [$info], HW: [$highWatermark], leaderLogStartOffset: [$leaderLogStartOffset], leaderLogEndOffset: [$leaderLogEndOffset], " +
-    s"followerLogStartOffset: [$followerLogStartOffset], fetchTimeMs: [$fetchTimeMs], readSize: [$readSize], lastStableOffset: [$lastStableOffset], error: [$error]"
+    s"followerLogStartOffset: [$followerLogStartOffset], fetchTimeMs: [$fetchTimeMs], readSize: [$readSize], error: [$error]"
 
 }
 
@@ -122,15 +121,7 @@ object ReplicaManager {
   val HighWatermarkFilename = "replication-offset-checkpoint"
   val IsrChangePropagationBlackOut = 5000L
   val IsrChangePropagationInterval = 60000L
-  val OfflinePartition: Partition = new Partition(new TopicPartition("", -1),
-    isOffline = true,
-    replicaLagTimeMaxMs = 0L,
-    interBrokerProtocolVersion = ApiVersion.latestVersion,
-    localBrokerId = -1,
-    time = null,
-    replicaManager = null,
-    logManager = null,
-    zkClient = null)
+  val OfflinePartition = new Partition("", -1, null, null, isOffline = true)
 }
 
 class ReplicaManager(val config: KafkaConfig,
@@ -147,7 +138,6 @@ class ReplicaManager(val config: KafkaConfig,
                      val delayedProducePurgatory: DelayedOperationPurgatory[DelayedProduce],
                      val delayedFetchPurgatory: DelayedOperationPurgatory[DelayedFetch],
                      val delayedDeleteRecordsPurgatory: DelayedOperationPurgatory[DelayedDeleteRecords],
-                     val delayedElectPreferredLeaderPurgatory: DelayedOperationPurgatory[DelayedElectPreferredLeader],
                      threadNamePrefix: Option[String]) extends Logging with KafkaMetricsGroup {
 
   def this(config: KafkaConfig,
@@ -173,16 +163,14 @@ class ReplicaManager(val config: KafkaConfig,
       DelayedOperationPurgatory[DelayedDeleteRecords](
         purgatoryName = "DeleteRecords", brokerId = config.brokerId,
         purgeInterval = config.deleteRecordsPurgatoryPurgeIntervalRequests),
-      DelayedOperationPurgatory[DelayedElectPreferredLeader](
-        purgatoryName = "ElectPreferredLeader", brokerId = config.brokerId),
       threadNamePrefix)
   }
 
   /* epoch of the controller that last changed the leader */
-  @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch
+  @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch - 1
   private val localBrokerId = config.brokerId
   private val allPartitions = new Pool[TopicPartition, Partition](valueFactory = Some(tp =>
-    Partition(tp, time, this)))
+    new Partition(tp.topic, tp.partition, time, this)))
   private val replicaStateChangeLock = new Object
   val replicaFetcherManager = createReplicaFetcherManager(metrics, time, threadNamePrefix, quotaManagers.follower)
   val replicaAlterLogDirsManager = createReplicaAlterLogDirsManager(quotaManagers.alterLogDirs, brokerTopicStats)
@@ -322,13 +310,6 @@ class ReplicaManager(val config: KafkaConfig,
     debug("Request key %s unblocked %d DeleteRecordsRequest.".format(key.keyLabel, completed))
   }
 
-  def hasDelayedElectionOperations = delayedElectPreferredLeaderPurgatory.delayed != 0
-
-  def tryCompleteElection(key: DelayedOperationKey): Unit = {
-    val completed = delayedElectPreferredLeaderPurgatory.checkAndComplete(key)
-    debug("Request key %s unblocked %d ElectPreferredLeader.".format(key.keyLabel, completed))
-  }
-
   def startup() {
     // start ISR expiration thread
     // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
@@ -377,7 +358,7 @@ class ReplicaManager(val config: KafkaConfig,
   def stopReplicas(stopReplicaRequest: StopReplicaRequest): (mutable.Map[TopicPartition, Errors], Errors) = {
     replicaStateChangeLock synchronized {
       val responseMap = new collection.mutable.HashMap[TopicPartition, Errors]
-      if (stopReplicaRequest.controllerEpoch() < controllerEpoch) {
+      if(stopReplicaRequest.controllerEpoch() < controllerEpoch) {
         stateChangeLogger.warn("Received stop replica request from an old controller epoch " +
           s"${stopReplicaRequest.controllerEpoch}. Latest known controller epoch is $controllerEpoch")
         (responseMap, Errors.STALE_CONTROLLER_EPOCH)
@@ -412,59 +393,66 @@ class ReplicaManager(val config: KafkaConfig,
   def nonOfflinePartition(topicPartition: TopicPartition): Option[Partition] =
     getPartition(topicPartition).filter(_ ne ReplicaManager.OfflinePartition)
 
-  // An iterator over all non offline partitions. This is a weakly consistent iterator; a partition made offline after
-  // the iterator has been constructed could still be returned by this iterator.
   private def nonOfflinePartitionsIterator: Iterator[Partition] =
     allPartitions.values.iterator.filter(_ ne ReplicaManager.OfflinePartition)
 
-  // An iterator over all offline partitions. This is a weakly consistent iterator; a partition made offline after the
-  // iterator has been constructed may not be visible.
   private def offlinePartitionsIterator: Iterator[Partition] =
     allPartitions.values.iterator.filter(_ eq ReplicaManager.OfflinePartition)
 
-
-  def getPartitionOrException(topicPartition: TopicPartition, expectLeader: Boolean): Partition = {
+  def getReplicaOrException(topicPartition: TopicPartition, brokerId: Int): Replica = {
     getPartition(topicPartition) match {
       case Some(partition) =>
         if (partition eq ReplicaManager.OfflinePartition)
-          throw new KafkaStorageException(s"Partition $topicPartition is in an offline log directory")
+          throw new KafkaStorageException(s"Replica $brokerId is in an offline log directory for partition $topicPartition")
         else
-          partition
-
-      case None if metadataCache.contains(topicPartition) =>
-        if (expectLeader) {
-          // The topic exists, but this broker is no longer a replica of it, so we return NOT_LEADER which
-          // forces clients to refresh metadata to find the new location. This can happen, for example,
-          // during a partition reassignment if a produce request from the client is sent to a broker after
-          // the local replica has been deleted.
-          throw new NotLeaderForPartitionException(s"Broker $localBrokerId is not a replica of $topicPartition")
-        } else {
-          throw new ReplicaNotAvailableException(s"Partition $topicPartition is not available")
-        }
-
+          partition.getReplica(brokerId).getOrElse(
+            throw new ReplicaNotAvailableException(s"Replica $brokerId is not available for partition $topicPartition"))
       case None =>
-        throw new UnknownTopicOrPartitionException(s"Partition $topicPartition doesn't exist")
+        throw new ReplicaNotAvailableException(s"Replica $brokerId is not available for partition $topicPartition")
     }
   }
 
-  def localReplicaOrException(topicPartition: TopicPartition): Replica = {
-    getPartitionOrException(topicPartition, expectLeader = false).localReplicaOrException
+  def getReplicaOrException(topicPartition: TopicPartition): Replica = getReplicaOrException(topicPartition, localBrokerId)
+
+  def getLeaderReplicaIfLocal(topicPartition: TopicPartition): Replica =  {
+    val (_, replica) = getPartitionAndLeaderReplicaIfLocal(topicPartition)
+    replica
   }
 
-  def futureLocalReplicaOrException(topicPartition: TopicPartition): Replica = {
-    getPartitionOrException(topicPartition, expectLeader = false).futureLocalReplicaOrException
+  def getPartitionAndLeaderReplicaIfLocal(topicPartition: TopicPartition): (Partition, Replica) =  {
+    val partitionOpt = getPartition(topicPartition)
+    partitionOpt match {
+      case None if metadataCache.contains(topicPartition) =>
+        // The topic exists, but this broker is no longer a replica of it, so we return NOT_LEADER which
+        // forces clients to refresh metadata to find the new location. This can happen, for example,
+        // during a partition reassignment if a produce request from the client is sent to a broker after
+        // the local replica has been deleted.
+        throw new NotLeaderForPartitionException(s"Broker $localBrokerId is not a replica of $topicPartition")
+
+      case None =>
+        throw new UnknownTopicOrPartitionException(s"Partition $topicPartition doesn't exist")
+
+      case Some(partition) =>
+        if (partition eq ReplicaManager.OfflinePartition)
+          throw new KafkaStorageException(s"Partition $topicPartition is in an offline log directory on broker $localBrokerId")
+        else partition.leaderReplicaIfLocal match {
+          case Some(leaderReplica) => (partition, leaderReplica)
+          case None =>
+            throw new NotLeaderForPartitionException(s"Leader not local for partition $topicPartition on broker $localBrokerId")
+        }
+    }
   }
 
-  def futureLocalReplica(topicPartition: TopicPartition): Option[Replica] = {
-    nonOfflinePartition(topicPartition).flatMap(_.futureLocalReplica)
-  }
+  def getReplica(topicPartition: TopicPartition, replicaId: Int): Option[Replica] =
+    nonOfflinePartition(topicPartition).flatMap(_.getReplica(replicaId))
 
-  def localReplica(topicPartition: TopicPartition): Option[Replica] = {
-    nonOfflinePartition(topicPartition).flatMap(_.localReplica)
-  }
+  def getReplica(tp: TopicPartition): Option[Replica] = getReplica(tp, localBrokerId)
 
   def getLogDir(topicPartition: TopicPartition): Option[String] = {
-    localReplica(topicPartition).flatMap(_.log).map(_.dir.getParent)
+    getReplica(topicPartition).flatMap(_.log) match {
+      case Some(log) => Some(log.dir.getParent)
+      case None => None
+    }
   }
 
   /**
@@ -536,9 +524,17 @@ class ReplicaManager(val config: KafkaConfig,
         (topicPartition, LogDeleteRecordsResult(-1L, -1L, Some(new InvalidTopicException(s"Cannot delete records of internal topic ${topicPartition.topic}"))))
       } else {
         try {
-          val partition = getPartitionOrException(topicPartition, expectLeader = true)
-          val logDeleteResult = partition.deleteRecordsOnLeader(requestedOffset)
-          (topicPartition, logDeleteResult)
+          val (partition, replica) = getPartitionAndLeaderReplicaIfLocal(topicPartition)
+          val convertedOffset =
+            if (requestedOffset == DeleteRecordsRequest.HIGH_WATERMARK) {
+              replica.highWatermark.messageOffset
+            } else
+              requestedOffset
+          if (convertedOffset < 0)
+            throw new OffsetOutOfRangeException(s"The offset $convertedOffset for partition $topicPartition is not valid")
+
+          val lowWatermark = partition.deleteRecordsOnLeader(convertedOffset)
+          (topicPartition, LogDeleteRecordsResult(convertedOffset, lowWatermark))
         } catch {
           case e@ (_: UnknownTopicOrPartitionException |
                    _: NotLeaderForPartitionException |
@@ -565,10 +561,11 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
-  /**
+  /*
    * For each pair of partition and log directory specified in the map, if the partition has already been created on
    * this broker, move its log files to the specified log directory. Otherwise, record the pair in the memory so that
    * the partition will be created in the specified log directory when broker receives LeaderAndIsrRequest for the partition later.
+   *
    */
   def alterReplicaLogDirs(partitionDirs: Map[TopicPartition, String]): Map[TopicPartition, Errors] = {
     replicaStateChangeLock synchronized {
@@ -577,15 +574,18 @@ class ReplicaManager(val config: KafkaConfig,
           if (!logManager.isLogDirOnline(destinationDir))
             throw new KafkaStorageException(s"Log directory $destinationDir is offline")
 
-          getPartition(topicPartition).foreach { partition =>
-            if (partition eq ReplicaManager.OfflinePartition)
-              throw new KafkaStorageException(s"Partition $topicPartition is offline")
+          getPartition(topicPartition) match {
+            case Some(partition) =>
+              if (partition eq ReplicaManager.OfflinePartition)
+                throw new KafkaStorageException(s"Partition $topicPartition is offline")
 
-            // Stop current replica movement if the destinationDir is different from the existing destination log directory
-            if (partition.futureReplicaDirChanged(destinationDir)) {
-              replicaAlterLogDirsManager.removeFetcherForPartitions(Set(topicPartition))
-              partition.removeFutureLocalReplica()
-            }
+              // Stop current replica movement if the destinationDir is different from the existing destination log directory
+              if (partition.futureReplicaDirChanged(destinationDir)) {
+                replicaAlterLogDirsManager.removeFetcherForPartitions(Set(topicPartition))
+                partition.removeFutureLocalReplica()
+              }
+
+            case None =>
           }
 
           // If the log for this partition has not been created yet:
@@ -593,23 +593,20 @@ class ReplicaManager(val config: KafkaConfig,
           //    when broker receives LeaderAndIsrRequest for this partition later.
           // 2) Respond with ReplicaNotAvailableException for this partition in the AlterReplicaLogDirsResponse
           logManager.maybeUpdatePreferredLogDir(topicPartition, destinationDir)
-
           // throw ReplicaNotAvailableException if replica does not exit for the given partition
-          val partition = getPartitionOrException(topicPartition, expectLeader = false)
-          partition.localReplicaOrException
+          getReplicaOrException(topicPartition)
 
           // If the destinationLDir is different from the current log directory of the replica:
           // - If there is no offline log directory, create the future log in the destinationDir (if it does not exist) and
           //   start ReplicaAlterDirThread to move data of this partition from the current log to the future log
           // - Otherwise, return KafkaStorageException. We do not create the future log while there is offline log directory
           //   so that we can avoid creating future log for the same partition in multiple log directories.
+          val partition = getPartition(topicPartition).get
           if (partition.maybeCreateFutureReplica(destinationDir)) {
-            val futureReplica = futureLocalReplicaOrException(topicPartition)
+            val futureReplica = getReplicaOrException(topicPartition, Request.FutureLocalReplicaId)
             logManager.abortAndPauseCleaning(topicPartition)
-
-            val initialFetchState = InitialFetchState(BrokerEndPoint(config.brokerId, "localhost", -1),
-              partition.getLeaderEpoch, futureReplica.highWatermark.messageOffset)
-            replicaAlterLogDirsManager.addFetcherForPartitions(Map(topicPartition -> initialFetchState))
+            replicaAlterLogDirsManager.addFetcherForPartitions(Map(topicPartition -> InitialFetchState(
+              BrokerEndPoint(config.brokerId, "localhost", -1), partition.getLeaderEpoch, futureReplica.highWatermark.messageOffset)))
           }
 
           (topicPartition, Errors.NONE)
@@ -667,10 +664,10 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def getLogEndOffsetLag(topicPartition: TopicPartition, logEndOffset: Long, isFuture: Boolean): Long = {
-    localReplica(topicPartition) match {
+    getReplica(topicPartition) match {
       case Some(replica) =>
         if (isFuture)
-          replica.logEndOffset - logEndOffset
+          replica.logEndOffset.messageOffset - logEndOffset
         else
           math.max(replica.highWatermark.messageOffset - logEndOffset, 0)
       case None =>
@@ -747,7 +744,7 @@ class ReplicaManager(val config: KafkaConfig,
           Some(new InvalidTopicException(s"Cannot append to internal topic ${topicPartition.topic}"))))
       } else {
         try {
-          val partition = getPartitionOrException(topicPartition, expectLeader = true)
+          val (partition, _) = getPartitionAndLeaderReplicaIfLocal(topicPartition)
           val info = partition.appendRecordsToLeader(records, isFromClient, requiredAcks)
           val numAppendedMessages = info.numMessages
 
@@ -757,7 +754,7 @@ class ReplicaManager(val config: KafkaConfig,
           brokerTopicStats.topicStats(topicPartition.topic).messagesInRate.mark(numAppendedMessages)
           brokerTopicStats.allTopicsStats.messagesInRate.mark(numAppendedMessages)
 
-          trace(s"${records.sizeInBytes} written to log $topicPartition beginning at offset " +
+          trace(s"${records.sizeInBytes} written to log ${topicPartition} beginning at offset " +
             s"${info.firstOffset.getOrElse(-1)} and ending at offset ${info.lastOffset}")
           (topicPartition, LogAppendResult(info))
         } catch {
@@ -780,29 +777,11 @@ class ReplicaManager(val config: KafkaConfig,
             }
             brokerTopicStats.topicStats(topicPartition.topic).failedProduceRequestRate.mark()
             brokerTopicStats.allTopicsStats.failedProduceRequestRate.mark()
-            error(s"Error processing append operation on partition $topicPartition", t)
+            error("Error processing append operation on partition %s".format(topicPartition), t)
             (topicPartition, LogAppendResult(LogAppendInfo.unknownLogAppendInfoWithLogStartOffset(logStartOffset), Some(t)))
         }
       }
     }
-  }
-
-  def fetchOffsetForTimestamp(topicPartition: TopicPartition,
-                              timestamp: Long,
-                              isolationLevel: Option[IsolationLevel],
-                              currentLeaderEpoch: Optional[Integer],
-                              fetchOnlyFromLeader: Boolean): Option[TimestampAndOffset] = {
-    val partition = getPartitionOrException(topicPartition, expectLeader = fetchOnlyFromLeader)
-    partition.fetchOffsetForTimestamp(timestamp, isolationLevel, currentLeaderEpoch, fetchOnlyFromLeader)
-  }
-
-  def legacyFetchOffsetsForTimestamp(topicPartition: TopicPartition,
-                                     timestamp: Long,
-                                     maxNumOffsets: Int,
-                                     isFromConsumer: Boolean,
-                                     fetchOnlyFromLeader: Boolean): Seq[Long] = {
-    val partition = getPartitionOrException(topicPartition, expectLeader = fetchOnlyFromLeader)
-    partition.legacyFetchOffsetsForTimestamp(timestamp, maxNumOffsets, isFromConsumer, fetchOnlyFromLeader)
   }
 
   /**
@@ -820,24 +799,18 @@ class ReplicaManager(val config: KafkaConfig,
                     isolationLevel: IsolationLevel) {
     val isFromFollower = Request.isValidBrokerId(replicaId)
     val fetchOnlyFromLeader = replicaId != Request.DebuggingConsumerId && replicaId != Request.FutureLocalReplicaId
-
-    val fetchIsolation = if (isFromFollower || replicaId == Request.FutureLocalReplicaId)
-      FetchLogEnd
-    else if (isolationLevel == IsolationLevel.READ_COMMITTED)
-      FetchTxnCommitted
-    else
-      FetchHighWatermark
-
+    val fetchOnlyCommitted = !isFromFollower && replicaId != Request.FutureLocalReplicaId
 
     def readFromLog(): Seq[(TopicPartition, LogReadResult)] = {
       val result = readFromLocalLog(
         replicaId = replicaId,
         fetchOnlyFromLeader = fetchOnlyFromLeader,
-        fetchIsolation = fetchIsolation,
+        readOnlyCommitted = fetchOnlyCommitted,
         fetchMaxBytes = fetchMaxBytes,
         hardMaxBytesLimit = hardMaxBytesLimit,
         readPartitionInfo = fetchInfos,
-        quota = quota)
+        quota = quota,
+        isolationLevel = isolationLevel)
       if (isFromFollower) updateFollowerLogReadResults(replicaId, result)
       else result
     }
@@ -845,15 +818,10 @@ class ReplicaManager(val config: KafkaConfig,
     val logReadResults = readFromLog()
 
     // check if this fetch request can be satisfied right away
-    var bytesReadable: Long = 0
-    var errorReadingData = false
-    val logReadResultMap = new mutable.HashMap[TopicPartition, LogReadResult]
-    logReadResults.foreach { case (topicPartition, logReadResult) =>
-      if (logReadResult.error != Errors.NONE)
-        errorReadingData = true
-      bytesReadable = bytesReadable + logReadResult.info.records.sizeInBytes
-      logReadResultMap.put(topicPartition, logReadResult)
-    }
+    val logReadResultValues = logReadResults.map { case (_, v) => v }
+    val bytesReadable = logReadResultValues.map(_.info.records.sizeInBytes).sum
+    val errorReadingData = logReadResultValues.foldLeft(false) ((errorIncurred, readResult) =>
+      errorIncurred || (readResult.error != Errors.NONE))
 
     // respond immediately if 1) fetch request does not want to wait
     //                        2) fetch request does not require any data
@@ -867,16 +835,15 @@ class ReplicaManager(val config: KafkaConfig,
       responseCallback(fetchPartitionData)
     } else {
       // construct the fetch results from the read results
-      val fetchPartitionStatus = new mutable.ArrayBuffer[(TopicPartition, FetchPartitionStatus)]
-      fetchInfos.foreach { case (topicPartition, partitionData) =>
-        logReadResultMap.get(topicPartition).foreach(logReadResult => {
-          val logOffsetMetadata = logReadResult.info.fetchOffsetMetadata
-          fetchPartitionStatus += (topicPartition -> FetchPartitionStatus(logOffsetMetadata, partitionData))
-        })
+      val fetchPartitionStatus = logReadResults.map { case (topicPartition, result) =>
+        val fetchInfo = fetchInfos.collectFirst {
+          case (tp, v) if tp == topicPartition => v
+        }.getOrElse(sys.error(s"Partition $topicPartition not found in fetchInfos"))
+        (topicPartition, FetchPartitionStatus(result.info.fetchOffsetMetadata, fetchInfo))
       }
       val fetchMetadata = FetchMetadata(fetchMinBytes, fetchMaxBytes, hardMaxBytesLimit, fetchOnlyFromLeader,
-        fetchIsolation, isFromFollower, replicaId, fetchPartitionStatus)
-      val delayedFetch = new DelayedFetch(timeout, fetchMetadata, this, quota, responseCallback)
+        fetchOnlyCommitted, isFromFollower, replicaId, fetchPartitionStatus)
+      val delayedFetch = new DelayedFetch(timeout, fetchMetadata, this, quota, isolationLevel, responseCallback)
 
       // create a list of (topic, partition) pairs to use as keys for this delayed fetch operation
       val delayedFetchKeys = fetchPartitionStatus.map { case (tp, _) => new TopicPartitionOperationKey(tp) }
@@ -893,11 +860,12 @@ class ReplicaManager(val config: KafkaConfig,
    */
   def readFromLocalLog(replicaId: Int,
                        fetchOnlyFromLeader: Boolean,
-                       fetchIsolation: FetchIsolation,
+                       readOnlyCommitted: Boolean,
                        fetchMaxBytes: Int,
                        hardMaxBytesLimit: Boolean,
                        readPartitionInfo: Seq[(TopicPartition, PartitionData)],
-                       quota: ReplicaQuota): Seq[(TopicPartition, LogReadResult)] = {
+                       quota: ReplicaQuota,
+                       isolationLevel: IsolationLevel): Seq[(TopicPartition, LogReadResult)] = {
 
     def read(tp: TopicPartition, fetchInfo: PartitionData, limitBytes: Int, minOneMessage: Boolean): LogReadResult = {
       val offset = fetchInfo.fetchOffset
@@ -907,51 +875,73 @@ class ReplicaManager(val config: KafkaConfig,
       brokerTopicStats.topicStats(tp.topic).totalFetchRequestRate.mark()
       brokerTopicStats.allTopicsStats.totalFetchRequestRate.mark()
 
-      val adjustedMaxBytes = math.min(fetchInfo.maxBytes, limitBytes)
       try {
         trace(s"Fetching log segment for partition $tp, offset $offset, partition fetch size $partitionFetchSize, " +
           s"remaining response limit $limitBytes" +
           (if (minOneMessage) s", ignoring response/partition size limits" else ""))
 
-        val partition = getPartitionOrException(tp, expectLeader = fetchOnlyFromLeader)
+        // decide whether to only fetch from leader
+        val localReplica = if (fetchOnlyFromLeader)
+          getLeaderReplicaIfLocal(tp)
+        else
+          getReplicaOrException(tp)
+
+        val initialHighWatermark = localReplica.highWatermark.messageOffset
+        val lastStableOffset = if (isolationLevel == IsolationLevel.READ_COMMITTED)
+          Some(localReplica.lastStableOffset.messageOffset)
+        else
+          None
+
+        // decide whether to only fetch committed data (i.e. messages below high watermark)
+        val maxOffsetOpt = if (readOnlyCommitted)
+          Some(lastStableOffset.getOrElse(initialHighWatermark))
+        else
+          None
+
+        /* Read the LogOffsetMetadata prior to performing the read from the log.
+         * We use the LogOffsetMetadata to determine if a particular replica is in-sync or not.
+         * Using the log end offset after performing the read can lead to a race condition
+         * where data gets appended to the log immediately after the replica has consumed from it
+         * This can cause a replica to always be out of sync.
+         */
+        val initialLogEndOffset = localReplica.logEndOffset.messageOffset
+        val initialLogStartOffset = localReplica.logStartOffset
         val fetchTimeMs = time.milliseconds
+        val logReadInfo = localReplica.log match {
+          case Some(log) =>
+            val adjustedFetchSize = math.min(partitionFetchSize, limitBytes)
 
-        // Try the read first, this tells us whether we need all of adjustedFetchSize for this partition
-        val readInfo = partition.readRecords(
-          fetchOffset = fetchInfo.fetchOffset,
-          currentLeaderEpoch = fetchInfo.currentLeaderEpoch,
-          maxBytes = adjustedMaxBytes,
-          fetchIsolation = fetchIsolation,
-          fetchOnlyFromLeader = fetchOnlyFromLeader,
-          minOneMessage = minOneMessage)
+            // Try the read first, this tells us whether we need all of adjustedFetchSize for this partition
+            val fetch = log.read(offset, adjustedFetchSize, maxOffsetOpt, minOneMessage, isolationLevel)
 
-        val fetchDataInfo = if (shouldLeaderThrottle(quota, tp, replicaId)) {
-          // If the partition is being throttled, simply return an empty set.
-          FetchDataInfo(readInfo.fetchedData.fetchOffsetMetadata, MemoryRecords.EMPTY)
-        } else if (!hardMaxBytesLimit && readInfo.fetchedData.firstEntryIncomplete) {
-          // For FetchRequest version 3, we replace incomplete message sets with an empty one as consumers can make
-          // progress in such cases and don't need to report a `RecordTooLargeException`
-          FetchDataInfo(readInfo.fetchedData.fetchOffsetMetadata, MemoryRecords.EMPTY)
-        } else {
-          readInfo.fetchedData
+            // If the partition is being throttled, simply return an empty set.
+            if (shouldLeaderThrottle(quota, tp, replicaId))
+              FetchDataInfo(fetch.fetchOffsetMetadata, MemoryRecords.EMPTY)
+            // For FetchRequest version 3, we replace incomplete message sets with an empty one as consumers can make
+            // progress in such cases and don't need to report a `RecordTooLargeException`
+            else if (!hardMaxBytesLimit && fetch.firstEntryIncomplete)
+              FetchDataInfo(fetch.fetchOffsetMetadata, MemoryRecords.EMPTY)
+            else fetch
+
+          case None =>
+            error(s"Leader for partition $tp does not have a local log")
+            FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MemoryRecords.EMPTY)
         }
 
-        LogReadResult(info = fetchDataInfo,
-                      highWatermark = readInfo.highWatermark,
-                      leaderLogStartOffset = readInfo.logStartOffset,
-                      leaderLogEndOffset = readInfo.logEndOffset,
+        LogReadResult(info = logReadInfo,
+                      highWatermark = initialHighWatermark,
+                      leaderLogStartOffset = initialLogStartOffset,
+                      leaderLogEndOffset = initialLogEndOffset,
                       followerLogStartOffset = followerLogStartOffset,
                       fetchTimeMs = fetchTimeMs,
-                      readSize = adjustedMaxBytes,
-                      lastStableOffset = Some(readInfo.lastStableOffset),
+                      readSize = partitionFetchSize,
+                      lastStableOffset = lastStableOffset,
                       exception = None)
       } catch {
         // NOTE: Failed fetch requests metric is not incremented for known exceptions since it
         // is supposed to indicate un-expected failure of a broker in handling a fetch request
         case e@ (_: UnknownTopicOrPartitionException |
                  _: NotLeaderForPartitionException |
-                 _: UnknownLeaderEpochException |
-                 _: FencedLeaderEpochException |
                  _: ReplicaNotAvailableException |
                  _: KafkaStorageException |
                  _: OffsetOutOfRangeException) =>
@@ -961,24 +951,20 @@ class ReplicaManager(val config: KafkaConfig,
                         leaderLogEndOffset = -1L,
                         followerLogStartOffset = -1L,
                         fetchTimeMs = -1L,
-                        readSize = 0,
+                        readSize = partitionFetchSize,
                         lastStableOffset = None,
                         exception = Some(e))
         case e: Throwable =>
           brokerTopicStats.topicStats(tp.topic).failedFetchRequestRate.mark()
           brokerTopicStats.allTopicsStats.failedFetchRequestRate.mark()
-
-          val fetchSource = Request.describeReplicaId(replicaId)
-          error(s"Error processing fetch with max size $adjustedMaxBytes from $fetchSource " +
-            s"on partition $tp: $fetchInfo", e)
-
+          error(s"Error processing fetch operation on partition $tp, offset $offset", e)
           LogReadResult(info = FetchDataInfo(LogOffsetMetadata.UnknownOffsetMetadata, MemoryRecords.EMPTY),
                         highWatermark = -1L,
                         leaderLogStartOffset = -1L,
                         leaderLogEndOffset = -1L,
                         followerLogStartOffset = -1L,
                         fetchTimeMs = -1L,
-                        readSize = 0,
+                        readSize = partitionFetchSize,
                         lastStableOffset = None,
                         exception = Some(e))
       }
@@ -1007,10 +993,10 @@ class ReplicaManager(val config: KafkaConfig,
     val isReplicaInSync = nonOfflinePartition(topicPartition).exists { partition =>
       partition.getReplica(replicaId).exists(partition.inSyncReplicas.contains)
     }
-    !isReplicaInSync && quota.isThrottled(topicPartition) && quota.isQuotaExceeded
+    quota.isThrottled(topicPartition) && quota.isQuotaExceeded && !isReplicaInSync
   }
 
-  def getLogConfig(topicPartition: TopicPartition): Option[LogConfig] = localReplica(topicPartition).flatMap(_.log.map(_.config))
+  def getLogConfig(topicPartition: TopicPartition): Option[LogConfig] = getReplica(topicPartition).flatMap(_.log.map(_.config))
 
   def getMagic(topicPartition: TopicPartition): Option[Byte] = getLogConfig(topicPartition).map(_.messageFormatVersion.recordVersion.value)
 
@@ -1023,7 +1009,7 @@ class ReplicaManager(val config: KafkaConfig,
         stateChangeLogger.warn(stateControllerEpochErrorMessage)
         throw new ControllerMovedException(stateChangeLogger.messageWithPrefix(stateControllerEpochErrorMessage))
       } else {
-        val deletedPartitions = metadataCache.updateMetadata(correlationId, updateMetadataRequest)
+        val deletedPartitions = metadataCache.updateCache(correlationId, updateMetadataRequest)
         controllerEpoch = updateMetadataRequest.controllerEpoch
         deletedPartitions
       }
@@ -1059,15 +1045,14 @@ class ReplicaManager(val config: KafkaConfig,
             newPartitions.add(createdPartition)
             createdPartition
           }
-          val currentLeaderEpoch = partition.getLeaderEpoch
-          val requestLeaderEpoch = stateInfo.basePartitionState.leaderEpoch
+          val partitionLeaderEpoch = partition.getLeaderEpoch
           if (partition eq ReplicaManager.OfflinePartition) {
             stateChangeLogger.warn(s"Ignoring LeaderAndIsr request from " +
               s"controller $controllerId with correlation id $correlationId " +
               s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
               "partition is in an offline log directory")
             responseMap.put(topicPartition, Errors.KAFKA_STORAGE_ERROR)
-          } else if (requestLeaderEpoch > currentLeaderEpoch) {
+          } else if (partitionLeaderEpoch < stateInfo.basePartitionState.leaderEpoch) {
             // If the leader epoch is valid record the epoch of the controller that made the leadership decision.
             // This is useful while updating the isr to maintain the decision maker controller's epoch in the zookeeper path
             if(stateInfo.basePartitionState.replicas.contains(localBrokerId))
@@ -1083,8 +1068,8 @@ class ReplicaManager(val config: KafkaConfig,
             stateChangeLogger.warn(s"Ignoring LeaderAndIsr request from " +
               s"controller $controllerId with correlation id $correlationId " +
               s"epoch $controllerEpoch for partition $topicPartition since its associated " +
-              s"leader epoch $requestLeaderEpoch is not higher than the current " +
-              s"leader epoch $currentLeaderEpoch")
+              s"leader epoch ${stateInfo.basePartitionState.leaderEpoch} is not higher than the current " +
+              s"leader epoch $partitionLeaderEpoch")
             responseMap.put(topicPartition, Errors.STALE_CONTROLLER_EPOCH)
           }
         }
@@ -1103,16 +1088,16 @@ class ReplicaManager(val config: KafkaConfig,
         else
           Set.empty[Partition]
 
-        leaderAndIsrRequest.partitionStates.asScala.keys.foreach { topicPartition =>
+        leaderAndIsrRequest.partitionStates.asScala.keys.foreach(topicPartition =>
           /*
            * If there is offline log directory, a Partition object may have been created by getOrCreatePartition()
            * before getOrCreateReplica() failed to create local replica due to KafkaStorageException.
            * In this case ReplicaManager.allPartitions will map this topic-partition to an empty Partition object.
            * we need to map this topic-partition to OfflinePartition instead.
            */
-          if (localReplica(topicPartition).isEmpty && (allPartitions.get(topicPartition) ne ReplicaManager.OfflinePartition))
+          if (getReplica(topicPartition).isEmpty && (allPartitions.get(topicPartition) ne ReplicaManager.OfflinePartition))
             allPartitions.put(topicPartition, ReplicaManager.OfflinePartition)
-        }
+        )
 
         // we initialize highwatermark thread after the first leaderisrrequest. This ensures that all the partitions
         // have been completely populated before starting the checkpointing there by avoiding weird race conditions
@@ -1125,21 +1110,19 @@ class ReplicaManager(val config: KafkaConfig,
         for (partition <- newPartitions) {
           val topicPartition = partition.topicPartition
           if (logManager.getLog(topicPartition, isFuture = true).isDefined) {
-            partition.localReplica.foreach { replica =>
+            partition.getReplica().foreach { replica =>
               val leader = BrokerEndPoint(config.brokerId, "localhost", -1)
-
               // Add future replica to partition's map
               partition.getOrCreateReplica(Request.FutureLocalReplicaId, isNew = false)
-
               // pause cleaning for partitions that are being moved and start ReplicaAlterDirThread to move
               // replica from source dir to destination dir
               logManager.abortAndPauseCleaning(topicPartition)
-
-              futureReplicasAndInitialOffset.put(topicPartition, InitialFetchState(leader,
-                partition.getLeaderEpoch, replica.highWatermark.messageOffset))
+              futureReplicasAndInitialOffset.put(
+                topicPartition, InitialFetchState(leader, partition.getLeaderEpoch, replica.highWatermark.messageOffset))
             }
           }
         }
+
         replicaAlterLogDirsManager.addFetcherForPartitions(futureReplicasAndInitialOffset)
 
         replicaFetcherManager.shutdownIdleFetcherThreads()
@@ -1260,6 +1243,7 @@ class ReplicaManager(val config: KafkaConfig,
     val partitionsToMakeFollower: mutable.Set[Partition] = mutable.Set()
 
     try {
+
       // TODO: Delete leaders from LeaderAndIsrRequest
       partitionStates.foreach { case (partition, partitionStateInfo) =>
         val newLeaderBrokerId = partitionStateInfo.basePartitionState.leader
@@ -1284,7 +1268,7 @@ class ReplicaManager(val config: KafkaConfig,
                 s"but cannot become follower since the new leader $newLeaderBrokerId is unavailable.")
               // Create the local replica even if the leader is unavailable. This is required to ensure that we include
               // the partition's high watermark in the checkpoint file (see KAFKA-1647)
-              partition.getOrCreateReplica(localBrokerId, isNew = partitionStateInfo.isNew)
+              partition.getOrCreateReplica(isNew = partitionStateInfo.isNew)
           }
         } catch {
           case e: KafkaStorageException =>
@@ -1328,12 +1312,11 @@ class ReplicaManager(val config: KafkaConfig,
       }
       else {
         // we do not need to check if the leader exists again since this has been done at the beginning of this process
-        val partitionsToMakeFollowerWithLeaderAndOffset = partitionsToMakeFollower.map { partition =>
-          val leader = metadataCache.getAliveBrokers.find(_.id == partition.leaderReplicaIdOpt.get).get
-            .brokerEndPoint(config.interBrokerListenerName)
-          val fetchOffset = partition.localReplicaOrException.highWatermark.messageOffset
-          partition.topicPartition -> InitialFetchState(leader, partition.getLeaderEpoch, fetchOffset)
-        }.toMap
+        val partitionsToMakeFollowerWithLeaderAndOffset = partitionsToMakeFollower.map(partition =>
+          partition.topicPartition -> InitialFetchState(
+            metadataCache.getAliveBrokers.find(_.id == partition.leaderReplicaIdOpt.get).get.brokerEndPoint(config.interBrokerListenerName),
+            partition.getLeaderEpoch,
+            partition.getReplica().get.highWatermark.messageOffset)).toMap
         replicaFetcherManager.addFetcherForPartitions(partitionsToMakeFollowerWithLeaderAndOffset)
 
         partitionsToMakeFollower.foreach { partition =>
@@ -1361,11 +1344,7 @@ class ReplicaManager(val config: KafkaConfig,
 
   private def maybeShrinkIsr(): Unit = {
     trace("Evaluating ISR list of partitions to see which replicas can be removed from the ISR")
-
-    // Shrink ISRs for non offline partitions
-    allPartitions.keys.foreach { topicPartition =>
-      nonOfflinePartition(topicPartition).foreach(_.maybeShrinkIsr(config.replicaLagTimeMaxMs))
-    }
+    nonOfflinePartitionsIterator.foreach(_.maybeShrinkIsr(config.replicaLagTimeMaxMs))
   }
 
   /**
@@ -1405,14 +1384,14 @@ class ReplicaManager(val config: KafkaConfig,
     nonOfflinePartitionsIterator.filter(_.leaderReplicaIfLocal.isDefined)
 
   def getLogEndOffset(topicPartition: TopicPartition): Option[Long] =
-    nonOfflinePartition(topicPartition).flatMap(_.leaderReplicaIfLocal.map(_.logEndOffset))
+    nonOfflinePartition(topicPartition).flatMap(_.leaderReplicaIfLocal.map(_.logEndOffset.messageOffset))
 
   // Flushes the highwatermark value for all partitions to the highwatermark file
   def checkpointHighWatermarks() {
     val replicas = nonOfflinePartitionsIterator.flatMap { partition =>
       val replicasList: mutable.Set[Replica] = mutable.Set()
-      partition.localReplica.foreach(replicasList.add)
-      partition.futureLocalReplica.foreach(replicasList.add)
+      partition.getReplica(localBrokerId).foreach(replicasList.add)
+      partition.getReplica(Request.FutureLocalReplicaId).foreach(replicasList.add)
       replicasList
     }.filter(_.log.isDefined).toBuffer
     val replicasByDir = replicas.groupBy(_.log.get.dir.getParent)
@@ -1440,13 +1419,13 @@ class ReplicaManager(val config: KafkaConfig,
     info(s"Stopping serving replicas in dir $dir")
     replicaStateChangeLock synchronized {
       val newOfflinePartitions = nonOfflinePartitionsIterator.filter { partition =>
-        partition.localReplica.exists { replica =>
+        partition.getReplica(config.brokerId).exists { replica =>
           replica.log.isDefined && replica.log.get.dir.getParent == dir
         }
       }.map(_.topicPartition).toSet
 
       val partitionsWithOfflineFutureReplica = nonOfflinePartitionsIterator.filter { partition =>
-        partition.futureLocalReplica.exists { replica =>
+        partition.getReplica(Request.FutureLocalReplicaId).exists { replica =>
           replica.log.isDefined && replica.log.get.dir.getParent == dir
         }
       }.toSet
@@ -1495,7 +1474,6 @@ class ReplicaManager(val config: KafkaConfig,
     delayedFetchPurgatory.shutdown()
     delayedProducePurgatory.shutdown()
     delayedDeleteRecordsPurgatory.shutdown()
-    delayedElectPreferredLeaderPurgatory.shutdown()
     if (checkpointHW)
       checkpointHighWatermarks()
     info("Shut down completely")
@@ -1509,49 +1487,19 @@ class ReplicaManager(val config: KafkaConfig,
     new ReplicaAlterLogDirsManager(config, this, quotaManager, brokerTopicStats)
   }
 
-  def lastOffsetForLeaderEpoch(requestedEpochInfo: Map[TopicPartition, OffsetsForLeaderEpochRequest.PartitionData]): Map[TopicPartition, EpochEndOffset] = {
-    requestedEpochInfo.map { case (tp, partitionData) =>
+  def lastOffsetForLeaderEpoch(requestedEpochInfo: Map[TopicPartition, Integer]): Map[TopicPartition, EpochEndOffset] = {
+    requestedEpochInfo.map { case (tp, leaderEpoch) =>
       val epochEndOffset = getPartition(tp) match {
         case Some(partition) =>
           if (partition eq ReplicaManager.OfflinePartition)
-            new EpochEndOffset(Errors.KAFKA_STORAGE_ERROR, UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
+            new EpochEndOffset(KAFKA_STORAGE_ERROR, UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
           else
-            partition.lastOffsetForLeaderEpoch(partitionData.currentLeaderEpoch, partitionData.leaderEpoch,
-              fetchOnlyFromLeader = true)
-
-        case None if metadataCache.contains(tp) =>
-          new EpochEndOffset(Errors.NOT_LEADER_FOR_PARTITION, UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
-
+            partition.lastOffsetForLeaderEpoch(leaderEpoch)
         case None =>
-          new EpochEndOffset(Errors.UNKNOWN_TOPIC_OR_PARTITION, UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
+          new EpochEndOffset(UNKNOWN_TOPIC_OR_PARTITION, UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
       }
       tp -> epochEndOffset
     }
   }
-
-  def electPreferredLeaders(controller: KafkaController,
-                            partitions: Set[TopicPartition],
-                            responseCallback: Map[TopicPartition, ApiError] => Unit,
-                            requestTimeout: Long): Unit = {
-
-    val deadline = time.milliseconds() + requestTimeout
-
-    def electionCallback(expectedLeaders: Map[TopicPartition, Int],
-                         results: Map[TopicPartition, ApiError]): Unit = {
-      if (expectedLeaders.nonEmpty) {
-        val watchKeys = expectedLeaders.map{
-          case (tp, leader) => new TopicPartitionOperationKey(tp.topic, tp.partition)
-        }.toSeq
-        delayedElectPreferredLeaderPurgatory.tryCompleteElseWatch(
-          new DelayedElectPreferredLeader(deadline - time.milliseconds(), expectedLeaders, results,
-            this, responseCallback),
-          watchKeys)
-      } else {
-          // There are no partitions actually being elected, so return immediately
-          responseCallback(results)
-      }
-    }
-
-    controller.electPreferredLeaders(partitions, electionCallback)
-  }
 }
+

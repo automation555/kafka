@@ -17,13 +17,14 @@
 package kafka.controller
 
 import kafka.api.LeaderAndIsr
+import kafka.utils.Logging
 import org.apache.kafka.common.TopicPartition
 
 import scala.collection.Seq
 
 case class ElectionResult(topicPartition: TopicPartition, leaderAndIsr: Option[LeaderAndIsr], liveReplicas: Seq[Int])
 
-object Election {
+object Election extends Logging {
 
   private def leaderForOffline(partition: TopicPartition,
                                leaderAndIsrOpt: Option[LeaderAndIsr],
@@ -32,12 +33,18 @@ object Election {
 
     val assignment = controllerContext.partitionReplicaAssignment(partition)
     val liveReplicas = assignment.filter(replica => controllerContext.isReplicaOnline(replica, partition))
+
     leaderAndIsrOpt match {
       case Some(leaderAndIsr) =>
         val isr = leaderAndIsr.isr
         val leaderOpt = PartitionLeaderElectionAlgorithms.offlinePartitionLeaderElection(
-          assignment, isr, liveReplicas.toSet, uncleanLeaderElectionEnabled, controllerContext)
-        val newLeaderAndIsrOpt = leaderOpt.map { leader =>
+          assignment, isr, liveReplicas.toSet, uncleanLeaderElectionEnabled)
+        val newLeaderAndIsrOpt = leaderOpt.map { case (leader, uncleanElection) =>
+          if (uncleanElection) {
+            controllerContext.stats.uncleanLeaderElectionRate.mark()
+            info(s"Unclean leader election. Partition $partition has been assigned leader $leader from deposed " +
+              s"leader ${leaderAndIsr.leader}.")
+          }
           val newIsr = if (isr.contains(leader)) isr.filter(replica => controllerContext.isReplicaOnline(replica, partition))
           else List(leader)
           leaderAndIsr.newLeaderAndIsr(leader, newIsr)
@@ -72,12 +79,12 @@ object Election {
   private def leaderForReassign(partition: TopicPartition,
                                 leaderAndIsr: LeaderAndIsr,
                                 controllerContext: ControllerContext): ElectionResult = {
-    val targetReplicas = controllerContext.partitionFullReplicaAssignment(partition).targetReplicas
-    val liveReplicas = targetReplicas.filter(replica => controllerContext.isReplicaOnline(replica, partition))
+    val reassignment = controllerContext.partitionsBeingReassigned(partition).newReplicas
+    val liveReplicas = reassignment.filter(replica => controllerContext.isReplicaOnline(replica, partition))
     val isr = leaderAndIsr.isr
-    val leaderOpt = PartitionLeaderElectionAlgorithms.reassignPartitionLeaderElection(targetReplicas, isr, liveReplicas.toSet)
+    val leaderOpt = PartitionLeaderElectionAlgorithms.reassignPartitionLeaderElection(reassignment, isr, liveReplicas.toSet)
     val newLeaderAndIsrOpt = leaderOpt.map(leader => leaderAndIsr.newLeader(leader))
-    ElectionResult(partition, newLeaderAndIsrOpt, targetReplicas)
+    ElectionResult(partition, newLeaderAndIsrOpt, reassignment)
   }
 
   /**

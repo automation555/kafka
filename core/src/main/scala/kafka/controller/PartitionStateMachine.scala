@@ -70,7 +70,7 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
       !controllerContext.isTopicQueuedUpForDeletion(partition.topic)
     }.toSeq
 
-    handleStateChanges(partitionsToTrigger, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy(forceUncleanElection = false)))
+    handleStateChanges(partitionsToTrigger, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy(false)))
     // TODO: If handleStateChanges catches an exception, it is not enough to bail out and log an error.
     // It is important to trigger leader election for those partitions.
   }
@@ -408,10 +408,11 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     }
 
     val (partitionsWithoutLeaders, partitionsWithLeaders) = partitionLeaderElectionStrategy match {
-      case OfflinePartitionLeaderElectionStrategy(forceUncleanElection) =>
+      case OfflinePartitionLeaderElectionStrategy(allowUnclean) =>
         val partitionsWithUncleanLeaderElectionState = collectUncleanLeaderElectionState(
           validLeaderAndIsrs,
-          forceUncleanElection)
+          allowUnclean
+        )
         leaderForOffline(controllerContext, partitionsWithUncleanLeaderElectionState).partition(_.leaderAndIsr.isEmpty)
       case ReassignPartitionLeaderElectionStrategy =>
         leaderForReassign(controllerContext, validLeaderAndIsrs).partition(_.leaderAndIsr.isEmpty)
@@ -449,14 +450,15 @@ class ZkPartitionStateMachine(config: KafkaConfig,
    *
    * @param leaderIsrAndControllerEpochs set of partition to determine if unclean leader election should be
    *                                     allowed
-   * @param forceUncleanElection whether to force unclean election without having to read the topic configuration
+   * @param allowUnclean whether to allow unclean election without having to read the topic configuration
    * @return a sequence of three element tuple:
    *         1. topic partition
-   *         2. leader, isr and controller epoch. Some means election should be performed
+   *         2. leader, isr and controller epoc. Some means election should be performed
    *         3. allow unclean
    */
-  private def collectUncleanLeaderElectionState(leaderAndIsrs: Seq[(TopicPartition, LeaderAndIsr)],
-    forceUncleanElection: Boolean
+  private def collectUncleanLeaderElectionState(
+    leaderAndIsrs: Seq[(TopicPartition, LeaderAndIsr)],
+    allowUnclean: Boolean
   ): Seq[(TopicPartition, Option[LeaderAndIsr], Boolean)] = {
     val (partitionsWithNoLiveInSyncReplicas, partitionsWithLiveInSyncReplicas) = leaderAndIsrs.partition {
       case (partition, leaderAndIsr) =>
@@ -464,21 +466,26 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         liveInSyncReplicas.isEmpty
     }
 
-    val electionForPartitionWithoutLiveReplicas = if (forceUncleanElection) {
+    val electionForPartitionWithoutLiveReplicas = if (allowUnclean) {
       partitionsWithNoLiveInSyncReplicas.map { case (partition, leaderAndIsr) =>
         (partition, Option(leaderAndIsr), true)
       }
     } else {
       val (logConfigs, failed) = zkClient.getLogConfigs(
         partitionsWithNoLiveInSyncReplicas.iterator.map { case (partition, _) => partition.topic }.toSet,
-        config.originals)
+        config.originals()
+      )
 
       partitionsWithNoLiveInSyncReplicas.map { case (partition, leaderAndIsr) =>
         if (failed.contains(partition.topic)) {
           logFailedStateChange(partition, partitionState(partition), OnlinePartition, failed(partition.topic))
           (partition, None, false)
         } else {
-          (partition, Option(leaderAndIsr), logConfigs(partition.topic).uncleanLeaderElectionEnable.booleanValue)
+          (
+            partition,
+            Option(leaderAndIsr),
+            logConfigs(partition.topic).uncleanLeaderElectionEnable.booleanValue()
+          )
         }
       }
     }
@@ -509,16 +516,22 @@ class ZkPartitionStateMachine(config: KafkaConfig,
 }
 
 object PartitionLeaderElectionAlgorithms {
-  def offlinePartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], uncleanLeaderElectionEnabled: Boolean, controllerContext: ControllerContext): Option[Int] = {
-    assignment.find(id => liveReplicas.contains(id) && isr.contains(id)).orElse {
-      if (uncleanLeaderElectionEnabled) {
-        val leaderOpt = assignment.find(liveReplicas.contains)
-        if (leaderOpt.isDefined)
-          controllerContext.stats.uncleanLeaderElectionRate.mark()
-        leaderOpt
-      } else {
-        None
-      }
+
+  /**
+   * @return Optionally, a tuple (replica, flag) where flag is a boolean indicating if unclean leader election was
+   *         used to replace the replica.
+   */
+  def offlinePartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], uncleanLeaderElectionEnabled: Boolean): Option[(Int, Boolean)] = {
+    assignment.find(id => liveReplicas.contains(id) && isr.contains(id)) match {
+      case Some(replicaId) => Some(replicaId, false)
+      case None =>  if (uncleanLeaderElectionEnabled) {
+                     assignment.find(liveReplicas.contains) match {
+                        case Some(uncleanReplicaId) => Some(uncleanReplicaId, true)
+                        case None => None
+                      }
+                  } else {
+                    None
+                  }
     }
   }
 
@@ -536,7 +549,7 @@ object PartitionLeaderElectionAlgorithms {
 }
 
 sealed trait PartitionLeaderElectionStrategy
-final case class OfflinePartitionLeaderElectionStrategy(forceUncleanElection: Boolean) extends PartitionLeaderElectionStrategy
+final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy
 final case object ReassignPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 final case object PreferredReplicaPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 final case object ControlledShutdownPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy

@@ -20,8 +20,8 @@ import java.nio.charset.StandardCharsets
 
 import com.fasterxml.jackson.core.JsonProcessingException
 import org.apache.kafka.common.TopicPartition
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.junit.Assert._
+import org.junit.Test
 
 class ReassignPartitionsZNodeTest {
 
@@ -42,14 +42,15 @@ class ReassignPartitionsZNodeTest {
   @Test
   def testDecodeInvalidJson(): Unit = {
     val result = ReassignPartitionsZNode.decode("invalid json".getBytes)
-    val exception = result.left.getOrElse(throw new AssertionError(s"decode should have failed, result $result"))
-    assertTrue(exception.isInstanceOf[JsonProcessingException])
+    assertTrue(result.isLeft)
+    assertTrue(result.left.get.isInstanceOf[JsonProcessingException])
   }
 
   @Test
   def testDecodeValidJson(): Unit = {
     val result = ReassignPartitionsZNode.decode(reassignmentJson.getBytes)
-    val replicas = result.map(assignmentMap => assignmentMap(new TopicPartition(topic, partition1)))
-    assertEquals(Right(Seq(replica1, replica2)), replicas)
+    assertTrue(result.isRight)
+    val assignmentMap = result.right.get
+    assertEquals(Seq(replica1, replica2), assignmentMap(new TopicPartition(topic, partition1)))
   }
 }

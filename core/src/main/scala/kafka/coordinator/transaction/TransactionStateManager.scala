@@ -22,17 +22,19 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
-import kafka.coordinator.CoordinatorUtils
+import kafka.common.KafkaException
 import kafka.log.LogConfig
 import kafka.message.UncompressedCodec
-import kafka.server.{Defaults, KafkaConfig, ReplicaManager}
+import kafka.server.Defaults
+import kafka.server.ReplicaManager
 import kafka.utils.CoreUtils.{inReadLock, inWriteLock}
 import kafka.utils.{Logging, Pool, Scheduler}
 import kafka.zk.KafkaZkClient
-import org.apache.kafka.common.{KafkaException, TopicPartition}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.{MemoryRecords, SimpleRecord}
+import org.apache.kafka.common.record.{FileRecords, MemoryRecords, SimpleRecord}
+import org.apache.kafka.common.requests.IsolationLevel
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.apache.kafka.common.requests.TransactionResult
 import org.apache.kafka.common.utils.{Time, Utils}
@@ -133,12 +135,12 @@ class TransactionStateManager(brokerId: Int,
     }
   }
 
-  def enableTransactionalIdExpiration() {
+  def enableTransactionalIdExpiration(): Unit = {
     scheduler.schedule("transactionalId-expiration", () => {
       val now = time.milliseconds()
       inReadLock(stateLock) {
         val transactionalIdByPartition: Map[Int, mutable.Iterable[TransactionalIdCoordinatorEpochAndMetadata]] =
-          transactionMetadataCache.flatMap { case (_, entry) =>
+          transactionMetadataCache.flatMap { case (partition, entry) =>
             entry.metadataPerTransactionalId.filter { case (_, txnMetadata) => txnMetadata.state match {
               case Empty | CompleteCommit | CompleteAbort => true
               case _ => false
@@ -295,8 +297,7 @@ class TransactionStateManager(brokerId: Int,
         warn(s"Attempted to load offsets and group metadata from $topicPartition, but found no log")
 
       case Some(log) =>
-        // buffer may not be needed if records are read from memory
-        var buffer = ByteBuffer.allocate(0)
+        lazy val buffer = ByteBuffer.allocate(config.transactionLogLoadBufferSize)
 
         // loop breaks if leader changes at any time during the load, since getHighWatermark is -1
         var currOffset = log.logStartOffset
@@ -306,16 +307,15 @@ class TransactionStateManager(brokerId: Int,
             && !shuttingDown.get()
             && inReadLock(stateLock) {loadingPartitions.exists { idAndEpoch: TransactionPartitionAndLeaderEpoch =>
               idAndEpoch.txnPartitionId == topicPartition.partition && idAndEpoch.coordinatorEpoch == coordinatorEpoch}}) {
-
-            val (memRecords, readBuffer) = CoordinatorUtils.readRecords(log, currOffset, buffer,
-              config.transactionLogLoadBufferSize)
-            // Only warn the first time we expand over the configured buffer size
-            if (readBuffer != buffer && readBuffer.capacity > config.transactionLogLoadBufferSize) {
-              warn(s"Loaded transaction metadata from $topicPartition with buffer larger " +
-                s"(${readBuffer.capacity} bytes) than configured ${KafkaConfig.TransactionsLoadBufferSizeProp} " +
-                s"(${config.transactionLogLoadBufferSize} bytes)")
+            val fetchDataInfo = log.read(currOffset, config.transactionLogLoadBufferSize, maxOffset = None,
+              minOneMessage = true, isolationLevel = IsolationLevel.READ_UNCOMMITTED)
+            val memRecords = fetchDataInfo.records match {
+              case records: MemoryRecords => records
+              case fileRecords: FileRecords =>
+                buffer.clear()
+                val bufferRead = fileRecords.readInto(buffer, 0)
+                MemoryRecords.readableRecords(bufferRead)
             }
-            buffer = readBuffer
 
             memRecords.batches.asScala.foreach { batch =>
               for (record <- batch.asScala) {
@@ -367,7 +367,7 @@ class TransactionStateManager(brokerId: Int,
    * When this broker becomes a leader for a transaction log partition, load this partition and
    * populate the transaction metadata cache with the transactional ids.
    */
-  def loadTransactionsForTxnTopicPartition(partitionId: Int, coordinatorEpoch: Int, sendTxnMarkers: SendTxnMarkersCallback) {
+  def loadTransactionsForTxnTopicPartition(partitionId: Int, coordinatorEpoch: Int, sendTxnMarkers: SendTxnMarkersCallback): Unit = {
     validateTransactionTopicPartitionCountIsStable()
 
     val topicPartition = new TopicPartition(Topic.TRANSACTION_STATE_TOPIC_NAME, partitionId)
@@ -378,7 +378,7 @@ class TransactionStateManager(brokerId: Int,
       loadingPartitions.add(partitionAndLeaderEpoch)
     }
 
-    def loadTransactions() {
+    def loadTransactions(): Unit = {
       info(s"Loading transaction metadata from $topicPartition")
       val loadedTransactions = loadTransactionMetadata(topicPartition, coordinatorEpoch)
 
@@ -423,7 +423,7 @@ class TransactionStateManager(brokerId: Int,
    * When this broker becomes a follower for a transaction log partition, clear out the cache for corresponding transactional ids
    * that belong to that partition.
    */
-  def removeTransactionsForTxnTopicPartition(partitionId: Int, coordinatorEpoch: Int) {
+  def removeTransactionsForTxnTopicPartition(partitionId: Int, coordinatorEpoch: Int): Unit = {
     validateTransactionTopicPartitionCountIsStable()
 
     val topicPartition = new TopicPartition(Topic.TRANSACTION_STATE_TOPIC_NAME, partitionId)
@@ -434,7 +434,7 @@ class TransactionStateManager(brokerId: Int,
       leavingPartitions.add(partitionAndLeaderEpoch)
     }
 
-    def removeTransactions() {
+    def removeTransactions(): Unit = {
       inWriteLock(stateLock) {
         if (leavingPartitions.contains(partitionAndLeaderEpoch)) {
           transactionMetadataCache.remove(partitionId) match {
@@ -626,7 +626,7 @@ class TransactionStateManager(brokerId: Int,
     }
   }
 
-  def shutdown() {
+  def shutdown(): Unit = {
     shuttingDown.set(true)
     loadingPartitions.clear()
     transactionMetadataCache.clear()

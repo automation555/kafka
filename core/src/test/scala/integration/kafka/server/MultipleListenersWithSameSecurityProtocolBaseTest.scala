@@ -28,17 +28,17 @@ import kafka.utils.JaasTestUtils.JaasSection
 import kafka.utils.{JaasTestUtils, TestUtils}
 import kafka.utils.Implicits._
 import kafka.zk.ZooKeeperTestHarness
-import org.apache.kafka.clients.consumer.KafkaConsumer
+import org.apache.kafka.clients.consumer.{ConsumerRecord, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
 import org.apache.kafka.common.config.SslConfigs
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.network.{ListenerName, Mode}
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.Assert.assertEquals
+import org.junit.{After, Before, Test}
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import scala.collection.Seq
+import scala.collection.JavaConverters._
 
 object MultipleListenersWithSameSecurityProtocolBaseTest {
   val SecureInternal = "SECURE_INTERNAL"
@@ -66,7 +66,7 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
   protected def staticJaasSections: Seq[JaasSection]
   protected def dynamicJaasSections: Properties
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     startSasl(staticJaasSections)
     super.setUp()
@@ -104,10 +104,10 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
     }
 
     servers.map(_.config).foreach { config =>
-      assertEquals(4, config.listeners.size, s"Unexpected listener count for broker ${config.brokerId}")
+      assertEquals(s"Unexpected listener count for broker ${config.brokerId}", 4, config.listeners.size)
       // KAFKA-5184 seems to show that this value can sometimes be PLAINTEXT, so verify it here
-      assertEquals(Internal, config.interBrokerListenerName.value,
-        s"Unexpected ${KafkaConfig.InterBrokerListenerNameProp} for broker ${config.brokerId}")
+      assertEquals(s"Unexpected ${KafkaConfig.InterBrokerListenerNameProp} for broker ${config.brokerId}",
+        Internal, config.interBrokerListenerName.value)
     }
 
     TestUtils.createTopic(zkClient, Topic.GROUP_METADATA_TOPIC_NAME, OffsetConfig.DefaultOffsetsTopicNumPartitions,
@@ -130,10 +130,10 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
         TestUtils.createTopic(zkClient, topic, 2, 2, servers)
         val clientMetadata = ClientMetadata(listenerName, mechanism, topic)
 
-        producers(clientMetadata) = TestUtils.createProducer(bootstrapServers, acks = -1,
+        producers(clientMetadata) = TestUtils.createNewProducer(bootstrapServers, acks = -1,
           securityProtocol = endPoint.securityProtocol, trustStoreFile = trustStoreFile, saslProperties = saslProps)
 
-        consumers(clientMetadata) = TestUtils.createConsumer(bootstrapServers, groupId = clientMetadata.toString,
+        consumers(clientMetadata) = TestUtils.createNewConsumer(bootstrapServers, groupId = clientMetadata.toString,
           securityProtocol = endPoint.securityProtocol, trustStoreFile = trustStoreFile, saslProperties = saslProps)
       }
 
@@ -147,7 +147,7 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
     }
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     producers.values.foreach(_.close())
     consumers.values.foreach(_.close())
@@ -169,7 +169,11 @@ abstract class MultipleListenersWithSameSecurityProtocolBaseTest extends ZooKeep
 
       val consumer = consumers(clientMetadata)
       consumer.subscribe(Collections.singleton(clientMetadata.topic))
-      TestUtils.consumeRecords(consumer, producerRecords.size)
+      val records = new ArrayBuffer[ConsumerRecord[Array[Byte], Array[Byte]]]
+      TestUtils.waitUntilTrue(() => {
+        records ++= consumer.poll(50).asScala
+        records.size == producerRecords.size
+      }, s"Consumed ${records.size} records until timeout instead of the expected ${producerRecords.size} records with mechanism ${clientMetadata.saslMechanism}")
     }
   }
 

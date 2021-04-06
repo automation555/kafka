@@ -18,14 +18,15 @@ import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.consumer.OffsetAndMetadata
 import org.apache.kafka.common.TopicPartition
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions._
+import org.junit.Test
+import org.junit.Assert._
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import java.util.Properties
 
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.record.CompressionType
+import org.apache.kafka.common.security.auth.SecurityProtocol
 
 class GroupCoordinatorIntegrationTest extends KafkaServerTestHarness {
   val offsetsTopicCompressionCodec = CompressionType.GZIP
@@ -38,13 +39,15 @@ class GroupCoordinatorIntegrationTest extends KafkaServerTestHarness {
   }
 
   @Test
-  def testGroupCoordinatorPropagatesOffsetsTopicCompressionCodec(): Unit = {
-    val consumer = TestUtils.createConsumer(TestUtils.getBrokerListStrFromServers(servers))
+  def testGroupCoordinatorPropagatesOfffsetsTopicCompressionCodec(): Unit = {
+    val consumer = TestUtils.createNewConsumer(TestUtils.getBrokerListStrFromServers(servers),
+                                               securityProtocol = SecurityProtocol.PLAINTEXT)
     val offsetMap = Map(
       new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, 0) -> new OffsetAndMetadata(10, "")
     ).asJava
     consumer.commitSync(offsetMap)
     val logManager = servers.head.getLogManager
+
     def getGroupMetadataLogOpt: Option[Log] =
       logManager.getLog(new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, 0))
 
@@ -55,7 +58,7 @@ class GroupCoordinatorIntegrationTest extends KafkaServerTestHarness {
     val incorrectCompressionCodecs = logSegments
       .flatMap(_.log.batches.asScala.map(_.compressionType))
       .filter(_ != offsetsTopicCompressionCodec)
-    assertEquals(Seq.empty, incorrectCompressionCodecs, "Incorrect compression codecs should be empty")
+    assertEquals("Incorrect compression codecs should be empty", Seq.empty, incorrectCompressionCodecs)
 
     consumer.close()
   }

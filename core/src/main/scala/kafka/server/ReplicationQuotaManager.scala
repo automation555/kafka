@@ -17,15 +17,13 @@
 package kafka.server
 
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
-import java.util.concurrent.locks.ReentrantReadWriteLock
-
-import scala.collection.Seq
 
 import kafka.server.Constants._
 import kafka.server.ReplicationQuotaManagerConfig._
 import kafka.utils.CoreUtils._
 import kafka.utils.Logging
 import org.apache.kafka.common.metrics._
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.metrics.stats.SimpleRate
@@ -53,9 +51,8 @@ object ReplicationQuotaManagerConfig {
 }
 
 trait ReplicaQuota {
-  def record(value: Long): Unit
   def isThrottled(topicPartition: TopicPartition): Boolean
-  def isQuotaExceeded: Boolean
+  def isQuotaExceeded(): Boolean
 }
 
 object Constants {
@@ -102,13 +99,12 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     *
     * @return
     */
-  override def isQuotaExceeded: Boolean = {
+  override def isQuotaExceeded(): Boolean = {
     try {
       sensor().checkQuotas()
     } catch {
       case qve: QuotaViolationException =>
-        trace(s"$replicationType: Quota violated for sensor (${sensor().name}), metric: (${qve.metric.metricName}), " +
-          s"metric-value: (${qve.value}), bound: (${qve.bound})")
+        trace("%s: Quota violated for sensor (%s), metric: (%s), metric-value: (%f), bound: (%f)".format(replicationType, sensor().name(), qve.metricName, qve.value, qve.bound))
         return true
     }
     false
@@ -134,7 +130,12 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     * @param value
     */
   def record(value: Long): Unit = {
-    sensor().record(value.toDouble, time.milliseconds(), false)
+    try {
+      sensor().record(value)
+    } catch {
+      case qve: QuotaViolationException =>
+        trace(s"Record: Quota violated, but ignored, for sensor (${sensor.name}), metric: (${qve.metricName}), value : (${qve.value}), bound: (${qve.bound}), recordedValue ($value)")
+    }
   }
 
   /**
@@ -174,10 +175,10 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     *
     * @return
     */
-  def upperBound: Long = {
+  def upperBound(): Long = {
     inReadLock(lock) {
       if (quota != null)
-        quota.bound.toLong
+        quota.bound().toLong
       else
         Long.MaxValue
     }
@@ -194,7 +195,9 @@ class ReplicationQuotaManager(val config: ReplicationQuotaManagerConfig,
     sensorAccess.getOrCreate(
       replicationType.toString,
       InactiveSensorExpirationTimeSeconds,
-      sensor => sensor.add(rateMetricName, new SimpleRate, getQuotaMetricConfig(quota))
+      rateMetricName,
+      Some(getQuotaMetricConfig(quota)),
+      new SimpleRate
     )
   }
 }

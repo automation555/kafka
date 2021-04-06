@@ -24,10 +24,10 @@ import kafka.utils.{Json, Logging}
 import kafka.utils.json.JsonObject
 import kafka.zk.{AdminZkClient, ConfigEntityChangeNotificationSequenceZNode, ConfigEntityChangeNotificationZNode, KafkaZkClient}
 import org.apache.kafka.common.config.types.Password
-import org.apache.kafka.common.security.scram.internals.ScramMechanism
+import org.apache.kafka.common.security.scram.internal.ScramMechanism
 import org.apache.kafka.common.utils.Time
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection._
 
 /**
@@ -38,8 +38,7 @@ object ConfigType {
   val Client = "clients"
   val User = "users"
   val Broker = "brokers"
-  val Ip = "ips"
-  val all = Seq(Topic, Client, User, Broker, Ip)
+  val all = Seq(Topic, Client, User, Broker)
 }
 
 object ConfigEntityName {

@@ -23,8 +23,8 @@ import kafka.utils.{CoreUtils, TestUtils, VerifiableProperties}
 import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.common.{ClusterResource, ClusterResourceListener}
 import org.apache.kafka.test.MockMetricsReporter
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
 import org.apache.kafka.test.TestUtils.isValidClusterId
 
 object KafkaMetricReporterClusterIdTest {
@@ -76,19 +76,19 @@ object KafkaMetricReporterClusterIdTest {
 }
 
 class KafkaMetricReporterClusterIdTest extends ZooKeeperTestHarness {
-  var server: KafkaServer = null
+  var server: KafkaServerStartable = null
   var config: KafkaConfig = null
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     val props = TestUtils.createBrokerConfig(1, zkConnect)
-    props.setProperty(KafkaConfig.KafkaMetricsReporterClassesProp, "kafka.server.KafkaMetricReporterClusterIdTest$MockKafkaMetricsReporter")
+    props.setProperty("kafka.metrics.reporters", "kafka.server.KafkaMetricReporterClusterIdTest$MockKafkaMetricsReporter")
     props.setProperty(KafkaConfig.MetricReporterClassesProp, "kafka.server.KafkaMetricReporterClusterIdTest$MockBrokerMetricsReporter")
     props.setProperty(KafkaConfig.BrokerIdGenerationEnableProp, "true")
     props.setProperty(KafkaConfig.BrokerIdProp, "-1")
     config = KafkaConfig.fromProps(props)
-    server = new KafkaServer(config, threadNamePrefix = Option(this.getClass.getName))
+    server = KafkaServerStartable.fromProps(props)
     server.startup()
   }
 
@@ -104,15 +104,13 @@ class KafkaMetricReporterClusterIdTest extends ZooKeeperTestHarness {
 
     assertEquals(KafkaMetricReporterClusterIdTest.MockKafkaMetricsReporter.CLUSTER_META.get().clusterId(),
       KafkaMetricReporterClusterIdTest.MockBrokerMetricsReporter.CLUSTER_META.get().clusterId())
-
-    server.shutdown()
-    TestUtils.assertNoNonDaemonThreads(this.getClass.getName)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     server.shutdown()
     CoreUtils.delete(config.logDirs)
+    TestUtils.verifyNonDaemonThreadsStatus(this.getClass.getName)
     super.tearDown()
   }
 }

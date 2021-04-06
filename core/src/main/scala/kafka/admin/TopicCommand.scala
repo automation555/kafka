@@ -22,7 +22,7 @@ import java.util.Properties
 import joptsimple._
 import kafka.common.AdminCommandFailedException
 import kafka.utils.Implicits._
-import kafka.utils.Whitelist
+import kafka.consumer.Whitelist
 import kafka.log.LogConfig
 import kafka.server.ConfigType
 import kafka.utils._
@@ -91,7 +91,7 @@ object TopicCommand extends Logging {
       allTopics
   }
 
-  def createTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions) {
+  def createTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions): Unit = {
     val topic = opts.options.valueOf(opts.topicOpt)
     val configs = parseTopicConfigsToBeAdded(opts)
     val ifNotExists = opts.options.has(opts.ifNotExistsOpt)
@@ -116,7 +116,7 @@ object TopicCommand extends Logging {
     }
   }
 
-  def alterTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions) {
+  def alterTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions): Unit = {
     val topics = getTopics(zkClient, opts)
     val ifExists = opts.options.has(opts.ifExistsOpt)
     if (topics.isEmpty && !ifExists) {
@@ -164,7 +164,7 @@ object TopicCommand extends Logging {
     }
   }
 
-  def listTopics(zkClient: KafkaZkClient, opts: TopicCommandOptions) {
+  def listTopics(zkClient: KafkaZkClient, opts: TopicCommandOptions): Unit = {
     val topics = getTopics(zkClient, opts)
     for(topic <- topics) {
       if (zkClient.isTopicMarkedForDeletion(topic)) {
@@ -175,7 +175,7 @@ object TopicCommand extends Logging {
     }
   }
 
-  def deleteTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions) {
+  def deleteTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions): Unit = {
     val topics = getTopics(zkClient, opts)
     val ifExists = opts.options.has(opts.ifExistsOpt)
     if (topics.isEmpty && !ifExists) {
@@ -202,12 +202,11 @@ object TopicCommand extends Logging {
     }
   }
 
-  def describeTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions) {
+  def describeTopic(zkClient: KafkaZkClient, opts: TopicCommandOptions): Unit = {
     val topics = getTopics(zkClient, opts)
     val reportUnderReplicatedPartitions = opts.options.has(opts.reportUnderReplicatedPartitionsOpt)
     val reportUnavailablePartitions = opts.options.has(opts.reportUnavailablePartitionsOpt)
     val reportOverriddenConfigs = opts.options.has(opts.topicsWithOverridesOpt)
-    val reportNotPreferredLeaders = opts.options.has(opts.reportNotPreferredLeaderPartitionsOpt)
     val liveBrokers = zkClient.getAllBrokersInCluster.map(_.id).toSet
     val adminZkClient = new AdminZkClient(zkClient)
 
@@ -235,15 +234,9 @@ object TopicCommand extends Logging {
               val inSyncReplicas = if (leaderIsrEpoch.isEmpty) Seq.empty[Int] else leaderIsrEpoch.get.leaderAndIsr.isr
               val leader = if (leaderIsrEpoch.isEmpty) None else Option(leaderIsrEpoch.get.leaderAndIsr.leader)
 
-              val isPartitionUnavailable = leader.isEmpty || !liveBrokers.contains(leader.get)
-              val isPartitionUnderReplicated = inSyncReplicas.size < assignedReplicas.size
-              val isPreferredLeader = leader.isDefined && assignedReplicas.head == leader.get
-
-              if ((!reportUnderReplicatedPartitions && !reportUnavailablePartitions && !reportNotPreferredLeaders) ||
-                  (reportUnderReplicatedPartitions && isPartitionUnderReplicated) ||
-                  (reportUnavailablePartitions && isPartitionUnavailable) ||
-                  (reportNotPreferredLeaders && !isPreferredLeader && !isPartitionUnavailable)) {
-                    // do not display unavailable partitions as in that case the leader is -1, which is not the preferred
+              if ((!reportUnderReplicatedPartitions && !reportUnavailablePartitions) ||
+                  (reportUnderReplicatedPartitions && inSyncReplicas.size < assignedReplicas.size) ||
+                  (reportUnavailablePartitions && (leader.isEmpty || !liveBrokers.contains(leader.get)))) {
 
                 val markedForDeletionString =
                   if (markedForDeletion && !describeConfigs) "\tMarkedForDeletion: true" else ""
@@ -351,8 +344,6 @@ object TopicCommand extends Logging {
                                                             "if set when describing topics, only show under replicated partitions")
     val reportUnavailablePartitionsOpt = parser.accepts("unavailable-partitions",
                                                             "if set when describing topics, only show partitions whose leader is not available")
-    val reportNotPreferredLeaderPartitionsOpt = parser.accepts("not-preferred-leaders",
-                                                            "If set when describing topics, only show partitions whose leader is not the preferred.")
     val topicsWithOverridesOpt = parser.accepts("topics-with-overrides",
                                                 "if set when describing topics, only show topics that have overridden configs")
     val ifExistsOpt = parser.accepts("if-exists",
@@ -368,7 +359,7 @@ object TopicCommand extends Logging {
 
     val allTopicLevelOpts: Set[OptionSpec[_]] = Set(alterOpt, createOpt, describeOpt, listOpt, deleteOpt)
 
-    def checkArgs() {
+    def checkArgs(): Unit = {
       // check required args
       CommandLineUtils.checkRequiredArgs(parser, options, zkConnectOpt)
       if (!options.has(listOpt) && !options.has(describeOpt))

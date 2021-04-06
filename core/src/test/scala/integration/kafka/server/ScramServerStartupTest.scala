@@ -17,17 +17,16 @@
   */
 
 package kafka.server
-
 import java.util.Collections
 
 import kafka.api.{IntegrationTestHarness, KafkaSasl, SaslSetup}
 import kafka.utils._
 import kafka.zk.ConfigEntityChangeNotificationZNode
 import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.junit.Assert._
+import org.junit.Test
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 /**
  * Tests that there are no failed authentications during broker startup. This is to verify
@@ -36,7 +35,9 @@ import scala.jdk.CollectionConverters._
  */
 class ScramServerStartupTest extends IntegrationTestHarness with SaslSetup {
 
-  override val brokerCount = 1
+  override val producerCount = 0
+  override val consumerCount = 0
+  override val serverCount = 1
 
   private val kafkaClientSaslMechanism = "SCRAM-SHA-256"
   private val kafkaServerSaslMechanisms = Collections.singletonList("SCRAM-SHA-256").asScala
@@ -57,9 +58,16 @@ class ScramServerStartupTest extends IntegrationTestHarness with SaslSetup {
 
   @Test
   def testAuthentications(): Unit = {
-    val successfulAuths = TestUtils.totalMetricValue(servers.head, "successful-authentication-total")
-    assertTrue(successfulAuths > 0, "No successful authentications")
-    val failedAuths = TestUtils.totalMetricValue(servers.head, "failed-authentication-total")
+    val successfulAuths = totalAuthentications("successful-authentication-total")
+    assertTrue("No successful authentications", successfulAuths > 0)
+    val failedAuths = totalAuthentications("failed-authentication-total")
     assertEquals(0, failedAuths)
+  }
+
+  private def totalAuthentications(metricName: String): Int = {
+    val allMetrics = servers.head.metrics.metrics
+    val totalAuthCount = allMetrics.values().asScala.filter(_.metricName().name() == metricName)
+      .foldLeft(0.0)((total, metric) => total + metric.metricValue.asInstanceOf[Double])
+    totalAuthCount.toInt
   }
 }

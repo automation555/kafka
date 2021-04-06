@@ -19,25 +19,26 @@ package kafka.log
 
 import java.io.File
 
+import kafka.common.InvalidOffsetException
 import kafka.utils.TestUtils
-import org.apache.kafka.common.errors.InvalidOffsetException
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertThrows}
+import org.junit.{Test, After, Before}
+import org.junit.Assert.{assertEquals}
+import org.scalatest.junit.JUnitSuite
 
 /**
  * Unit test for time index.
  */
-class TimeIndexTest {
+class TimeIndexTest extends JUnitSuite {
   var idx: TimeIndex = null
   val maxEntries = 30
   val baseOffset = 45L
 
-  @BeforeEach
+  @Before
   def setup(): Unit = {
     this.idx = new TimeIndex(nonExistantTempFile(), baseOffset = baseOffset, maxIndexSize = maxEntries * 12)
   }
 
-  @AfterEach
+  @After
   def teardown(): Unit = {
     if(this.idx != null)
       this.idx.file.delete()
@@ -60,20 +61,6 @@ class TimeIndexTest {
   }
 
   @Test
-  def testEntry(): Unit = {
-    appendEntries(maxEntries - 1)
-    assertEquals(TimestampOffset(10L, 55L), idx.entry(0))
-    assertEquals(TimestampOffset(20L, 65L), idx.entry(1))
-    assertEquals(TimestampOffset(30L, 75L), idx.entry(2))
-    assertEquals(TimestampOffset(40L, 85L), idx.entry(3))
-  }
-
-  @Test
-  def testEntryOverflow(): Unit = {
-    assertThrows(classOf[IllegalArgumentException], () => idx.entry(0))
-  }
-
-  @Test
   def testTruncate(): Unit = {
     appendEntries(maxEntries - 1)
     idx.truncate()
@@ -87,8 +74,12 @@ class TimeIndexTest {
   @Test
   def testAppend(): Unit = {
     appendEntries(maxEntries - 1)
-    assertThrows(classOf[IllegalArgumentException], () => idx.maybeAppend(10000L, 1000L))
-    assertThrows(classOf[InvalidOffsetException], () => idx.maybeAppend(10000L, (maxEntries - 2) * 10, true))
+    intercept[IllegalArgumentException] {
+      idx.maybeAppend(10000L, 1000L)
+    }
+    intercept[InvalidOffsetException] {
+      idx.maybeAppend(10000L, (maxEntries - 2) * 10, true)
+    }
     idx.maybeAppend(10000L, 1000L, true)
   }
 
@@ -128,15 +119,15 @@ class TimeIndexTest {
     }
 
     shouldCorruptOffset = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptOffset = false
 
     shouldCorruptTimestamp = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptTimestamp = false
 
     shouldCorruptLength = true
-    assertThrows(classOf[CorruptIndexException], () => idx.sanityCheck())
+    intercept[CorruptIndexException](idx.sanityCheck())
     shouldCorruptLength = false
 
     idx.sanityCheck()

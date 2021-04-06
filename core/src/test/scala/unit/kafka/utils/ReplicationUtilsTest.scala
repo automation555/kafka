@@ -17,12 +17,14 @@
 
 package kafka.utils
 
+import kafka.server.{KafkaConfig, ReplicaFetcherManager}
 import kafka.api.LeaderAndIsr
 import kafka.controller.LeaderIsrAndControllerEpoch
-import kafka.zk._
+import kafka.zk.{IsrChangeNotificationZNode, TopicZNode, ZooKeeperTestHarness}
 import org.apache.kafka.common.TopicPartition
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.Assert._
+import org.junit.{Before, Test}
+import org.easymock.EasyMock
 
 class ReplicationUtilsTest extends ZooKeeperTestHarness {
   private val zkVersion = 1
@@ -33,18 +35,35 @@ class ReplicationUtilsTest extends ZooKeeperTestHarness {
   private val controllerEpoch = 1
   private val isr = List(1, 2)
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     zkClient.makeSurePersistentPathExists(TopicZNode.path(topic))
     val topicPartition = new TopicPartition(topic, partition)
     val leaderAndIsr = LeaderAndIsr(leader, leaderEpoch, isr, 1)
     val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)
-    zkClient.createTopicPartitionStatesRaw(Map(topicPartition -> leaderIsrAndControllerEpoch), ZkVersion.MatchAnyVersion)
+    zkClient.createTopicPartitionStatesRaw(Map(topicPartition -> leaderIsrAndControllerEpoch))
   }
 
   @Test
   def testUpdateLeaderAndIsr(): Unit = {
+    val configs = TestUtils.createBrokerConfigs(1, zkConnect).map(KafkaConfig.fromProps)
+    val log = EasyMock.createMock(classOf[kafka.log.Log])
+    EasyMock.expect(log.logEndOffset).andReturn(20).anyTimes()
+    EasyMock.expect(log)
+    EasyMock.replay(log)
+
+    val logManager = EasyMock.createMock(classOf[kafka.log.LogManager])
+    EasyMock.expect(logManager.getLog(new TopicPartition(topic, partition), false)).andReturn(Some(log)).anyTimes()
+    EasyMock.replay(logManager)
+
+    val replicaManager = EasyMock.createMock(classOf[kafka.server.ReplicaManager])
+    EasyMock.expect(replicaManager.config).andReturn(configs.head)
+    EasyMock.expect(replicaManager.logManager).andReturn(logManager)
+    EasyMock.expect(replicaManager.replicaFetcherManager).andReturn(EasyMock.createMock(classOf[ReplicaFetcherManager]))
+    EasyMock.expect(replicaManager.zkClient).andReturn(zkClient)
+    EasyMock.replay(replicaManager)
+
     zkClient.makeSurePersistentPathExists(IsrChangeNotificationZNode.path)
 
     val replicas = List(0, 1)

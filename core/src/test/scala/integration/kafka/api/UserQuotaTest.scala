@@ -15,11 +15,13 @@
 package kafka.api
 
 import java.io.File
+import java.util.Properties
 
-import kafka.server.{KafkaConfig, KafkaServer}
+import kafka.server.{ConfigEntityName, KafkaConfig, KafkaServer}
 import kafka.utils.JaasTestUtils
 import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
-import org.junit.jupiter.api.{AfterEach, BeforeEach}
+import org.apache.kafka.common.utils.Sanitizer
+import org.junit.{After, Before}
 
 class UserQuotaTest extends BaseQuotaTest with SaslSetup {
 
@@ -30,55 +32,43 @@ class UserQuotaTest extends BaseQuotaTest with SaslSetup {
   override protected val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
   override protected val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     startSasl(jaasSections(kafkaServerSaslMechanisms, Some("GSSAPI"), KafkaSasl, JaasTestUtils.KafkaServerContextName))
     this.serverConfig.setProperty(KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp, Long.MaxValue.toString)
     this.serverConfig.setProperty(KafkaConfig.ConsumerQuotaBytesPerSecondDefaultProp, Long.MaxValue.toString)
     super.setUp()
-    quotaTestClients.alterClientQuotas(
-      quotaTestClients.clientQuotaAlteration(
-        quotaTestClients.clientQuotaEntity(Some(QuotaTestClients.DefaultEntity), None),
-        Some(defaultProducerQuota), Some(defaultConsumerQuota), Some(defaultRequestQuota)
-      )
-    )
+    val defaultProps = quotaTestClients.quotaProperties(defaultProducerQuota, defaultConsumerQuota, defaultRequestQuota)
+    adminZkClient.changeUserOrUserClientIdConfig(ConfigEntityName.Default, defaultProps)
     quotaTestClients.waitForQuotaUpdate(defaultProducerQuota, defaultConsumerQuota, defaultRequestQuota)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     super.tearDown()
     closeSasl()
   }
 
   override def createQuotaTestClients(topic: String, leaderNode: KafkaServer): QuotaTestClients = {
-    val producer = createProducer()
-    val consumer = createConsumer()
-    val adminClient = createAdminClient()
-
-    new QuotaTestClients(topic, leaderNode, producerClientId, consumerClientId, producer, consumer, adminClient) {
+    new QuotaTestClients(topic, leaderNode, producerClientId, consumerClientId, producers.head, consumers.head) {
       override val userPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, JaasTestUtils.KafkaClientPrincipalUnqualifiedName2)
-
       override def quotaMetricTags(clientId: String): Map[String, String] = {
         Map("user" -> userPrincipal.getName, "client-id" -> "")
       }
 
       override def overrideQuotas(producerQuota: Long, consumerQuota: Long, requestQuota: Double): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(Some(userPrincipal.getName), None),
-            Some(producerQuota), Some(consumerQuota), Some(requestQuota)
-          )
-        )
+        val props = quotaProperties(producerQuota, consumerQuota, requestQuota)
+        updateQuotaOverride(props)
       }
 
       override def removeQuotaOverrides(): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(Some(userPrincipal.getName), None),
-            None, None, None
-          )
-        )
+        val emptyProps = new Properties
+        updateQuotaOverride(emptyProps)
+        updateQuotaOverride(emptyProps)
+      }
+
+      private def updateQuotaOverride(properties: Properties): Unit = {
+        adminZkClient.changeUserOrUserClientIdConfig(Sanitizer.sanitize(userPrincipal.getName), properties)
       }
     }
   }

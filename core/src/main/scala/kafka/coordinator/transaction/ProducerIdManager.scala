@@ -18,11 +18,11 @@ package kafka.coordinator.transaction
 
 import java.nio.charset.StandardCharsets
 
+import kafka.common.KafkaException
 import kafka.utils.{Json, Logging}
 import kafka.zk.{KafkaZkClient, ProducerIdBlockZNode}
-import org.apache.kafka.common.KafkaException
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 /**
  * ProducerIdManager is the part of the transaction coordinator that provides ProducerIds in a unique way
@@ -70,12 +70,7 @@ case class ProducerIdBlock(brokerId: Int, blockStartId: Long, blockEndId: Long) 
   }
 }
 
-trait ProducerIdGenerator {
-  def generateProducerId(): Long
-  def shutdown() : Unit = {}
-}
-
-class ProducerIdManager(val brokerId: Int, val zkClient: KafkaZkClient) extends ProducerIdGenerator with Logging {
+class ProducerIdManager(val brokerId: Int, val zkClient: KafkaZkClient) extends Logging {
 
   this.logIdent = "[ProducerId Manager " + brokerId + "]: "
 
@@ -155,7 +150,7 @@ class ProducerIdManager(val brokerId: Int, val zkClient: KafkaZkClient) extends 
     }
   }
 
-  override def shutdown(): Unit = {
+  def shutdown(): Unit = {
     info(s"Shutdown complete: last producerId assigned $nextProducerId")
   }
 }

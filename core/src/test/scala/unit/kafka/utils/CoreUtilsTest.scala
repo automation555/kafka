@@ -17,26 +17,27 @@
 
 package kafka.utils
 
-import java.util.{Arrays, Base64, UUID}
+import java.util.{Arrays, UUID}
 import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import java.nio.ByteBuffer
 import java.util.regex.Pattern
 
-import org.junit.jupiter.api.Assertions._
+import org.scalatest.junit.JUnitSuite
+import org.junit.Assert._
+import kafka.common.KafkaException
 import kafka.utils.CoreUtils.inLock
-import org.apache.kafka.common.KafkaException
-import org.junit.jupiter.api.Test
-import org.apache.kafka.common.utils.Utils
+import org.junit.Test
+import org.apache.kafka.common.utils.{Base64, Utils}
 import org.slf4j.event.Level
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
 
-class CoreUtilsTest extends Logging {
+class CoreUtilsTest extends JUnitSuite with Logging {
 
   val clusterIdPattern = Pattern.compile("[a-zA-Z0-9_\\-]+")
 
@@ -103,7 +104,7 @@ class CoreUtilsTest extends Logging {
     assertEquals(2, itl.next())
     assertEquals(1, itl.next())
     assertEquals(2, itl.next())
-    assertFalse(itl.isEmpty)
+    assertFalse(itl.hasDefiniteSize)
 
     val s = Set(1, 2)
     val its = CoreUtils.circularIterator(s)
@@ -145,7 +146,7 @@ class CoreUtilsTest extends Logging {
     val buffer = ByteBuffer.allocate(4 * values.size)
     for(i <- 0 until values.length) {
       buffer.putInt(i*4, values(i))
-      assertEquals(values(i), CoreUtils.readInt(buffer.array, i*4), "Written value should match read value.")
+      assertEquals("Written value should match read value.", values(i), CoreUtils.readInt(buffer.array, i*4))
     }
   }
 
@@ -201,25 +202,25 @@ class CoreUtilsTest extends Logging {
   def testInLock(): Unit = {
     val lock = new ReentrantLock()
     val result = inLock(lock) {
-      assertTrue(lock.isHeldByCurrentThread, "Should be in lock")
+      assertTrue("Should be in lock", lock.isHeldByCurrentThread)
       1 + 1
     }
     assertEquals(2, result)
-    assertFalse(lock.isLocked, "Should be unlocked")
+    assertFalse("Should be unlocked", lock.isLocked)
   }
 
   @Test
   def testUrlSafeBase64EncodeUUID(): Unit = {
 
     // Test a UUID that has no + or / characters in base64 encoding [a149b4a3-06e1-4b49-a8cb-8a9c4a59fa46 ->(base64)-> oUm0owbhS0moy4qcSln6Rg==]
-    val clusterId1 = Base64.getUrlEncoder.withoutPadding.encodeToString(CoreUtils.getBytesFromUuid(UUID.fromString(
+    val clusterId1 = Base64.urlEncoderNoPadding.encodeToString(CoreUtils.getBytesFromUuid(UUID.fromString(
       "a149b4a3-06e1-4b49-a8cb-8a9c4a59fa46")))
     assertEquals(clusterId1, "oUm0owbhS0moy4qcSln6Rg")
     assertEquals(clusterId1.length, 22)
     assertTrue(clusterIdPattern.matcher(clusterId1).matches())
 
     // Test a UUID that has + or / characters in base64 encoding [d418ec02-277e-4853-81e6-afe30259daec ->(base64)-> 1BjsAid+SFOB5q/jAlna7A==]
-    val clusterId2 = Base64.getUrlEncoder.withoutPadding.encodeToString(CoreUtils.getBytesFromUuid(UUID.fromString(
+    val clusterId2 = Base64.urlEncoderNoPadding.encodeToString(CoreUtils.getBytesFromUuid(UUID.fromString(
       "d418ec02-277e-4853-81e6-afe30259daec")))
     assertEquals(clusterId2, "1BjsAid-SFOB5q_jAlna7A")
     assertEquals(clusterId2.length, 22)
@@ -251,7 +252,7 @@ class CoreUtilsTest extends Logging {
       }, Duration(1, TimeUnit.MINUTES))
       assertEquals(count, map(0).get)
       val created = createdCount.get
-      assertTrue(created > 0 && created <= nThreads, s"Too many creations $created")
+      assertTrue(s"Too many creations $created", created > 0 && created <= nThreads)
     } finally {
       executionContext.shutdownNow()
     }

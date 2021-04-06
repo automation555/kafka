@@ -50,7 +50,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
                   partitions: Int,
                   replicationFactor: Int,
                   topicConfig: Properties = new Properties,
-                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
+                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced): Unit = {
     val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
     createOrUpdateTopicPartitionAssignmentPathInZK(topic, replicaAssignment, topicConfig)
@@ -90,9 +90,10 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   def createOrUpdateTopicPartitionAssignmentPathInZK(topic: String,
                                                      partitionReplicaAssignment: Map[Int, Seq[Int]],
                                                      config: Properties = new Properties,
-                                                     update: Boolean = false) {
+                                                     update: Boolean = false): Unit = {
     validateCreateOrUpdateTopic(topic, partitionReplicaAssignment, config, update)
 
+    // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
     if (!update) {
       // write out the config if there is any, this isn't transactional with the partition assignments
       zkClient.setOrCreateEntityConfigs(ConfigType.Topic, topic, config)
@@ -140,18 +141,12 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
         throw new InvalidReplicaAssignmentException("Duplicate replica assignment found: " + partitionReplicaAssignment)
     )
 
-    val allBrokerIds = zkClient.getSortedBrokerList()
-    partitionReplicaAssignment.values.foreach ( reps =>
-      if (reps.filterNot(allBrokerIds.contains(_)).size == reps.size)
-        throw new InvalidReplicaAssignmentException("At lest one replica of partition should be alive.")
-    )
-
     // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
     if (!update)
       LogConfig.validate(config)
   }
 
-  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean) {
+  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean): Unit = {
     try {
       val assignment = replicaAssignment.map { case (partitionId, replicas) => (new TopicPartition(topic,partitionId), replicas) }.toMap
 
@@ -174,7 +169,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    * Creates a delete path for a given topic
    * @param topic
    */
-  def deleteTopic(topic: String) {
+  def deleteTopic(topic: String): Unit = {
     if (zkClient.topicExists(topic)) {
       try {
         zkClient.createDeleteTopicPath(topic)
@@ -270,18 +265,6 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     }
   }
 
-  def parseBroker(broker: String): Option[Int] = {
-    broker match {
-      case ConfigEntityName.Default => None
-      case _ =>
-        try Some(broker.toInt)
-        catch {
-          case _: NumberFormatException =>
-            throw new IllegalArgumentException(s"Error parsing broker $broker. The broker's Entity Name must be a single integer value")
-        }
-    }
-  }
-
   /**
    * Change the configs for a given entityType and entityName
    * @param entityType
@@ -290,11 +273,19 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    */
   def changeConfigs(entityType: String, entityName: String, configs: Properties): Unit = {
 
+    def parseBroker(broker: String): Int = {
+      try broker.toInt
+      catch {
+        case _: NumberFormatException =>
+          throw new IllegalArgumentException(s"Error parsing broker $broker. The broker's Entity Name must be a single integer value")
+      }
+    }
+
     entityType match {
       case ConfigType.Topic => changeTopicConfig(entityName, configs)
       case ConfigType.Client => changeClientIdConfig(entityName, configs)
       case ConfigType.User => changeUserOrUserClientIdConfig(entityName, configs)
-      case ConfigType.Broker => changeBrokerConfig(parseBroker(entityName), configs)
+      case ConfigType.Broker => changeBrokerConfig(Seq(parseBroker(entityName)), configs)
       case _ => throw new IllegalArgumentException(s"$entityType is not a known entityType. Should be one of ${ConfigType.Topic}, ${ConfigType.Client}, ${ConfigType.Broker}")
     }
   }
@@ -309,7 +300,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeClientIdConfig(sanitizedClientId: String, configs: Properties) {
+  def changeClientIdConfig(sanitizedClientId: String, configs: Properties): Unit = {
     DynamicConfig.Client.validate(configs)
     changeEntityConfig(ConfigType.Client, sanitizedClientId, configs)
   }
@@ -324,7 +315,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties) {
+  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties): Unit = {
     if (sanitizedEntityName == ConfigEntityName.Default || sanitizedEntityName.contains("/clients"))
       DynamicConfig.Client.validate(configs)
     else
@@ -381,7 +372,8 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     */
   def changeBrokerConfig(broker: Option[Int], configs: Properties): Unit = {
     validateBrokerConfig(configs)
-    changeEntityConfig(ConfigType.Broker, broker.map(_.toString).getOrElse(ConfigEntityName.Default), configs)
+    val entityName = broker.map(_.toString).getOrElse(ConfigEntityName.Default)
+    changeEntityConfig(ConfigType.Broker, broker.map(String.valueOf).getOrElse(ConfigEntityName.Default), configs)
   }
 
   /**
@@ -393,7 +385,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     DynamicConfig.Broker.validate(configs)
   }
 
-  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties) {
+  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties): Unit = {
     val sanitizedEntityPath = rootEntityType + '/' + fullSanitizedEntityName
     zkClient.setOrCreateEntityConfigs(rootEntityType, fullSanitizedEntityName, configs)
 

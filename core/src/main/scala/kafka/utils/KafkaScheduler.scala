@@ -51,9 +51,8 @@ trait Scheduler {
    * @param delay The amount of time to wait before the first execution
    * @param period The period with which to execute the task. If < 0 the task will execute only once.
    * @param unit The unit for the preceding times.
-   * @return A Future object to manage the task scheduled.
    */
-  def schedule(name: String, fun: ()=>Unit, delay: Long = 0, period: Long = -1, unit: TimeUnit = TimeUnit.MILLISECONDS) : ScheduledFuture[_]
+  def schedule(name: String, fun: ()=>Unit, delay: Long = 0, period: Long = -1, unit: TimeUnit = TimeUnit.MILLISECONDS): Unit
 }
 
 /**
@@ -80,9 +79,10 @@ class KafkaScheduler(val threads: Int,
       executor = new ScheduledThreadPoolExecutor(threads)
       executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false)
       executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false)
-      executor.setRemoveOnCancelPolicy(true)
-      executor.setThreadFactory(runnable =>
-        new KafkaThread(threadNamePrefix + schedulerThreadId.getAndIncrement(), runnable, daemon))
+      executor.setThreadFactory(new ThreadFactory() {
+                                  def newThread(runnable: Runnable): Thread = 
+                                    new KafkaThread(threadNamePrefix + schedulerThreadId.getAndIncrement(), runnable, daemon)
+                                })
     }
   }
   
@@ -99,37 +99,26 @@ class KafkaScheduler(val threads: Int,
     }
   }
 
-  def scheduleOnce(name: String, fun: () => Unit): Unit = {
-    schedule(name, fun, delay = 0L, period = -1L, unit = TimeUnit.MILLISECONDS)
-  }
-
-  def schedule(name: String, fun: () => Unit, delay: Long, period: Long, unit: TimeUnit): ScheduledFuture[_] = {
+  def schedule(name: String, fun: ()=>Unit, delay: Long, period: Long, unit: TimeUnit): Unit = {
     debug("Scheduling task %s with initial delay %d ms and period %d ms."
         .format(name, TimeUnit.MILLISECONDS.convert(delay, unit), TimeUnit.MILLISECONDS.convert(period, unit)))
     this synchronized {
-      ensureRunning()
-      val runnable: Runnable = () => {
+      ensureRunning
+      val runnable = CoreUtils.runnable {
         try {
           trace("Beginning execution of scheduled task '%s'.".format(name))
           fun()
         } catch {
-          case t: Throwable => error(s"Uncaught exception in scheduled task '$name'", t)
+          case t: Throwable => error("Uncaught exception in scheduled task '" + name +"'", t)
         } finally {
           trace("Completed execution of scheduled task '%s'.".format(name))
         }
       }
-      if (period >= 0)
+      if(period >= 0)
         executor.scheduleAtFixedRate(runnable, delay, period, unit)
       else
         executor.schedule(runnable, delay, unit)
     }
-  }
-
-  /**
-   * Package private for testing.
-   */
-  private[kafka] def taskRunning(task: ScheduledFuture[_]): Boolean = {
-    executor.getQueue().contains(task)
   }
 
   def resizeThreadPool(newSize: Int): Unit = {

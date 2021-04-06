@@ -17,20 +17,19 @@
 
 package kafka.api
 
-import org.junit.jupiter.api._
-import org.junit.jupiter.api.Assertions._
-
+import org.junit._
+import org.scalatest.junit.JUnitSuite
+import org.junit.Assert._
 import scala.util.Random
 import java.nio.ByteBuffer
-
+import kafka.common.KafkaException
 import kafka.utils.TestUtils
-import org.apache.kafka.common.KafkaException
 
 object ApiUtilsTest {
   val rnd: Random = new Random()
 }
 
-class ApiUtilsTest {
+class ApiUtilsTest extends JUnitSuite {
 
   @Test
   def testShortStringNonASCII(): Unit = {
@@ -64,8 +63,18 @@ class ApiUtilsTest {
     assertEquals(s1, ApiUtils.readShortString(bb))
 
     // One byte too big
-    val s2: String = TestUtils.randomString(Short.MaxValue + 1)
-    assertThrows(classOf[KafkaException], () => ApiUtils.shortStringLength(s2))
-    assertThrows(classOf[KafkaException], () => ApiUtils.writeShortString(bb, s2))
+    val s2: String = TestUtils.randomString(Short.MaxValue + 1) 
+    try {
+      ApiUtils.shortStringLength(s2)
+      fail
+    } catch {
+      case _: KafkaException => // ok
+    }
+    try {
+      ApiUtils.writeShortString(bb, s2)
+      fail
+    } catch {
+      case _: KafkaException => // ok
+    }
   }
 }

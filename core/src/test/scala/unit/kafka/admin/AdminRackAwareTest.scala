@@ -17,9 +17,8 @@
 package kafka.admin
 
 import kafka.utils.Logging
-import org.apache.kafka.common.errors.InvalidReplicationFactorException
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.Test
+import org.junit.Assert._
+import org.junit.Test
 
 import scala.collection.Map
 
@@ -30,7 +29,7 @@ class AdminRackAwareTest extends RackAwareTest with Logging {
     val rackMap = Map(0 -> "rack1", 1 -> "rack3", 2 -> "rack3", 3 -> "rack2", 4 -> "rack2", 5 -> "rack1")
     val newList = AdminUtils.getRackAlternatedBrokerList(rackMap)
     assertEquals(List(0, 3, 1, 5, 4, 2), newList)
-    val anotherList = AdminUtils.getRackAlternatedBrokerList(rackMap.toMap - 5)
+    val anotherList = AdminUtils.getRackAlternatedBrokerList(rackMap - 5)
     assertEquals(List(0, 3, 1, 4, 2), anotherList)
     val assignment = AdminUtils.assignReplicasToBrokers(toBrokerMetadata(rackMap), 7, 3, 0, 0)
     val expected = Map(0 -> List(0, 3, 1),
@@ -147,7 +146,7 @@ class AdminRackAwareTest extends RackAwareTest with Logging {
     val replicationFactor = 5
     val brokerRackMapping = Map(0 -> "rack1", 1 -> "rack2", 2 -> "rack2", 3 -> "rack3", 4 -> "rack3", 5 -> "rack2")
     val assignment = AdminUtils.assignReplicasToBrokers(toBrokerMetadata(brokerRackMapping), numPartitions, replicationFactor)
-    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.toIndexedSeq.map(_.size))
+    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.map(_.size))
     val distribution = getReplicaDistribution(assignment, brokerRackMapping)
     for (partition <- 0 until numPartitions)
       assertEquals(3, distribution.partitionRacks(partition).toSet.size)
@@ -160,7 +159,7 @@ class AdminRackAwareTest extends RackAwareTest with Logging {
     val brokerRackMapping = Map(0 -> "rack1", 1 -> "rack2", 2 -> "rack2", 3 -> "rack3", 4 -> "rack3", 5 -> "rack2")
     val assignment = AdminUtils.assignReplicasToBrokers(toBrokerMetadata(brokerRackMapping), numPartitions,
       replicationFactor)
-    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.toIndexedSeq.map(_.size))
+    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.map(_.size))
     val distribution = getReplicaDistribution(assignment, brokerRackMapping)
     for (partition <- 0 to 5)
       assertEquals(2, distribution.partitionRacks(partition).toSet.size)
@@ -172,7 +171,7 @@ class AdminRackAwareTest extends RackAwareTest with Logging {
     val replicationFactor = 3
     val brokerRackMapping = Map(0 -> "rack1", 1 -> "rack1", 2 -> "rack1", 3 -> "rack1", 4 -> "rack1", 5 -> "rack1")
     val assignment = AdminUtils.assignReplicasToBrokers(toBrokerMetadata(brokerRackMapping), numPartitions, replicationFactor)
-    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.toIndexedSeq.map(_.size))
+    assertEquals(List.fill(assignment.size)(replicationFactor), assignment.values.map(_.size))
     val distribution = getReplicaDistribution(assignment, brokerRackMapping)
     for (partition <- 0 until numPartitions)
       assertEquals(1, distribution.partitionRacks(partition).toSet.size)
@@ -192,34 +191,5 @@ class AdminRackAwareTest extends RackAwareTest with Logging {
       fixedStartIndex = 2)
     checkReplicaDistribution(assignment, rackInfo, 5, 6, 4,
       verifyRackAware = false, verifyLeaderDistribution = false, verifyReplicasDistribution = false)
-  }
-
-  @Test
-  def testReplicaAssignment(): Unit = {
-    val brokerMetadatas = (0 to 4).map(new BrokerMetadata(_, None))
-
-    // test 0 replication factor
-    assertThrows(classOf[InvalidReplicationFactorException],
-      () => AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 0))
-
-    // test wrong replication factor
-    assertThrows(classOf[InvalidReplicationFactorException],
-      () => AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 6))
-
-    // correct assignment
-    val expectedAssignment = Map(
-        0 -> List(0, 1, 2),
-        1 -> List(1, 2, 3),
-        2 -> List(2, 3, 4),
-        3 -> List(3, 4, 0),
-        4 -> List(4, 0, 1),
-        5 -> List(0, 2, 3),
-        6 -> List(1, 3, 4),
-        7 -> List(2, 4, 0),
-        8 -> List(3, 0, 1),
-        9 -> List(4, 1, 2))
-
-    val actualAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 3, 0)
-    assertEquals(expectedAssignment, actualAssignment)
   }
 }

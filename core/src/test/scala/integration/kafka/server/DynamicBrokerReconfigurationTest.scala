@@ -112,7 +112,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       props.put(KafkaConfig.ZkEnableSecureAclsProp, "true")
       props.put(KafkaConfig.SaslEnabledMechanismsProp, kafkaServerSaslMechanisms.mkString(","))
       props.put(KafkaConfig.LogSegmentBytesProp, "2000") // low value to test log rolling on config update
-      props.put(KafkaConfig.MessageMaxBytesProp, "2000") // match log.segment.bytes
       props.put(KafkaConfig.NumReplicaFetchersProp, "2") // greater than one to test reducing threads
       props.put(KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp, "10000000") // non-default value to trigger a new metric
       props.put(KafkaConfig.PasswordEncoderSecretProp, "dynamic-config-secret")
@@ -120,13 +119,12 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       props ++= sslProperties1
       props ++= securityProps(sslProperties1, KEYSTORE_PROPS, listenerPrefix(SecureInternal))
 
-      // Set invalid top-level properties to ensure that listener config is used
-      // Don't set any dynamic configs here since they get overridden in tests
+      // Set invalid static properties to ensure that dynamic config is used
       props ++= invalidSslProperties
-      props ++= securityProps(invalidSslProperties, KEYSTORE_PROPS, "")
-      props ++= securityProps(sslProperties1, KEYSTORE_PROPS, listenerPrefix(SecureExternal))
+      props ++= securityProps(invalidSslProperties, KEYSTORE_PROPS, listenerPrefix(SecureExternal))
 
       val kafkaConfig = KafkaConfig.fromProps(props)
+      configureDynamicKeystoreInZooKeeper(kafkaConfig, Seq(brokerId), sslProperties1)
 
       servers += TestUtils.createServer(kafkaConfig)
     }
@@ -141,7 +139,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
   }
 
   @After
-  override def tearDown() {
+  override def tearDown(): Unit = {
     clientThreads.foreach(_.interrupt())
     clientThreads.foreach(_.initiateShutdown())
     clientThreads.foreach(_.join(5 * 1000))
@@ -185,7 +183,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       if (overrideCount > 0) {
         val listenerPrefix = "listener.name.external.ssl."
         verifySynonym(configName, synonyms.get(0), isSensitive, listenerPrefix, ConfigSource.DYNAMIC_BROKER_CONFIG, sslProperties1)
-        verifySynonym(configName, synonyms.get(1), isSensitive, listenerPrefix, ConfigSource.STATIC_BROKER_CONFIG, sslProperties1)
+        verifySynonym(configName, synonyms.get(1), isSensitive, listenerPrefix, ConfigSource.STATIC_BROKER_CONFIG, invalidSslProperties)
       }
       verifySynonym(configName, synonyms.get(overrideCount), isSensitive, "ssl.", ConfigSource.STATIC_BROKER_CONFIG, invalidSslProperties)
       defaultValue.foreach { value =>
@@ -206,7 +204,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     }
 
     val adminClient = adminClients.head
-    alterSslKeystoreUsingConfigCommand(sslProperties1, SecureExternal)
 
     val configDesc = describeConfig(adminClient)
     verifySslConfig("listener.name.external.", sslProperties1, configDesc)
@@ -314,7 +311,6 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     props.put(KafkaConfig.LogCleanerDedupeBufferLoadFactorProp, "0.8")
     props.put(KafkaConfig.LogCleanerIoBufferSizeProp, "300000")
     props.put(KafkaConfig.MessageMaxBytesProp, "40000")
-    props.put(KafkaConfig.LogSegmentBytesProp, "40000")
     props.put(KafkaConfig.LogCleanerIoMaxBytesPerSecondProp, "50000000")
     props.put(KafkaConfig.LogCleanerBackoffMsProp, "6000")
     reconfigureServers(props, perBrokerConfig = false, (KafkaConfig.LogCleanerThreadsProp, "2"))
@@ -358,7 +354,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     props.put(KafkaConfig.LogFlushIntervalMsProp, "60000")
     props.put(KafkaConfig.LogRetentionBytesProp, "10000000")
     props.put(KafkaConfig.LogRetentionTimeMillisProp, TimeUnit.DAYS.toMillis(1).toString)
-    props.put(KafkaConfig.MessageMaxBytesProp, "4000")
+    props.put(KafkaConfig.MessageMaxBytesProp, "100000")
     props.put(KafkaConfig.LogIndexIntervalBytesProp, "10000")
     props.put(KafkaConfig.LogCleanerDeleteRetentionMsProp, TimeUnit.DAYS.toMillis(1).toString)
     props.put(KafkaConfig.LogCleanerMinCompactionLagMsProp, "60000")
@@ -705,7 +701,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     // Ensure connections are made to brokers before external listener is made inaccessible
     describeConfig(externalAdminClient)
 
-    // Update broker external listener to use invalid listener address
+    // Update broker keystore for external listener to use invalid listener address
     // any address other than localhost is sufficient to fail (either connection or host name verification failure)
     val invalidHost = "192.168.0.1"
     alterAdvertisedListener(adminClient, externalAdminClient, "localhost", invalidHost)
@@ -1070,6 +1066,13 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
       (s"$configPrefix$SSL_KEYSTORE_LOCATION_CONFIG", props.getProperty(SSL_KEYSTORE_LOCATION_CONFIG)), expectFailure)
   }
 
+  private def alterSslTruststore(adminClient: AdminClient, props: Properties, listener: String, expectFailure: Boolean  = false): Unit = {
+    val configPrefix = listenerPrefix(listener)
+    val newProps = securityProps(props, TRUSTSTORE_PROPS, configPrefix)
+    reconfigureServers(newProps, perBrokerConfig = true,
+      (s"$configPrefix$SSL_TRUSTSTORE_LOCATION_CONFIG", props.getProperty(SSL_TRUSTSTORE_LOCATION_CONFIG)), expectFailure)
+  }
+
   private def alterSslKeystoreUsingConfigCommand(props: Properties, listener: String): Unit = {
     val configPrefix = listenerPrefix(listener)
     val newProps = securityProps(props, KEYSTORE_PROPS, configPrefix)
@@ -1240,7 +1243,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     val executor = Executors.newSingleThreadExecutor
     executors += executor
     val future = executor.submit(new Runnable() {
-      def run() {
+      def run(): Unit = {
         producer.send(new ProducerRecord(topic, "key", "value")).get
       }
     })
@@ -1252,7 +1255,7 @@ class DynamicBrokerReconfigurationTest extends ZooKeeperTestHarness with SaslSet
     val executor = Executors.newSingleThreadExecutor
     executors += executor
     val future = executor.submit(new Runnable() {
-      def run() {
+      def run(): Unit = {
         assertEquals(0, consumer.poll(100).count)
       }
     })

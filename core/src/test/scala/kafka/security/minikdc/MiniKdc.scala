@@ -27,7 +27,7 @@ import java.util.{Locale, Properties, UUID}
 
 import kafka.utils.{CoreUtils, Exit, Logging}
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 import org.apache.commons.lang.text.StrSubstitutor
 import org.apache.directory.api.ldap.model.entry.{DefaultEntry, Entry}
 import org.apache.directory.api.ldap.model.ldif.LdifReader
@@ -94,7 +94,7 @@ class MiniKdc(config: Properties, workDir: File) extends Logging {
 
   info("Configuration:")
   info("---------------------------------------------------------------")
-  config.forEach { (key, value) =>
+  config.asScala.foreach { case (key, value) =>
     info(s"\t$key: $value")
   }
   info("---------------------------------------------------------------")
@@ -359,7 +359,7 @@ object MiniKdc {
           throw new RuntimeException(s"Specified configuration does not exist: ${configFile.getAbsolutePath}")
 
         val userConfig = Utils.loadProps(configFile.getAbsolutePath)
-        userConfig.forEach { (key, value) =>
+        userConfig.asScala.foreach { case (key, value) =>
           config.put(key, value)
         }
         val keytabFile = new File(keytabPath).getAbsoluteFile
@@ -370,7 +370,7 @@ object MiniKdc {
     }
   }
 
-  private[minikdc] def start(workDir: File, config: Properties, keytabFile: File, principals: Seq[String]): MiniKdc = {
+  private def start(workDir: File, config: Properties, keytabFile: File, principals: Seq[String]): Unit = {
     val miniKdc = new MiniKdc(config, workDir)
     miniKdc.start()
     miniKdc.createPrincipal(keytabFile, principals: _*)
@@ -390,8 +390,9 @@ object MiniKdc {
       |
     """.stripMargin
     println(infoMessage)
-    Exit.addShutdownHook("minikdc-shutdown-hook", miniKdc.stop())
-    miniKdc
+    Runtime.getRuntime.addShutdownHook(CoreUtils.newThread("minikdc-shutdown-hook", daemon = false) {
+      miniKdc.stop()
+    })
   }
 
   val OrgName = "org.name"

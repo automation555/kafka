@@ -20,10 +20,11 @@ package kafka.log
 import java.nio._
 
 import kafka.utils.Exit
-import org.junit.jupiter.api._
-import org.junit.jupiter.api.Assertions._
+import org.junit._
+import org.scalatest.junit.JUnitSuite
+import org.junit.Assert._
 
-class OffsetMapTest {
+class OffsetMapTest extends JUnitSuite {
   
   @Test
   def testBasicValidation(): Unit = {
@@ -82,7 +83,7 @@ object OffsetMapTest {
     val start = System.nanoTime
     val map = test.validateMap(size, load)
     val ellapsedMs = (System.nanoTime - start) / 1000.0 / 1000.0
-    println(s"${map.size} entries in map of size ${map.slots} in $ellapsedMs ms")
+    println(map.size + " entries in map of size " + map.slots + " in " + ellapsedMs + " ms")
     println("Collision rate: %.1f%%".format(100*map.collisionRate))
   }
 }

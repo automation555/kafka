@@ -15,21 +15,20 @@
 package kafka.server
 
 import java.net.Socket
-import java.util.{Collections, Properties}
+import java.util.Properties
 
 import kafka.utils.TestUtils
-import org.apache.kafka.common.config.internals.QuotaConfigs
 import org.apache.kafka.common.network.ListenerName
-import org.apache.kafka.common.requests.{ListGroupsRequest, ListGroupsResponse}
+import org.apache.kafka.common.requests.{ListGroupsRequest,ListGroupsResponse}
 import org.apache.kafka.common.metrics.MetricsReporter
 import org.apache.kafka.common.metrics.KafkaMetric
 import org.apache.kafka.common.security.auth.SecurityProtocol
 import org.apache.kafka.common.protocol.Errors
-import org.junit.jupiter.api.Assertions._
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
-import java.util.concurrent.atomic.AtomicInteger
 
-import org.apache.kafka.common.message.ListGroupsRequestData
+import org.junit.Assert._
+import org.junit.{Before, Test}
+import org.junit.After
+import java.util.concurrent.atomic.AtomicInteger
 
 /*
  * this test checks that a reporter that throws an exception will not affect other reporters
@@ -37,23 +36,23 @@ import org.apache.kafka.common.message.ListGroupsRequestData
  */
 class KafkaMetricReporterExceptionHandlingTest extends BaseRequestTest {
 
-  override def brokerCount: Int = 1
+  override def numBrokers: Int = 1
 
-  override def brokerPropertyOverrides(properties: Properties): Unit = {
+  override def propertyOverrides(properties: Properties): Unit = {
     properties.put(KafkaConfig.MetricReporterClassesProp, classOf[KafkaMetricReporterExceptionHandlingTest.BadReporter].getName + "," + classOf[KafkaMetricReporterExceptionHandlingTest.GoodReporter].getName)
   }
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
 
     // need a quota prop to register a "throttle-time" metrics after server startup
     val quotaProps = new Properties()
-    quotaProps.put(QuotaConfigs.REQUEST_PERCENTAGE_OVERRIDE_CONFIG, "0.1")
+    quotaProps.put(DynamicConfig.Client.RequestPercentageOverrideProp, "0.1")
     adminZkClient.changeClientIdConfig("<default>", quotaProps)
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     KafkaMetricReporterExceptionHandlingTest.goodReporterRegistered.set(0)
     KafkaMetricReporterExceptionHandlingTest.badReporterRegistered.set(0)
@@ -69,10 +68,8 @@ class KafkaMetricReporterExceptionHandlingTest extends BaseRequestTest {
 
     try {
       TestUtils.retry(10000) {
-        val listGroupsRequest = new ListGroupsRequest.Builder(new ListGroupsRequestData).build()
-        val listGroupsResponse = sendAndReceive[ListGroupsResponse](listGroupsRequest, socket)
-        val errors = listGroupsResponse.errorCounts()
-        assertEquals(Collections.singletonMap(Errors.NONE, 1), errors)
+        val error = new ListGroupsResponse(requestResponse(socket, "clientId", 0, new ListGroupsRequest.Builder())).error()
+        assertEquals(Errors.NONE, error)
         assertEquals(KafkaMetricReporterExceptionHandlingTest.goodReporterRegistered.get, KafkaMetricReporterExceptionHandlingTest.badReporterRegistered.get)
         assertTrue(KafkaMetricReporterExceptionHandlingTest.goodReporterRegistered.get > 0)
       }

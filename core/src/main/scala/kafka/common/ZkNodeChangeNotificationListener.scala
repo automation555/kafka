@@ -16,7 +16,6 @@
  */
 package kafka.common
 
-import java.nio.charset.StandardCharsets.UTF_8
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -24,9 +23,6 @@ import kafka.utils.{Logging, ShutdownableThread}
 import kafka.zk.{KafkaZkClient, StateChangeHandlers}
 import kafka.zookeeper.{StateChangeHandler, ZNodeChildChangeHandler}
 import org.apache.kafka.common.utils.Time
-
-import scala.collection.Seq
-import scala.util.{Failure, Try}
 
 /**
  * Handle the notificationMessage.
@@ -87,7 +83,12 @@ class ZkNodeChangeNotificationListener(private val zkClient: KafkaZkClient,
         for (notification <- notifications) {
           val changeId = changeNumber(notification)
           if (changeId > lastExecutedChange) {
-            processNotification(notification)
+            val changeZnode = seqNodeRoot + "/" + notification
+            val (data, _) = zkClient.getDataAndStat(changeZnode)
+            data match {
+              case Some(d) => notificationHandler.processNotification(d)
+              case None => warn(s"read null data from $changeZnode when processing notification $notification")
+            }
             lastExecutedChange = changeId
           }
         }
@@ -99,25 +100,13 @@ class ZkNodeChangeNotificationListener(private val zkClient: KafkaZkClient,
     }
   }
 
-  private def processNotification(notification: String): Unit = {
-    val changeZnode = seqNodeRoot + "/" + notification
-    val (data, _) = zkClient.getDataAndStat(changeZnode)
-    data match {
-      case Some(d) => Try(notificationHandler.processNotification(d)) match {
-        case Failure(e) => error(s"error processing change notification ${new String(d, UTF_8)} from $changeZnode", e)
-        case _ =>
-      }
-      case None => warn(s"read null data from $changeZnode")
-    }
-  }
-
   private def addChangeNotification(): Unit = {
     if (!isClosed.get && queue.peek() == null)
       queue.put(new ChangeNotification)
   }
 
   class ChangeNotification {
-    def process(): Unit = processNotifications()
+    def process(): Unit = processNotifications
   }
 
   /**
@@ -143,17 +132,17 @@ class ZkNodeChangeNotificationListener(private val zkClient: KafkaZkClient,
   private def changeNumber(name: String): Long = name.substring(seqNodePrefix.length).toLong
 
   class ChangeEventProcessThread(name: String) extends ShutdownableThread(name = name) {
-    override def doWork(): Unit = queue.take().process()
+    override def doWork(): Unit = queue.take().process
   }
 
   object ChangeNotificationHandler extends ZNodeChildChangeHandler {
     override val path: String = seqNodeRoot
-    override def handleChildChange(): Unit = addChangeNotification()
+    override def handleChildChange(): Unit = addChangeNotification
   }
 
   object ZkStateChangeHandler extends  StateChangeHandler {
     override val name: String = StateChangeHandlers.zkNodeChangeListenerHandler(seqNodeRoot)
-    override def afterInitializingSession(): Unit = addChangeNotification()
+    override def afterInitializingSession(): Unit = addChangeNotification
   }
 }
 

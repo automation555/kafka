@@ -19,20 +19,13 @@ package kafka.api
 import org.apache.kafka.common.config.internals.BrokerSecurityConfigs
 import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.security.auth._
-import org.junit.jupiter.api.{BeforeEach, Test}
-import org.junit.jupiter.api.Assertions._
-import org.apache.kafka.common.errors.TopicAuthorizationException
+import org.junit.Before
 
 // This test case uses a separate listener for client and inter-broker communication, from
 // which we derive corresponding principals
 object PlaintextEndToEndAuthorizationTest {
-  @volatile
-  private var clientListenerName = None: Option[String]
-  @volatile
-  private var serverListenerName = None: Option[String]
   class TestClientPrincipalBuilder extends KafkaPrincipalBuilder {
     override def build(context: AuthenticationContext): KafkaPrincipal = {
-      clientListenerName = Some(context.listenerName)
       context match {
         case ctx: PlaintextAuthenticationContext if ctx.clientAddress != null =>
           new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "client")
@@ -44,7 +37,6 @@ object PlaintextEndToEndAuthorizationTest {
 
   class TestServerPrincipalBuilder extends KafkaPrincipalBuilder {
     override def build(context: AuthenticationContext): KafkaPrincipal = {
-      serverListenerName = Some(context.listenerName)
       context match {
         case ctx: PlaintextAuthenticationContext =>
           new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "server")
@@ -66,23 +58,13 @@ class PlaintextEndToEndAuthorizationTest extends EndToEndAuthorizationTest {
     classOf[TestClientPrincipalBuilder].getName)
   this.serverConfig.setProperty("listener.name.server." + BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_CONFIG,
     classOf[TestServerPrincipalBuilder].getName)
-  override val clientPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "client")
-  override val kafkaPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "server")
+  override val clientPrincipal = "client"
+  override val kafkaPrincipal = "server"
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     startSasl(jaasSections(List.empty, None, ZkSasl))
     super.setUp()
-  }
-
-  @Test
-  def testListenerName(): Unit = {
-    // To check the client listener name, establish a session on the server by sending any request eg sendRecords
-    val producer = createProducer()
-    assertThrows(classOf[TopicAuthorizationException], () => sendRecords(producer, numRecords = 1, tp))
-
-    assertEquals(Some("CLIENT"), PlaintextEndToEndAuthorizationTest.clientListenerName)
-    assertEquals(Some("SERVER"), PlaintextEndToEndAuthorizationTest.serverListenerName)
   }
 
 }

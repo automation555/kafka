@@ -22,12 +22,13 @@ import java.nio.file.Files
 import java.util.concurrent._
 
 import com.yammer.metrics.core.Gauge
+import kafka.common.KafkaException
 import kafka.metrics.KafkaMetricsGroup
 import kafka.server.checkpoints.OffsetCheckpointFile
 import kafka.server.{BrokerState, RecoveringFromUncleanShutdown, _}
 import kafka.utils._
 import kafka.zk.KafkaZkClient
-import org.apache.kafka.common.{KafkaException, TopicPartition}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.utils.Time
 import org.apache.kafka.common.errors.{KafkaStorageException, LogDirNotFoundException}
 
@@ -143,8 +144,10 @@ class LogManager(logDirs: Seq[File],
    * </ol>
    */
   private def createAndValidateLogDirs(dirs: Seq[File], initialOfflineDirs: Seq[File]): ConcurrentLinkedQueue[File] = {
+    if(dirs.map(_.getCanonicalPath).toSet.size < dirs.size)
+      throw new KafkaException("Duplicate log directory found: " + dirs.mkString(", "))
+
     val liveLogDirs = new ConcurrentLinkedQueue[File]()
-    val canonicalPaths = mutable.HashSet.empty[String]
 
     for (dir <- dirs) {
       try {
@@ -152,21 +155,13 @@ class LogManager(logDirs: Seq[File],
           throw new IOException(s"Failed to load ${dir.getAbsolutePath} during broker startup")
 
         if (!dir.exists) {
-          info(s"Log directory ${dir.getAbsolutePath} not found, creating it.")
+          info("Log directory '" + dir.getAbsolutePath + "' not found, creating it.")
           val created = dir.mkdirs()
           if (!created)
-            throw new IOException(s"Failed to create data directory ${dir.getAbsolutePath}")
+            throw new IOException("Failed to create data directory " + dir.getAbsolutePath)
         }
         if (!dir.isDirectory || !dir.canRead)
-          throw new IOException(s"${dir.getAbsolutePath} is not a readable log directory.")
-
-        // getCanonicalPath() throws IOException if a file system query fails or if the path is invalid (e.g. contains
-        // the Nul character). Since there's no easy way to distinguish between the two cases, we treat them the same
-        // and mark the log directory as offline.
-        if (!canonicalPaths.add(dir.getCanonicalPath))
-          throw new KafkaException(s"Duplicate log directory found: ${dirs.mkString(", ")}")
-
-
+          throw new IOException(dir.getAbsolutePath + " is not a readable log directory.")
         liveLogDirs.add(dir)
       } catch {
         case e: IOException =>
@@ -174,7 +169,7 @@ class LogManager(logDirs: Seq[File],
       }
     }
     if (liveLogDirs.isEmpty) {
-      fatal(s"Shutdown broker because none of the specified log dirs from ${dirs.mkString(", ")} can be created or validated")
+      fatal(s"Shutdown broker because none of the specified log dirs from " + dirs.mkString(", ") + " can be created or validated")
       Exit.halt(1)
     }
 
@@ -187,7 +182,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   // dir should be an absolute path
-  def handleLogDirFailure(dir: String) {
+  def handleLogDirFailure(dir: String): Unit = {
     info(s"Stopping serving logs in dir $dir")
     logCreationOrDeletionLock synchronized {
       _liveLogDirs.remove(new File(dir))
@@ -230,27 +225,22 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
-    * Lock all the given directories
-    */
+   * Lock all the given directories
+   */
   private def lockLogDirs(dirs: Seq[File]): Seq[FileLock] = {
-    val locks = mutable.ArrayBuffer.empty[FileLock]
-    for (dir <- dirs) {
+    dirs.flatMap { dir =>
       try {
         val lock = new FileLock(new File(dir, LockFile))
-        if (!lock.tryLock()) {
-          lock.destroy()
-          locks.foreach(_.destroy())
-          throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParentFile.getAbsolutePath +
+        if (!lock.tryLock())
+          throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParent +
             ". A Kafka instance in another process or thread is using this directory.")
-        }
-        locks.append(lock)
+        Some(lock)
       } catch {
         case e: IOException =>
-          locks.foreach(_.destroy())
           logDirFailureChannel.maybeAddOfflineLogDir(dir.getAbsolutePath, s"Disk error while locking directory $dir", e)
+          None
       }
     }
-    locks
   }
 
   private def addLogToBeDeleted(log: Log): Unit = {
@@ -392,7 +382,7 @@ class LogManager(logDirs: Seq[File],
   /**
    *  Start the background threads to flush logs and do log cleanup
    */
-  def startup() {
+  def startup(): Unit = {
     /* Schedule the cleanup task to delete old logs */
     if (scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
@@ -429,7 +419,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Close all the logs
    */
-  def shutdown() {
+  def shutdown(): Unit = {
     info("Shutting down.")
 
     removeMetric("OfflineLogDirectoryCount")
@@ -499,7 +489,7 @@ class LogManager(logDirs: Seq[File],
    * @param partitionOffsets Partition logs that need to be truncated
    * @param isFuture True iff the truncation should be performed on the future log of the specified partitions
    */
-  def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean) {
+  def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean): Unit = {
     var truncated = false
     for ((topicPartition, truncateOffset) <- partitionOffsets) {
       val log = {
@@ -537,7 +527,7 @@ class LogManager(logDirs: Seq[File],
    * @param newOffset The new offset to start the log with
    * @param isFuture True iff the truncation should be performed on the future log of the specified partition
    */
-  def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean) {
+  def truncateFullyAndStartAt(topicPartition: TopicPartition, newOffset: Long, isFuture: Boolean): Unit = {
     val log = {
       if (isFuture)
         futureLogs.get(topicPartition)
@@ -562,7 +552,7 @@ class LogManager(logDirs: Seq[File],
    * Write out the current recovery point for all logs to a text file in the log directory
    * to avoid recovering the whole log on startup.
    */
-  def checkpointLogRecoveryOffsets() {
+  def checkpointLogRecoveryOffsets(): Unit = {
     liveLogDirs.foreach(checkpointLogRecoveryOffsetsInDir)
   }
 
@@ -570,7 +560,7 @@ class LogManager(logDirs: Seq[File],
    * Write out the current log start offset for all logs to a text file in the log directory
    * to avoid exposing data that have been deleted by DeleteRecordsRequest
    */
-  def checkpointLogStartOffsets() {
+  def checkpointLogStartOffsets(): Unit = {
     liveLogDirs.foreach(checkpointLogStartOffsetsInDir)
   }
 
@@ -835,7 +825,6 @@ class LogManager(logDirs: Seq[File],
         cleaner.abortCleaning(topicPartition)
         cleaner.updateCheckpoints(removedLog.dir.getParentFile)
       }
-      removedLog.close()
       removedLog.renameDir(Log.logDeleteDirName(topicPartition))
       checkpointLogRecoveryOffsetsInDir(removedLog.dir.getParentFile)
       checkpointLogStartOffsetsInDir(removedLog.dir.getParentFile)
@@ -871,7 +860,7 @@ class LogManager(logDirs: Seq[File],
    * Delete any eligible logs. Return the number of segments deleted.
    * Only consider logs that are not compacted.
    */
-  def cleanupLogs() {
+  def cleanupLogs(): Unit = {
     debug("Beginning log cleanup...")
     var total = 0
     val startMs = time.milliseconds
@@ -889,9 +878,9 @@ class LogManager(logDirs: Seq[File],
   def allLogs: Iterable[Log] = currentLogs.values ++ futureLogs.values
 
   def logsByTopic(topic: String): Seq[Log] = {
-    (currentLogs.toList ++ futureLogs.toList).filter { case (topicPartition, _) =>
+    (currentLogs.toList ++ futureLogs.toList).filter { case (topicPartition, log) =>
       topicPartition.topic() == topic
-    }.map { case (_, log) => log }
+    }.map { case (topicPartition, log) => log }
   }
 
   /**

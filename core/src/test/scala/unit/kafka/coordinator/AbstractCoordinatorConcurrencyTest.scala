@@ -17,26 +17,26 @@
 
 package kafka.coordinator
 
-import java.util.concurrent.{ConcurrentHashMap, Executors}
-import java.util.{Collections, Random}
+import java.util.{ Collections, Random }
+import java.util.concurrent.{ ConcurrentHashMap, Executors }
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.Lock
 
 import kafka.coordinator.AbstractCoordinatorConcurrencyTest._
-import kafka.log.{AppendOrigin, Log}
+import kafka.log.Log
 import kafka.server._
 import kafka.utils._
 import kafka.utils.timer.MockTimer
 import kafka.zk.KafkaZkClient
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.record.{MemoryRecords, RecordBatch, RecordConversionStats}
+import org.apache.kafka.common.record.{ MemoryRecords, RecordBatch, RecordsProcessingStats }
 import org.apache.kafka.common.requests.ProduceResponse.PartitionResponse
 import org.easymock.EasyMock
-import org.junit.jupiter.api.{AfterEach, BeforeEach}
+import org.junit.{ After, Before }
 
 import scala.collection._
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 abstract class AbstractCoordinatorConcurrencyTest[M <: CoordinatorMember] {
 
@@ -51,7 +51,7 @@ abstract class AbstractCoordinatorConcurrencyTest[M <: CoordinatorMember] {
   val serverProps = TestUtils.createBrokerConfig(nodeId = 0, zkConnect = "")
   val random = new Random
 
-  @BeforeEach
+  @Before
   def setUp(): Unit = {
 
     replicaManager = EasyMock.partialMockBuilder(classOf[TestReplicaManager]).createMock()
@@ -60,7 +60,7 @@ abstract class AbstractCoordinatorConcurrencyTest[M <: CoordinatorMember] {
     zkClient = EasyMock.createNiceMock(classOf[KafkaZkClient])
   }
 
-  @AfterEach
+  @After
   def tearDown(): Unit = {
     EasyMock.reset(replicaManager)
     if (executor != null)
@@ -97,7 +97,7 @@ abstract class AbstractCoordinatorConcurrencyTest[M <: CoordinatorMember] {
   }
 
   def enableCompletion(): Unit = {
-    replicaManager.tryCompleteActions()
+    replicaManager.tryCompleteDelayedRequests()
     scheduler.tick()
   }
 
@@ -158,7 +158,7 @@ object AbstractCoordinatorConcurrencyTest {
   }
 
   class TestReplicaManager extends ReplicaManager(
-    null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, None, null, null) {
+    null, null, null, null, null, null, null, null, null, null, null, null, null, null, None) {
 
     var producePurgatory: DelayedOperationPurgatory[DelayedProduce] = _
     var watchKeys: mutable.Set[TopicPartitionOperationKey] = _
@@ -166,17 +166,18 @@ object AbstractCoordinatorConcurrencyTest {
       producePurgatory = new DelayedOperationPurgatory[DelayedProduce]("Produce", timer, 1, reaperEnabled = false)
       watchKeys = Collections.newSetFromMap(new ConcurrentHashMap[TopicPartitionOperationKey, java.lang.Boolean]()).asScala
     }
-
-    override def tryCompleteActions(): Unit = watchKeys.map(producePurgatory.checkAndComplete)
+    def tryCompleteDelayedRequests(): Unit = {
+      watchKeys.map(producePurgatory.checkAndComplete)
+    }
 
     override def appendRecords(timeout: Long,
                                requiredAcks: Short,
                                internalTopicsAllowed: Boolean,
-                               origin: AppendOrigin,
+                               isFromClient: Boolean,
                                entriesPerPartition: Map[TopicPartition, MemoryRecords],
                                responseCallback: Map[TopicPartition, PartitionResponse] => Unit,
                                delayedProduceLock: Option[Lock] = None,
-                               processingStatsCallback: Map[TopicPartition, RecordConversionStats] => Unit = _ => ()): Unit = {
+                               processingStatsCallback: Map[TopicPartition, RecordsProcessingStats] => Unit = _ => {}) {
 
       if (entriesPerPartition.isEmpty)
         return
@@ -200,9 +201,10 @@ object AbstractCoordinatorConcurrencyTest {
           })
         }
       }
-      val producerRequestKeys = entriesPerPartition.keys.map(TopicPartitionOperationKey(_)).toSeq
+      val producerRequestKeys = entriesPerPartition.keys.map(new TopicPartitionOperationKey(_)).toSeq
       watchKeys ++= producerRequestKeys
       producePurgatory.tryCompleteElseWatch(delayedProduce, producerRequestKeys)
+      tryCompleteDelayedRequests()
     }
     override def getMagic(topicPartition: TopicPartition): Option[Byte] = {
       Some(RecordBatch.MAGIC_VALUE_V2)

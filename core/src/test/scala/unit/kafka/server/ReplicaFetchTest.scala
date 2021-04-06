@@ -17,9 +17,7 @@
 
 package kafka.server
 
-import scala.collection.Seq
-
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.{After, Before, Test}
 import kafka.zk.ZooKeeperTestHarness
 import kafka.utils.TestUtils
 import TestUtils._
@@ -32,14 +30,14 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
   val topic1 = "foo"
   val topic2 = "bar"
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     super.setUp()
     val props = createBrokerConfigs(2, zkConnect)
     brokers = props.map(KafkaConfig.fromProps).map(TestUtils.createServer(_))
   }
 
-  @AfterEach
+  @After
   override def tearDown(): Unit = {
     TestUtils.shutdownServers(brokers)
     super.tearDown()
@@ -57,7 +55,8 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
     }
 
     // send test messages to leader
-    val producer = TestUtils.createProducer(TestUtils.getBrokerListStrFromServers(brokers),
+    val producer = TestUtils.createNewProducer(TestUtils.getBrokerListStrFromServers(brokers),
+                                               retries = 5,
                                                keySerializer = new StringSerializer,
                                                valueSerializer = new StringSerializer)
     val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m)) ++
@@ -69,9 +68,9 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
       var result = true
       for (topic <- List(topic1, topic2)) {
         val tp = new TopicPartition(topic, partition)
-        val expectedOffset = brokers.head.getLogManager.getLog(tp).get.logEndOffset
+        val expectedOffset = brokers.head.getLogManager().getLog(tp).get.logEndOffset
         result = result && expectedOffset > 0 && brokers.forall { item =>
-          expectedOffset == item.getLogManager.getLog(tp).get.logEndOffset
+          expectedOffset == item.getLogManager().getLog(tp).get.logEndOffset
         }
       }
       result

@@ -21,10 +21,11 @@ import java.util.Properties
 import java.util.concurrent.atomic._
 
 import kafka.log._
-import kafka.server.{BrokerTopicStats, FetchLogEnd, LogDirFailureChannel}
+import kafka.server.{BrokerTopicStats, LogDirFailureChannel}
 import kafka.utils._
 import org.apache.kafka.clients.consumer.OffsetOutOfRangeException
 import org.apache.kafka.common.record.FileRecords
+import org.apache.kafka.common.requests.IsolationLevel
 import org.apache.kafka.common.utils.Utils
 
 /**
@@ -51,19 +52,19 @@ object StressTestLog {
       maxProducerIdExpirationMs = 60 * 60 * 1000,
       producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
       brokerTopicStats = new BrokerTopicStats,
-      logDirFailureChannel = new LogDirFailureChannel(10),
-      topicId = None,
-      keepPartitionMetadataFile = true)
+      logDirFailureChannel = new LogDirFailureChannel(10))
     val writer = new WriterThread(log)
     writer.start()
     val reader = new ReaderThread(log)
     reader.start()
 
-    Exit.addShutdownHook("stress-test-shutdown-hook", {
+    Runtime.getRuntime().addShutdownHook(new Thread() {
+      override def run() = {
         running.set(false)
         writer.join()
         reader.join()
         Utils.delete(dir)
+      }
     })
 
     while(running.get) {
@@ -121,7 +122,7 @@ object StressTestLog {
   class WriterThread(val log: Log) extends WorkerThread with LogProgress {
     override def work(): Unit = {
       val logAppendInfo = log.appendAsLeader(TestUtils.singletonRecords(currentOffset.toString.getBytes), 0)
-      require(logAppendInfo.firstOffset.forall(_.messageOffset == currentOffset) && logAppendInfo.lastOffset == currentOffset)
+      require(logAppendInfo.firstOffset.forall(_ == currentOffset) && logAppendInfo.lastOffset == currentOffset)
       currentOffset += 1
       if (currentOffset % 1000 == 0)
         Thread.sleep(50)
@@ -131,10 +132,7 @@ object StressTestLog {
   class ReaderThread(val log: Log) extends WorkerThread with LogProgress {
     override def work(): Unit = {
       try {
-        log.read(currentOffset,
-          maxLength = 1,
-          isolation = FetchLogEnd,
-          minOneMessage = true).records match {
+        log.read(currentOffset, 1024, Some(currentOffset + 1), isolationLevel = IsolationLevel.READ_UNCOMMITTED).records match {
           case read: FileRecords if read.sizeInBytes > 0 => {
             val first = read.batches.iterator.next()
             require(first.lastOffset == currentOffset, "We should either read nothing or the message we asked for.")

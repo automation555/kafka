@@ -16,8 +16,6 @@
  */
 package kafka.admin
 
-import java.util.Date
-
 import org.junit.Assert._
 import org.junit.Test
 import kafka.utils.Logging
@@ -25,17 +23,14 @@ import kafka.utils.TestUtils
 import kafka.zk.{ConfigEntityChangeNotificationZNode, ZooKeeperTestHarness}
 import kafka.server.ConfigType
 import kafka.admin.TopicCommand.TopicCommandOptions
-import kafka.api.LeaderAndIsr
-import kafka.controller.LeaderIsrAndControllerEpoch
 import kafka.utils.ZkUtils.getDeleteTopicPath
-import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.TopicExistsException
 import org.apache.kafka.common.internals.Topic
 
 class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareTest {
 
   @Test
-  def testConfigPreservationAcrossPartitionAlteration() {
+  def testConfigPreservationAcrossPartitionAlteration(): Unit = {
     val topic = "test"
     val numPartitionsOriginal = 1
     val cleanupKey = "cleanup.policy"
@@ -66,7 +61,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testTopicDeletion() {
+  def testTopicDeletion(): Unit = {
 
     val normalTopic = "test"
 
@@ -106,7 +101,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testDeleteIfExists() {
+  def testDeleteIfExists(): Unit = {
     // create brokers
     val brokers = List(0, 1, 2)
     TestUtils.createBrokersInZk(zkClient, brokers)
@@ -123,7 +118,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testAlterIfExists() {
+  def testAlterIfExists(): Unit = {
     // create brokers
     val brokers = List(0, 1, 2)
     TestUtils.createBrokersInZk(zkClient, brokers)
@@ -140,7 +135,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testCreateIfNotExists() {
+  def testCreateIfNotExists(): Unit = {
     // create brokers
     val brokers = List(0, 1, 2)
     TestUtils.createBrokersInZk(zkClient, brokers)
@@ -165,7 +160,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testCreateAlterTopicWithRackAware() {
+  def testCreateAlterTopicWithRackAware(): Unit = {
     val rackInfo = Map(0 -> "rack1", 1 -> "rack2", 2 -> "rack2", 3 -> "rack1", 4 -> "rack3", 5 -> "rack3")
     TestUtils.createBrokersInZk(toBrokerMetadata(rackInfo), zkClient)
 
@@ -195,7 +190,7 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
   }
 
   @Test
-  def testDescribeAndListTopicsMarkedForDeletion() {
+  def testDescribeAndListTopicsMarkedForDeletion(): Unit = {
     val brokers = List(0)
     val topic = "testtopic"
     val markedForDeletionDescribe = "MarkedForDeletion"
@@ -210,129 +205,24 @@ class TopicCommandTest extends ZooKeeperTestHarness with Logging with RackAwareT
     TopicCommand.deleteTopic(zkClient, new TopicCommandOptions(Array("--topic", topic)))
 
     // Test describe topics
-    def describeTopicsWithConfig() {
+    def describeTopicsWithConfig(): Unit = {
       TopicCommand.describeTopic(zkClient, new TopicCommandOptions(Array("--describe")))
     }
     val outputWithConfig = TestUtils.grabConsoleOutput(describeTopicsWithConfig)
     assertTrue(outputWithConfig.contains(topic) && outputWithConfig.contains(markedForDeletionDescribe))
 
-    def describeTopicsNoConfig() {
+    def describeTopicsNoConfig(): Unit = {
       TopicCommand.describeTopic(zkClient, new TopicCommandOptions(Array("--describe", "--unavailable-partitions")))
     }
     val outputNoConfig = TestUtils.grabConsoleOutput(describeTopicsNoConfig)
     assertTrue(outputNoConfig.contains(topic) && outputNoConfig.contains(markedForDeletionDescribe))
 
     // Test list topics
-    def listTopics() {
+    def listTopics(): Unit = {
       TopicCommand.listTopics(zkClient, new TopicCommandOptions(Array("--list")))
     }
     val output = TestUtils.grabConsoleOutput(listTopics)
     assertTrue(output.contains(topic) && output.contains(markedForDeletionList))
   }
 
-  @Test
-  def testInvalidTopicLevelConfig(): Unit = {
-    val brokers = List(0)
-    TestUtils.createBrokersInZk(zkClient, brokers)
-
-    // create the topic
-    try {
-      val createOpts = new TopicCommandOptions(
-        Array("--partitions", "1", "--replication-factor", "1", "--topic", "test",
-          "--config", "message.timestamp.type=boom"))
-      TopicCommand.createTopic(zkClient, createOpts)
-      fail("Expected exception on invalid topic-level config.")
-    } catch {
-      case _: Exception => // topic creation should fail due to the invalid config
-    }
-  }
-
-  @Test
-  def testDescribeNotPreferredLeaderPartitions(): Unit = {
-    TestUtils.createBrokersInZk(zkClient, Seq(1, 2, 3))
-    val topic = "test-topic-" + new Date().getTime.toString
-
-    val createOpts = new TopicCommandOptions(Array(
-      "--partitions", 3.toString,
-      "--replication-factor", 3.toString,
-      "--topic", topic))
-    TopicCommand.createTopic(zkClient, createOpts)
-
-    val p0 = new TopicPartition(topic, 0)
-    val p1 = new TopicPartition(topic, 1)
-    val p2 = new TopicPartition(topic, 2)
-
-    val isr1 = new LeaderAndIsr(2, 1, List(1, 2, 3), 1)
-    val isr2 = new LeaderAndIsr(2, 1, List(2, 3, 1), 1)
-    val isr3 = new LeaderAndIsr(2, 1, List(3, 1, 2), 1)
-
-    zkClient.createTopicPartitionStatesRaw(
-      Map(p0 -> LeaderIsrAndControllerEpoch(isr1, 1),
-          p1 -> LeaderIsrAndControllerEpoch(isr2, 1),
-          p2 -> LeaderIsrAndControllerEpoch(isr3, 1))
-    )
-
-    def describeTopicsWithNotPreferredLeaders() {
-      TopicCommand.describeTopic(zkClient, new TopicCommandOptions(Array("--describe", "--not-preferred-leaders")))
-    }
-    val output = TestUtils.grabConsoleOutput(describeTopicsWithNotPreferredLeaders)
-    assertTrue(s"Assertion failed for output: \n$output", output.contains("Leader: 2"))
-    assertFalse(s"Assertion failed for output: \n$output", output.contains("Leader: 1"))
-    assertFalse(s"Assertion failed for output: \n$output", output.contains("Leader: 3"))
-    assertFalse(s"Assertion failed for output: \n$output",
-      output.contains("Replicas: 2,1,3") ||
-      output.contains("Replicas: 2,3,1")
-    )
-    assertTrue(s"Assertion failed for output: \n$output",
-      output.contains("Replicas: 1,3,2") ||
-      output.contains("Replicas: 1,2,3") ||
-      output.contains("Replicas: 3,1,2") ||
-      output.contains("Replicas: 3,2,1")
-    )
-  }
-
-  @Test
-  def testDescribeNotPreferredLeaderPartitionsWontPrintOfflineReplicas(): Unit = {
-    TestUtils.createBrokersInZk(zkClient, Seq(1, 2, 3))
-    val topic = "test-topic-" + new Date().getTime.toString
-
-    val createOpts = new TopicCommandOptions(Array(
-      "--partitions", 3.toString,
-      "--replication-factor", 3.toString,
-      "--topic", topic))
-    TopicCommand.createTopic(zkClient, createOpts)
-
-    val p0 = new TopicPartition(topic, 0)
-    val p1 = new TopicPartition(topic, 1)
-    val p2 = new TopicPartition(topic, 2)
-
-    val isr1 = new LeaderAndIsr(-1, 1, List(1, 2, 3), 1)
-    val isr2 = new LeaderAndIsr(2, 1, List(2, 3, 1), 1)
-    val isr3 = new LeaderAndIsr(2, 1, List(3, 1, 2), 1)
-
-    zkClient.createTopicPartitionStatesRaw(
-      Map(p0 -> LeaderIsrAndControllerEpoch(isr1, 1),
-        p1 -> LeaderIsrAndControllerEpoch(isr2, 1),
-        p2 -> LeaderIsrAndControllerEpoch(isr3, 1))
-    )
-
-    def describeTopicsWithNotPreferredLeaders() {
-      TopicCommand.describeTopic(zkClient, new TopicCommandOptions(Array("--describe", "--not-preferred-leaders")))
-    }
-    val output = TestUtils.grabConsoleOutput(describeTopicsWithNotPreferredLeaders)
-    assertTrue(s"Assertion failed for output: \n$output", output.contains("Leader: 2"))
-    assertFalse(s"Assertion failed for output: \n$output", output.contains("Leader: 1"))
-    assertFalse(s"Assertion failed for output: \n$output", output.contains("Leader: 3"))
-    assertFalse(s"Assertion failed for output: \n$output", output.contains("Leader: -1"))
-    assertFalse(s"Assertion failed for output: \n$output",
-      output.contains("Replicas: 2,1,3") ||
-      output.contains("Replicas: 2,3,1")
-    )
-    assertTrue(s"Assertion failed for output: \n$output",
-      output.contains("Replicas: 1,3,2") ||
-      output.contains("Replicas: 1,2,3") ||
-      output.contains("Replicas: 3,1,2") ||
-      output.contains("Replicas: 3,2,1")
-    )
-  }
 }

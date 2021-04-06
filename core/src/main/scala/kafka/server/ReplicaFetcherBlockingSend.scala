@@ -26,16 +26,14 @@ import org.apache.kafka.common.requests.AbstractRequest
 import org.apache.kafka.common.security.JaasContext
 import org.apache.kafka.common.utils.{LogContext, Time}
 import org.apache.kafka.clients.{ApiVersions, ClientResponse, ManualMetadataUpdater, NetworkClient}
-import org.apache.kafka.common.{Node, Reconfigurable}
+import org.apache.kafka.common.Node
 import org.apache.kafka.common.requests.AbstractRequest.Builder
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
 
 trait BlockingSend {
 
   def sendRequest(requestBuilder: AbstractRequest.Builder[_ <: AbstractRequest]): ClientResponse
-
-  def initiateClose(): Unit
 
   def close(): Unit
 }
@@ -51,23 +49,15 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
   private val sourceNode = new Node(sourceBroker.id, sourceBroker.host, sourceBroker.port)
   private val socketTimeout: Int = brokerConfig.replicaSocketTimeoutMs
 
-  private val (networkClient, reconfigurableChannelBuilder) = {
+  private val networkClient = {
     val channelBuilder = ChannelBuilders.clientChannelBuilder(
       brokerConfig.interBrokerSecurityProtocol,
       JaasContext.Type.SERVER,
       brokerConfig,
       brokerConfig.interBrokerListenerName,
       brokerConfig.saslMechanismInterBrokerProtocol,
-      time,
-      brokerConfig.saslInterBrokerHandshakeRequestEnable,
-      logContext
+      brokerConfig.saslInterBrokerHandshakeRequestEnable
     )
-    val reconfigurableChannelBuilder = channelBuilder match {
-      case reconfigurable: Reconfigurable =>
-        brokerConfig.addReconfigurable(reconfigurable)
-        Some(reconfigurable)
-      case _ => None
-    }
     val selector = new Selector(
       NetworkReceive.UNLIMITED,
       brokerConfig.connectionsMaxIdleMs,
@@ -79,7 +69,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       channelBuilder,
       logContext
     )
-    val networkClient = new NetworkClient(
+    new NetworkClient(
       selector,
       new ManualMetadataUpdater(),
       clientId,
@@ -89,17 +79,14 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       Selectable.USE_DEFAULT_BUFFER_SIZE,
       brokerConfig.replicaSocketReceiveBufferBytes,
       brokerConfig.requestTimeoutMs,
-      brokerConfig.connectionSetupTimeoutMs,
-      brokerConfig.connectionSetupTimeoutMaxMs,
       time,
       false,
       new ApiVersions,
       logContext
     )
-    (networkClient, reconfigurableChannelBuilder)
   }
 
-  override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse = {
+  override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse =  {
     try {
       if (!NetworkClientUtils.awaitReady(networkClient, sourceNode, time, socketTimeout))
         throw new SocketTimeoutException(s"Failed to connect within $socketTimeout ms")
@@ -114,11 +101,6 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
         networkClient.close(sourceBroker.id.toString)
         throw e
     }
-  }
-
-  override def initiateClose(): Unit = {
-    reconfigurableChannelBuilder.foreach(brokerConfig.removeReconfigurable)
-    networkClient.initiateClose()
   }
 
   def close(): Unit = {

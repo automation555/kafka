@@ -14,16 +14,19 @@
 
 package kafka.api
 
-import kafka.server.{KafkaConfig, KafkaServer}
+import java.util.Properties
+
+import kafka.server.{DynamicConfig, KafkaConfig, KafkaServer}
 import org.apache.kafka.common.security.auth.KafkaPrincipal
-import org.junit.jupiter.api.BeforeEach
+import org.apache.kafka.common.utils.Sanitizer
+import org.junit.Before
 
 class ClientIdQuotaTest extends BaseQuotaTest {
 
   override def producerClientId = "QuotasTestProducer-!@#$%^&*()"
   override def consumerClientId = "QuotasTestConsumer-!@#$%^&*()"
 
-  @BeforeEach
+  @Before
   override def setUp(): Unit = {
     this.serverConfig.setProperty(KafkaConfig.ProducerQuotaBytesPerSecondDefaultProp, defaultProducerQuota.toString)
     this.serverConfig.setProperty(KafkaConfig.ConsumerQuotaBytesPerSecondDefaultProp, defaultConsumerQuota.toString)
@@ -31,41 +34,32 @@ class ClientIdQuotaTest extends BaseQuotaTest {
   }
 
   override def createQuotaTestClients(topic: String, leaderNode: KafkaServer): QuotaTestClients = {
-    val producer = createProducer()
-    val consumer = createConsumer()
-    val adminClient = createAdminClient()
-
-    new QuotaTestClients(topic, leaderNode, producerClientId, consumerClientId, producer, consumer, adminClient) {
+    new QuotaTestClients(topic, leaderNode, producerClientId, consumerClientId, producers.head, consumers.head) {
       override def userPrincipal: KafkaPrincipal = KafkaPrincipal.ANONYMOUS
-
       override def quotaMetricTags(clientId: String): Map[String, String] = {
         Map("user" -> "", "client-id" -> clientId)
       }
 
       override def overrideQuotas(producerQuota: Long, consumerQuota: Long, requestQuota: Double): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(producerClientId)),
-            Some(producerQuota), None, Some(requestQuota)
-          ),
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(consumerClientId)),
-            None, Some(consumerQuota), Some(requestQuota)
-          )
-        )
+        val producerProps = new Properties()
+        producerProps.put(DynamicConfig.Client.ProducerByteRateOverrideProp, producerQuota.toString)
+        producerProps.put(DynamicConfig.Client.RequestPercentageOverrideProp, requestQuota.toString)
+        updateQuotaOverride(producerClientId, producerProps)
+
+        val consumerProps = new Properties()
+        consumerProps.put(DynamicConfig.Client.ConsumerByteRateOverrideProp, consumerQuota.toString)
+        consumerProps.put(DynamicConfig.Client.RequestPercentageOverrideProp, requestQuota.toString)
+        updateQuotaOverride(consumerClientId, consumerProps)
       }
 
       override def removeQuotaOverrides(): Unit = {
-        alterClientQuotas(
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(producerClientId)),
-            None, None, None
-          ),
-          clientQuotaAlteration(
-            clientQuotaEntity(None, Some(consumerClientId)),
-            None, None, None
-          )
-        )
+        val emptyProps = new Properties
+        updateQuotaOverride(producerClientId, emptyProps)
+        updateQuotaOverride(consumerClientId, emptyProps)
+      }
+
+      private def updateQuotaOverride(clientId: String, properties: Properties): Unit = {
+        adminZkClient.changeClientIdConfig(Sanitizer.sanitize(clientId), properties)
       }
     }
   }

@@ -20,12 +20,10 @@ import java.util.Properties
 
 import kafka.admin.{AdminOperationException, AdminUtils, BrokerMetadata, RackAwareMode}
 import kafka.common.TopicAlreadyMarkedForDeletionException
-import kafka.controller.ReplicaAssignment
 import kafka.log.LogConfig
 import kafka.server.{ConfigEntityName, ConfigType, DynamicConfig}
 import kafka.utils._
-import kafka.utils.Implicits._
-import org.apache.kafka.common.{TopicPartition, Uuid}
+import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors._
 import org.apache.kafka.common.internals.Topic
 import org.apache.zookeeper.KeeperException.NodeExistsException
@@ -47,17 +45,15 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    * @param replicationFactor Replication factor
    * @param topicConfig  topic configs
    * @param rackAwareMode
-   * @param usesTopicId Boolean indicating whether the topic ID will be created
    */
   def createTopic(topic: String,
                   partitions: Int,
                   replicationFactor: Int,
                   topicConfig: Properties = new Properties,
-                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
-                  usesTopicId: Boolean = false): Unit = {
+                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
     val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
-    createTopicWithAssignment(topic, topicConfig, replicaAssignment, usesTopicId = usesTopicId)
+    createOrUpdateTopicPartitionAssignmentPathInZK(topic, replicaAssignment, topicConfig, rackAwareMode)
   }
 
   /**
@@ -85,89 +81,94 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   }
 
   /**
-   * Create topic and optionally validate its parameters. Note that this method is used by the
-   * TopicCommand as well.
-   *
-   * @param topic The name of the topic
-   * @param config The config of the topic
-   * @param partitionReplicaAssignment The assignments of the topic
-   * @param validate Boolean indicating if parameters must be validated or not (true by default)
-   * @param usesTopicId Boolean indicating whether the topic ID will be created
+   * Creates or Updates the partition assignment for a given topic
+   * @param topic
+   * @param partitionReplicaAssignment
+   * @param config
+   * @param rackAwareMode
+   * @param update
    */
-  def createTopicWithAssignment(topic: String,
-                                config: Properties,
-                                partitionReplicaAssignment: Map[Int, Seq[Int]],
-                                validate: Boolean = true,
-                                usesTopicId: Boolean = false): Unit = {
-    if (validate)
-      validateTopicCreate(topic, partitionReplicaAssignment, config)
+  def createOrUpdateTopicPartitionAssignmentPathInZK(topic: String,
+                                                     partitionReplicaAssignment: Map[Int, Seq[Int]],
+                                                     config: Properties = new Properties,
+                                                     rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
+                                                     update: Boolean = false) {
+    validateCreateOrUpdateTopic(topic, partitionReplicaAssignment, config, update, rackAwareMode)
 
-    info(s"Creating topic $topic with configuration $config and initial partition " +
-      s"assignment $partitionReplicaAssignment")
-
-    // write out the config if there is any, this isn't transactional with the partition assignments
-    zkClient.setOrCreateEntityConfigs(ConfigType.Topic, topic, config)
+    if (!update) {
+      // write out the config if there is any, this isn't transactional with the partition assignments
+      zkClient.setOrCreateEntityConfigs(ConfigType.Topic, topic, config)
+    }
 
     // create the partition assignment
-    writeTopicPartitionAssignment(topic, partitionReplicaAssignment.map { case (k, v) => k -> ReplicaAssignment(v) },
-      isUpdate = false, usesTopicId)
+    writeTopicPartitionAssignment(topic, partitionReplicaAssignment, update)
   }
 
   /**
-   * Validate topic creation parameters. Note that this method is indirectly used by the
-   * TopicCommand via the `createTopicWithAssignment` method.
-   *
-   * @param topic The name of the topic
-   * @param partitionReplicaAssignment The assignments of the topic
-   * @param config The config of the topic
+   * Validate method to use before the topic creation or update
+   * @param topic
+   * @param partitionReplicaAssignment
+   * @param config
+   * @param update
    */
-  def validateTopicCreate(topic: String,
-                          partitionReplicaAssignment: Map[Int, Seq[Int]],
-                          config: Properties): Unit = {
+  def validateCreateOrUpdateTopic(topic: String,
+                                  partitionReplicaAssignment: Map[Int, Seq[Int]],
+                                  config: Properties,
+                                  update: Boolean,
+                                  rackAwareMode: RackAwareMode = RackAwareMode.Enforced): Unit = {
+    // validate arguments
     Topic.validate(topic)
 
-    if (zkClient.topicExists(topic))
-      throw new TopicExistsException(s"Topic '$topic' already exists.")
-    else if (Topic.hasCollisionChars(topic)) {
-      val allTopics = zkClient.getAllTopicsInCluster()
-      // check again in case the topic was created in the meantime, otherwise the
-      // topic could potentially collide with itself
-      if (allTopics.contains(topic))
+    if (!update) {
+      if (zkClient.topicExists(topic))
         throw new TopicExistsException(s"Topic '$topic' already exists.")
-      val collidingTopics = allTopics.filter(Topic.hasCollision(topic, _))
-      if (collidingTopics.nonEmpty) {
-        throw new InvalidTopicException(s"Topic '$topic' collides with existing topics: ${collidingTopics.mkString(", ")}")
+      else if (Topic.hasCollisionChars(topic)) {
+        val allTopics = zkClient.getAllTopicsInCluster
+        // check again in case the topic was created in the meantime, otherwise the
+        // topic could potentially collide with itself
+        if (allTopics.contains(topic))
+          throw new TopicExistsException(s"Topic '$topic' already exists.")
+        val collidingTopics = allTopics.filter(Topic.hasCollision(topic, _))
+        if (collidingTopics.nonEmpty) {
+          throw new InvalidTopicException(s"Topic '$topic' collides with existing topics: ${collidingTopics.mkString(", ")}")
+        }
       }
     }
 
-    if (partitionReplicaAssignment.values.map(_.size).toSet.size != 1)
-      throw new InvalidReplicaAssignmentException("All partitions should have the same number of replicas")
+    /*
+    Validate partition replica assignment during topic creation.
+    Skip validation for alter topic to avoid validation failures for add partitions.
+     */
+    if (!update) {
+      validatePartitionReplicaAssignment(topic, partitionReplicaAssignment, rackAwareMode)
+    }
 
-    partitionReplicaAssignment.values.foreach(reps =>
-      if (reps.size != reps.toSet.size)
-        throw new InvalidReplicaAssignmentException("Duplicate replica assignment found: " + partitionReplicaAssignment)
-    )
-
-    val partitionSize = partitionReplicaAssignment.size
-    val sequenceSum = partitionSize * (partitionSize - 1) / 2
-    if (partitionReplicaAssignment.size != partitionReplicaAssignment.toSet.size ||
-        partitionReplicaAssignment.keys.filter(_ >= 0).sum != sequenceSum)
-        throw new InvalidReplicaAssignmentException("partitions should be a consecutive 0-based integer sequence")
-
-    LogConfig.validate(config)
+    // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
+    if (!update)
+      LogConfig.validate(config)
   }
 
-  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, ReplicaAssignment],
-                                            isUpdate: Boolean, usesTopicId: Boolean = false): Unit = {
+  def validatePartitionReplicaAssignment(topic: String,
+                                         partitionReplicaAssignment: Map[Int, Seq[Int]],
+                                         rackAwareMode: RackAwareMode): Unit = {
+    val assignmentPartition0 = partitionReplicaAssignment.getOrElse(0,
+      throw new AdminOperationException(
+        s"Unexpected replica assignment for topic '$topic', partition id 0 is missing. " +
+          s"Assignment: $partitionReplicaAssignment"))
+    val allBrokers = getBrokerMetadatas(rackAwareMode)
+    validateReplicaAssignment(partitionReplicaAssignment, assignmentPartition0.size, allBrokers.map(_.id).toSet)
+  }
+
+  private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean) {
     try {
       val assignment = replicaAssignment.map { case (partitionId, replicas) => (new TopicPartition(topic,partitionId), replicas) }.toMap
 
-      if (!isUpdate) {
-        val topicIdOpt = if (usesTopicId) Some(Uuid.randomUuid()) else None
-        zkClient.createTopicAssignment(topic, topicIdOpt, assignment.map { case (k, v) => k -> v.replicas })
+      if (!update) {
+        info("Topic creation " + assignment)
+        zkClient.createTopicAssignment(topic, assignment)
       } else {
-        val topicIds = zkClient.getTopicIdsForTopics(Set(topic))
-        zkClient.setTopicAssignment(topic, topicIds.get(topic), assignment)
+        info("Topic update " + assignment)
+        zkClient.setTopicAssignment(topic, assignment)
       }
       debug("Updated path %s with %s for replica assignment".format(TopicZNode.path(topic), assignment))
     } catch {
@@ -176,11 +177,12 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     }
   }
 
+
   /**
    * Creates a delete path for a given topic
    * @param topic
    */
-  def deleteTopic(topic: String): Unit = {
+  def deleteTopic(topic: String) {
     if (zkClient.topicExists(topic)) {
       try {
         zkClient.createDeleteTopicPath(topic)
@@ -195,61 +197,26 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   }
 
   /**
-   * Add partitions to existing topic with optional replica assignment. Note that this
-   * method is used by the TopicCommand.
-   *
-   * @param topic Topic for adding partitions to
-   * @param existingAssignment A map from partition id to its assignment
-   * @param allBrokers All brokers in the cluster
-   * @param numPartitions Number of partitions to be set
-   * @param replicaAssignment Manual replica assignment, or none
-   * @param validateOnly If true, validate the parameters without actually adding the partitions
-   * @return the updated replica assignment
-   */
+  * Add partitions to existing topic with optional replica assignment
+  *
+  * @param topic Topic for adding partitions to
+  * @param existingAssignment A map from partition id to its assigned replicas
+  * @param numPartitions Number of partitions to be set
+  * @param replicaAssignment Manual replica assignment, or none
+  * @param validateOnly If true, validate the parameters without actually adding the partitions
+  * @return the updated replica assignment
+  */
   def addPartitions(topic: String,
-                    existingAssignment: Map[Int, ReplicaAssignment],
-                    allBrokers: Seq[BrokerMetadata],
+                    existingAssignment: Map[Int, Seq[Int]],
                     numPartitions: Int = 1,
                     replicaAssignment: Option[Map[Int, Seq[Int]]] = None,
+                    rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                     validateOnly: Boolean = false): Map[Int, Seq[Int]] = {
-
-    val proposedAssignmentForNewPartitions = createNewPartitionsAssignment(
-      topic,
-      existingAssignment,
-      allBrokers,
-      numPartitions,
-      replicaAssignment
-    )
-
-    if (validateOnly) {
-      (existingAssignment ++ proposedAssignmentForNewPartitions)
-        .map { case (k, v) => k -> v.replicas }
-    } else {
-      createPartitionsWithAssignment(topic, existingAssignment, proposedAssignmentForNewPartitions)
-        .map { case (k, v) => k -> v.replicas }
-    }
-  }
-
-  /**
-   * Create assignment to add the given number of partitions while validating the
-   * provided arguments.
-   *
-   * @param topic Topic for adding partitions to
-   * @param existingAssignment A map from partition id to its assignment
-   * @param allBrokers All brokers in the cluster
-   * @param numPartitions Number of partitions to be set
-   * @param replicaAssignment Manual replica assignment, or none
-   * @return the assignment for the new partitions
-   */
-  def createNewPartitionsAssignment(topic: String,
-                                    existingAssignment: Map[Int, ReplicaAssignment],
-                                    allBrokers: Seq[BrokerMetadata],
-                                    numPartitions: Int = 1,
-                                    replicaAssignment: Option[Map[Int, Seq[Int]]] = None): Map[Int, ReplicaAssignment] = {
+    val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     val existingAssignmentPartition0 = existingAssignment.getOrElse(0,
       throw new AdminOperationException(
         s"Unexpected existing replica assignment for topic '$topic', partition id 0 is missing. " +
-          s"Assignment: $existingAssignment")).replicas
+          s"Assignment: $existingAssignment"))
 
     val partitionsToAdd = numPartitions - existingAssignment.size
     if (partitionsToAdd <= 0)
@@ -260,48 +227,29 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
 
     replicaAssignment.foreach { proposedReplicaAssignment =>
       validateReplicaAssignment(proposedReplicaAssignment, existingAssignmentPartition0.size,
-        allBrokers.map(_.id).toSet)
+        brokerMetadatas.map(_.id).toSet)
     }
 
     val proposedAssignmentForNewPartitions = replicaAssignment.getOrElse {
-      val startIndex = math.max(0, allBrokers.indexWhere(_.id >= existingAssignmentPartition0.head))
-      AdminUtils.assignReplicasToBrokers(allBrokers, partitionsToAdd, existingAssignmentPartition0.size,
+      val startIndex = math.max(0, brokerMetadatas.indexWhere(_.id >= existingAssignmentPartition0.head))
+      AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitionsToAdd, existingAssignmentPartition0.size,
         startIndex, existingAssignment.size)
     }
-
-    proposedAssignmentForNewPartitions.map { case (tp, replicas) =>
-      tp -> ReplicaAssignment(replicas, List(), List())
+    val proposedAssignment = existingAssignment ++ proposedAssignmentForNewPartitions
+    if (!validateOnly) {
+      info(s"Creating $partitionsToAdd partitions for '$topic' with the following replica assignment: " +
+        s"$proposedAssignmentForNewPartitions.")
+      // add the combined new list
+      createOrUpdateTopicPartitionAssignmentPathInZK(topic, proposedAssignment, update = true)
     }
+    proposedAssignment
   }
 
-  /**
-   * Add partitions to the existing topic with the provided assignment. This method does
-   * not validate the provided assignments. Validation must be done beforehand.
-   *
-   * @param topic Topic for adding partitions to
-   * @param existingAssignment A map from partition id to its assignment
-   * @param newPartitionAssignment The assignments to add
-   * @return the updated replica assignment
-   */
-  def createPartitionsWithAssignment(topic: String,
-                                     existingAssignment: Map[Int, ReplicaAssignment],
-                                     newPartitionAssignment: Map[Int, ReplicaAssignment]): Map[Int, ReplicaAssignment] = {
-
-    info(s"Creating ${newPartitionAssignment.size} partitions for '$topic' with the following replica assignment: " +
-      s"$newPartitionAssignment.")
-
-    val combinedAssignment = existingAssignment ++ newPartitionAssignment
-
-    writeTopicPartitionAssignment(topic, combinedAssignment, isUpdate = true)
-
-    combinedAssignment
-  }
-
-  private def validateReplicaAssignment(replicaAssignment: Map[Int, Seq[Int]],
+  def validateReplicaAssignment(replicaAssignment: Map[Int, Seq[Int]],
                                         expectedReplicationFactor: Int,
                                         availableBrokerIds: Set[Int]): Unit = {
 
-    replicaAssignment.forKeyValue { (partitionId, replicas) =>
+    replicaAssignment.foreach { case (partitionId, replicas) =>
       if (replicas.isEmpty)
         throw new InvalidReplicaAssignmentException(
           s"Cannot have replication factor of 0 for partition id $partitionId.")
@@ -309,9 +257,10 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
         throw new InvalidReplicaAssignmentException(
           s"Duplicate brokers not allowed in replica assignment: " +
             s"${replicas.mkString(", ")} for partition id $partitionId.")
-      if (!replicas.toSet.subsetOf(availableBrokerIds))
+      // Topic creation should be interrupted if all the replicas are unavailable.
+      if ((replicas.toSet -- availableBrokerIds).size == replicas.size)
         throw new BrokerNotAvailableException(
-          s"Some brokers specified for partition id $partitionId are not available. " +
+          s"All brokers specified for partition id $partitionId are not available. " +
             s"Specified brokers: ${replicas.mkString(", ")}, " +
             s"available brokers: ${availableBrokerIds.mkString(", ")}.")
       partitionId -> replicas.size
@@ -324,7 +273,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
       val partitions = sortedBadRepFactors.map { case (partitionId, _) => partitionId }
       val repFactors = sortedBadRepFactors.map { case (_, rf) => rf }
       throw new InvalidReplicaAssignmentException(s"Inconsistent replication factor between partitions, " +
-        s"partition 0 has $expectedReplicationFactor while partitions [${partitions.mkString(", ")}] have " +
+        s"partition 0 has ${expectedReplicationFactor} while partitions [${partitions.mkString(", ")}] have " +
         s"replication factors [${repFactors.mkString(", ")}], respectively.")
     }
   }
@@ -354,8 +303,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
       case ConfigType.Client => changeClientIdConfig(entityName, configs)
       case ConfigType.User => changeUserOrUserClientIdConfig(entityName, configs)
       case ConfigType.Broker => changeBrokerConfig(parseBroker(entityName), configs)
-      case ConfigType.Ip => changeIpConfig(entityName, configs)
-      case _ => throw new IllegalArgumentException(s"$entityType is not a known entityType. Should be one of ${ConfigType.all}")
+      case _ => throw new IllegalArgumentException(s"$entityType is not a known entityType. Should be one of ${ConfigType.Topic}, ${ConfigType.Client}, ${ConfigType.Broker}")
     }
   }
 
@@ -369,7 +317,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeClientIdConfig(sanitizedClientId: String, configs: Properties): Unit = {
+  def changeClientIdConfig(sanitizedClientId: String, configs: Properties) {
     DynamicConfig.Client.validate(configs)
     changeEntityConfig(ConfigType.Client, sanitizedClientId, configs)
   }
@@ -384,34 +332,12 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    *                 existing configs need to be deleted, it should be done prior to invoking this API
    *
    */
-  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties): Unit = {
+  def changeUserOrUserClientIdConfig(sanitizedEntityName: String, configs: Properties) {
     if (sanitizedEntityName == ConfigEntityName.Default || sanitizedEntityName.contains("/clients"))
       DynamicConfig.Client.validate(configs)
     else
       DynamicConfig.User.validate(configs)
     changeEntityConfig(ConfigType.User, sanitizedEntityName, configs)
-  }
-
-  /**
-   * Validates the IP configs.
-   * @param ip ip for which configs are being validated
-   * @param configs properties to validate for the IP
-   */
-  def validateIpConfig(ip: String, configs: Properties): Unit = {
-    if (!DynamicConfig.Ip.isValidIpEntity(ip))
-      throw new AdminOperationException(s"$ip is not a valid IP or resolvable host.")
-    DynamicConfig.Ip.validate(configs)
-  }
-
-  /**
-   * Update the config for an IP. These overrides will be persisted between sessions, and will override any default
-   * IP properties.
-   * @param ip ip for which configs are being updated
-   * @param configs properties to update for the IP
-   */
-  def changeIpConfig(ip: String, configs: Properties): Unit = {
-    validateIpConfig(ip, configs)
-    changeEntityConfig(ConfigType.Ip, ip, configs)
   }
 
   /**
@@ -422,7 +348,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   def validateTopicConfig(topic: String, configs: Properties): Unit = {
     Topic.validate(topic)
     if (!zkClient.topicExists(topic))
-      throw new UnknownTopicOrPartitionException(s"Topic '$topic' does not exist.")
+      throw new AdminOperationException("Topic \"%s\" does not exist.".format(topic))
     // remove the topic overrides
     LogConfig.validate(configs)
   }
@@ -475,7 +401,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     DynamicConfig.Broker.validate(configs)
   }
 
-  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties): Unit = {
+  private def changeEntityConfig(rootEntityType: String, fullSanitizedEntityName: String, configs: Properties) {
     val sanitizedEntityPath = rootEntityType + '/' + fullSanitizedEntityName
     zkClient.setOrCreateEntityConfigs(rootEntityType, fullSanitizedEntityName, configs)
 
@@ -484,8 +410,8 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   }
 
   /**
-   * Read the entity (topic, broker, client, user, <user, client> or <ip>) config (if any) from zk
-   * sanitizedEntityName is <topic>, <broker>, <client-id>, <user>, <user>/clients/<client-id> or <ip>.
+   * Read the entity (topic, broker, client, user or <user, client>) config (if any) from zk
+   * sanitizedEntityName is <topic>, <broker>, <client-id>, <user> or <user>/clients/<client-id>.
    * @param rootEntityType
    * @param sanitizedEntityName
    * @return
@@ -499,7 +425,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
    * @return
    */
   def getAllTopicConfigs(): Map[String, Properties] =
-    zkClient.getAllTopicsInCluster().map(topic => (topic, fetchEntityConfig(ConfigType.Topic, topic))).toMap
+    zkClient.getAllTopicsInCluster.map(topic => (topic, fetchEntityConfig(ConfigType.Topic, topic))).toMap
 
   /**
    * Gets all the entity configs for a given entityType

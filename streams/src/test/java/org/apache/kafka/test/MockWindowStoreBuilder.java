@@ -14,31 +14,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.kafka.streams.processor.internals;
+package org.apache.kafka.test;
 
-import org.apache.kafka.streams.processor.RecordContext;
-import org.apache.kafka.streams.processor.TopicNameExtractor;
+import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.streams.state.internals.AbstractStoreBuilder;
 
-import java.util.Collection;
-import java.util.Collections;
+public class MockWindowStoreBuilder extends AbstractStoreBuilder<Integer, byte[], WindowStore> {
 
-/**
- * Static topic name extractor
- */
-public class StaticTopicNameExtractor<K, V> implements TopicNameExtractor<K, V> {
+    private final boolean persistent;
 
-    public final Collection<String> topicSingleton;
-
-    public StaticTopicNameExtractor(final String topicName) {
-        this.topicSingleton = Collections.singleton(topicName);
-    }
-
-    public Collection<String> extract(final K key, final V value, final RecordContext recordContext) {
-        return topicSingleton;
+    public MockWindowStoreBuilder(final String storeName, final boolean persistent) {
+        super(storeName, Serdes.Integer(), Serdes.ByteArray(), new MockTime());
+        this.persistent = persistent;
     }
 
     @Override
-    public String toString() {
-        return "StaticTopicNameExtractor(" + topicSingleton + ")";
+    public WindowStore build() {
+        return new MockWindowStore(name, persistent);
     }
 }

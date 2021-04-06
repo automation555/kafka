@@ -114,14 +114,16 @@ object ConsumerGroupCommand extends Logging {
   }
 
   def printOffsetsToReset(groupAssignmentsToReset: Map[TopicPartition, OffsetAndMetadata]): Unit = {
-    println("\n%-30s %-10s %-15s".format("TOPIC", "PARTITION", "NEW-OFFSET"))
+    print("\n%-30s %-10s %-15s".format("TOPIC", "PARTITION", "NEW-OFFSET"))
+    println()
 
     groupAssignmentsToReset.foreach {
       case (consumerAssignment, offsetAndMetadata) =>
-        println("%-30s %-10s %-15s".format(
-          consumerAssignment.topic,
-          consumerAssignment.partition,
-          offsetAndMetadata.offset))
+        print("%-30s %-10s %-15s".format(
+          consumerAssignment.topic(),
+          consumerAssignment.partition(),
+          offsetAndMetadata.offset()))
+        println()
     }
   }
 
@@ -282,7 +284,7 @@ object ConsumerGroupCommand extends Logging {
     protected def opts: ConsumerGroupCommandOptions
 
     protected def getLogEndOffset(topicPartition: TopicPartition): LogOffsetResult =
-      getLogEndOffsets(Seq(topicPartition)).getOrElse(topicPartition, LogOffsetResult.Ignore)
+      getLogEndOffsets(Seq(topicPartition)).get(topicPartition).getOrElse(LogOffsetResult.Ignore)
 
     protected def getLogEndOffsets(topicPartitions: Seq[TopicPartition]): Map[TopicPartition, LogOffsetResult]
 
@@ -548,43 +550,48 @@ object ConsumerGroupCommand extends Logging {
     // `consumer` is only needed for `describe`, so we instantiate it lazily
     private var consumer: KafkaConsumer[String, String] = _
 
-    override def listGroups(): List[String] = {
+    def listGroups(): List[String] = {
       adminClient.listAllConsumerGroupsFlattened().map(_.groupId)
     }
 
-    override def collectGroupOffsets(): (Option[String], Option[Seq[PartitionAssignmentState]]) = {
+    def collectGroupOffsets(): (Option[String], Option[Seq[PartitionAssignmentState]]) = {
       val group = opts.options.valueOf(opts.groupOpt)
       val consumerGroupSummary = adminClient.describeConsumerGroup(group, opts.options.valueOf(opts.timeoutMsOpt))
-      val assignments = consumerGroupSummary.consumers.map { consumers =>
-        var assignedTopicPartitions = Array[TopicPartition]()
-        val offsets = adminClient.listGroupOffsets(group)
-        val rowsWithConsumer =
-          if (offsets.isEmpty)
-            List[PartitionAssignmentState]()
-          else {
-            consumers.filter(_.assignment.nonEmpty).sortWith(_.assignment.size > _.assignment.size).flatMap { consumerSummary =>
-              val topicPartitions = consumerSummary.assignment
-              assignedTopicPartitions = assignedTopicPartitions ++ consumerSummary.assignment
-              val partitionOffsets: Map[TopicPartition, Option[Long]] = consumerSummary.assignment.map { topicPartition =>
-                new TopicPartition(topicPartition.topic, topicPartition.partition) -> offsets.get(topicPartition)
-              }.toMap
-              collectConsumerAssignment(group, Some(consumerGroupSummary.coordinator), topicPartitions,
-                partitionOffsets, Some(s"${consumerSummary.consumerId}"), Some(s"${consumerSummary.host}"),
-                Some(s"${consumerSummary.clientId}"))
+      (Some(consumerGroupSummary.state),
+        consumerGroupSummary.consumers match {
+          case None =>
+            None
+          case Some(consumers) =>
+            var assignedTopicPartitions = Array[TopicPartition]()
+            val offsets = adminClient.listGroupOffsets(group)
+            val rowsWithConsumer =
+              if (offsets.isEmpty)
+                List[PartitionAssignmentState]()
+              else {
+                consumers.filter(_.assignment.nonEmpty).sortWith(_.assignment.size > _.assignment.size).flatMap { consumerSummary =>
+                  val topicPartitions = consumerSummary.assignment
+                  assignedTopicPartitions = assignedTopicPartitions ++ consumerSummary.assignment
+                  val partitionOffsets: Map[TopicPartition, Option[Long]] = consumerSummary.assignment.map { topicPartition =>
+                    new TopicPartition(topicPartition.topic, topicPartition.partition) -> offsets.get(topicPartition)
+                  }.toMap
+                  collectConsumerAssignment(group, Some(consumerGroupSummary.coordinator), topicPartitions,
+                    partitionOffsets, Some(s"${consumerSummary.consumerId}"), Some(s"${consumerSummary.host}"),
+                    Some(s"${consumerSummary.clientId}"))
+                }
+              }
+
+            val rowsWithoutConsumer = offsets.filterKeys(!assignedTopicPartitions.contains(_))
+              .toSeq.sortBy(offset => (offset._1.topic(), offset._1.partition()))
+              .flatMap {
+              case (topicPartition, offset) =>
+                collectConsumerAssignment(group, Some(consumerGroupSummary.coordinator), Seq(topicPartition),
+                    Map(topicPartition -> Some(offset)), Some(MISSING_COLUMN_VALUE),
+                    Some(MISSING_COLUMN_VALUE), Some(MISSING_COLUMN_VALUE))
             }
-          }
 
-        val rowsWithoutConsumer = offsets.filterKeys(!assignedTopicPartitions.contains(_)).flatMap {
-          case (topicPartition, offset) =>
-            collectConsumerAssignment(group, Some(consumerGroupSummary.coordinator), Seq(topicPartition),
-              Map(topicPartition -> Some(offset)), Some(MISSING_COLUMN_VALUE),
-              Some(MISSING_COLUMN_VALUE), Some(MISSING_COLUMN_VALUE))
-        }
-
-        rowsWithConsumer ++ rowsWithoutConsumer
+            Some(rowsWithConsumer ++ rowsWithoutConsumer)
       }
-
-      (Some(consumerGroupSummary.state), assignments)
+      )
     }
 
     override def collectGroupMembers(verbose: Boolean): (Option[String], Option[Seq[MemberAssignmentState]]) = {
@@ -675,9 +682,7 @@ object ConsumerGroupCommand extends Logging {
         case "Empty" | "Dead" =>
           val partitionsToReset = getPartitionsToReset(groupId)
           val preparedOffsets = prepareOffsetsToReset(groupId, partitionsToReset)
-
-          // Dry-run is the default behavior if --execute is not specified
-          val dryRun = opts.options.has(opts.dryRunOpt) || !opts.options.has(opts.executeOpt)
+          val dryRun = opts.options.has(opts.dryRunOpt)
           if (!dryRun)
             getConsumer.commitSync(preparedOffsets.asJava)
           preparedOffsets
@@ -793,7 +798,7 @@ object ConsumerGroupCommand extends Logging {
         val (partitionsToResetWithCommittedOffset, partitionsToResetWithoutCommittedOffset) =
           partitionsToReset.partition(currentCommittedOffsets.keySet.contains(_))
 
-        val preparedOffsetsForPartitionsWithCommittedOffset = partitionsToResetWithCommittedOffset.map { topicPartition =>
+        val preparedOffsetsForParititionsWithCommittedOffset = partitionsToResetWithCommittedOffset.map { topicPartition =>
           (topicPartition, new OffsetAndMetadata(currentCommittedOffsets.get(topicPartition) match {
             case Some(offset) => offset
             case _ => throw new IllegalStateException(s"Expected a valid current offset for topic partition: $topicPartition")
@@ -805,7 +810,7 @@ object ConsumerGroupCommand extends Logging {
           case (topicPartition, _) => CommandLineUtils.printUsageAndDie(opts.parser, s"Error getting ending offset of topic partition: $topicPartition")
         }
 
-        preparedOffsetsForPartitionsWithCommittedOffset ++ preparedOffsetsForPartitionsWithoutCommittedOffset
+        preparedOffsetsForParititionsWithCommittedOffset ++ preparedOffsetsForPartitionsWithoutCommittedOffset
       } else {
         CommandLineUtils.printUsageAndDie(opts.parser, "Option '%s' requires one of the following scenarios: %s".format(opts.resetOffsetsOpt, opts.allResetOffsetScenarioOpts) )
       }
@@ -835,7 +840,7 @@ object ConsumerGroupCommand extends Logging {
     }
 
     override def exportOffsetsToReset(assignmentsToReset: Map[TopicPartition, OffsetAndMetadata]): String = {
-      val rows = assignmentsToReset.map { case (k,v) => s"${k.topic},${k.partition},${v.offset}" }(collection.breakOut): List[String]
+      val rows = assignmentsToReset.map { case (k,v) => s"${k.topic()},${k.partition()},${v.offset()}" }(collection.breakOut): List[String]
       rows.foldRight("")(_ + "\n" + _)
     }
 
@@ -875,19 +880,19 @@ object ConsumerGroupCommand extends Logging {
       "Multiple URLS can be given to allow fail-over."
     val BootstrapServerDoc = "REQUIRED (for consumer groups based on the new consumer): The server to connect to."
     val GroupDoc = "The consumer group we wish to act on."
-    val TopicDoc = "The topic whose consumer group information should be deleted or the topic that should be included in the offset reset process. " +
-      "When resetting offsets, partitions can be specified using this format: 'topic:0,1,2', where 0,1,2 are the partitions whose offsets will be reset. " +
-      "Offsets of multiple topics can be reset at a time."
-    val AllTopicsDoc = "Consider all topics assigned to a group in the 'reset-offsets' process."
+    val TopicDoc = "The topic whose consumer group information should be deleted or topic whose should be included in the reset offset process. " +
+      "In `reset-offsets` case, partitions can be specified using this format: `topic1:0,1,2`, where 0,1,2 are the partition to be included in the process. " +
+      "Reset-offsets also supports multiple topic inputs."
+    val AllTopicsDoc = "Consider all topics assigned to a group in the `reset-offsets` process."
     val ListDoc = "List all consumer groups."
     val DescribeDoc = "Describe consumer group and list offset lag (number of messages not yet processed) related to given group."
     val nl = System.getProperty("line.separator")
     val DeleteDoc = "Pass in groups to delete topic partition offsets and ownership information " +
-      "over the entire consumer group. For instance '--group g1 --group g2'." + nl +
+      "over the entire consumer group. For instance --group g1 --group g2" + nl +
       "Pass in groups with a single topic to just delete the given topic's partition offsets and ownership " +
-      "information for the given consumer groups. For instance '--group g1 --group g2 --topic t1'." + nl +
+      "information for the given consumer groups. For instance --group g1 --group g2 --topic t1" + nl +
       "Pass in just a topic to delete the given topic's partition offsets and ownership information " +
-      "for every consumer group. For instance '--topic t1'." + nl +
+      "for every consumer group. For instance --topic t1" + nl +
       "WARNING: Group deletion only works for old ZK-based consumer groups, and one has to use it carefully to only delete groups that are not active."
     val NewConsumerDoc = "Use the new consumer implementation. This is the default, so this option is deprecated and " +
       "will be removed in a future release."
@@ -895,14 +900,11 @@ object ConsumerGroupCommand extends Logging {
       "to specify the maximum amount of time in milliseconds to wait before the group stabilizes (when the group is just created, " +
       "or is going through some changes)."
     val CommandConfigDoc = "Property file containing configs to be passed to Admin Client and Consumer."
-    val ResetOffsetsDoc = "Reset offsets of consumer group. Supports one consumer group at the time, and instances should be inactive." + nl +
-      "There are 2 execution options: '--dry-run' (default) to plan which offsets to reset, and '--execute' to update the offsets. " +
-      "Additionally, the '--export' option is used to export the results to a CSV format." + nl +
-      "One of the following reset specifications must be chosen: '--to-datetime', '--by-period', '--to-earliest', " +
-      "'--to-latest', '--shift-by', '--from-file', '--to-current'." + nl +
-      "To define the scope use '--all-topics' or '--topic'. One scope must be specified unless the '--from-file' option is used."
-    val DryRunDoc = "Only show results without executing changes on consumer groups. Supported operation: '--reset-offsets'."
-    val ExecuteDoc = "Execute operation. Supported operation: '--reset-offsets'."
+    val ResetOffsetsDoc = "Reset offsets of consumer group. Supports one consumer group at the time, and instances should be inactive" + nl +
+      "Has 3 execution options: (default) to plan which offsets to reset, --execute to execute the reset-offsets process, and --export to export the results to a CSV format." + nl +
+      "Has the following scenarios to choose: --to-datetime, --by-period, --to-earliest, --to-latest, --shift-by, --from-file, --to-current. One scenario must be choose" + nl +
+      "To define the scope use: --all-topics or --topic. . One scope must be choose, unless you use '--from-file' scenario"
+    val DryRunDoc = "Only show results without executing changes on Consumer Groups. Supported operations: reset-offsets."
     val ExportDoc = "Export operation execution to a CSV file. Supported operations: reset-offsets."
     val ResetToOffsetDoc = "Reset offsets to a specific offset."
     val ResetFromFileDoc = "Reset offsets to values defined in CSV file."
@@ -911,17 +913,16 @@ object ConsumerGroupCommand extends Logging {
     val ResetToEarliestDoc = "Reset offsets to earliest offset."
     val ResetToLatestDoc = "Reset offsets to latest offset."
     val ResetToCurrentDoc = "Reset offsets to current offset."
-    val ResetShiftByDoc = "Reset offsets by shifting current offset by 'n', where 'n' can be positive or negative."
+    val ResetShiftByDoc = "Reset offsets shifting current offset by 'n', where 'n' can be positive or negative."
     val MembersDoc = "Describe members of the group. This option may be used with '--describe' and '--bootstrap-server' options only." + nl +
-      "Example: '--bootstrap-server localhost:9092 --describe --group group1 --members'"
+      "Example: --bootstrap-server localhost:9092 --describe --group group1 --members"
     val VerboseDoc = "Provide additional information, if any, when describing the group. This option may be used " +
-      "with '--offsets'/'--members'/'--state' and '--bootstrap-server' options only." + nl +
-      "Example: '--bootstrap-server localhost:9092 --describe --group group1 --members --verbose'"
+      "with '--offsets'/'--members'/'--state' and '--bootstrap-server' options only." + nl + "Example: --bootstrap-server localhost:9092 --describe --group group1 --members --verbose"
     val OffsetsDoc = "Describe the group and list all topic partitions in the group along with their offset lag. " +
       "This is the default sub-action of and may be used with '--describe' and '--bootstrap-server' options only." + nl +
-      "Example: '--bootstrap-server localhost:9092 --describe --group group1 --offsets'"
+      "Example: --bootstrap-server localhost:9092 --describe --group group1 --offsets"
     val StateDoc = "Describe the group state. This option may be used with '--describe' and '--bootstrap-server' options only." + nl +
-      "Example: '--bootstrap-server localhost:9092 --describe --group group1 --state'"
+      "Example: --bootstrap-server localhost:9092 --describe --group group1 --state"
 
     val parser = new OptionParser(false)
     val zkConnectOpt = parser.accepts("zookeeper", ZkConnectDoc)
@@ -956,7 +957,6 @@ object ConsumerGroupCommand extends Logging {
                                   .ofType(classOf[String])
     val resetOffsetsOpt = parser.accepts("reset-offsets", ResetOffsetsDoc)
     val dryRunOpt = parser.accepts("dry-run", DryRunDoc)
-    val executeOpt = parser.accepts("execute", ExecuteDoc)
     val exportOpt = parser.accepts("export", ExportDoc)
     val resetToOffsetOpt = parser.accepts("to-offset", ResetToOffsetDoc)
                            .withRequiredArg()
@@ -1018,8 +1018,8 @@ object ConsumerGroupCommand extends Logging {
         CommandLineUtils.checkRequiredArgs(parser, options, bootstrapServerOpt)
 
         if (options.has(newConsumerOpt)) {
-          Console.err.println(s"The --new-consumer option is deprecated and will be removed in a future major release. " +
-            s"The new consumer is used by default if the --bootstrap-server option is provided.")
+          Console.err.println(s"The $newConsumerOpt option is deprecated and will be removed in a future major release." +
+            s"The new consumer is used by default if the $bootstrapServerOpt option is provided.")
         }
 
         if (options.has(deleteOpt) && options.has(topicOpt))
@@ -1031,19 +1031,8 @@ object ConsumerGroupCommand extends Logging {
         CommandLineUtils.checkRequiredArgs(parser, options, groupOpt)
 
       if (options.has(deleteOpt) && !options.has(groupOpt) && !options.has(topicOpt))
-        CommandLineUtils.printUsageAndDie(parser, s"Option $deleteOpt either takes $groupOpt, $topicOpt, or both")
-
-      if (options.has(resetOffsetsOpt)) {
-        if (options.has(dryRunOpt) && options.has(executeOpt))
-          CommandLineUtils.printUsageAndDie(parser, s"Option $resetOffsetsOpt only accepts one of $executeOpt and $dryRunOpt")
-
-        if (!options.has(dryRunOpt) && !options.has(executeOpt)) {
-          Console.err.println("WARN: No action will be performed as the --execute option is missing." +
-            "In a future major release, the default behavior of this command will be to prompt the user before " +
-            "executing the reset rather than doing a dry run. You should add the --dry-run option explicitly " +
-            "if you are scripting this command and want to keep the current default behavior without prompting.")
-        }
-
+        CommandLineUtils.printUsageAndDie(parser, "Option %s either takes %s, %s, or both".format(deleteOpt, groupOpt, topicOpt))
+      if (options.has(resetOffsetsOpt))
         CommandLineUtils.checkRequiredArgs(parser, options, groupOpt)
         CommandLineUtils.checkInvalidArgs(parser, options, resetToOffsetOpt, allResetOffsetScenarioOpts - resetToOffsetOpt)
         CommandLineUtils.checkInvalidArgs(parser, options, resetToDatetimeOpt, allResetOffsetScenarioOpts - resetToDatetimeOpt)
@@ -1053,7 +1042,7 @@ object ConsumerGroupCommand extends Logging {
         CommandLineUtils.checkInvalidArgs(parser, options, resetToCurrentOpt, allResetOffsetScenarioOpts - resetToCurrentOpt)
         CommandLineUtils.checkInvalidArgs(parser, options, resetShiftByOpt, allResetOffsetScenarioOpts - resetShiftByOpt)
         CommandLineUtils.checkInvalidArgs(parser, options, resetFromFileOpt, allResetOffsetScenarioOpts - resetFromFileOpt)
-      }
+
 
       // check invalid args
       CommandLineUtils.checkInvalidArgs(parser, options, groupOpt, allConsumerGroupLevelOpts - describeOpt - deleteOpt - resetOffsetsOpt)
